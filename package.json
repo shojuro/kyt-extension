@@ -1,13 +1,16 @@
 {
   "name": "kyt-validation-sprint",
   "version": "1.0.0",
+  "type": "module",
   "description": "**Goal**: Prove automatic ChatGPT conversation capture via API interception works reliably.",
   "main": "background.js",
   "directories": {
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "sync": "node src/test_sync.js",
+    "search": "node src/test_search.js"
   },
   "keywords": [],
   "author": "",
