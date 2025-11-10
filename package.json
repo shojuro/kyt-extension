@@ -10,7 +10,11 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "sync": "node src/test_sync.js",
-    "search": "node src/test_search.js"
+    "search": "node src/test_search.js",
+    "mem": "node cli/mem.js"
+  },
+  "bin": {
+    "mem": "./cli/mem.js"
   },
   "keywords": [],
   "author": "",
