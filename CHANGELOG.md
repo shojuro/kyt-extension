@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### In Progress - Day 2 Setup
+- Configured Supabase MCP server integration for database management
+- Created `.env` file with Supabase and OpenAI credentials (gitignored)
+- Updated Claude Code MCP configuration with Supabase personal access token
+- Prepared for pgvector schema creation and semantic search implementation
+
 ---
 
 ## [0.1.1] - 2025-11-10
