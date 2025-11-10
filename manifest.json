@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "KYT Memory Extension - Day 1 Validation",
+  "version": "0.1.0",
+  "description": "Validation Sprint Day 1: Automatic ChatGPT conversation capture via API interception",
+
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+
+  "host_permissions": [
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.openai.com/*",
+        "https://chatgpt.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+
+  "icons": {
+    "16": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%234CAF50'/><text x='8' y='12' text-anchor='middle' fill='white' font-size='10' font-weight='bold'>K</text></svg>",
+    "48": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'><circle cx='24' cy='24' r='22' fill='%234CAF50'/><text x='24' y='34' text-anchor='middle' fill='white' font-size='28' font-weight='bold'>K</text></svg>",
+    "128": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'><circle cx='64' cy='64' r='60' fill='%234CAF50'/><text x='64' y='90' text-anchor='middle' fill='white' font-size='72' font-weight='bold'>K</text></svg>"
+  },
+
+  "web_accessible_resources": [],
+
+  "minimum_chrome_version": "88"
+}
