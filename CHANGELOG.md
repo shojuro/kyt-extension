@@ -7,11 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### In Progress - Day 2 Setup
-- Configured Supabase MCP server integration for database management
-- Created `.env` file with Supabase and OpenAI credentials (gitignored)
-- Updated Claude Code MCP configuration with Supabase personal access token
-- Prepared for pgvector schema creation and semantic search implementation
+### In Progress - Day 2: Semantic Search Infrastructure
+- **Database Schema**: Created `supabase_schema.sql` with pgvector extension support
+  - Messages table with 1536-dimensional vector embeddings for semantic search
+  - HNSW indexes for fast approximate nearest neighbor search
+  - Indexes for timestamp, conversation_id, and role filtering
+  - Unique constraint on message_id to prevent duplicates
+- **Node.js Setup**: Initialized npm project with dependencies
+  - Installed `@supabase/supabase-js`, `openai`, and `dotenv` packages
+  - Created `package.json` for dependency management
+- **Database Setup Scripts**:
+  - `setup_supabase.js`: Connection testing and schema verification script
+  - Detected existing Supabase project (svrcvfzlwhnixzuxaccf)
+  - Ready for manual SQL execution in Supabase dashboard
+- **Environment Configuration**:
+  - Verified `.env` file contains required SUPABASE_URL, SUPABASE_ANON_KEY, OPENAI_API_KEY
+  - Confirmed `.env` is properly gitignored and not tracked
+  - `.env.example` template updated with Day 2 requirements
 
 ---
 
