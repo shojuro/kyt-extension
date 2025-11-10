@@ -19,9 +19,10 @@ RETURNS TABLE (
   model text,
   timestamp bigint,
   message_id text,
+  source text,
   created_at timestamp,
   synced_from_extension timestamp,
-  similarity float
+  distance float
 )
 LANGUAGE plpgsql
 AS $$
@@ -35,11 +36,12 @@ BEGIN
     messages.model,
     messages.timestamp,
     messages.message_id,
+    messages.source,
     messages.created_at,
     messages.synced_from_extension,
-    1 - (messages.embedding <=> query_embedding) as similarity
+    (messages.embedding <=> query_embedding) as distance
   FROM messages
-  WHERE 1 - (messages.embedding <=> query_embedding) > match_threshold
+  WHERE (messages.embedding <=> query_embedding) < match_threshold
   ORDER BY messages.embedding <=> query_embedding
   LIMIT match_count;
 END;
