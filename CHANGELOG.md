@@ -97,6 +97,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ef354b7`: Validation suite with 9 comprehensive tests
   - `dfb81e0`: SQL function fix (distance + source column)
   - `230cffc`: Validation status documentation
+  - `2f2f26c`: CHANGELOG update with validation progress
+  - `970b5ad`: SQL syntax fix (timestamp reserved keyword)
 
 #### Validation Test Suite
 - **Test Suite Created** (`validation/verify_search.js`): 9 comprehensive tests
