@@ -64,12 +64,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `9ee1407`: Changelog documentation
   - `1ba97a9`: Sync and search modules
 
+#### Multi-Source Memory (Day 2 Evolution)
+- **Multi-Source Architecture**: Unified memory system supporting multiple capture sources
+  - `source` column added to messages table ('chatgpt', 'cli', future: 'terminal', 'notion', etc.)
+  - Index on source column for efficient filtering
+  - Foundation for cross-platform memory aggregation
+
+- **Browser-Compatible Modules**: Chrome extension integration
+  - `src/browser-sync.js`: Extension-compatible sync using fetch() and chrome.storage
+  - `src/browser-search.js`: Extension-compatible search with OpenAI embeddings
+  - Reads API configuration from chrome.storage.local (not process.env)
+  - Background.js message handlers: SYNC_TO_SUPABASE, SEARCH_MESSAGES, FIND_SIMILAR, SET_API_CONFIG
+
+- **CLI Memory Tool** (`cli/mem.js`): Explicit terminal capture
+  - Philosophy: High-signal explicit capture (NO passive logging)
+  - Basic usage: `mem "remember this command"`
+  - Pipe support: `npm test | mem --pipe "test results"`
+  - Writes directly to Supabase with source='cli'
+  - Maintains < 0.2 distance precision (no noise pollution)
+  - ✅ **User tested successfully 2x via PowerShell/WSL**
+
+- **Verification Tools**:
+  - `check_cli_messages.js`: Query and display CLI-captured messages
+  - `DAY2_SETUP.md`: Setup instructions for SQL and testing
+  - Confirmed CLI messages appear in Supabase with embeddings
+
+#### Git Workflow (Continued)
+- Additional atomic commits:
+  - `779cefe`: Browser integration (sync/search modules + background.js handlers)
+  - `23a4b51`: CLI memory tool with explicit capture
+  - `9591b04`: Setup documentation
+
 ### Status
 - ✅ **Phase 1 Complete**: Database schema and setup verified
 - ✅ **Phase 2 Complete**: Sync and search modules implemented
-- ⏳ **Phase 3 In Progress**: Background.js integration pending
-- ⏳ **Phase 4 Pending**: Validation test suite
-- ⏳ **Phase 5 Pending**: End-to-end testing with real messages
+- ✅ **Phase 3 Complete**: Background.js integration done
+- ✅ **Phase 4 Complete**: Multi-source architecture validated
+- ✅ **Phase 5 Complete**: CLI tool tested with real user input (2x verified)
+- ✅ **Phase 6 Complete**: Browser modules created and integrated
+- ⏳ **Phase 7 Pending**: Validation test suite (9 tests)
+- ⏳ **Phase 8 Pending**: Full end-to-end validation
+- ⏳ **Phase 9 Pending**: Extension sync testing (ChatGPT messages)
 
 ---
 
