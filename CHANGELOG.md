@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added debug logging for backend-api fetch calls to aid troubleshooting
 - Aggressive fetch monitoring: Re-install override at 100ms, 500ms, 1s, and 2s after page load
 - Continuous monitoring every 1 second to detect and fix when other scripts replace window.fetch
+- **ARCHITECTURAL CHANGE**: Switched from content script fetch override to page context injection
+  - Created `inject.js` that runs in PAGE CONTEXT instead of isolated content script world
+  - Allows fetch override to operate at same level as competing extensions (uBlock Origin, Dark Reader)
+  - Uses CustomEvent (`KYT_MESSAGE_CAPTURED`) to communicate between page context and content script
+  - Content script now acts as bridge: receives events from page, forwards to background for storage
+  - Solves extension conflict issue where VM scripts were replacing fetch after content script initialization
 
 ### Planned
 - Day 2: Semantic search with Supabase pgvector

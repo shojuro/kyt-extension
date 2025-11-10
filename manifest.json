@@ -37,7 +37,10 @@
     "128": "icon.svg"
   },
 
-  "web_accessible_resources": [],
+  "web_accessible_resources": [{
+    "resources": ["inject.js"],
+    "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"]
+  }],
 
   "minimum_chrome_version": "88"
 }
