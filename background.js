@@ -1,8 +1,8 @@
 /**
- * KYT Memory Extension - Background Service Worker (Day 1 Validation)
+ * KYT Memory Extension - Background Service Worker (Day 1-2)
  *
  * Purpose: Receive captured messages from content script and store in chrome.storage
- * Strategy: Simple message relay for Day 1 (no external APIs yet)
+ * Day 2: Added sync and search capabilities for unified memory
  *
  * Compliance: CLAUDE.md Anti-Theater Rules
  * - Real storage verification (not console.log theater)
@@ -11,6 +11,10 @@
  */
 
 'use strict';
+
+// Day 2: Import browser-compatible sync and search modules
+import { syncToSupabase, setApiConfig } from './src/browser-sync.js';
+import { searchMessages, findSimilarMessages } from './src/browser-search.js';
 
 console.log('🚀 KYT Background: Service worker starting...');
 
@@ -189,6 +193,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ success: false, error: error.message });
         });
       return true; // Keep channel open
+
+    case 'SYNC_TO_SUPABASE':
+      // Day 2: Sync messages to Supabase with embeddings
+      console.log('🔄 Starting Supabase sync...');
+      syncToSupabase()
+        .then(result => {
+          console.log('✅ Sync result:', result);
+          sendResponse(result);
+        })
+        .catch(error => {
+          console.error('❌ Sync error:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Keep channel open for async
+
+    case 'SEARCH_MESSAGES':
+      // Day 2: Search messages by semantic similarity
+      console.log('🔍 Searching messages:', message.query);
+      searchMessages(message.query, message.options || {})
+        .then(results => {
+          console.log(`✅ Search found ${results.length} results`);
+          sendResponse({ success: true, results: results });
+        })
+        .catch(error => {
+          console.error('❌ Search error:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Keep channel open for async
+
+    case 'FIND_SIMILAR':
+      // Day 2: Find messages similar to a given message
+      console.log('🔍 Finding similar messages to:', message.messageId);
+      findSimilarMessages(message.messageId, message.limit || 5)
+        .then(results => {
+          console.log(`✅ Found ${results.length} similar messages`);
+          sendResponse({ success: true, results: results });
+        })
+        .catch(error => {
+          console.error('❌ Find similar error:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Keep channel open for async
+
+    case 'SET_API_CONFIG':
+      // Day 2: Set API configuration (Supabase + OpenAI keys)
+      console.log('🔧 Saving API configuration...');
+      setApiConfig(message.config)
+        .then(() => {
+          console.log('✅ API configuration saved');
+          sendResponse({ success: true });
+        })
+        .catch(error => {
+          console.error('❌ Config save error:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Keep channel open for async
 
     default:
       console.warn('⚠️ Unknown message type:', message.type);
