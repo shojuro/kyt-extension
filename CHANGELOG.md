@@ -94,6 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `779cefe`: Browser integration (sync/search modules + background.js handlers)
   - `23a4b51`: CLI memory tool with explicit capture
   - `9591b04`: Setup documentation
+  - `ef354b7`: Validation suite with 9 comprehensive tests
+  - `dfb81e0`: SQL function fix (distance + source column)
+  - `230cffc`: Validation status documentation
 
 #### Validation Test Suite
 - **Test Suite Created** (`validation/verify_search.js`): 9 comprehensive tests
@@ -107,10 +110,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - TEST 8: Source attribution accurate ✅
   - TEST 9: Signal quality (no duplicates) ✅
 
-- **Initial Results**: 3/9 tests passing (honest validation)
-  - Infrastructure working: connection, attribution, uniqueness
-  - Pending fixes: embedding parsing, SQL function updates
-  - Expected after fixes: 6/9 passing (3 require ChatGPT sync)
+- **Validation Results**: 3/9 tests passing (honest validation)
+  - ✅ Infrastructure working: connection, attribution, uniqueness
+  - 🔧 Fixes applied: embedding parsing, SQL function (distance + source)
+  - ⏳ Pending user action: Run updated SQL in Supabase dashboard
+  - 🎯 Expected after SQL: 6/9 passing (3 require ChatGPT sync for Day 3)
+  - 📝 See: `DAY2_VALIDATION_STATUS.md` for detailed instructions
 
 ### Status
 - ✅ **Phase 1 Complete**: Database schema and setup verified
