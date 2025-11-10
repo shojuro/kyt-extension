@@ -1,0 +1,100 @@
+# KYT Validation Sprint - .gitignore
+# Created: 2025-11-10
+# Compliance: CLAUDE.md Rule 5 (Security First)
+
+# ============================================
+# SECRETS AND CREDENTIALS
+# ============================================
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.p12
+config/secrets.json
+credentials.json
+service-account*.json
+
+# ============================================
+# LOGS AND DEBUGGING
+# ============================================
+*.log
+logs/
+debug.log
+error.log
+validation/*.log
+
+# ============================================
+# CHROME EXTENSION ARTIFACTS
+# ============================================
+*.crx
+*.pem
+*.zip
+web-ext-artifacts/
+
+# ============================================
+# CACHE AND TEMPORARY FILES
+# ============================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.tmp
+*.temp
+
+# ============================================
+# IDE AND EDITOR FILES
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ============================================
+# OS GENERATED FILES
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ============================================
+# NODE.JS (Future-proofing)
+# ============================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# ============================================
+# BUILD AND DISTRIBUTION
+# ============================================
+build/
+dist/
+*.egg-info/
+.webpack/
+
+# ============================================
+# DATABASE FILES (Day 2+)
+# ============================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ============================================
+# USER DATA (Testing)
+# ============================================
+test_data/captured_*.json
+validation/user_data/
