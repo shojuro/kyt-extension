@@ -172,7 +172,26 @@
   }
   window.addEventListener('load', () => {
     setTimeout(installFetchOverride, 100); // Small delay after page load
+    setTimeout(installFetchOverride, 500); // Try again at 500ms
+    setTimeout(installFetchOverride, 1000); // And at 1 second
+    setTimeout(installFetchOverride, 2000); // And at 2 seconds
   });
+
+  // Aggressive approach: Continuously monitor and re-install if fetch gets replaced
+  let ourFetch = null;
+  const defender = setInterval(() => {
+    if (window.fetch !== ourFetch && ourFetch !== null) {
+      console.log('🔄 KYT: Fetch was replaced by another script, re-installing...');
+      installFetchOverride();
+      ourFetch = window.fetch;
+    }
+  }, 1000); // Check every second
+
+  // Store reference to our override after 3 seconds (after other extensions load)
+  setTimeout(() => {
+    ourFetch = window.fetch;
+    console.log('🛡️ KYT: Started monitoring fetch for replacements');
+  }, 3000);
 
   // Health monitoring: Alert if no interceptions for 5 minutes
   setInterval(() => {

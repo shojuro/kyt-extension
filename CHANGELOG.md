@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fetch override now intercepts both old (`/backend-api/conversation`) and new (`/backend-api/f/conversation`) endpoints
 - Re-install fetch override after page load to ensure KYT wraps fetch last (fixes conflict with uBlock Origin and other extensions)
 - Added debug logging for backend-api fetch calls to aid troubleshooting
+- Aggressive fetch monitoring: Re-install override at 100ms, 500ms, 1s, and 2s after page load
+- Continuous monitoring every 1 second to detect and fix when other scripts replace window.fetch
 
 ### Planned
 - Day 2: Semantic search with Supabase pgvector
