@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.1.1] - 2025-11-10
+
+### Validated
+- ✅ **DAY 1 VALIDATION COMPLETE**: 6/6 tests passed at 3:18 PM
+  - 8 messages captured automatically during field testing
+  - All required fields present and valid
+  - Conversation IDs successfully extracted from API
+  - No race conditions detected
+  - All message IDs unique
+  - Sequential timestamp ordering maintained
+
 ### Fixed
 - Chrome extension manifest icon field now uses actual SVG file instead of inline data URIs
 - Resolves "Invalid value for 'icons[\"128\"]'" error when loading extension
