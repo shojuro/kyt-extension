@@ -103,9 +103,10 @@
     const [url, options] = args;
 
     // Check if this is a ChatGPT conversation API call
+    // Updated to match new endpoint: /backend-api/f/conversation
     const isChatGPTAPI = (
       typeof url === 'string' &&
-      url.includes('/backend-api/conversation')
+      (url.includes('/backend-api/conversation') || url.includes('/backend-api/f/conversation'))
     );
 
     if (isChatGPTAPI && options?.body) {
