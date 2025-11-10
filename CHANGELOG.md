@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Chrome extension manifest icon field now uses actual SVG file instead of inline data URIs
+- Resolves "Invalid value for 'icons[\"128\"]'" error when loading extension
+
 ### Planned
 - Day 2: Semantic search with Supabase pgvector
 - Day 3: Invisible context injection into ChatGPT prompts
