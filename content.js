@@ -95,12 +95,22 @@
 
   /**
    * Override window.fetch to intercept ChatGPT API calls
-   * This runs BEFORE page JavaScript loads (document_start)
+   * Install override after a delay to ensure we're the last extension to wrap fetch
    */
-  const originalFetch = window.fetch;
+  function installFetchOverride() {
+    const originalFetch = window.fetch;
 
-  window.fetch = async function(...args) {
+    window.fetch = async function(...args) {
     const [url, options] = args;
+
+    // Debug: Log ALL fetch calls to diagnose issues
+    if (typeof url === 'string' && url.includes('backend-api')) {
+      console.log('🔍 KYT DEBUG: Fetch call detected', {
+        url: url,
+        hasBody: !!options?.body,
+        method: options?.method
+      });
+    }
 
     // Check if this is a ChatGPT conversation API call
     // Updated to match new endpoint: /backend-api/f/conversation
@@ -148,9 +158,21 @@
 
     // Continue with original fetch (don't break ChatGPT)
     return originalFetch.apply(this, args);
-  };
+    };
 
-  console.log('✅ KYT: Fetch override installed successfully');
+    console.log('✅ KYT: Fetch override installed successfully');
+  }
+
+  // Install immediately
+  installFetchOverride();
+
+  // Re-install after page load to override any other extensions
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', installFetchOverride);
+  }
+  window.addEventListener('load', () => {
+    setTimeout(installFetchOverride, 100); // Small delay after page load
+  });
 
   // Health monitoring: Alert if no interceptions for 5 minutes
   setInterval(() => {

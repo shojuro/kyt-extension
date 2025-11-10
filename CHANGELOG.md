@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resolves "Invalid value for 'icons[\"128\"]'" error when loading extension
 - Updated API endpoint detection to match ChatGPT's new endpoint: `/backend-api/f/conversation`
 - Fetch override now intercepts both old (`/backend-api/conversation`) and new (`/backend-api/f/conversation`) endpoints
+- Re-install fetch override after page load to ensure KYT wraps fetch last (fixes conflict with uBlock Origin and other extensions)
+- Added debug logging for backend-api fetch calls to aid troubleshooting
 
 ### Planned
 - Day 2: Semantic search with Supabase pgvector
