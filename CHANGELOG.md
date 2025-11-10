@@ -7,23 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### In Progress - Day 2: Semantic Search Infrastructure
-- **Database Schema**: Created `supabase_schema.sql` with pgvector extension support
-  - Messages table with 1536-dimensional vector embeddings for semantic search
-  - HNSW indexes for fast approximate nearest neighbor search
-  - Indexes for timestamp, conversation_id, and role filtering
-  - Unique constraint on message_id to prevent duplicates
-- **Node.js Setup**: Initialized npm project with dependencies
-  - Installed `@supabase/supabase-js`, `openai`, and `dotenv` packages
-  - Created `package.json` for dependency management
-- **Database Setup Scripts**:
-  - `setup_supabase.js`: Connection testing and schema verification script
-  - Detected existing Supabase project (svrcvfzlwhnixzuxaccf)
-  - Ready for manual SQL execution in Supabase dashboard
-- **Environment Configuration**:
-  - Verified `.env` file contains required SUPABASE_URL, SUPABASE_ANON_KEY, OPENAI_API_KEY
-  - Confirmed `.env` is properly gitignored and not tracked
-  - `.env.example` template updated with Day 2 requirements
+### Added - Day 2: Semantic Search Infrastructure
+
+#### Database Layer
+- **Database Schema** (`supabase_schema.sql`): PostgreSQL schema with pgvector extension
+  - Messages table with 1536-dimensional vector embeddings (OpenAI text-embedding-3-small)
+  - HNSW index for fast approximate nearest neighbor search (vector_cosine_ops)
+  - B-tree indexes on timestamp, conversation_id, and role for filtering
+  - Unique constraint on message_id to prevent duplicate syncs
+  - Verified working: Table created and accessible via Supabase client
+
+- **Search Function** (`supabase_search_function.sql`): PostgreSQL RPC function
+  - `match_messages()`: Performs cosine similarity search on embeddings
+  - Returns ranked results with similarity scores (1 - cosine distance)
+  - Configurable match_threshold and match_count parameters
+  - Must be executed in Supabase SQL Editor after schema creation
+
+#### Application Layer
+- **Sync Module** (`src/sync.js`): Message synchronization service
+  - `syncMessages()`: Syncs Chrome storage messages to Supabase with embeddings
+  - `generateEmbeddingsBatch()`: Batch embedding generation (100 messages/batch)
+  - `getMessagesToSync()`: Identifies new messages to avoid duplicate syncing
+  - `getSyncStatus()`: Returns total synced messages and last sync timestamp
+  - Handles OpenAI API rate limits and Supabase upsert conflicts
+
+- **Search Module** (`src/search.js`): Vector similarity search service
+  - `searchMessages()`: Natural language semantic search with filters
+  - `findSimilarMessages()`: Find conversations similar to a reference message
+  - `getConversationContext()`: Retrieve full conversation thread by ID
+  - `advancedSearch()`: Search with date range and role filters
+  - Returns results ranked by cosine similarity scores
+
+- **Configuration Module** (`src/config.js`): Centralized environment management
+  - Environment variable validation on import
+  - Initialized Supabase and OpenAI clients with error handling
+  - Exported configuration constants (batch size, thresholds, models)
+  - `validateConfig()`: Runtime configuration verification
+
+#### Build & Tooling
+- **NPM Package** (`package.json`): ES module configuration
+  - Added `"type": "module"` for native ES imports
+  - Dependencies: @supabase/supabase-js@2.80.0, openai@6.8.1, dotenv@17.2.3
+  - NPM scripts: `npm run sync`, `npm run search` (placeholders for test scripts)
+
+- **Setup Scripts**:
+  - `setup_supabase.js`: Verifies Supabase connection and table existence
+  - `setup_database_direct.js`: Automated SQL execution with manual fallback
+  - Both use environment variables from `.env` (no hardcoded credentials)
+
+#### Git Workflow
+- Created feature branch: `feat/day2-semantic-search`
+- Atomic commits with conventional commit messages:
+  - `9a6e73f`: Database schema with pgvector
+  - `0ba61ad`: NPM initialization and dependencies
+  - `6f0ea33`: Database setup scripts
+  - `9ee1407`: Changelog documentation
+  - `1ba97a9`: Sync and search modules
+
+### Status
+- ✅ **Phase 1 Complete**: Database schema and setup verified
+- ✅ **Phase 2 Complete**: Sync and search modules implemented
+- ⏳ **Phase 3 In Progress**: Background.js integration pending
+- ⏳ **Phase 4 Pending**: Validation test suite
+- ⏳ **Phase 5 Pending**: End-to-end testing with real messages
 
 ---
 
