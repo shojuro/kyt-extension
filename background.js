@@ -10,13 +10,9 @@
  * - Health monitoring for API fragility
  */
 
-'use strict';
-
 // Day 2: Import browser-compatible sync and search modules
-// TEMPORARY: Commented out due to Chrome service worker module loading issue
-// These will be re-enabled after moving to root directory or using dynamic import
-// import { syncToSupabase, setApiConfig } from './src/browser-sync.js';
-// import { searchMessages, findSimilarMessages } from './src/browser-search.js';
+import { syncToSupabase, setApiConfig } from './src/browser-sync.js';
+import { searchMessages, findSimilarMessages } from './src/browser-search.js';
 
 console.log('🚀 KYT Background: Service worker starting...');
 
