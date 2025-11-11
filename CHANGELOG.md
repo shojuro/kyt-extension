@@ -143,6 +143,40 @@ For users upgrading from Day 3:
 - ✅ **Production Proven**: Cross-session semantic memory retrieval working
 - ✅ **Ready for Deployment**: All features implemented, tested, and documented
 
+#### Day 4 Cleanup and Finalization (2025-11-12)
+
+**Database Cleanup**
+- Removed 2 test messages to reduce noise in semantic search
+- Final counts: 44 total messages (40 ChatGPT + 4 CLI)
+- All messages have embeddings and are searchable
+
+**CLI Documentation**
+- Created `CLI_USAGE.md`: Comprehensive CLI memory tool guide
+  - Quick reference for `mem` command usage
+  - Documented known issue: Global `mem` command hangs (workaround: use `node cli/mem.js`)
+  - Usage examples: basic capture, piped input, multi-line content
+  - Environment setup instructions (local vs global variables)
+  - Verification commands and troubleshooting guide
+  - Best practices: DO/DON'T lists for signal vs noise
+
+**Production Verification**
+- ✅ **Context Injection Verified**: ChatGPT successfully retrieved CLI-captured message
+  - Query: "What did I capture in CLI about KYT hybrid sync?"
+  - Result: Perfect explanation of 4-minute threshold from CLI memory
+  - Proves cross-source semantic memory working (ChatGPT + CLI unified)
+- ✅ **Semantic Search Working**: Distance 0.353 (similarity 0.647) above 0.5 threshold
+- ✅ **All Systems Operational**: Full RAG pipeline end-to-end functional
+
+**Git Commits**
+```
+b1b07b7 docs: add CLI usage guide and cleanup notes
+```
+
+**Key Insight: Noise Management**
+- Issue identified: Test messages like "Walla Walla", "hello turkey" pollute semantic space
+- Solution implemented: Delete test messages, document best practices
+- Future enhancement: Add quality thresholds, source filtering, message tagging
+
 ---
 
 ### Added - Day 3: Context Injection (RAG System)
