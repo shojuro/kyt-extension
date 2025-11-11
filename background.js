@@ -392,32 +392,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'SYNC_TO_SUPABASE':
       // Day 2: Sync messages to Supabase with embeddings
-      // TEMPORARY: Disabled due to module loading issue
-      console.warn('⚠️ SYNC_TO_SUPABASE temporarily disabled - module loading issue');
-      sendResponse({
-        success: false,
-        error: 'Sync functionality temporarily disabled. Day 3 context injection works independently.'
-      });
+      console.log('🔄 Manual sync requested');
+      syncToSupabase()
+        .then(result => {
+          console.log('✅ Sync result:', result);
+          sendResponse(result);
+        })
+        .catch(error => {
+          console.error('❌ Sync failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
       return true;
 
     case 'SEARCH_MESSAGES':
       // Day 2: Search messages by semantic similarity
-      // TEMPORARY: Disabled due to module loading issue
-      console.warn('⚠️ SEARCH_MESSAGES temporarily disabled - module loading issue');
-      sendResponse({
-        success: false,
-        error: 'Search functionality temporarily disabled. Use GET_CONTEXT for Day 3 context injection.'
-      });
+      console.log('🔍 Search requested:', message.query);
+      searchMessages(message.query, message.limit)
+        .then(results => {
+          console.log('✅ Search results:', results.length, 'items');
+          sendResponse({ success: true, results });
+        })
+        .catch(error => {
+          console.error('❌ Search failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
       return true;
 
     case 'FIND_SIMILAR':
       // Day 2: Find messages similar to a given message
-      // TEMPORARY: Disabled due to module loading issue
-      console.warn('⚠️ FIND_SIMILAR temporarily disabled - module loading issue');
-      sendResponse({
-        success: false,
-        error: 'Find similar functionality temporarily disabled. Use GET_CONTEXT for Day 3 context injection.'
-      });
+      console.log('🔍 Find similar requested for message:', message.messageId);
+      findSimilarMessages(message.messageId, message.threshold)
+        .then(results => {
+          console.log('✅ Similar messages found:', results.length, 'items');
+          sendResponse({ success: true, results });
+        })
+        .catch(error => {
+          console.error('❌ Find similar failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
       return true;
 
     case 'SET_API_CONFIG':
