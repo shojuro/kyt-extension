@@ -264,10 +264,11 @@ npm run validate:all  # Run all tests + validation
    - Improvement: Dynamic context length based on conversation complexity
 
 3. **Sync Functionality**
-   - Status: TEMPORARILY DISABLED (module loading issue)
-   - Day 2 sync/search features disabled in background.js (lines 319-347)
-   - Context injection works independently
-   - Fix: Resolve ES module loading for browser-sync.js and browser-search.js
+   - Status: ✅ RE-ENABLED (Day 4 - 2025-11-12)
+   - Hybrid sync strategy: immediate for first message (>4 min), periodic batches (5 min)
+   - All messages automatically synced to Supabase with embeddings
+   - Context injection has full access to message history
+   - See [SYNC_BEHAVIOR.md](./SYNC_BEHAVIOR.md) for details
 
 ---
 
@@ -315,9 +316,9 @@ window.KYT_HEALTH_CHECK()
 ## Next Steps (Future Enhancements)
 
 ### Immediate
-1. ✅ Re-enable Day 2 sync functionality (fix module loading)
-2. ✅ Add more edge case tests (empty database, API rate limits)
-3. ✅ Implement user-configurable threshold
+1. ✅ Re-enable Day 2 sync functionality (COMPLETE - Day 4)
+2. ⏳ Add more edge case tests (empty database, API rate limits)
+3. ⏳ Implement user-configurable threshold
 
 ### Medium-term
 1. Dynamic context length based on conversation complexity
@@ -337,7 +338,8 @@ window.KYT_HEALTH_CHECK()
 
 ### 1. Run Automated Tests
 ```bash
-npm test  # Should show: Tests  27 passed (27)
+npm test  # Should show: Tests  35 passed (35 unit+integration)
+          # Note: E2E tests (12) require Chrome deps, fail in WSL
 ```
 
 ### 2. Run Validation
@@ -371,12 +373,13 @@ npm run validate  # Should show: 11/11 passing
 **Day 3 is complete** with a fully functional RAG context injection system, comprehensive automated test suite, and honest documentation of what works and what doesn't.
 
 **Key achievements**:
-- ✅ 27/27 automated tests passing (can prove they work by making them fail)
+- ✅ 35/35 unit+integration tests passing (8 new sync tests added)
 - ✅ 11/11 validation tests passing (real API calls)
 - ✅ E2E verified in live browser (no CSP violations)
 - ✅ Proper testing methodology established (automated primary, manual secondary)
 - ✅ CLAUDE.md compliant (no theater, real assertions)
 - ✅ Security verified (VSEC passed, no secrets exposed)
+- ✅ Sync re-enabled (Day 4 - hybrid strategy)
 
 **Honest assessment**:
 - KYT_DEBUG is a debugging convenience, not "the solution"
