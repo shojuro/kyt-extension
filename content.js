@@ -16,15 +16,15 @@
   console.log('🚀 KYT Content Script: Initializing...');
 
   // === PAGE CONTEXT INJECTION ===
-  // Inject inject.js into page context to intercept fetch at the same level as VM scripts
+  // Day 3: Inject inject-day3.js with context injection (RAG) support
   const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('inject.js');
+  script.src = chrome.runtime.getURL('inject-day3.js');
   script.onload = function() {
-    console.log('✅ KYT Content Script: inject.js loaded into page context');
+    console.log('✅ KYT Content Script: inject-day3.js loaded into page context');
     this.remove();
   };
   script.onerror = function() {
-    console.error('❌ KYT Content Script: Failed to load inject.js');
+    console.error('❌ KYT Content Script: Failed to load inject-day3.js');
   };
   (document.head || document.documentElement).appendChild(script);
 
@@ -44,6 +44,47 @@
     }).catch(error => {
       console.error('❌ KYT Content Script: Failed to forward message to background:', error);
     });
+  });
+
+  // === DAY 3: CONFIG REQUEST HANDLER ===
+  // Listen for config requests from page context (inject-day3.js needs API keys)
+  window.addEventListener('KYT_CONFIG_REQUEST', async function(event) {
+    const requestId = event.detail.requestId;
+    console.log('🔧 KYT Content Script: Config request from page context');
+
+    try {
+      // Get config from chrome.storage
+      const result = await chrome.storage.local.get(['api_config', 'context_injection_config']);
+
+      // Send response back to page context
+      window.dispatchEvent(new CustomEvent('KYT_CONFIG_RESPONSE', {
+        detail: {
+          requestId: requestId,
+          apiConfig: result.api_config || null,
+          contextConfig: result.context_injection_config || {
+            enabled: true,
+            threshold: 0.5,
+            maxContextItems: 3,
+            minDistance: 0.0,
+            debugMode: false
+          }
+        }
+      }));
+
+      console.log('✅ KYT Content Script: Config sent to page context');
+    } catch (error) {
+      console.error('❌ KYT Content Script: Failed to get config:', error);
+
+      // Send error response
+      window.dispatchEvent(new CustomEvent('KYT_CONFIG_RESPONSE', {
+        detail: {
+          requestId: requestId,
+          apiConfig: null,
+          contextConfig: null,
+          error: error.message
+        }
+      }));
+    }
   });
 
   console.log('✅ KYT Content Script: Listening for messages from page context');

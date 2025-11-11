@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "KYT Memory Extension - Day 1 Validation",
-  "version": "0.1.0",
-  "description": "Validation Sprint Day 1: Automatic ChatGPT conversation capture via API interception",
+  "name": "KYT Memory Extension - Day 3 RAG",
+  "version": "0.3.0",
+  "description": "RAG system: ChatGPT with long-term semantic memory via context injection",
 
   "permissions": [
     "storage",
@@ -38,7 +38,7 @@
   },
 
   "web_accessible_resources": [{
-    "resources": ["inject.js"],
+    "resources": ["inject.js", "inject-day3.js"],
     "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"]
   }],
 
