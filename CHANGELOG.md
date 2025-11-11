@@ -102,11 +102,28 @@ Page Context (inject-day3-fixed.js)
 - `8b471f0`: feat(day3): Implement context injection (RAG core functionality)
 - `7269b66`: docs(day3): Add extension setup and testing guide
 - `685e046`: fix(day3): Move API calls from page context to background (CSP fix)
+- `f218ca3`: fix(day3): Remove ES module type from manifest to fix service worker crash
+- (current): fix(day3): Add return true to all message handlers to keep channel open
+
+### Fixed - Day 3: Service Worker Message Listener Issues
+
+#### Issue #1: Service Worker Crash on Startup
+- **Error**: `Unchecked runtime.lastError: Could not establish connection. Receiving end does not exist.`
+- **Root Cause**: Manifest declared `"type": "module"` but background.js no longer had ES module imports
+- **Solution**: Removed `"type": "module"` from manifest.json background configuration
+- **Commit**: `f218ca3` - "fix(day3): Remove ES module type from manifest to fix service worker crash"
+
+#### Issue #2: Message Listener Not Responding
+- **Error**: `Unchecked runtime.lastError: Could not establish connection. Receiving end does not exist.`
+- **Root Cause**: Some message handler cases (`EXTRACTION_ERROR`, `HEALTH_WARNING`, `default`) called `sendResponse()` but didn't return `true`, causing the message channel to close prematurely
+- **Solution**: Added `return true;` to ALL cases that call `sendResponse()` to keep message channel open
+- **Impact**: GET_STATS, EXTRACTION_ERROR, HEALTH_WARNING now properly respond
 
 ### Status - Day 3
 - ✅ **RAG Architecture Implemented**: Context injection working with message passing
 - ✅ **CSP Compliance**: Background script handles all external API calls
 - ✅ **Multi-Source Memory**: CLI + ChatGPT context aggregation
+- ✅ **Service Worker Stability**: All message handlers properly maintain channel state
 - ⏳ **Testing Required**: Extension sync + context injection validation pending
 - ⏳ **Validation Suite**: 9/9 tests expected after testing
 

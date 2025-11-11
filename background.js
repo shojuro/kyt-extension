@@ -285,7 +285,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         chrome.storage.local.set({ error_log: errors });
       });
       sendResponse({ acknowledged: true });
-      break;
+      return true; // Keep message channel open
 
     case 'HEALTH_WARNING':
       console.warn('⚠️ Health warning from content script:', message.message);
@@ -303,7 +303,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
 
       sendResponse({ acknowledged: true });
-      break;
+      return true; // Keep message channel open
 
     case 'GET_STATS':
       // Async stats retrieval
@@ -378,6 +378,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     default:
       console.warn('⚠️ Unknown message type:', message.type);
       sendResponse({ success: false, error: 'Unknown message type' });
+      return true; // Keep message channel open
   }
 });
 
