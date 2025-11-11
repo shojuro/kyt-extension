@@ -8,7 +8,10 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
     "sync": "node src/test_sync.js",
     "search": "node src/test_search.js",
     "mem": "node cli/mem.js"
@@ -23,5 +26,9 @@
     "@supabase/supabase-js": "^2.80.0",
     "dotenv": "^17.2.3",
     "openai": "^6.8.1"
+  },
+  "devDependencies": {
+    "@vitest/ui": "^1.0.4",
+    "vitest": "^1.0.4"
   }
 }
