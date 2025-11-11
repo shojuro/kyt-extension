@@ -434,8 +434,27 @@ chrome.runtime.onInstalled.addListener((details) => {
 });
 
 /**
- * Expose debug functions via chrome.runtime
- * Usage: chrome.runtime.sendMessage({type: 'GET_STATS'}, console.log)
+ * Expose debug functions for service worker console testing
+ * Note: chrome.runtime.sendMessage() doesn't work from service worker to itself
+ * Use these direct function calls instead:
  */
+globalThis.KYT_DEBUG = {
+  // Get storage statistics
+  getStats: () => getStorageStats().then(console.log),
+
+  // Get context for a test message
+  getContext: (message) => getContextForInjection(message, {}).then(console.log),
+
+  // View current storage
+  viewStorage: () => chrome.storage.local.get(null).then(console.log),
+
+  // Clear all storage (use with caution!)
+  clearStorage: () => chrome.storage.local.clear().then(() => console.log('✅ Storage cleared'))
+};
+
 console.log('✅ KYT Background: Service worker ready');
-console.log('   Debug: chrome.runtime.sendMessage({type: "GET_STATS"}, console.log)');
+console.log('   Debug: Use KYT_DEBUG object for testing');
+console.log('   - KYT_DEBUG.getStats() - View storage statistics');
+console.log('   - KYT_DEBUG.getContext("test message") - Test context retrieval');
+console.log('   - KYT_DEBUG.viewStorage() - View all storage');
+console.log('   Note: chrome.runtime.sendMessage() from service worker to itself does not work');

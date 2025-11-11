@@ -118,6 +118,18 @@ Page Context (inject-day3-fixed.js)
 - **Root Cause**: Some message handler cases (`EXTRACTION_ERROR`, `HEALTH_WARNING`, `default`) called `sendResponse()` but didn't return `true`, causing the message channel to close prematurely
 - **Solution**: Added `return true;` to ALL cases that call `sendResponse()` to keep message channel open
 - **Impact**: GET_STATS, EXTRACTION_ERROR, HEALTH_WARNING now properly respond
+- **Commit**: `865ae7a` - "fix(day3): Fix message listener - add return true to all handlers"
+
+#### Issue #3: Testing Service Worker Functions (Architecture Limitation)
+- **Error**: `Unchecked runtime.lastError: Could not establish connection. Receiving end does not exist.` when testing with `chrome.runtime.sendMessage()` from service worker console
+- **Root Cause**: **Fundamental Chrome Extension Limitation** - Service workers CANNOT send messages to themselves using `chrome.runtime.sendMessage()`. The `onMessage` listener only receives messages FROM content scripts, popup pages, and options pages, NOT from the service worker itself.
+- **Solution**: Added `KYT_DEBUG` object with direct function calls for testing:
+  - `KYT_DEBUG.getStats()` - View storage statistics
+  - `KYT_DEBUG.getContext("message")` - Test context retrieval
+  - `KYT_DEBUG.viewStorage()` - View all storage
+  - `KYT_DEBUG.clearStorage()` - Clear storage (caution!)
+- **Impact**: Service worker functions can now be tested directly without message passing
+- **Commit**: (current) - "fix(day3): Add KYT_DEBUG helper for service worker testing"
 
 ### Status - Day 3
 - ✅ **RAG Architecture Implemented**: Context injection working with message passing
