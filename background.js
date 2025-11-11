@@ -21,6 +21,59 @@ let totalMessagesSaved = 0;
 let totalErrors = 0;
 let lastSaveTime = Date.now();
 
+// Day 4: Extension lifecycle - sync existing messages on install/update
+chrome.runtime.onInstalled.addListener(async (details) => {
+  console.log('🔄 KYT Background: Extension installed/updated');
+  console.log(`   Reason: ${details.reason}`);
+
+  // Sync all existing messages
+  try {
+    const syncResult = await syncToSupabase();
+    if (syncResult.success) {
+      console.log(`✅ Initial sync completed: ${syncResult.synced} messages synced`);
+    } else {
+      console.warn('⚠️ Initial sync failed:', syncResult.error);
+    }
+  } catch (error) {
+    console.error('❌ Initial sync error:', error);
+  }
+
+  // Set up periodic sync alarm (every 5 minutes)
+  await chrome.alarms.create('periodicSync', { periodInMinutes: 5 });
+  console.log('⏰ Periodic sync alarm created (5 minute interval)');
+});
+
+// Day 4: Periodic sync handler
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === 'periodicSync') {
+    console.log('⏰ Periodic sync triggered');
+
+    try {
+      const syncResult = await syncToSupabase();
+      if (syncResult.success) {
+        console.log(`✅ Periodic sync: ${syncResult.synced} messages synced`);
+      } else {
+        console.warn('⚠️ Periodic sync failed:', syncResult.error);
+      }
+    } catch (error) {
+      console.error('❌ Periodic sync error:', error);
+    }
+  }
+});
+
+// Day 4: Check API configuration on startup
+chrome.runtime.onStartup.addListener(async () => {
+  console.log('🔍 KYT Background: Extension startup - checking API config');
+
+  const result = await chrome.storage.local.get(['api_config']);
+  if (!result.api_config) {
+    console.warn('⚠️ API config not found - sync will fail until configured');
+    console.warn('   Use SET_API_CONFIG message to configure Supabase + OpenAI keys');
+  } else {
+    console.log('✅ API config found');
+  }
+});
+
 /**
  * Save captured message to chrome.storage.local
  * @param {Object} messageData - Extracted message data from content script
@@ -259,8 +312,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'SAVE_MESSAGE':
       // Async save - respond immediately to avoid timeout
       saveMessage(message.data)
-        .then(success => {
-          sendResponse({ success: success });
+        .then(async (success) => {
+          if (success) {
+            // Day 4: Hybrid sync logic
+            const result = await chrome.storage.local.get(['last_sync_status']);
+            const lastSync = result.last_sync_status?.lastSyncTime || 0;
+            const timeSinceSync = Date.now() - lastSync;
+
+            // If more than 4 minutes since last sync, trigger immediate sync
+            if (timeSinceSync > 4 * 60 * 1000) {
+              console.log('🚀 First message in window - immediate sync');
+              syncToSupabase()
+                .then(syncResult => {
+                  if (syncResult.success) {
+                    console.log(`✅ Immediate sync: ${syncResult.synced} messages synced`);
+                  }
+                })
+                .catch(err => {
+                  console.warn('⚠️ Immediate sync failed:', err);
+                });
+            } else {
+              console.log('📦 Message batched for next periodic sync');
+            }
+
+            sendResponse({ success: true });
+          } else {
+            sendResponse({ success: false });
+          }
         })
         .catch(error => {
           console.error('❌ Save failed:', error);
