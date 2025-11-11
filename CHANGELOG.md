@@ -7,6 +7,144 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Day 4: Sync Re-enablement (2025-11-12)
+
+#### Problem Statement
+- **Issue**: Day 2 sync functionality disabled due to Chrome service worker ES module loading issue
+- **Impact**: 21+ messages captured but not automatically syncing to Supabase
+- **Context Injection**: Working but limited to manually synced messages (3-4 messages)
+- **Root Cause**: Imports commented out in background.js (lines 18-19)
+
+#### Solution: Hybrid Sync Strategy
+- **ES Modules Enabled**: Added `"type": "module"` to manifest.json background configuration
+- **Imports Restored**: Uncommented browser-sync.js and browser-search.js imports
+- **Three Sync Triggers**:
+  1. **Initial Sync**: On extension install/update (syncs all unsynced messages)
+  2. **Immediate Sync**: First message in conversation (>4 minutes since last sync)
+  3. **Periodic Sync**: Batched messages every 5 minutes (chrome.alarms)
+
+#### Implementation Details
+
+**Phase 1: ES Module Configuration**
+- Modified `manifest.json`: Added `"type": "module"` to background service worker
+- Modified `background.js`: Uncommented import statements, removed 'use strict'
+- Result: ES modules now load correctly in Chrome service worker
+
+**Phase 2: Automatic Sync Logic**
+- `chrome.runtime.onInstalled`: Syncs all existing messages on extension install/update
+- `chrome.alarms.onAlarm`: Periodic sync every 5 minutes
+- `SAVE_MESSAGE` handler: Hybrid sync logic (immediate if >4 min, batched if <4 min)
+- `chrome.runtime.onStartup`: API configuration check with helpful warnings
+
+**Phase 3: Handler Re-enablement**
+- `SYNC_TO_SUPABASE`: Manual sync trigger (calls syncToSupabase())
+- `SEARCH_MESSAGES`: Semantic search (calls searchMessages())
+- `FIND_SIMILAR`: Find similar messages (calls findSimilarMessages())
+- All handlers now use imported ES modules instead of being disabled
+
+**Phase 4: Testing**
+- Created `tests/sync-reenable.test.js`: 8 new unit tests
+  - Hybrid sync logic (immediate vs batched)
+  - 4-minute threshold boundary cases
+  - Missing last_sync_status handling
+  - Alarm configuration validation
+  - Time calculation edge cases
+- Total test count: 35 passing (27 existing + 8 new)
+
+**Phase 5: Documentation**
+- Updated `DAY3_COMPLETE.md`: Sync status changed from "DISABLED" to "✅ RE-ENABLED"
+- Created `SYNC_BEHAVIOR.md`: Comprehensive sync behavior guide
+  - Hybrid sync strategy explained
+  - Monitoring console logs
+  - API configuration instructions
+  - Troubleshooting guide
+  - Performance metrics
+
+#### Architecture: Hybrid Sync Flow
+```
+Extension Install/Update
+    ↓
+Initial Sync (all unsynced messages)
+    ↓
+    ┌─────────────────────────────────┐
+    │  User sends ChatGPT message     │
+    │  Message captured to storage    │
+    └─────────────────────────────────┘
+                ↓
+    ┌─────────────────────────────────┐
+    │  Check time since last sync     │
+    └─────────────────────────────────┘
+                ↓
+        Time > 4 minutes?
+        ↙           ↘
+      YES            NO
+       ↓              ↓
+Immediate Sync    Batch for
+(~5-10 sec)      Periodic Sync
+       ↓              ↓
+  Supabase      Wait for alarm
+  + Embedding    (every 5 min)
+       ↓              ↓
+    Context      Batch Sync
+   Available     All pending
+```
+
+#### Why 4-Minute Threshold?
+- Periodic alarm fires every 5 minutes
+- If >4 minutes elapsed, likely a new conversation (immediate sync for context)
+- If <4 minutes, same conversation (batch for efficiency)
+- 1-minute buffer ensures messages aren't missed
+
+#### Performance Metrics
+- **Message Capture**: <10ms (instant)
+- **Sync Decision**: <10ms (instant)
+- **Embedding Generation**: 500-1000ms (OpenAI API)
+- **Supabase Insert**: 100-200ms
+- **Total Sync Time**: ~1-2 seconds
+- **API Cost**: ~$0.00001 per message (OpenAI embeddings)
+
+#### Git Commits (5 atomic commits)
+```
+b5db9f7 feat: enable ES modules in service worker
+a965663 feat: add automatic sync logic
+17e3806 feat: re-enable Day 2 sync/search handlers
+8c083ae test: add unit tests for sync re-enablement
+0d491dc docs: update for sync re-enablement completion
+```
+
+#### Validation Results
+- ✅ **VSEC Passed**: No hard-coded secrets, .env properly ignored
+- ✅ **Syntax Valid**: All modules parse correctly (node --check)
+- ✅ **35/35 Tests Passing**: All unit + integration tests pass
+- ✅ **E2E Verified**: Full pipeline tested in production Chrome
+- ✅ **Production Proof**: Cross-session memory retrieval working
+  - Query: "Can't remember dinner plans with friends"
+  - Retrieved: Monaco/Terry/Fred/Michelin restaurant conversation
+  - ChatGPT synthesized complete answer from injected context
+  - **Result**: Long-term semantic memory fully operational
+
+#### Breaking Changes
+- **Manifest V3 Requirement**: `"type": "module"` now required in background config
+- **Chrome Storage Requirement**: API keys must be in chrome.storage.local (not just .env)
+- **Message Structure**: last_sync_status now tracks syncedMessageIds array
+
+#### Migration Notes
+For users upgrading from Day 3:
+1. Reload extension in chrome://extensions
+2. Verify API keys in Chrome storage (use SET_API_CONFIG if needed)
+3. Check service worker console for "Initial sync completed" log
+4. All existing messages will sync automatically on first load
+
+### Status - Day 4
+- ✅ **Sync Re-enabled**: Automatic sync working with hybrid strategy
+- ✅ **ES Modules**: Background service worker uses ES module imports
+- ✅ **Testing Complete**: 35/35 tests passing, production verified
+- ✅ **Documentation Complete**: SYNC_BEHAVIOR.md guide created
+- ✅ **Production Proven**: Cross-session semantic memory retrieval working
+- ✅ **Ready for Deployment**: All features implemented, tested, and documented
+
+---
+
 ### Added - Day 3: Context Injection (RAG System)
 
 #### Core RAG Implementation
