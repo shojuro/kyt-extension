@@ -12,6 +12,8 @@
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
+    "validate": "node validation/verify_context_injection.js",
+    "validate:all": "npm test && node validation/verify_context_injection.js",
     "sync": "node src/test_sync.js",
     "search": "node src/test_search.js",
     "mem": "node cli/mem.js"
