@@ -13,8 +13,10 @@
 'use strict';
 
 // Day 2: Import browser-compatible sync and search modules
-import { syncToSupabase, setApiConfig } from './src/browser-sync.js';
-import { searchMessages, findSimilarMessages } from './src/browser-search.js';
+// TEMPORARY: Commented out due to Chrome service worker module loading issue
+// These will be re-enabled after moving to root directory or using dynamic import
+// import { syncToSupabase, setApiConfig } from './src/browser-sync.js';
+// import { searchMessages, findSimilarMessages } from './src/browser-search.js';
 
 console.log('🚀 KYT Background: Service worker starting...');
 
@@ -316,50 +318,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'SYNC_TO_SUPABASE':
       // Day 2: Sync messages to Supabase with embeddings
-      console.log('🔄 Starting Supabase sync...');
-      syncToSupabase()
-        .then(result => {
-          console.log('✅ Sync result:', result);
-          sendResponse(result);
-        })
-        .catch(error => {
-          console.error('❌ Sync error:', error);
-          sendResponse({ success: false, error: error.message });
-        });
-      return true; // Keep channel open for async
+      // TEMPORARY: Disabled due to module loading issue
+      console.warn('⚠️ SYNC_TO_SUPABASE temporarily disabled - module loading issue');
+      sendResponse({
+        success: false,
+        error: 'Sync functionality temporarily disabled. Day 3 context injection works independently.'
+      });
+      return true;
 
     case 'SEARCH_MESSAGES':
       // Day 2: Search messages by semantic similarity
-      console.log('🔍 Searching messages:', message.query);
-      searchMessages(message.query, message.options || {})
-        .then(results => {
-          console.log(`✅ Search found ${results.length} results`);
-          sendResponse({ success: true, results: results });
-        })
-        .catch(error => {
-          console.error('❌ Search error:', error);
-          sendResponse({ success: false, error: error.message });
-        });
-      return true; // Keep channel open for async
+      // TEMPORARY: Disabled due to module loading issue
+      console.warn('⚠️ SEARCH_MESSAGES temporarily disabled - module loading issue');
+      sendResponse({
+        success: false,
+        error: 'Search functionality temporarily disabled. Use GET_CONTEXT for Day 3 context injection.'
+      });
+      return true;
 
     case 'FIND_SIMILAR':
       // Day 2: Find messages similar to a given message
-      console.log('🔍 Finding similar messages to:', message.messageId);
-      findSimilarMessages(message.messageId, message.limit || 5)
-        .then(results => {
-          console.log(`✅ Found ${results.length} similar messages`);
-          sendResponse({ success: true, results: results });
-        })
-        .catch(error => {
-          console.error('❌ Find similar error:', error);
-          sendResponse({ success: false, error: error.message });
-        });
-      return true; // Keep channel open for async
+      // TEMPORARY: Disabled due to module loading issue
+      console.warn('⚠️ FIND_SIMILAR temporarily disabled - module loading issue');
+      sendResponse({
+        success: false,
+        error: 'Find similar functionality temporarily disabled. Use GET_CONTEXT for Day 3 context injection.'
+      });
+      return true;
 
     case 'SET_API_CONFIG':
       // Day 2: Set API configuration (Supabase + OpenAI keys)
+      // Inline implementation (no module dependency)
       console.log('🔧 Saving API configuration...');
-      setApiConfig(message.config)
+      chrome.storage.local.set({ api_config: message.config })
         .then(() => {
           console.log('✅ API configuration saved');
           sendResponse({ success: true });
