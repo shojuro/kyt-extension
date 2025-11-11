@@ -131,6 +131,126 @@ async function getStorageStats() {
 }
 
 /**
+ * Day 3: Get context for injection (CSP fix)
+ * Runs in background script (no CSP restrictions)
+ *
+ * @param {string} userMessage - User's message text
+ * @param {Object} config - Context injection configuration
+ * @returns {Promise<Object>} Context data with formatted string and items
+ */
+async function getContextForInjection(userMessage, config) {
+  const startTime = performance.now();
+
+  try {
+    // Get API configuration
+    const result = await chrome.storage.local.get(['api_config']);
+    if (!result.api_config) {
+      throw new Error('API configuration not found');
+    }
+
+    const apiConfig = result.api_config;
+
+    // Use provided config or defaults
+    const contextConfig = {
+      threshold: config?.threshold || 0.5,
+      maxContextItems: config?.maxContextItems || 3,
+      minDistance: config?.minDistance || 0.0,
+      debugMode: config?.debugMode || false
+    };
+
+    // Generate embedding using OpenAI (no CSP in background!)
+    const embeddingResponse = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiConfig.openaiKey}`
+      },
+      body: JSON.stringify({
+        model: 'text-embedding-3-small',
+        input: userMessage,
+        encoding_format: 'float'
+      })
+    });
+
+    if (!embeddingResponse.ok) {
+      const error = await embeddingResponse.json().catch(() => ({}));
+      throw new Error(`OpenAI API error: ${error.error?.message || embeddingResponse.statusText}`);
+    }
+
+    const embeddingData = await embeddingResponse.json();
+    const queryEmbedding = embeddingData.data[0].embedding;
+
+    // Search Supabase for relevant context (no CSP in background!)
+    const searchResponse = await fetch(
+      `${apiConfig.supabaseUrl}/rest/v1/rpc/match_messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': apiConfig.supabaseKey,
+          'Authorization': `Bearer ${apiConfig.supabaseKey}`
+        },
+        body: JSON.stringify({
+          query_embedding: queryEmbedding,
+          match_threshold: contextConfig.threshold,
+          match_count: contextConfig.maxContextItems
+        })
+      }
+    );
+
+    if (!searchResponse.ok) {
+      const error = await searchResponse.json().catch(() => ({}));
+      throw new Error(`Supabase search error: ${error.message || searchResponse.statusText}`);
+    }
+
+    const contextItems = await searchResponse.json();
+
+    // Filter by minimum distance
+    const filteredItems = contextItems.filter(r => r.distance >= contextConfig.minDistance);
+
+    // Format context for injection
+    let formattedContext = null;
+    if (filteredItems.length > 0) {
+      formattedContext = `[Memory Context - ${filteredItems.length} relevant item${filteredItems.length > 1 ? 's' : ''}]\n\n`;
+
+      filteredItems.forEach((item, index) => {
+        const source = item.source === 'cli' ? '📝 Terminal' : '💬 Previous conversation';
+        const timestamp = new Date(item.msg_timestamp || item.timestamp).toLocaleDateString();
+
+        formattedContext += `${index + 1}. ${source} (${timestamp})\n`;
+        formattedContext += `   "${item.content}"\n`;
+
+        if (contextConfig.debugMode) {
+          formattedContext += `   [Distance: ${item.distance.toFixed(3)}, Source: ${item.source}]\n`;
+        }
+
+        formattedContext += '\n';
+      });
+
+      formattedContext += '[End of Memory Context]\n\n';
+    }
+
+    const elapsedTime = performance.now() - startTime;
+
+    return {
+      success: true,
+      items: filteredItems,
+      formattedContext: formattedContext,
+      elapsedMs: elapsedTime
+    };
+
+  } catch (error) {
+    console.error('❌ Context retrieval failed:', error);
+    return {
+      success: false,
+      error: error.message,
+      items: [],
+      formattedContext: null
+    };
+  }
+}
+
+/**
  * Message listener - Handle messages from content script
  */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -246,6 +366,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         })
         .catch(error => {
           console.error('❌ Config save error:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Keep channel open for async
+
+    case 'GET_CONTEXT':
+      // Day 3: Get context for RAG injection (CSP fix - runs in background, no CSP restrictions)
+      console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
+      getContextForInjection(message.userMessage, message.config)
+        .then(contextData => {
+          console.log('✅ Context retrieved:', contextData.items?.length || 0, 'items');
+          sendResponse(contextData);
+        })
+        .catch(error => {
+          console.error('❌ Context retrieval error:', error);
           sendResponse({ success: false, error: error.message });
         });
       return true; // Keep channel open for async

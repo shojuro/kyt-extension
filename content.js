@@ -16,15 +16,15 @@
   console.log('🚀 KYT Content Script: Initializing...');
 
   // === PAGE CONTEXT INJECTION ===
-  // Day 3: Inject inject-day3.js with context injection (RAG) support
+  // Day 3: Inject inject-day3-fixed.js with context injection (RAG) support (CSP FIXED)
   const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('inject-day3.js');
+  script.src = chrome.runtime.getURL('inject-day3-fixed.js');
   script.onload = function() {
-    console.log('✅ KYT Content Script: inject-day3.js loaded into page context');
+    console.log('✅ KYT Content Script: inject-day3-fixed.js loaded into page context');
     this.remove();
   };
   script.onerror = function() {
-    console.error('❌ KYT Content Script: Failed to load inject-day3.js');
+    console.error('❌ KYT Content Script: Failed to load inject-day3-fixed.js');
   };
   (document.head || document.documentElement).appendChild(script);
 
@@ -46,41 +46,45 @@
     });
   });
 
-  // === DAY 3: CONFIG REQUEST HANDLER ===
-  // Listen for config requests from page context (inject-day3.js needs API keys)
-  window.addEventListener('KYT_CONFIG_REQUEST', async function(event) {
-    const requestId = event.detail.requestId;
-    console.log('🔧 KYT Content Script: Config request from page context');
+  // === DAY 3: CONTEXT REQUEST HANDLER (CSP FIX) ===
+  // Listen for context requests from page context
+  // Page context cannot call OpenAI/Supabase directly (CSP blocks)
+  // So we forward to background script which has no CSP restrictions
+  window.addEventListener('KYT_CONTEXT_REQUEST', async function(event) {
+    const { requestId, userMessage, config } = event.detail;
+    console.log('🔍 KYT Content Script: Context request from page context');
 
     try {
-      // Get config from chrome.storage
-      const result = await chrome.storage.local.get(['api_config', 'context_injection_config']);
+      // Forward to background script (no CSP restrictions there!)
+      const response = await chrome.runtime.sendMessage({
+        type: 'GET_CONTEXT',
+        userMessage: userMessage,
+        config: config
+      });
 
       // Send response back to page context
-      window.dispatchEvent(new CustomEvent('KYT_CONFIG_RESPONSE', {
+      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
         detail: {
           requestId: requestId,
-          apiConfig: result.api_config || null,
-          contextConfig: result.context_injection_config || {
-            enabled: true,
-            threshold: 0.5,
-            maxContextItems: 3,
-            minDistance: 0.0,
-            debugMode: false
-          }
+          success: response.success,
+          formattedContext: response.formattedContext,
+          items: response.items,
+          elapsedMs: response.elapsedMs,
+          error: response.error
         }
       }));
 
-      console.log('✅ KYT Content Script: Config sent to page context');
+      console.log('✅ KYT Content Script: Context response sent to page context');
     } catch (error) {
-      console.error('❌ KYT Content Script: Failed to get config:', error);
+      console.error('❌ KYT Content Script: Failed to get context:', error);
 
       // Send error response
-      window.dispatchEvent(new CustomEvent('KYT_CONFIG_RESPONSE', {
+      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
         detail: {
           requestId: requestId,
-          apiConfig: null,
-          contextConfig: null,
+          success: false,
+          formattedContext: null,
+          items: [],
           error: error.message
         }
       }));

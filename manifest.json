@@ -38,7 +38,7 @@
   },
 
   "web_accessible_resources": [{
-    "resources": ["inject.js", "inject-day3.js"],
+    "resources": ["inject.js", "inject-day3.js", "inject-day3-fixed.js"],
     "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"]
   }],
 
