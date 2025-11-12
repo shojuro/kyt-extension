@@ -27,6 +27,28 @@
 - ✅ Context properly formatted and injected
 - ✅ LLM used context to answer correctly
 
+### Threshold Optimization
+
+**Issue Found**: Some cross-platform queries returned 0 items despite relevant messages existing.
+
+**Diagnostic Test** (`KYT_DEBUG.getContext("Who is Cleophis?")`):
+```
+✅ success: true
+✅ items: 2
+✅ elapsedMs: 1999ms
+formattedContext: "[Memory Context - 2 relevant items]..."
+```
+
+**Root Cause**: Semantic search threshold 0.5 too strict
+- High similarity queries worked (Wanda: 0.6+ distance)
+- Medium similarity queries failed (Lucy/Pearson: 0.45-0.49 distance)
+- Valid memories were being filtered out
+
+**Solution**: Lowered threshold from 0.5 to 0.4
+- More permissive matching
+- Better cross-platform recall
+- Acceptable precision/recall tradeoff
+
 ### ChatGPT Platform
 - ✅ **Context injection WORKING**
 - ✅ Pre-send interception capturing requests
