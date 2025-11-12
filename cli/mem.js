@@ -18,6 +18,8 @@ import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { stdin } from 'process';
+import { fileURLToPath } from 'url';
+import { realpathSync } from 'fs';
 
 // Configuration from .env
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -86,20 +88,35 @@ async function saveMemory(content, metadata = {}) {
 
 /**
  * Read from stdin (for piping)
+ * Uses a timeout to detect if stdin has data available
  */
 async function readStdin() {
   return new Promise((resolve) => {
     let data = '';
+    let hasData = false;
+
+    // Timeout: If no data received in 100ms, assume no pipe
+    const timeout = setTimeout(() => {
+      if (!hasData) {
+        stdin.pause();
+        resolve(null);
+      }
+    }, 100);
 
     stdin.setEncoding('utf8');
 
     stdin.on('data', (chunk) => {
+      hasData = true;
+      clearTimeout(timeout);
       data += chunk;
     });
 
     stdin.on('end', () => {
-      resolve(data.trim());
+      clearTimeout(timeout);
+      resolve(data.trim() || null);
     });
+
+    stdin.resume(); // Start reading
   });
 }
 
@@ -180,7 +197,11 @@ async function main() {
 }
 
 // Run if called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Resolve symlinks to get the real file path (for npm link compatibility)
+const scriptPath = fileURLToPath(import.meta.url);
+const argv1Real = realpathSync(process.argv[1]);
+
+if (scriptPath === argv1Real) {
   main().catch(error => {
     console.error('❌ Fatal error:', error);
     process.exit(1);
