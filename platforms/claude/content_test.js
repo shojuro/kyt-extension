@@ -59,8 +59,8 @@ async function getAndInjectContext(bodyString) {
           requestId: requestId,
           userMessage: body.prompt,
           config: {
-            threshold: 0.5,
-            maxContextItems: 3,
+            threshold: 0.4, // Lowered from 0.5 for better cross-platform matching
+            maxContextItems: 5, // Increased from 3 for more context
             debugMode: false
           }
         }
