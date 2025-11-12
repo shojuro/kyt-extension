@@ -69,6 +69,87 @@
   };
 
   /**
+   * Request context from background and inject into message
+   */
+  async function getAndInjectContext(bodyString) {
+    try {
+      const body = JSON.parse(bodyString);
+
+      // Extract user message
+      if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+        return bodyString; // No modification
+      }
+
+      const lastMessage = body.messages[body.messages.length - 1];
+      let userContent = null;
+
+      if (lastMessage?.content?.parts && Array.isArray(lastMessage.content.parts)) {
+        userContent = lastMessage.content.parts[0];
+      } else if (typeof lastMessage?.content === 'string') {
+        userContent = lastMessage.content;
+      }
+
+      if (!userContent || typeof userContent !== 'string') {
+        return bodyString; // No modification
+      }
+
+      console.log('🔍 KYT ChatGPT: Requesting context for:', userContent.substring(0, 50) + '...');
+
+      // Request context from content script
+      const requestId = `ctx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          console.warn('⏱️ KYT ChatGPT: Context request timeout');
+          resolve(bodyString); // Timeout - proceed without context
+        }, 2000);
+
+        const responseHandler = (event) => {
+          if (event.detail.requestId === requestId) {
+            clearTimeout(timeout);
+            window.removeEventListener('KYT_CONTEXT_RESPONSE', responseHandler);
+
+            if (event.detail.success && event.detail.formattedContext) {
+              console.log('✅ KYT ChatGPT: Context received, injecting...');
+
+              // Inject context as a system message
+              const contextMessage = {
+                author: { role: 'system' },
+                content: { content_type: 'text', parts: [event.detail.formattedContext] },
+                metadata: { kyt_context: true }
+              };
+
+              body.messages.splice(body.messages.length - 1, 0, contextMessage);
+              resolve(JSON.stringify(body));
+            } else {
+              console.log('ℹ️ KYT ChatGPT: No context found or error');
+              resolve(bodyString); // No context - proceed with original
+            }
+          }
+        };
+
+        window.addEventListener('KYT_CONTEXT_RESPONSE', responseHandler);
+
+        // Dispatch context request
+        window.dispatchEvent(new CustomEvent('KYT_CONTEXT_REQUEST', {
+          detail: {
+            requestId: requestId,
+            userMessage: userContent,
+            config: {
+              threshold: 0.5,
+              maxContextItems: 3,
+              debugMode: false
+            }
+          }
+        }));
+      });
+    } catch (error) {
+      console.error('❌ KYT ChatGPT: Context injection error:', error);
+      return bodyString; // Error - proceed with original
+    }
+  }
+
+  /**
    * Override fetch in page context
    */
   const originalFetch = window.fetch;
@@ -82,7 +163,16 @@
       totalInterceptions++;
       lastInterceptionTime = Date.now();
 
-      // Extract message data
+      // PHASE 1: Get context and inject BEFORE sending
+      if (options.body) {
+        try {
+          options.body = await getAndInjectContext(options.body);
+        } catch (error) {
+          console.error('❌ KYT ChatGPT: Pre-send context injection failed:', error);
+        }
+      }
+
+      // PHASE 2: Extract message data for storage AFTER sending
       const messageData = platform.extractMessage(options.body);
 
       if (messageData) {
@@ -98,7 +188,7 @@
       }
     }
 
-    // Continue with original fetch
+    // Continue with original fetch (with modified body if context was injected)
     return originalFetch.apply(this, args);
   };
 

@@ -10,6 +10,68 @@
 
 console.log('🟢 KYT Claude: Content script loaded in MAIN world at:', new Date().toISOString());
 
+/**
+ * Request context from bridge and inject into message
+ */
+async function getAndInjectContext(bodyString) {
+  try {
+    const body = JSON.parse(bodyString);
+
+    // Claude API uses prompt string
+    if (!body.prompt || typeof body.prompt !== 'string') {
+      return bodyString; // No modification
+    }
+
+    console.log('🔍 KYT Claude: Requesting context for:', body.prompt.substring(0, 50) + '...');
+
+    // Request context from bridge
+    const requestId = `ctx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        console.warn('⏱️ KYT Claude: Context request timeout');
+        resolve(bodyString); // Timeout - proceed without context
+      }, 2000);
+
+      const responseHandler = (event) => {
+        if (event.detail.requestId === requestId) {
+          clearTimeout(timeout);
+          window.removeEventListener('KYT_CONTEXT_RESPONSE', responseHandler);
+
+          if (event.detail.success && event.detail.formattedContext) {
+            console.log('✅ KYT Claude: Context received, injecting...');
+
+            // Prepend context to prompt
+            body.prompt = `${event.detail.formattedContext}\n\n---\n\n${body.prompt}`;
+            resolve(JSON.stringify(body));
+          } else {
+            console.log('ℹ️ KYT Claude: No context found or error');
+            resolve(bodyString); // No context - proceed with original
+          }
+        }
+      };
+
+      window.addEventListener('KYT_CONTEXT_RESPONSE', responseHandler);
+
+      // Dispatch context request
+      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_REQUEST', {
+        detail: {
+          requestId: requestId,
+          userMessage: body.prompt,
+          config: {
+            threshold: 0.5,
+            maxContextItems: 3,
+            debugMode: false
+          }
+        }
+      }));
+    });
+  } catch (error) {
+    console.error('❌ KYT Claude: Context injection error:', error);
+    return bodyString; // Error - proceed with original
+  }
+}
+
 // Wrap window.fetch to intercept Claude API calls
 const originalFetch = window.fetch;
 window.fetch = async function(...args) {
@@ -25,7 +87,16 @@ window.fetch = async function(...args) {
       const conversationIdMatch = url.match(/chat_conversations\/([^\/]+)\/completion/);
       const conversationId = conversationIdMatch ? conversationIdMatch[1] : null;
 
-      // Parse request body to get the message
+      // PHASE 1: Get context and inject BEFORE sending
+      if (options && options.body) {
+        try {
+          options.body = await getAndInjectContext(options.body);
+        } catch (error) {
+          console.error('❌ KYT Claude: Pre-send context injection failed:', error);
+        }
+      }
+
+      // PHASE 2: Extract message data for storage AFTER injection
       let messageData = null;
       if (options && options.body) {
         try {
@@ -66,7 +137,7 @@ window.fetch = async function(...args) {
     }
   }
 
-  // Always call the original fetch
+  // Always call the original fetch (with modified body if context was injected)
   return originalFetch.apply(this, args);
 };
 

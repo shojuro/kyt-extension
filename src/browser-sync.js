@@ -117,14 +117,15 @@ export async function syncToSupabase() {
       synced_from_extension: new Date().toISOString()
     }));
 
-    // Insert to Supabase
-    const response = await fetch(`${config.supabaseUrl}/rest/v1/messages`, {
+    // Insert to Supabase (UPSERT for idempotency)
+    // on_conflict=message_id tells PostgREST which column to check for duplicates
+    const response = await fetch(`${config.supabaseUrl}/rest/v1/messages?on_conflict=message_id`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'apikey': config.supabaseKey,
         'Authorization': `Bearer ${config.supabaseKey}`,
-        'Prefer': 'resolution=ignore-duplicates'
+        'Prefer': 'resolution=merge-duplicates'
       },
       body: JSON.stringify(messagesWithEmbeddings)
     });

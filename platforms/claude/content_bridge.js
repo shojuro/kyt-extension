@@ -39,6 +39,49 @@ window.addEventListener('KYT_MESSAGE_CAPTURED', (event) => {
   }
 });
 
+// Listen for context requests from MAIN world
+window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
+  const { requestId, userMessage, config } = event.detail;
+  console.log('🔍 BRIDGE: Context request from MAIN world');
+
+  try {
+    // Forward to background script (no CSP restrictions there!)
+    const response = await chrome.runtime.sendMessage({
+      type: 'GET_CONTEXT',
+      userMessage: userMessage,
+      config: config
+    });
+
+    // Send response back to MAIN world
+    window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+      detail: {
+        requestId: requestId,
+        success: response.success,
+        formattedContext: response.formattedContext,
+        items: response.items,
+        elapsedMs: response.elapsedMs,
+        error: response.error
+      }
+    }));
+
+    console.log('✅ BRIDGE: Context response sent to MAIN world');
+  } catch (error) {
+    console.error('❌ BRIDGE: Failed to get context:', error);
+
+    // Send error response
+    window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+      detail: {
+        requestId: requestId,
+        success: false,
+        formattedContext: null,
+        items: [],
+        elapsedMs: 0,
+        error: error.message
+      }
+    }));
+  }
+});
+
 // Health check for bridge
 window.addEventListener('KYT_BRIDGE_PING', () => {
   console.log('🔵 BRIDGE: Ping received, responding...');
@@ -51,4 +94,4 @@ window.addEventListener('KYT_BRIDGE_PING', () => {
   }));
 });
 
-console.log('🔵 BRIDGE: Listening for KYT_MESSAGE_CAPTURED events');
+console.log('🔵 BRIDGE: Listening for KYT_MESSAGE_CAPTURED and KYT_CONTEXT_REQUEST events');
