@@ -7,6 +7,167 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Day 5: Claude Platform Integration with Dual-World Architecture (2025-11-12)
+
+#### Problem Statement
+- **Issue**: Claude.ai enforces strict Content Security Policy (CSP) blocking traditional script injection
+- **Root Cause**: `<script src="inject.js">` injection blocked by CSP `script-src 'self'` directive
+- **Impact**: Claude platform implementation non-functional despite plugin architecture being ready
+- **Discovery**: Phase 1.2 diagnostics revealed CSP violation preventing page context access
+
+#### Solution: Dual-World Architecture with CustomEvent Bridge
+- **Chrome Manifest V3 Feature**: `world: "MAIN"` parameter for content scripts
+- **MAIN World Script**: Runs directly in page context (bypasses CSP completely)
+- **ISOLATED World Script**: Traditional content script with chrome.runtime access
+- **Communication Bridge**: CustomEvent for MAIN → ISOLATED → background message passing
+
+#### Architecture: Dual-World Message Flow
+```
+User Message to Claude
+  ↓
+Claude Web App
+  ↓
+fetch(/api/.../completion)
+  ↓
+🟢 MAIN World (content_test.js)
+  - window.fetch wrapper intercepts call
+  - Extracts: conversationId from URL, prompt from body
+  - Dispatches: CustomEvent('KYT_MESSAGE_CAPTURED', messageData)
+  ↓
+🔵 ISOLATED World (content_bridge.js)
+  - addEventListener('KYT_MESSAGE_CAPTURED')
+  - Has chrome.runtime access
+  - Forwards: chrome.runtime.sendMessage({type: 'SAVE_MESSAGE'})
+  ↓
+Background Script (background.js)
+  - Receives message via chrome.runtime.onMessage
+  - Saves to Supabase with embeddings
+  - ✅ Message stored in database
+```
+
+#### Implementation Phases
+
+**Phase 1: Diagnostic Discovery** (1 hour)
+- Phase 1.1: Content script loads successfully
+- Phase 1.2: Script injection blocked by CSP
+- Root Cause Identified: CSP `script-src 'self'` prevents external script injection
+- Solution Research: Found Chrome's `world: "MAIN"` parameter
+
+**Phase 2: Dual-World Implementation** (2 hours)
+- Phase 2.1: Updated manifest.json with `world: "MAIN"` for Claude content script
+- Phase 2.2: Verified MAIN world execution context (direct page access confirmed)
+- Phase 2.3: Implemented dual content script architecture:
+  - `content_test.js`: MAIN world with fetch wrapper
+  - `content_bridge.js`: ISOLATED world with chrome.runtime bridge
+- Phase 2.4: Tested dual-world communication (MAIN → BRIDGE → background)
+- Phase 2.5: Identified actual Claude API endpoint via Network tab
+- Phase 2.6: Implemented production message capture with real API structure
+
+**Phase 3: End-to-End Validation** (30 minutes)
+- Sent real message to Claude.ai
+- Verified fetch interception in MAIN world
+- Confirmed message extraction and parsing
+- Validated CustomEvent bridge communication
+- Confirmed background script receipt and Supabase storage
+- ✅ **Full pipeline working end-to-end**
+
+#### Technical Details
+
+**Manifest Configuration**:
+```json
+{
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["platforms/claude/content_test.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["platforms/claude/content_bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
+```
+
+**MAIN World Script** (`content_test.js`, 74 lines):
+- Wraps `window.fetch` to intercept all fetch calls
+- Detects Claude API: `/chat_conversations/{id}/completion`
+- Extracts conversation ID from URL regex
+- Parses request body: `{ prompt: "user message", model: "..." }`
+- Dispatches CustomEvent with message data
+
+**ISOLATED World Bridge** (`content_bridge.js`, 55 lines):
+- Listens for `KYT_MESSAGE_CAPTURED` CustomEvent
+- Has chrome.runtime API access (MAIN world doesn't)
+- Forwards messages to background via `chrome.runtime.sendMessage`
+- Includes health check ping/pong for diagnostics
+
+**Message Data Structure**:
+```javascript
+{
+  content: "user message text",
+  role: "user",
+  conversationId: "075d8041-cfe2-4812-a88b-dbb6a6e0ad01",
+  model: "claude-3-opus",
+  timestamp: 1699999999999,
+  messageId: "msg_075d8041-cfe2-4812-a88b-dbb6a6e0ad01_1699999999999",
+  platform: "claude",
+  url: "https://claude.ai/api/organizations/.../completion"
+}
+```
+
+#### Claude API Structure Captured
+```javascript
+POST https://claude.ai/api/organizations/{org_id}/chat_conversations/{conv_id}/completion
+Body: {
+  prompt: "user message text",
+  model: "claude-3-opus-20240229",
+  // ... other fields
+}
+```
+
+#### Console Validation (End-to-End Test)
+```
+🟢 KYT Claude: Content script loaded in MAIN world
+🟢 KYT Claude: Fetch wrapper installed - ready to capture messages
+🔵 BRIDGE: Content bridge loaded in ISOLATED world
+🔵 BRIDGE: chrome.runtime available: true
+🔵 BRIDGE: Listening for KYT_MESSAGE_CAPTURED events
+
+[User sends message]
+
+🟢 KYT Claude: Intercepted completion request
+🟢 KYT Claude: Message captured: Object
+🔵 BRIDGE: Received KYT_MESSAGE_CAPTURED event
+🔵 BRIDGE: Forwarding to background...
+🔵 BRIDGE: ✅ Background confirmed receipt: Object
+```
+
+#### Benefits Achieved
+1. **CSP Bypass**: MAIN world scripts immune to page CSP restrictions
+2. **Native Integration**: Runs at same level as Claude's own code
+3. **No Script Injection**: No external `<script>` tags needed
+4. **Reliable Communication**: CustomEvent bridge proven stable
+5. **Chrome Extension Standard**: Using official Chrome API features
+
+#### Files Modified/Created
+- `manifest.json`: Added dual content script configuration for Claude
+- `platforms/claude/content_test.js`: MAIN world fetch interceptor (74 lines)
+- `platforms/claude/content_bridge.js`: ISOLATED world bridge (55 lines)
+
+#### Known Limitations
+- **Context Injection**: Not yet implemented for Claude (planned Phase 4)
+- **MAIN World Restrictions**: No chrome.runtime API access (by design)
+- **Browser Support**: Chrome/Edge only (Firefox doesn't support `world: "MAIN"`)
+
+#### Commits
+- `[pending]`: fix(day5): Implement Claude dual-world architecture for CSP bypass
+
+---
+
 ### Added - Day 5: Plugin Architecture for Multi-Platform Support (2025-11-12)
 
 #### Problem Statement
