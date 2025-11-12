@@ -140,6 +140,7 @@
         window.addEventListener('KYT_CONTEXT_RESPONSE', responseHandler);
 
         // Dispatch context request
+        console.log('📤 KYT ChatGPT: Dispatching context request:', requestId);
         window.dispatchEvent(new CustomEvent('KYT_CONTEXT_REQUEST', {
           detail: {
             requestId: requestId,
