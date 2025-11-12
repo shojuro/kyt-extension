@@ -7,6 +7,185 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Day 6: Pre-Send Context Injection Implementation (2025-11-12)
+
+#### Problem Statement
+- **Issue**: WRITE path working (capture + storage) but READ path missing (retrieval + injection)
+- **Impact**: Both platforms depositing messages into Supabase but neither pulling context before sending
+- **User Report**: "Both LLMs are depositing the request into Supabase, but neither is pulling from it now"
+- **Expected Behavior**: Before sending user message to LLM API, retrieve relevant context from Supabase and inject
+
+#### Solution: Pre-Send Context Injection with Async Await
+
+**Architecture**: Request → Wait for Context → Inject → Send Modified Request
+
+```
+User types message
+    ↓
+Page Context intercepts fetch()
+    ↓
+🔍 PAUSE: Request context from background
+    ↓
+Background: Generate embedding → Supabase search
+    ↓
+Background: Format context → Return to page
+    ↓
+Page Context: Inject context into request body
+    ↓
+✅ CONTINUE: Send modified request to API
+```
+
+#### Implementation Details
+
+**ChatGPT Platform (Working ✅)**
+- **File**: `platforms/chatgpt/inject.js`
+- **Function Added**: `getAndInjectContext()` (lines 74-150)
+  - Extracts user message from request body
+  - Dispatches `KYT_CONTEXT_REQUEST` CustomEvent
+  - Awaits `KYT_CONTEXT_RESPONSE` with 2-second timeout
+  - Injects context as system message in messages array
+  - Returns modified body for fetch to send
+- **Fetch Wrapper Modified** (lines 166-173)
+  - Changed from: `const messageData = platform.extractMessage(options.body);`
+  - Changed to: `options.body = await getAndInjectContext(options.body);`
+  - Fetch now **awaits context** before proceeding
+- **Context Injection Format**:
+  ```javascript
+  const contextMessage = {
+    author: { role: 'system' },
+    content: { content_type: 'text', parts: [event.detail.formattedContext] },
+    metadata: { kyt_context: true }
+  };
+  body.messages.splice(body.messages.length - 1, 0, contextMessage);
+  ```
+
+**Claude Platform (Code Implemented, Execution Blocked ❌)**
+- **Files Modified**:
+  - `platforms/claude/content_test.js` (MAIN world)
+  - `platforms/claude/content_bridge.js` (ISOLATED world bridge)
+- **Function Added**: `getAndInjectContext()` (content_test.js lines 16-73)
+  - Same pattern as ChatGPT
+  - Extracts from `body.prompt` (string instead of messages array)
+  - Prepends context to prompt: `context\n\n---\n\n[original prompt]`
+- **Bridge Handler Added**: `KYT_CONTEXT_REQUEST` listener (content_bridge.js lines 42-83)
+  - Forwards request from MAIN world to background.js
+  - Background has no CSP restrictions (can call OpenAI/Supabase APIs)
+  - Returns formatted context back to MAIN world
+- **Fetch Wrapper Modified** (content_test.js lines 90-97)
+  - Same async await pattern as ChatGPT
+  - `options.body = await getAndInjectContext(options.body);`
+
+**Backend Already Complete**
+- `background.js` line 192: `getContextForInjection()` function exists
+- Handles OpenAI embeddings generation
+- Performs Supabase `match_messages()` search
+- Returns formatted context with metadata
+
+#### Troubleshooting: Browser Cache Issue
+
+**Symptom**: Claude code implemented but not executing
+- ✅ Content scripts load (confirmed by startup logs)
+- ❌ NO context retrieval attempts logged
+- ❌ NO fetch interception logs appearing
+- Evidence: Console shows Claude checking native `userMemories` instead of Supabase
+
+**Diagnosis**: Browser serving cached versions of files from BEFORE context injection was added
+- File modification timestamp: Recent
+- Browser execution: Old code (without `getAndInjectContext()` function)
+- Common issue: Chrome aggressively caches extension files
+
+**Attempted Fixes** (Multiple iterations):
+1. Hard refresh (Ctrl+Shift+R) - No effect
+2. Extension reload button - No effect
+3. Clear browsing data - No effect
+4. Remove + reload extension - No effect
+5. Close all Chrome windows + reload - **PENDING TEST**
+
+**Expected Logs After Cache Clear**:
+```javascript
+// Startup (within 2 seconds of page load)
+🟢 KYT Claude: Content script loaded in MAIN world at: [timestamp]
+🟢 KYT Claude: Fetch wrapper installed - ready to capture messages
+🔵 BRIDGE: Content bridge loaded in ISOLATED world at: [timestamp]
+🔵 BRIDGE: Listening for KYT_MESSAGE_CAPTURED and KYT_CONTEXT_REQUEST events
+
+// During message send
+🟢 KYT Claude: Intercepted completion request
+🔍 KYT Claude: Requesting context for: [message preview]
+🔍 BRIDGE: Context request from MAIN world
+✅ KYT Claude: Context received, injecting...
+🟢 KYT Claude: Event dispatched to bridge
+```
+
+#### Related Fix: Supabase UPSERT for Extension Reload
+
+**Problem**: Extension reload triggered duplicate key error
+- Error: `duplicate key value violates unique constraint messages_message_id_key`
+- Root cause: `chrome.runtime.onInstalled` re-syncs ALL messages
+- Previous messages already in Supabase with same `message_id`
+
+**Solution**: Added `on_conflict` parameter for proper UPSERT
+- **File**: `src/browser-sync.js`
+- **Change** (line 122):
+  ```javascript
+  // Before
+  const response = await fetch(`${config.supabaseUrl}/rest/v1/messages`, {
+
+  // After
+  const response = await fetch(`${config.supabaseUrl}/rest/v1/messages?on_conflict=message_id`, {
+  ```
+- **Header** (line 128): Kept `Prefer: resolution=merge-duplicates`
+- **Result**: Extension can be reloaded without sync errors
+
+#### Status Summary
+
+**Working ✅**:
+- ChatGPT context injection confirmed by user
+- Backend semantic search fully functional
+- Supabase UPSERT preventing duplicate key errors
+- Message capture working on both platforms
+
+**Blocked ❌**:
+- Claude context injection code exists but not executing
+- Browser cache serving old JavaScript files
+- Multiple cache clear attempts unsuccessful
+- Requires nuclear cache clear: remove extension completely
+
+**Architecture Validated ✅**:
+- Pre-send async/await pattern proven correct (ChatGPT working)
+- CustomEvent bridge for context requests works
+- Background script handles API calls without CSP issues
+- Graceful degradation with 2-second timeouts
+
+#### Files Modified
+- `platforms/chatgpt/inject.js`: Added context injection function + async wrapper
+- `platforms/claude/content_test.js`: Added context injection function + async wrapper (not executing)
+- `platforms/claude/content_bridge.js`: Added context request forwarding handler
+- `src/browser-sync.js`: Fixed UPSERT with on_conflict parameter
+
+#### Git Commits
+- `2e8cf94`: feat: Implement pre-send context injection for both platforms
+
+#### Known Issues
+1. **Claude Cache Persistence**: Browser caching extension files aggressively
+   - Workaround: Complete extension removal + reload required
+   - Multiple soft refreshes ineffective
+   - Possible Chrome bug or security measure
+2. **Native Memory Competition**: Claude checks built-in `userMemories` first
+   - Not an issue once cache cleared (code will intercept before native check)
+3. **No Visual Indicator**: Context injection invisible to user (by design)
+   - Debug logs only way to confirm injection
+   - Consider adding subtle UI indicator in future
+
+#### Next Steps
+1. ✅ Nuclear cache clear (remove extension entirely)
+2. ⏳ Verify Claude context injection logs appear
+3. ⏳ Test cross-platform retrieval (ChatGPT → Claude, Claude → ChatGPT)
+4. ⏳ Add visual indicators for context injection
+5. ⏳ Performance optimization (reduce timeout from 2s to 1s)
+
+---
+
 ### Fixed - Day 5: Claude Platform Integration with Dual-World Architecture (2025-11-12)
 
 #### Problem Statement
