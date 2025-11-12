@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Day 5: CLI Global Command (2025-11-12)
+
+#### Problem Statement
+- **Issue**: Global `mem` command hung indefinitely when called via npm link
+- **Workaround**: Users had to use `node cli/mem.js "message"` instead
+- **Root Causes**:
+  1. `.env` file had Windows line endings (CRLF) causing dotenv to hang during parsing
+  2. npm link symlink path mismatch: `import.meta.url` (real file) ≠ `process.argv[1]` (symlink)
+  3. Script's direct execution check failed, so `main()` never called
+
+#### Solution: Symlink Resolution + Line Ending Fix
+- **Line Endings**: Converted `.env` from CRLF → LF using dos2unix/sed
+- **Symlink Resolution**: Added `fileURLToPath()` and `realpathSync()` to resolve real paths
+- **Path Comparison**: Compare resolved real paths instead of raw `process.argv[1]`
+- **Result**: Global command `mem "message"` now works from any directory
+
+#### Implementation Details
+- **Import additions**: `fileURLToPath` from 'url', `realpathSync` from 'fs'
+- **Execution check**: Resolve both `import.meta.url` and `process.argv[1]` to real paths before comparison
+- **Testing**: Verified direct call, global command, and pipe mode all work
+
+#### Files Modified
+- `cli/mem.js`: Added symlink resolution logic (lines 21-22, 200-209)
+- `.env`: Fixed line endings (CRLF → LF)
+- `CLI_USAGE.md`: Removed "Known Issue" warnings, updated troubleshooting
+
+#### Commit
+- `7d7a3dd`: fix: resolve npm link symlink issue for global mem command
+- `bbd512b`: docs: update CLI_USAGE.md to reflect global command fix
+
+---
+
 ### Added - Day 4: Sync Re-enablement (2025-11-12)
 
 #### Problem Statement
