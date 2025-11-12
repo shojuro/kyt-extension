@@ -82,7 +82,9 @@ yarn.lock
 # ============================================
 # BUILD AND DISTRIBUTION
 # ============================================
-build/
+build/dist/
+build/output/
+build/*.log
 dist/
 *.egg-info/
 .webpack/
