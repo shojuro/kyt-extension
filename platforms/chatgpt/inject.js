@@ -111,6 +111,8 @@
 
             if (event.detail.success && event.detail.formattedContext) {
               console.log('✅ KYT ChatGPT: Context received, injecting...');
+              console.log('📝 Context items:', event.detail.items?.length || 0);
+              console.log('📄 Context preview:', event.detail.formattedContext?.substring(0, 200) + '...');
 
               // Inject context as a system message
               const contextMessage = {
@@ -120,9 +122,16 @@
               };
 
               body.messages.splice(body.messages.length - 1, 0, contextMessage);
+
+              console.log('🔧 Modified request body (messages count):', body.messages.length);
+              console.log('🔧 System message injected at position:', body.messages.length - 2);
+
               resolve(JSON.stringify(body));
             } else {
               console.log('ℹ️ KYT ChatGPT: No context found or error');
+              console.log('   Response success:', event.detail.success);
+              console.log('   Has formattedContext:', !!event.detail.formattedContext);
+              console.log('   Error:', event.detail.error);
               resolve(bodyString); // No context - proceed with original
             }
           }
