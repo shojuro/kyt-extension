@@ -21,19 +21,24 @@ echo "data" | node cli/mem.js --pipe "Description"
 npm test | node cli/mem.js --pipe "Test results"
 ```
 
-### ⚠️ Known Issue: Global Command
+### ✅ Fixed: Global Command Now Works
 
-The global `mem` command has argument-passing issues:
+The global `mem` command now works correctly:
 
 ```bash
-# ❌ May hang or not work correctly
+# ✅ Now works!
 mem "Your message"
 
-# ✅ Use this instead
+# ✅ Also works
 node cli/mem.js "Your message"
 ```
 
-**Root cause**: Issue with how npm link passes arguments to the script.
+**Fixed on**: 2025-11-12
+**Root causes**:
+1. Windows line endings in .env file (caused dotenv to hang)
+2. npm link symlink path mismatch (import.meta.url vs process.argv[1])
+
+**Solution**: Symlink resolution + Unix line endings
 
 ---
 
@@ -45,13 +50,13 @@ node cli/mem.js "Your message"
 node cli/mem.js "message"
 ```
 
-### Global Installation (Optional, Has Issues)
+### Global Installation (Now Working)
 ```bash
 # Install globally
 npm link
 
-# Try using it
-mem "test"  # May hang - use node cli/mem.js instead
+# Use from anywhere
+mem "test"  # ✅ Works!
 ```
 
 ---
@@ -215,7 +220,6 @@ ChatGPT should retrieve your CLI message and explain the 4-minute threshold.
 - Capture single-word tests ("test", "hello")
 - Create noise with meaningless content
 - Capture sensitive information (passwords, keys)
-- Rely on global `mem` command (use `node cli/mem.js` instead)
 
 ---
 
@@ -224,8 +228,10 @@ ChatGPT should retrieve your CLI message and explain the 4-minute threshold.
 ### "Missing required environment variables"
 **Solution**: Run from project directory OR set environment variables globally.
 
-### "Command hangs"
-**Solution**: Don't use global `mem` command. Use `node cli/mem.js` instead.
+### "Command hangs" (FIXED as of 2025-11-12)
+**Was**: npm link symlink + Windows line endings issue
+**Now**: Fixed with symlink resolution + Unix line endings
+**If still occurs**: Check .env file line endings with `file .env` (should be "ASCII text", not "CRLF")
 
 ### "Message not appearing in ChatGPT"
 **Possible causes**:
