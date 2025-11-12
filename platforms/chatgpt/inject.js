@@ -102,7 +102,7 @@
         const timeout = setTimeout(() => {
           console.warn('⏱️ KYT ChatGPT: Context request timeout');
           resolve(bodyString); // Timeout - proceed without context
-        }, 2000);
+        }, 5000); // 5 seconds to match Claude (embedding + search time)
 
         const responseHandler = (event) => {
           if (event.detail.requestId === requestId) {
