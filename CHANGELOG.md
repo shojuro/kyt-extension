@@ -166,23 +166,39 @@ Page Context: Inject context into request body
 #### Git Commits
 - `2e8cf94`: feat: Implement pre-send context injection for both platforms
 
-#### Known Issues
-1. **Claude Cache Persistence**: Browser caching extension files aggressively
-   - Workaround: Complete extension removal + reload required
-   - Multiple soft refreshes ineffective
-   - Possible Chrome bug or security measure
-2. **Native Memory Competition**: Claude checks built-in `userMemories` first
-   - Not an issue once cache cleared (code will intercept before native check)
+#### Known Issues (UPDATED 2025-11-12 Late Session)
+
+1. **Claude Context Timeout - ROOT CAUSE IDENTIFIED** ⚠️
+   - **Problem**: Context requests reach bridge but background doesn't respond within 2s
+   - **Console Evidence**:
+     ```
+     🔍 KYT Claude: Requesting context for: What should I make for dinner?...
+     🔍 BRIDGE: Context request from MAIN world
+     ⏱️ KYT Claude: Context request timeout
+     ```
+   - **Diagnosis**: API configuration not stored in `chrome.storage.local`
+   - **Root Cause**: Extension loads, background.js line 197 checks `chrome.storage.local.get(['api_config'])`, finds nothing, throws error "API configuration not found"
+   - **Fix Implemented**: Created `setup.html` - user-friendly page to load .env keys into chrome.storage
+   - **Status**: Awaiting user to run setup.html to populate API keys
+   - **Graceful Degradation**: ✅ Messages still sent and captured even without context
+
+2. **Claude Cache Persistence**: ✅ RESOLVED
+   - Browser was caching extension files aggressively
+   - Nuclear cache clear successful: "🟢 KYT Claude: Fetch wrapper installed"
+   - Code now executing, just missing API configuration
+
 3. **No Visual Indicator**: Context injection invisible to user (by design)
    - Debug logs only way to confirm injection
    - Consider adding subtle UI indicator in future
 
 #### Next Steps
-1. ✅ Nuclear cache clear (remove extension entirely)
-2. ⏳ Verify Claude context injection logs appear
-3. ⏳ Test cross-platform retrieval (ChatGPT → Claude, Claude → ChatGPT)
-4. ⏳ Add visual indicators for context injection
-5. ⏳ Performance optimization (reduce timeout from 2s to 1s)
+1. ✅ Nuclear cache clear (remove extension entirely) - DONE
+2. ✅ Identify root cause of timeout - DONE (missing API config)
+3. ⏳ **User action required**: Open `setup.html` to populate API keys in chrome.storage
+4. ⏳ Verify Claude context injection works after API keys loaded
+5. ⏳ Verify cross-platform context retrieval (ChatGPT messages in Claude, vice versa)
+6. ⏳ Add visual indicators for context injection (future enhancement)
+7. ⏳ Performance optimization - reduce timeout from 2s to 1s (future enhancement)
 
 ---
 
