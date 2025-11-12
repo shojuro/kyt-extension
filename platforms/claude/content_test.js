@@ -31,7 +31,7 @@ async function getAndInjectContext(bodyString) {
       const timeout = setTimeout(() => {
         console.warn('⏱️ KYT Claude: Context request timeout');
         resolve(bodyString); // Timeout - proceed without context
-      }, 2000);
+      }, 5000); // 5 seconds for embedding + search
 
       const responseHandler = (event) => {
         if (event.detail.requestId === requestId) {
