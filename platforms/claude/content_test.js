@@ -77,6 +77,12 @@ const originalFetch = window.fetch;
 window.fetch = async function(...args) {
   const [url, options] = args;
 
+  // DIAGNOSTIC: Log ALL Claude API calls to identify memory check endpoint
+  if (typeof url === 'string' && url.includes('claude.ai/api')) {
+    const endpoint = url.replace(/https:\/\/claude\.ai\/api\//, '');
+    console.log('🔍 KYT Claude API Call:', endpoint.substring(0, 100));
+  }
+
   // Check if this is a Claude message completion request
   if (typeof url === 'string' && url.includes('/chat_conversations/') && url.includes('/completion')) {
     console.log('🟢 KYT Claude: Intercepted completion request:', url);
