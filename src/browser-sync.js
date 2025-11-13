@@ -104,6 +104,14 @@ export async function syncToSupabase() {
     const texts = messagesToSync.map(m => m.content);
     const embeddings = await generateEmbeddings(texts, config.openaiKey);
 
+    // Log platform distribution for diagnostics
+    const platformCounts = messagesToSync.reduce((acc, m) => {
+      const platform = m.platform || 'unknown';
+      acc[platform] = (acc[platform] || 0) + 1;
+      return acc;
+    }, {});
+    console.log(`📊 KYT Sync: Syncing ${messagesToSync.length} messages -`, platformCounts);
+
     // Prepare data for Supabase
     const messagesWithEmbeddings = messagesToSync.map((msg, idx) => ({
       content: msg.content,
@@ -113,7 +121,7 @@ export async function syncToSupabase() {
       timestamp: msg.timestamp || msg.capturedAt,
       message_id: msg.messageId,
       embedding: embeddings[idx],
-      source: 'chatgpt', // Mark as ChatGPT source
+      source: msg.platform || 'chatgpt', // Use actual platform or default to chatgpt
       synced_from_extension: new Date().toISOString()
     }));
 
