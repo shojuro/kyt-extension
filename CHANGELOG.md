@@ -134,22 +134,61 @@ chrome.storage.local.get(['last_sync_status'], (r) => console.log('Last sync:', 
 4. Feat: Add diagnostic logging for platform distribution
 5. Test: End-to-end cross-platform verification
 
-#### Status Before Fixes
-- ❌ **Source Attribution**: Broken - all messages mislabeled as 'chatgpt'
-- ❌ **Threshold**: Incorrect - 0.4 is too strict (should be 0.5+)
+#### Implementation Results
+
+**Commits Applied**:
+- `ce84f17`: Security - Removed diagnostic script with exposed API keys + .gitignore update
+- `842aca4`: Fix - Corrected source field bug + reverted incorrect threshold
+
+**Changes Made**:
+1. ✅ **Source Field Fix** (browser-sync.js:124)
+   - Before: `source: 'chatgpt',` (hardcoded)
+   - After: `source: msg.platform || 'chatgpt',` (dynamic)
+   - Result: Claude messages now tagged correctly
+
+2. ✅ **Diagnostic Logging** (browser-sync.js:107-113)
+   - Added platform distribution logging before sync
+   - Example: `📊 KYT Sync: Syncing 5 messages - { chatgpt: 3, claude: 2 }`
+   - Helps verify cross-platform capture
+
+3. ✅ **Threshold Correction**
+   - ChatGPT: 0.4 → 0.5 (inject.js:149)
+   - Claude: 0.4 → 0.5 (content_test.js:62)
+   - Reasoning: pgvector distance - lower = stricter, 0.5 = balanced
+
+**User Verification** (2025-11-13):
+- ✅ **ChatGPT Message Capture**: Confirmed working with correct source field
+- ✅ **Claude Message Capture**: Confirmed working with correct source field
+- ✅ **Database Attribution**: Messages now properly tagged by platform
+- ⏳ **Bidirectional Retrieval**: User still testing cross-platform context (ChatGPT ↔ Claude)
+
+#### Status After Fixes
+- ✅ **Source Attribution**: FIXED - messages correctly tagged by platform
+- ✅ **Threshold**: CORRECTED - 0.5 provides balanced precision/recall
 - ✅ **Capture**: Working - both platforms capturing messages
 - ✅ **Storage**: Working - platform field preserved
-- ⚠️ **Sync**: Partial - sync runs but ignores platform field
-- ⚠️ **System State**: Unclear - need to verify current operational status
+- ✅ **Sync**: FIXED - sync uses actual platform field
+- ✅ **Diagnostic Logging**: Added - platform distribution visible in logs
 
-#### Next Steps
-1. Checkpoint commit (security fixes)
-2. Apply source field fix
-3. Revert threshold changes
-4. Add diagnostic logging
-5. Test end-to-end
-6. Update STATUS.md with honest current state
-7. Final CHANGELOG update with results
+#### Lessons Learned
+
+**pgvector Distance Thresholds**:
+- Distance range: 0.0 (identical) to 2.0 (opposite)
+- Lower threshold = STRICTER matching (fewer results)
+- Higher threshold = MORE LENIENT matching (more results)
+- 0.5 = balanced (typical starting point)
+- My error: Thought 0.4 would be more lenient (backwards)
+
+**Multi-Platform Source Attribution**:
+- Platform field must be passed through ENTIRE pipeline
+- Capture ✓ → Storage ✓ → Sync ✓ → Database
+- Each stage must preserve platform field
+- Hardcoding defeats multi-platform architecture
+
+**Security Practices**:
+- Diagnostic scripts with hardcoded keys = security violation
+- Always add diagnostic patterns to .gitignore immediately
+- CLAUDE.md VSEC rules: no hardcoded secrets, period
 
 ---
 
