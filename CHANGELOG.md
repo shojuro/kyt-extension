@@ -7,6 +7,152 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Day 6 Session 2: Hardcoded Source Field Bug (2025-11-13)
+
+#### Critical Issue Identified
+- **Problem**: All messages in Supabase database tagged with `source='chatgpt'` regardless of platform
+- **Impact**: Cross-platform memory attribution completely broken
+  - Database showed: 114 ChatGPT messages, 0 Claude messages
+  - Reality: Both platforms capturing messages, but all mislabeled as ChatGPT
+- **User Report**: "the notation for source was not placed in the right place"
+- **Root Cause**: `src/browser-sync.js` line 116 hardcoded `source: 'chatgpt'`
+
+#### Root Cause Analysis
+
+**The Bug** (browser-sync.js lines 108-118):
+```javascript
+const messagesWithEmbeddings = messagesToSync.map((msg, idx) => ({
+  content: msg.content,
+  role: msg.role || 'unknown',
+  conversation_id: msg.conversationId || null,
+  model: msg.model || null,
+  timestamp: msg.timestamp || msg.capturedAt,
+  message_id: msg.messageId,
+  embedding: embeddings[idx],
+  source: 'chatgpt', // ❌ HARDCODED - ALWAYS CHATGPT
+  synced_from_extension: new Date().toISOString()
+}));
+```
+
+**Why It Happened**:
+1. Original implementation was ChatGPT-only
+2. Claude platform added in Day 5 with proper `platform: 'claude'` field
+3. Both platforms correctly set platform field during capture
+4. But sync module IGNORED the platform field and hardcoded 'chatgpt'
+
+**Data Flow**:
+- ✅ **Capture**: Platform field correctly set ('chatgpt' or 'claude')
+- ✅ **Storage**: Platform field preserved in chrome.storage.local
+- ❌ **Sync**: Platform field IGNORED, hardcoded to 'chatgpt'
+- ❌ **Database**: All messages have source='chatgpt'
+
+#### Investigation Process
+
+**Phase 1: User Verification Report Analysis**
+- User provided VERIFICATION_REPORT.md showing database query results
+- Report claimed: "No conversations were captured from Claude"
+- User corrected: "notation for source was not placed in the right place"
+- Database reality: 114 messages exist but all show source='chatgpt'
+
+**Phase 2: Complete Pipeline Trace**
+- Launched Plan agent to trace message capture → storage → sync pipeline
+- Confirmed: Both platforms correctly set `platform` field
+- Confirmed: chrome.storage.local preserves platform field
+- Found: browser-sync.js line 116 ignores msg.platform, hardcodes 'chatgpt'
+
+**Phase 3: Threshold Confusion Resolution**
+- Previous session incorrectly lowered threshold from 0.5 to 0.4
+- Reasoning error: Thought lower threshold = more lenient
+- Reality: pgvector distance threshold - LOWER = STRICTER
+- User corrected: "Is a 0.4 threshold more lenient than a 0.5?"
+- User directed: Focus on precision over recall for PoC
+
+#### Security Issue Found During Investigation
+
+**File**: `check_sources.js` (untracked)
+- **Issue**: Diagnostic script with hardcoded API keys (Supabase URL + Anon Key)
+- **Action Taken**: File removed, added to .gitignore
+- **Pattern Added**: `check_sources.js`, `*_diagnostic.js`, `verify_*.js`
+- **Compliance**: CLAUDE.md VSEC rule - NO hardcoded secrets
+
+#### Planned Fixes
+
+**1. Fix Hardcoded Source Field** (CRITICAL)
+- **File**: `src/browser-sync.js` line 116
+- **Change**: `source: 'chatgpt',` → `source: msg.platform || 'chatgpt',`
+- **Impact**: Claude messages will be correctly tagged
+- **Verification**: Database query will show both 'chatgpt' and 'claude' sources
+
+**2. Revert Incorrect Threshold Change**
+- **Files**: `platforms/chatgpt/inject.js` line 149, `platforms/claude/content_test.js` line 62
+- **Change**: Threshold 0.4 → 0.5 (or higher like 0.6-0.7)
+- **Reason**: 0.4 is TOO STRICT for pgvector distance matching
+- **User Directive**: Precision over recall for PoC
+
+**3. Add Diagnostic Logging**
+- **File**: `src/browser-sync.js` after line 108
+- **Purpose**: Log platform distribution during sync
+- **Example**: `{ chatgpt: 5, claude: 3, cli: 2 }`
+
+**4. End-to-End Testing Required**
+- Send test message on ChatGPT → Verify source='chatgpt' in Supabase
+- Send test message on Claude → Verify source='claude' in Supabase
+- Test cross-platform retrieval: ChatGPT → Claude and Claude → ChatGPT
+- Verify context injection working on both platforms
+
+#### System State Contradiction
+
+**Evidence Conflict**:
+- Database query: 114 ChatGPT messages exist
+- User claim: "System is NOT functioning - neither platform sending to Supabase"
+- Need investigation: API config, sync status, recent changes
+
+**Possible Explanations**:
+1. Extension was reinstalled, lost API configuration
+2. API keys expired or invalid
+3. Recent code changes broke capture
+4. User testing after some breaking change
+
+**Verification Commands** (to be run in browser console):
+```javascript
+chrome.storage.local.get(['captured_messages'], (r) => console.log('Messages:', r.captured_messages?.length));
+chrome.storage.local.get(['api_config'], (r) => console.log('Has config:', !!r.api_config));
+chrome.storage.local.get(['last_sync_status'], (r) => console.log('Last sync:', r.last_sync_status));
+```
+
+#### Files Modified This Session
+- `.gitignore`: Added pattern for diagnostic scripts with hardcoded secrets
+- `check_sources.js`: Removed (security violation - hardcoded API keys)
+- **Pending**: `src/browser-sync.js` - Fix source field bug
+- **Pending**: `platforms/chatgpt/inject.js` - Revert threshold
+- **Pending**: `platforms/claude/content_test.js` - Revert threshold
+
+#### Commits Planned
+1. Security: Remove diagnostic script with exposed keys + update .gitignore
+2. Fix: Change source field from hardcoded to dynamic (browser-sync.js)
+3. Fix: Revert incorrect threshold changes (both platforms)
+4. Feat: Add diagnostic logging for platform distribution
+5. Test: End-to-end cross-platform verification
+
+#### Status Before Fixes
+- ❌ **Source Attribution**: Broken - all messages mislabeled as 'chatgpt'
+- ❌ **Threshold**: Incorrect - 0.4 is too strict (should be 0.5+)
+- ✅ **Capture**: Working - both platforms capturing messages
+- ✅ **Storage**: Working - platform field preserved
+- ⚠️ **Sync**: Partial - sync runs but ignores platform field
+- ⚠️ **System State**: Unclear - need to verify current operational status
+
+#### Next Steps
+1. Checkpoint commit (security fixes)
+2. Apply source field fix
+3. Revert threshold changes
+4. Add diagnostic logging
+5. Test end-to-end
+6. Update STATUS.md with honest current state
+7. Final CHANGELOG update with results
+
+---
+
 ### Added - Day 6: Pre-Send Context Injection Implementation (2025-11-12)
 
 #### Problem Statement

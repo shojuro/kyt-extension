@@ -101,3 +101,10 @@ dist/
 # ============================================
 test_data/captured_*.json
 validation/user_data/
+
+# ============================================
+# DIAGNOSTIC SCRIPTS WITH HARDCODED SECRETS
+# ============================================
+check_sources.js
+*_diagnostic.js
+verify_*.js
