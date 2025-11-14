@@ -7,6 +7,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Strategic Pivot - Day 7: Assistant Response Capture Required (2025-11-14)
+
+#### Phase 1 Complete: Critical Gap Identified
+
+**Phase 1 Status**: ✅ **COMPLETE** - All tests passed with proof
+- ✅ Test #1: Rapid-fire context pollution (temporal filtering working)
+- ✅ Test #2: Tab backgrounding (service workers independent)
+- ✅ Test #3: Duplicate injection protection (guards working)
+
+**Validation**: Core functionality proven. Context injection works on both platforms.
+
+#### Critical Discovery from Real-World Testing
+
+**User Observation**:
+> "Claude pulled from memory TWICE to answer a question - wonderful! However, ChatGPT seems rather reluctant to access its memory. With prompt engineering it gets there though."
+
+**Root Cause Analysis**:
+- ✅ **Retrieval mechanism works** (Claude pulled from memory twice - proof positive)
+- ✅ **Injection mechanism works** (context reaching both platforms)
+- ❌ **DATA COMPLETENESS ISSUE** (only capturing user questions, not assistant responses)
+
+**User's Critical Insight**:
+> "This is also a shortfall of not grabbing both sides of the conversations. My questions are not enough for the system to be truly robust. It is like trying to learn a language and only know 100 words. You are not providing enough pieces for the puzzle to be put together."
+
+#### The Fundamental Problem
+
+**Current Database Contents** (questions only):
+```
+User: "What is TON 618?"               ← Sparse (10-20 tokens)
+User: "How massive is that black hole?" ← Sparse (10-20 tokens)
+User: "What is quantum entanglement?"   ← Sparse (10-20 tokens)
+```
+
+**What's Missing** (assistant responses):
+```
+Assistant: "TON 618 is a supermassive black hole containing 66 billion solar masses, located 18.2 billion light-years away. It's one of the most massive black holes ever discovered..." ← Rich (100-500 tokens)
+```
+
+**Impact**:
+- Semantic search finds related **questions** but not **answers**
+- LLM receives "What is X?" context instead of "X is [explanation]" knowledge
+- Questions are sparse (user's words), answers are rich (model's facts/reasoning)
+- **Real knowledge is in the answers, not the questions**
+
+#### Why Claude Works Better Than ChatGPT
+
+**Claude's Behavior**:
+- Native memory system searches FIRST before generating
+- Pulled from KYT memory TWICE in one response (proven)
+- More robust retrieval-first strategy
+
+**ChatGPT's Behavior**:
+- Goes to "making things up" mode first
+- Says "I don't know" before checking memory
+- Only searches memory under pressure/prompt engineering
+- Model behavior difference BUT...
+
+**The Real Issue**: Even when ChatGPT searches, it finds **questions only**, not the **knowledge/answers** needed.
+
+#### Strategic Decision: Option B (Assistant Capture First)
+
+**Decision**: Pause Phase 2 robustness improvements. Implement assistant response capture FIRST.
+
+**Why Option B Over Option A** (completing Phase 2 first):
+
+**Option A Problems** (Phase 2 first, then assistant capture):
+- ❌ Polishing incomplete functionality (edge cases when core is broken)
+- ❌ Can't validate properly (testing with question-only data)
+- ❌ Doesn't solve user's pain (ChatGPT reluctance is DATA issue)
+- ❌ Wasted effort (may need to retest Phase 2 after adding responses)
+- ❌ Architecture backwards (optimizing retrieval before fixing capture)
+
+**Option B Benefits** (assistant capture first, then Phase 2):
+- ✅ Fundamental before polish (fix core data before edge cases)
+- ✅ Proper testing (Phase 2 validated with complete conversation data)
+- ✅ Solves user pain (ChatGPT gets KNOWLEDGE, not just questions)
+- ✅ Efficient (one round of Phase 2 testing with complete data)
+- ✅ Architecture correct (fix capture → store → retrieve in order)
+- ✅ Validates retrieval (Claude's success proves retrieval works, data is the issue)
+
+**Claude's Success Proves the Point**:
+- Pulled from memory TWICE → ✅ Retrieval mechanism works
+- Context injection working → ✅ Injection mechanism works
+- ChatGPT reluctant → ❌ Data quality issue (questions only)
+
+**User's Analogy**: "Like trying to learn a language with only 100 words"
+- Questions = 100 words (sparse)
+- Answers = rich vocabulary (complete)
+- **You need the ingredients before you optimize the recipe**
+
+#### Implementation Plan
+
+**Phase 1.5: Assistant Response Capture** (NEW PRIORITY)
+1. Modify fetch wrapper to intercept BOTH requests AND responses
+2. Capture streaming SSE responses from completion endpoints
+3. Extract assistant messages from response stream
+4. Store with `role='assistant'` (matching user questions)
+5. Link question→answer pairs via conversation_id + timestamp
+6. Re-test with complete conversation data
+
+**Then Resume**: Phase 2 robustness improvements (with complete data)
+
+#### Files to Modify (Planned)
+
+**Response Capture**:
+- `platforms/chatgpt/inject.js`: Intercept response stream
+- `platforms/claude/content_test.js`: Intercept response stream
+- `src/browser-sync.js`: Handle assistant message storage
+- Database: Ensure `role` field distinguishes user vs assistant
+
+**Why This Works**:
+- Already have fetch wrapper infrastructure
+- Can clone response before consumption
+- Read SSE stream as it arrives
+- Store complete conversations for semantic search
+
+#### Expected Outcome
+
+**After assistant capture**:
+- Database contains question + answer pairs
+- Semantic search finds KNOWLEDGE (answers), not just questions
+- ChatGPT receives "TON 618 is a supermassive black hole..." context
+- Both platforms benefit from rich, complete conversation history
+- Semantic search quality dramatically improves
+- ChatGPT becomes as proactive as Claude (data quality equal)
+
+**Then**: Phase 2 robustness tested with complete, high-quality data.
+
+---
+
 ### Fixed - Day 7: Context Pollution from Rapid-Fire Questions (2025-11-14)
 
 #### Critical Issue Identified
