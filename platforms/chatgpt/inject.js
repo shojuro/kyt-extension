@@ -313,9 +313,9 @@
         chunkCount++;
         const chunk = decoder.decode(value, {stream: true});
 
-        // DIAGNOSTIC: Log first chunk to see actual format
-        if (chunkCount === 1 && debugMode) {
-          console.log('🔍 KYT ChatGPT DEBUG: First chunk received');
+        // DIAGNOSTIC: Log first 5 chunks to see actual format
+        if (chunkCount <= 5) {
+          console.log(`🔍 KYT ChatGPT DEBUG: Chunk ${chunkCount} received`);
           console.log('   Chunk length:', chunk.length);
           console.log('   Chunk preview (first 500 chars):', chunk.substring(0, 500));
         }
@@ -327,9 +327,9 @@
           if (line.trim().length === 0) continue;
           if (line.startsWith('event:')) continue;
 
-          // DIAGNOSTIC: Log line format
-          if (chunkCount <= 3 && debugMode && line.trim().length > 0) {
-            console.log('🔍 DEBUG Line:', line.substring(0, 200));
+          // DIAGNOSTIC: Log line format from first 5 chunks
+          if (chunkCount <= 5 && line.trim().length > 0) {
+            console.log(`🔍 DEBUG Chunk ${chunkCount} Line:`, line.substring(0, 200));
           }
 
           // ChatGPT format: "data: {json}" or "data: \"string\""
@@ -341,30 +341,38 @@
           try {
             const json = JSON.parse(data);
 
-            // DIAGNOSTIC: Log parsed JSON structure (first valid JSON only)
-            if (typeof json === 'object' && json !== null && debugMode) {
-              console.log('🔍 DEBUG Parsed JSON:', JSON.stringify(json).substring(0, 300));
-              console.log('🔍 DEBUG JSON keys:', Object.keys(json));
-              console.log('🔍 DEBUG JSON type:', json.type || 'no type field');
+            // DIAGNOSTIC: Log parsed JSON structure from first 5 chunks
+            if (typeof json === 'object' && json !== null && chunkCount <= 5) {
+              console.log(`🔍 DEBUG Chunk ${chunkCount} Parsed JSON:`, JSON.stringify(json).substring(0, 300));
+              console.log(`🔍 DEBUG Chunk ${chunkCount} JSON keys:`, Object.keys(json));
+              console.log(`🔍 DEBUG Chunk ${chunkCount} JSON type:`, json.type || 'no type field');
 
               // Check multiple possible structures
               if (json.message) {
-                console.log('🔍 DEBUG has message field:', JSON.stringify(json.message).substring(0, 150));
+                console.log(`🔍 DEBUG Chunk ${chunkCount} has message field:`, JSON.stringify(json.message).substring(0, 150));
               }
               if (json.content) {
-                console.log('🔍 DEBUG has content field:', JSON.stringify(json.content).substring(0, 150));
+                console.log(`🔍 DEBUG Chunk ${chunkCount} has content field:`, JSON.stringify(json.content).substring(0, 150));
               }
               if (json.choices) {
-                console.log('🔍 DEBUG has choices[0]:', JSON.stringify(json.choices[0]).substring(0, 150));
+                console.log(`🔍 DEBUG Chunk ${chunkCount} has choices[0]:`, JSON.stringify(json.choices[0]).substring(0, 150));
               }
               if (json.delta) {
-                console.log('🔍 DEBUG has delta field:', JSON.stringify(json.delta).substring(0, 150));
+                console.log(`🔍 DEBUG Chunk ${chunkCount} has delta field:`, JSON.stringify(json.delta).substring(0, 150));
               }
               if (json.text) {
-                console.log('🔍 DEBUG has text field:', json.text.substring(0, 100));
+                console.log(`🔍 DEBUG Chunk ${chunkCount} has text field:`, json.text.substring(0, 100));
               }
-
-              debugMode = false; // Only log once
+              // Check nested structure seen in user logs: {"p": "", "o": "add", "v": {"message": ...}}
+              if (json.v) {
+                console.log(`🔍 DEBUG Chunk ${chunkCount} has v (value) field:`, JSON.stringify(json.v).substring(0, 300));
+              }
+              if (json.p !== undefined) {
+                console.log(`🔍 DEBUG Chunk ${chunkCount} has p (path) field:`, json.p);
+              }
+              if (json.o) {
+                console.log(`🔍 DEBUG Chunk ${chunkCount} has o (operation) field:`, json.o);
+              }
             }
 
             // Try multiple possible ChatGPT response formats
@@ -389,6 +397,23 @@
             // Format 5: Text field
             else if (typeof json.text === 'string') {
               content = json.text;
+            }
+            // Format 6: Nested v.message structure (ChatGPT web API format)
+            // Structure: {"p": "", "o": "add", "v": {"message": {"content": {"parts": ["text"]}}}}
+            else if (json.v?.message?.content?.parts?.[0]) {
+              content = json.v.message.content.parts[0];
+            }
+            // Format 7: Nested v.content directly
+            else if (typeof json.v?.content === 'string') {
+              content = json.v.content;
+            }
+            // Format 8: Nested v.text
+            else if (typeof json.v?.text === 'string') {
+              content = json.v.text;
+            }
+            // Format 9: Nested v as string
+            else if (typeof json.v === 'string') {
+              content = json.v;
             }
 
             if (content) {
