@@ -303,15 +303,31 @@
       const decoder = new TextDecoder();
       let fullText = '';
       let messageId = null;
+      let chunkCount = 0;
+      let debugMode = true; // Enable diagnostic logging
 
       while (true) {
         const {done, value} = await reader.read();
         if (done) break;
 
+        chunkCount++;
         const chunk = decoder.decode(value, {stream: true});
+
+        // DIAGNOSTIC: Log first chunk to see actual format
+        if (chunkCount === 1 && debugMode) {
+          console.log('🔍 KYT ChatGPT DEBUG: First chunk received');
+          console.log('   Chunk length:', chunk.length);
+          console.log('   Chunk preview (first 500 chars):', chunk.substring(0, 500));
+        }
+
         const lines = chunk.split('\n');
 
         for (const line of lines) {
+          // DIAGNOSTIC: Log line format
+          if (chunkCount <= 2 && debugMode && line.trim().length > 0) {
+            console.log('🔍 DEBUG Line:', line.substring(0, 200));
+          }
+
           if (!line.startsWith('data: ')) continue;
 
           const data = line.substring(6).trim();
@@ -319,6 +335,16 @@
 
           try {
             const json = JSON.parse(data);
+
+            // DIAGNOSTIC: Log parsed JSON structure (first occurrence only)
+            if (chunkCount === 1 && debugMode) {
+              console.log('🔍 DEBUG Parsed JSON:', JSON.stringify(json).substring(0, 300));
+              console.log('🔍 DEBUG JSON keys:', Object.keys(json));
+              if (json.choices) {
+                console.log('🔍 DEBUG choices[0]:', JSON.stringify(json.choices[0]).substring(0, 200));
+              }
+              debugMode = false; // Only log once
+            }
 
             // Extract text from ChatGPT SSE format
             // Format: {"id":"chatcmpl-...","choices":[{"delta":{"content":"text"}}]}
@@ -332,11 +358,19 @@
               messageId = json.id;
             }
           } catch (parseError) {
-            // Skip malformed JSON chunks
+            // DIAGNOSTIC: Log parse errors
+            console.warn('⚠️ DEBUG Parse error:', parseError.message);
+            console.warn('   Failed to parse:', data.substring(0, 100));
             continue;
           }
         }
       }
+
+      // DIAGNOSTIC: Log final statistics
+      console.log('📊 KYT ChatGPT DEBUG: Stream reading complete');
+      console.log('   Total chunks:', chunkCount);
+      console.log('   Text length:', fullText.length);
+      console.log('   Message ID:', messageId || 'none');
 
       // Only store if we captured meaningful text
       if (fullText.trim().length > 0) {
