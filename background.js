@@ -285,6 +285,16 @@ async function getContextForInjection(userMessage, config) {
 
     const contextItems = await searchResponse.json();
 
+    // DEBUG: Log what we got back from Supabase
+    console.log(`🔍 Context search returned ${contextItems.length} items (threshold: ${contextConfig.threshold}, exclude: ${contextConfig.excludeRecentSeconds}s)`);
+    if (contextItems.length > 0) {
+      const now = Date.now();
+      contextItems.forEach((item, idx) => {
+        const ageSeconds = Math.floor((now - item.msg_timestamp) / 1000);
+        console.log(`   ${idx + 1}. Age: ${ageSeconds}s, Distance: ${item.distance.toFixed(3)}, Content: "${item.content.substring(0, 50)}..."`);
+      });
+    }
+
     // Filter by minimum distance
     const filteredItems = contextItems.filter(r => r.distance >= contextConfig.minDistance);
 

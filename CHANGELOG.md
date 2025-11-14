@@ -7,6 +7,240 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Day 7: Context Pollution from Rapid-Fire Questions (2025-11-14)
+
+#### Critical Issue Identified
+
+**User Discovery**:
+> "By the time the 4 minute hold kicks in, I have asked so many times that it garbs the top 5, which are my noise questions, and so it returns them as the closest matches."
+
+**Problem**: Rapid-fire user questions clustering in database during 4-minute batching window, then dominating similarity search results with noise instead of relevant context.
+
+**Impact**:
+- Context retrieval polluted with recent noise questions
+- LLM receiving user's own rapid-fire questions as "relevant context"
+- Semantic search returning 5 noise questions instead of historical knowledge
+- Memory system counterproductive during active questioning
+
+#### Root Cause Analysis
+
+**The Batching Problem** (background.js lines 340-367):
+```javascript
+// OLD CODE - 4-minute batching window
+if (timeSinceSync > 4 * 60 * 1000) {
+  console.log('🚀 First message in window - immediate sync');
+  syncToSupabase();
+} else {
+  console.log('📦 Message batched for next periodic sync');
+}
+```
+
+**Why It Happened**:
+1. Messages batched for 4 minutes before syncing
+2. User asks 5 rapid questions in 60 seconds
+3. All 5 questions batch together, sync at once during periodic alarm
+4. All 5 questions now have similar timestamps (within seconds of each other)
+5. Next query's semantic search finds these 5 clustered questions
+6. Result: Top 5 results are user's own noise questions, not relevant context
+
+**Data Flow Timeline**:
+```
+T+0s:  User asks "How was TON 618 mass estimated?" → Batched
+T+10s: User asks "How far away is TON 618?" → Batched
+T+20s: User asks "What is a quasar?" → Batched
+T+30s: User asks "What makes TON 618 massive?" → Batched
+T+40s: User asks "Could TON 618 threaten Earth?" → Batched
+T+240s: [4-minute alarm fires] → All 5 sync together
+T+250s: User asks "Why is TON 618 important?" → Context search finds 5 recent noise questions ❌
+```
+
+**The Temporal Problem**:
+- No temporal exclusion in `match_messages()` RPC function
+- Recent questions (0-120 seconds) should not pollute context
+- Need to exclude very recent messages to allow semantic search to find relevant history
+
+#### Solution Implemented
+
+**Fix #1: Remove Batching Window** (background.js lines 340-367)
+```javascript
+// NEW CODE - Immediate sync
+// CONTEXT POLLUTION FIX: Always sync immediately
+// Removed 4-minute batching window to prevent rapid-fire questions
+// from clustering in database before next query
+console.log('🚀 Immediate sync triggered');
+syncToSupabase()
+  .then(syncResult => {
+    if (syncResult.success) {
+      console.log(`✅ Immediate sync: ${syncResult.synced} messages synced`);
+    }
+  })
+  .catch(err => {
+    console.warn('⚠️ Immediate sync failed:', err);
+  });
+```
+
+**Fix #2: Add Temporal Filtering** (background.js line 236)
+```javascript
+const contextConfig = {
+  threshold: config?.threshold || 0.5,
+  maxContextItems: config?.maxContextItems || 3,
+  minDistance: config?.minDistance || 0.0,
+  excludeRecentSeconds: config?.excludeRecentSeconds || 120, // CONTEXT POLLUTION FIX
+  debugMode: config?.debugMode || false
+};
+```
+
+**Fix #3: Update Supabase RPC Function** (migrations/temporal_filtering.sql)
+```sql
+CREATE OR REPLACE FUNCTION match_messages(
+  query_embedding vector(1536),
+  match_threshold float,
+  match_count int,
+  exclude_recent_seconds int DEFAULT 120
+)
+RETURNS TABLE (
+  id uuid,
+  content text,
+  msg_timestamp bigint,
+  source text,
+  distance float
+)
+LANGUAGE sql
+AS $$
+  SELECT
+    id,
+    content,
+    timestamp as msg_timestamp,
+    source,
+    (embedding <=> query_embedding) as distance
+  FROM messages
+  WHERE (embedding <=> query_embedding) < match_threshold
+    AND timestamp < EXTRACT(EPOCH FROM NOW())::bigint * 1000 - (exclude_recent_seconds * 1000)
+  ORDER BY embedding <=> query_embedding
+  LIMIT match_count;
+$$;
+```
+
+**Key Changes**:
+1. Added `exclude_recent_seconds` parameter (default: 120 seconds)
+2. Temporal comparison: `timestamp < NOW() - exclude_recent_seconds`
+3. Handles Unix millisecond timestamps (bigint type)
+4. Grants execute permissions to authenticated and anon users
+
+**Fix #4: Add Debug Logging** (background.js lines 288-296)
+```javascript
+// DEBUG: Log what we got back from Supabase
+console.log(`🔍 Context search returned ${contextItems.length} items (threshold: ${contextConfig.threshold}, exclude: ${contextConfig.excludeRecentSeconds}s)`);
+if (contextItems.length > 0) {
+  const now = Date.now();
+  contextItems.forEach((item, idx) => {
+    const ageSeconds = Math.floor((now - item.msg_timestamp) / 1000);
+    console.log(`   ${idx + 1}. Age: ${ageSeconds}s, Distance: ${item.distance.toFixed(3)}, Content: "${item.content.substring(0, 50)}..."`);
+  });
+}
+```
+
+#### Validation Test Results
+
+**Test #1: Rapid-Fire Context Pollution** ✅ **PASSED**
+
+**Test Protocol**:
+1. Send 5 rapid-fire questions about TON 618 quasar (within 60 seconds)
+2. Observe context retrieval during rapid-fire phase
+3. Wait 3+ minutes (beyond 120-second exclusion window)
+4. Send follow-up question and observe context retrieval
+
+**Results**:
+```
+Rapid-fire phase (0-60 seconds):
+- Message 1: Context returned 0 items ✅ (no messages >120s old about TON 618)
+- Message 2: Context returned 0 items ✅
+- Message 3: Context returned 0 items ✅
+- Message 4: Context returned 0 items ✅
+- Message 5: Context returned 0 items ✅
+
+After 3+ minutes (180+ seconds):
+- Follow-up question: Context returned 3 items ✅
+  1. Age: 302s, Distance: 0.369, Content: "How far away is TON 618..."
+  2. Age: 225s, Distance: 0.422, Content: "Could TON 618 eventually..."
+  3. Age: 330s, Distance: 0.465, Content: "How was the mass of TON 618..."
+```
+
+**Console Evidence**:
+```
+background.js:289 🔍 Context search returned 0 items (threshold: 0.5, exclude: 120s)
+...
+[3 minutes later]
+background.js:289 🔍 Context search returned 3 items (threshold: 0.5, exclude: 120s)
+background.js:294    1. Age: 302s, Distance: 0.369, Content: "How far away is TON 618..."
+background.js:294    2. Age: 225s, Distance: 0.422, Content: "Could TON 618 eventually..."
+background.js:294    3. Age: 330s, Distance: 0.465, Content: "How was the mass of TON 618..."
+```
+
+**Proof of Success**:
+- ✅ Immediate sync working (every message synced in <1 second)
+- ✅ Temporal filter working (no items <120 seconds old retrieved)
+- ✅ Context quality preserved (relevant historical messages found after exclusion window)
+- ✅ No noise pollution (rapid-fire questions excluded during active questioning)
+- ✅ Conversational memory builds naturally (past questions become context after 2 minutes)
+
+#### SQL Migration Issues Resolved
+
+**Error #1**: String concatenation type mismatch
+```sql
+-- FAILED:
+AND timestamp < NOW() - (exclude_recent_seconds || ' seconds')::interval
+-- ERROR: operator does not exist: bigint < timestamp with time zone
+```
+
+**Error #2**: Interval multiplication type mismatch
+```sql
+-- FAILED:
+AND timestamp < NOW() - (exclude_recent_seconds * INTERVAL '1 second')
+-- ERROR: operator does not exist: bigint < timestamp with time zone
+```
+
+**Root Cause**: The `timestamp` column stores Unix milliseconds as `bigint`, not PostgreSQL timestamp type.
+
+**Successful Solution**:
+```sql
+-- Convert NOW() to Unix milliseconds, subtract exclusion window
+AND timestamp < EXTRACT(EPOCH FROM NOW())::bigint * 1000 - (exclude_recent_seconds * 1000)
+```
+
+#### Files Modified
+
+**Modified**:
+- `background.js` (lines 236, 288-296, 340-367): Immediate sync + temporal config + debug logging
+- `migrations/temporal_filtering.sql` (NEW): SQL migration for temporal exclusion
+
+**Verified Working**:
+- `platforms/chatgpt/inject.js`: Context injection with immediate sync
+- `platforms/claude/content_test.js`: Context injection with immediate sync
+- `src/browser-sync.js`: Immediate sync to Supabase
+
+#### Behavioral Changes
+
+**Before**:
+- Messages batched for up to 4 minutes before syncing
+- Rapid-fire questions clustered together during sync
+- No temporal exclusion in context search
+- Result: Recent noise questions dominated search results
+
+**After**:
+- Every message syncs immediately (no batching)
+- Temporal filter excludes messages from last 120 seconds
+- Context search only returns messages >120 seconds old
+- Result: Relevant historical context without noise pollution
+
+**Impact**:
+- Natural conversational memory without pollution
+- Recent questions excluded during active questioning
+- Historical context emerges naturally after 2-minute window
+- Semantic search quality dramatically improved
+
+---
+
 ### Fixed - Day 6 Session 2: Hardcoded Source Field Bug (2025-11-13)
 
 #### Critical Issue Identified
