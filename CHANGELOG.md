@@ -222,31 +222,187 @@ if (content) {
 
 ---
 
-#### Current Status
+**Round 4: Expanded Diagnostics + Nested Structure Parsing (Commit 3a5ed45)**
+
+User provided NEW console logs showing crucial evidence:
+
+**Evidence #1: First Message Works (Partially)**
+```javascript
+// CONSOLE OUTPUT:
+🎯 KYT ChatGPT: Intercepted API call
+🔍 KYT ChatGPT: Requesting context for: [message]
+✅ KYT ChatGPT: Context received, injecting...
+✅ KYT ChatGPT: Message extracted: [message]
+📊 KYT ChatGPT DEBUG: Stream reading complete
+   Total chunks: 39
+   Text length: 0  // ❌ Still 0!
+   Message ID: 69175c9d-f790-8321-9798-4ab614dc04de
+```
+
+**Evidence #2: Extension Context Invalidation (NEW ISSUE)**
+```javascript
+// CONSOLE OUTPUT (Second message):
+❌ KYT ChatGPT Content: Failed to get context: Error: Extension context invalidated.
+    at content.js:51:45
+```
+This is a SEPARATE issue - extension loses connection to background script between messages.
+
+**Evidence #3: Nested Structure Revealed**
+```javascript
+// From first chunk preview in user logs:
+inject.js:320    Chunk preview (first 500 chars): event: delta_encoding
+data: "v1"
+
+data: {"type": "resume_conversation_token", "token": "...", "conversation_id": "..."}
+
+event: delta
+data: {"p": "", "o": "add", "v": {"message":   // ← CRITICAL CLUE!
+```
+
+**Key Discovery**: Chunks 2+ have DIFFERENT format with nested structure:
+- `"p"`: path field (empty string)
+- `"o"`: operation field ("add")
+- `"v"`: value field (contains nested message object)
+
+The actual text is likely in `json.v.message.content.parts[0]` or similar nested path!
+
+**Root Cause of 0 Characters**: The diagnostic logging had:
+```javascript
+if (chunkCount === 1 && debugMode) {
+  // ... log chunk 1 ...
+}
+
+if (typeof json === 'object' && json !== null && debugMode) {
+  // ... log JSON structure ...
+  debugMode = false; // ❌ This stops logging after first chunk!
+}
+```
+
+We only logged chunk 1 (metadata), but chunks 2-39 contain the actual text in a different format!
+
+**Fix Applied** (inject.js lines 316-417):
+
+1. **Expand logging to chunks 1-5** (lines 316-321):
+```javascript
+// BEFORE:
+if (chunkCount === 1 && debugMode) {
+  console.log('🔍 KYT ChatGPT DEBUG: First chunk received');
+
+// AFTER:
+if (chunkCount <= 5) {
+  console.log(`🔍 KYT ChatGPT DEBUG: Chunk ${chunkCount} received`);
+```
+
+2. **Remove debugMode = false to allow continued logging** (lines 344-376):
+```javascript
+// BEFORE:
+if (typeof json === 'object' && json !== null && debugMode) {
+  // ... logging ...
+  debugMode = false; // ❌ Stopped logging
+
+// AFTER:
+if (typeof json === 'object' && json !== null && chunkCount <= 5) {
+  // ... logging ...
+  // No debugMode = false, keeps logging for first 5 chunks
+```
+
+3. **Add chunk numbers to all diagnostic messages** (lines 346-375):
+```javascript
+console.log(`🔍 DEBUG Chunk ${chunkCount} Parsed JSON:`, ...);
+console.log(`🔍 DEBUG Chunk ${chunkCount} JSON keys:`, ...);
+console.log(`🔍 DEBUG Chunk ${chunkCount} JSON type:`, ...);
+```
+
+4. **Add nested structure field checks** (lines 366-375):
+```javascript
+// Check nested structure seen in user logs: {"p": "", "o": "add", "v": {"message": ...}}
+if (json.v) {
+  console.log(`🔍 DEBUG Chunk ${chunkCount} has v (value) field:`, JSON.stringify(json.v).substring(0, 300));
+}
+if (json.p !== undefined) {
+  console.log(`🔍 DEBUG Chunk ${chunkCount} has p (path) field:`, json.p);
+}
+if (json.o) {
+  console.log(`🔍 DEBUG Chunk ${chunkCount} has o (operation) field:`, json.o);
+}
+```
+
+5. **Add parsing for nested v field** (lines 401-417):
+```javascript
+// Format 6: Nested v.message structure (ChatGPT web API format)
+// Structure: {"p": "", "o": "add", "v": {"message": {"content": {"parts": ["text"]}}}}
+else if (json.v?.message?.content?.parts?.[0]) {
+  content = json.v.message.content.parts[0];
+}
+// Format 7: Nested v.content directly
+else if (typeof json.v?.content === 'string') {
+  content = json.v.content;
+}
+// Format 8: Nested v.text
+else if (typeof json.v?.text === 'string') {
+  content = json.v.text;
+}
+// Format 9: Nested v as string
+else if (typeof json.v === 'string') {
+  content = json.v;
+}
+```
+
+**Expected Result**:
+- User should now see diagnostic logs for chunks 1-5 (not just chunk 1)
+- Complete JSON structure from chunks 2-5 will reveal where text is stored
+- If text is in nested `v` field, parsing should succeed
+
+**Status**: READY FOR TESTING with expanded diagnostics.
+
+---
+
+#### Current Status (After Round 4)
 
 **Working ✅**:
-- ✅ No crashes (both critical bugs fixed)
-- ✅ Stream reading successful (39 chunks read)
-- ✅ Defensive checks prevent errors
-- ✅ Multiple format attempts implemented
-- ✅ Diagnostic logging in place
+- ✅ No crashes (both critical bugs fixed - Round 1)
+- ✅ Stream reading successful (39 chunks read - Round 2)
+- ✅ Defensive checks prevent errors (Round 1)
+- ✅ Non-standard SSE format handling (event: lines, plain strings - Round 3)
+- ✅ 9 different response format attempts implemented (Round 3 + Round 4)
+- ✅ Diagnostic logging expanded to chunks 1-5 (Round 4)
+- ✅ Nested structure field checks added (p, o, v - Round 4)
+- ✅ Chunk numbers in all diagnostic messages (Round 4)
 
 **Not Working ❌**:
-- ❌ Text extraction still returns 0 characters
-- ❌ Only seeing first chunk in diagnostics (metadata)
-- ❌ Chunks 2-39 not logged (where actual text likely is)
+- ❌ Text extraction still returns 0 characters (need to test with new logging)
+- ⚠️ Extension context invalidation between messages (NEW ISSUE - separate from SSE)
 
-**Hypothesis**: The diagnostic logging only triggers on `chunkCount === 1` and when `debugMode = true` (lines 317-320, 345-367). After logging the first chunk, `debugMode` is set to `false`, so we never see what's in chunks 2-39. The actual message text is probably in those chunks but we're not logging them to see the format.
+**Ready for Testing**:
+User should reload extension and send ChatGPT message. Should now see:
+- Diagnostic logs for chunks 1-5 (not just chunk 1)
+- Complete JSON structure from chunks 2-5
+- If text is in nested `v` field, parsing should succeed
+- Text length > 0 in final statistics
+
+**Known Separate Issue**:
+"Extension context invalidated" error on second message - extension loses connection to background script. This is independent of SSE format debugging and needs separate investigation.
 
 #### Files Modified This Session
 
 **ChatGPT Platform** (`platforms/chatgpt/inject.js`):
+
+**Round 1 Fixes**:
 - Lines 208-219: Extract metadata BEFORE body modification
 - Lines 276-300: Defensive checks for response.body
+
+**Round 3 Fixes**:
 - Lines 325-328: Skip event: lines in SSE stream
 - Lines 339: Skip plain string values
-- Lines 345-367: Enhanced diagnostic logging
-- Lines 370-404: Try 5 different response formats
+- Lines 370-400: Try 5 different response formats (Formats 1-5)
+
+**Round 4 Fixes (Latest)**:
+- Lines 316-321: Expand logging to chunks 1-5 (was only chunk 1)
+- Lines 331-333: Log lines from first 5 chunks with chunk numbers
+- Lines 344-376: Remove debugMode = false, log chunks 1-5 instead of just 1
+- Lines 346-375: Add chunk numbers to all diagnostic messages
+- Lines 366-375: Add nested structure field checks (p, o, v)
+- Lines 401-417: Add 4 new response formats for nested v field (Formats 6-9)
 
 **Claude Platform** (`platforms/claude/content_test.js`):
 - Lines 127-136: Extract model BEFORE body modification
