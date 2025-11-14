@@ -398,9 +398,20 @@
             else if (typeof json.text === 'string') {
               content = json.text;
             }
-            // Format 6: Delta/patch format (ChatGPT web API streaming)
-            // Structure: {"p": "message.content.parts[0]", "o": "replace", "v": "text chunk"}
+            // Format 6: Delta/patch format with array (ChatGPT web API streaming)
+            // Structure: {"v": [{"p": "/message/content/parts/0", "o": "append", "v": "text"}]}
             // This is used for streaming text updates after the initial message is created
+            else if (Array.isArray(json.v) && json.v.length > 0) {
+              // Extract text from all patches in the array
+              for (const patch of json.v) {
+                // Check if this patch updates the text content
+                if (patch.p === '/message/content/parts/0' && patch.o === 'append' && typeof patch.v === 'string') {
+                  content = (content || '') + patch.v;
+                }
+              }
+            }
+            // Format 6b: Delta format with single patch (alternative format)
+            // Structure: {"p": "message.content.parts[0]", "o": "replace", "v": "text chunk"}
             else if (json.o && json.v !== undefined && typeof json.v === 'string' && json.v.length > 0) {
               // Delta format: v contains the text chunk directly as string
               content = json.v;
