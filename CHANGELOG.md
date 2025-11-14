@@ -559,12 +559,34 @@ This confirms:
 **PHASE 1.5 GOAL ACHIEVED** 🎉:
 ChatGPT now captures and uses complete assistant responses (not just sparse questions), making it as proactive as Claude when retrieving contextual memory. Text capture increased 34x (91 chars → 3125 chars).
 
-**Known Separate Issue ⚠️**:
-- ⚠️ Extension context invalidation between messages (NEW ISSUE - separate from SSE)
-  - Error: "Extension context invalidated" on second message
-  - Extension loses connection to background script
-  - Independent of SSE format debugging
-  - Needs separate investigation AFTER confirming text capture works
+**Extension Context Invalidation Fix** (Commit b4307a5):
+
+**Problem Identified**:
+- "Extension context invalidated" error appearing on second message
+- Service worker goes inactive after ~30s of inactivity
+- Calling `chrome.runtime.sendMessage()` on dead context throws unhelpful errors
+- Users saw cryptic error messages without guidance
+
+**Root Cause**:
+Manifest V3 service workers can terminate after inactivity. When content scripts try to communicate with terminated service worker, Chrome throws "Extension context invalidated" error.
+
+**Solution Implemented**:
+1. **Runtime Validation**: Check `chrome.runtime?.id` before ALL `sendMessage()` calls
+2. **Early Return**: Fail fast with clear warning if context is invalid
+3. **User-Friendly Messages**: Replace cryptic errors with "Please reload the page"
+4. **Graceful Degradation**: Operations fail gracefully instead of crashing silently
+
+**Code Changes**:
+- `platforms/chatgpt/content.js` (lines 31-36, 44-49, 60-76, 100-105)
+- `platforms/claude/content_bridge.js` (lines 24-29, 38-44, 59-76, 100-105)
+
+**New Console Messages**:
+```
+⚠️ Extension context invalidated - message not saved
+   Please reload the page to restore functionality
+```
+
+**Status**: ✅ FIXED - Graceful error handling with clear user guidance
 
 **Ready for Final Testing**:
 User should reload extension and send ChatGPT message. Expected results:
@@ -678,6 +700,25 @@ User should reload extension and send ChatGPT message. Expected results:
    - Loop through patches and extract text from append operations
    - Filter by path `/message/content/parts/0` and operation `append`
    - Concatenate all text chunks to build full assistant response
+
+10. `0e85dd1`: "docs: Update CHANGELOG with Round 5 array format discovery and fixes"
+   - Documented Round 5 debugging session
+   - Added array format discovery evidence from chunks 5-10
+   - Documented commits ebfde87 and 70170b2
+   - Updated Current Status and Files Modified sections
+
+11. `f35659a`: "docs: Document Phase 1.5 completion - assistant response capture SUCCESS"
+   - Added Round 5 testing results section
+   - Documented 3125 char capture success (34x improvement)
+   - Added comparison table: Before vs After Phase 1.5
+   - User confirmation: ChatGPT proactively using memory
+   - Updated all deliverables to completed status
+
+12. `b4307a5`: "fix: Add graceful handling for extension context invalidation"
+   - Added `chrome.runtime?.id` validation before all sendMessage() calls
+   - Implemented graceful degradation with user-friendly warnings
+   - Applied fix to both ChatGPT and Claude platforms
+   - Clear messaging: "Please reload the page to restore functionality"
 
 #### Next Steps
 
