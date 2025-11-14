@@ -16,7 +16,7 @@ CREATE OR REPLACE FUNCTION match_messages(
 RETURNS TABLE (
   id uuid,
   content text,
-  msg_timestamp timestamp,
+  msg_timestamp bigint,
   source text,
   distance float
 )
@@ -30,7 +30,7 @@ AS $$
     (embedding <=> query_embedding) as distance
   FROM messages
   WHERE (embedding <=> query_embedding) < match_threshold
-    AND timestamp < NOW() - (exclude_recent_seconds || ' seconds')::interval
+    AND timestamp < EXTRACT(EPOCH FROM NOW())::bigint * 1000 - (exclude_recent_seconds * 1000)
   ORDER BY embedding <=> query_embedding
   LIMIT match_count;
 $$;
