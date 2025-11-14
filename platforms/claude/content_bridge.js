@@ -21,6 +21,13 @@ window.addEventListener('KYT_MESSAGE_CAPTURED', (event) => {
     return;
   }
 
+  // Check if extension context is still valid
+  if (!chrome.runtime?.id) {
+    console.warn('⚠️ BRIDGE: Extension context invalidated - message not saved');
+    console.warn('   Please reload the page to restore functionality');
+    return;
+  }
+
   // Forward to background script
   if (chrome?.runtime) {
     console.log('🔵 BRIDGE: Forwarding to background...');
@@ -29,7 +36,12 @@ window.addEventListener('KYT_MESSAGE_CAPTURED', (event) => {
       data: event.detail
     }, (response) => {
       if (chrome.runtime.lastError) {
-        console.error('🔵 BRIDGE: Background message failed:', chrome.runtime.lastError.message);
+        const error = chrome.runtime.lastError.message;
+        if (error.includes('Extension context invalidated')) {
+          console.warn('⚠️ BRIDGE: Extension was reloaded - please refresh page');
+        } else {
+          console.error('🔵 BRIDGE: Background message failed:', error);
+        }
       } else {
         console.log('🔵 BRIDGE: ✅ Background confirmed receipt:', response);
       }
@@ -43,6 +55,25 @@ window.addEventListener('KYT_MESSAGE_CAPTURED', (event) => {
 window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
   const { requestId, userMessage, config } = event.detail;
   console.log('🔍 BRIDGE: Context request from MAIN world');
+
+  // Check if extension context is still valid
+  if (!chrome.runtime?.id) {
+    console.warn('⚠️ BRIDGE: Extension context invalidated - cannot get context');
+    console.warn('   Please reload the page to restore functionality');
+
+    // Send error response
+    window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+      detail: {
+        requestId: requestId,
+        success: false,
+        formattedContext: null,
+        items: [],
+        elapsedMs: 0,
+        error: 'Extension context invalidated - please reload page'
+      }
+    }));
+    return;
+  }
 
   try {
     // Forward to background script (no CSP restrictions there!)
@@ -66,7 +97,12 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
 
     console.log('✅ BRIDGE: Context response sent to MAIN world');
   } catch (error) {
-    console.error('❌ BRIDGE: Failed to get context:', error);
+    // Better error handling for context invalidation
+    if (error.message && error.message.includes('Extension context invalidated')) {
+      console.warn('⚠️ BRIDGE: Extension was reloaded - please refresh page');
+    } else {
+      console.error('❌ BRIDGE: Failed to get context:', error);
+    }
 
     // Send error response
     window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {

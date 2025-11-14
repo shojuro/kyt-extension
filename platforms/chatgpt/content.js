@@ -28,6 +28,13 @@
     console.log('📨 KYT ChatGPT Content: Received message from page context');
     console.log('   Content preview:', messageData.content.substring(0, 50) + '...');
 
+    // Check if extension context is still valid
+    if (!chrome.runtime?.id) {
+      console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated - message not saved');
+      console.warn('   Please reload the page to restore functionality');
+      return;
+    }
+
     // Forward to background script for storage
     chrome.runtime.sendMessage({
       type: 'SAVE_MESSAGE',
@@ -35,7 +42,11 @@
     }).then(() => {
       console.log('✅ KYT ChatGPT Content: Message forwarded to background');
     }).catch(error => {
-      console.error('❌ KYT ChatGPT Content: Failed to forward message:', error);
+      if (error.message && error.message.includes('Extension context invalidated')) {
+        console.warn('⚠️ KYT ChatGPT Content: Extension was reloaded - please refresh page');
+      } else {
+        console.error('❌ KYT ChatGPT Content: Failed to forward message:', error);
+      }
     });
   });
 
@@ -45,6 +56,24 @@
   window.addEventListener('KYT_CONTEXT_REQUEST', async function(event) {
     const { requestId, userMessage, config } = event.detail;
     console.log('🔍 KYT ChatGPT Content: Context request from page context');
+
+    // Check if extension context is still valid
+    if (!chrome.runtime?.id) {
+      console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated - cannot get context');
+      console.warn('   Please reload the page to restore functionality');
+
+      // Send error response
+      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+        detail: {
+          requestId: requestId,
+          success: false,
+          formattedContext: null,
+          items: [],
+          error: 'Extension context invalidated - please reload page'
+        }
+      }));
+      return;
+    }
 
     try {
       // Forward to background script (no CSP restrictions there!)
@@ -68,7 +97,12 @@
 
       console.log('✅ KYT ChatGPT Content: Context response sent to page context');
     } catch (error) {
-      console.error('❌ KYT ChatGPT Content: Failed to get context:', error);
+      // Better error handling for context invalidation
+      if (error.message && error.message.includes('Extension context invalidated')) {
+        console.warn('⚠️ KYT ChatGPT Content: Extension was reloaded - please refresh page');
+      } else {
+        console.error('❌ KYT ChatGPT Content: Failed to get context:', error);
+      }
 
       // Send error response
       window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
