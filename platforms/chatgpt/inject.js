@@ -496,6 +496,129 @@
     }
   }
 
+  /**
+   * VOICE INPUT CAPTURE (PoC): DOM-Based Observer
+   *
+   * WHY NEEDED: Voice input uses WebSocket (wss://ws.chatgpt.com/ws/user/...)
+   * instead of fetch, so the fetch wrapper above doesn't intercept it.
+   *
+   * APPROACH: Watch DOM mutations for new text nodes containing user/assistant messages.
+   *
+   * FRAGILITY WARNING: This is DOM-sensitive and may break if ChatGPT changes HTML structure.
+   * This is a PoC - robust solutions to be brainstormed after validation.
+   */
+
+  // Track seen nodes to avoid duplicate captures
+  const seenNodes = new WeakSet();
+  let domCaptureCount = 0;
+
+  // DOM-agnostic text extraction
+  function extractTextFromNode(node) {
+    if (!node || seenNodes.has(node)) return null;
+
+    // Only process element nodes
+    if (node.nodeType !== Node.ELEMENT_NODE) return null;
+
+    const text = node.textContent?.trim();
+
+    // Filter out empty, whitespace-only, or very short text
+    if (!text || text.length < 2 || /^\s*$/.test(text)) return null;
+
+    // Filter out common UI noise
+    const ignorePatterns = [
+      /^(copy code|regenerate|stop generating|send|cancel)$/i,
+      /^[\d\s:]+$/,  // timestamps
+      /^[•\-\*]+$/   // bullets
+    ];
+
+    if (ignorePatterns.some(pattern => pattern.test(text))) return null;
+
+    seenNodes.add(node);
+    return text;
+  }
+
+  // Attempt to determine message role from context
+  function inferMessageRole(text, element) {
+    // Check aria attributes (more stable than classes)
+    const ariaLabel = element.getAttribute('aria-label') ||
+                      element.closest('[aria-label]')?.getAttribute('aria-label') || '';
+
+    if (ariaLabel.toLowerCase().includes('user')) return 'user';
+    if (ariaLabel.toLowerCase().includes('assistant') || ariaLabel.toLowerCase().includes('chatgpt')) return 'assistant';
+
+    // Check data attributes
+    const dataAuthor = element.getAttribute('data-author') ||
+                       element.closest('[data-author]')?.getAttribute('data-author');
+    if (dataAuthor) return dataAuthor === 'user' ? 'user' : 'assistant';
+
+    // Fallback: content-based heuristics
+    if (text.startsWith('You said:') || text.includes('🎤')) return 'user';
+    if (text.startsWith('ChatGPT said:') || text.includes('🤖')) return 'assistant';
+
+    // Default to unknown - will still capture but mark as uncertain
+    return 'unknown';
+  }
+
+  // Mutation observer for DOM-based capture
+  const domObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        try {
+          const text = extractTextFromNode(node);
+          if (!text) continue;
+
+          const role = inferMessageRole(text, node);
+
+          // Only capture substantial messages (not single words or UI elements)
+          if (text.length < 10) continue;
+
+          domCaptureCount++;
+
+          const message = {
+            content: text,
+            role: role,
+            conversationId: 'dom_capture',  // Will be updated by content script if available
+            model: 'chatgpt',
+            timestamp: Date.now(),
+            messageId: `msg_dom_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            platform: 'chatgpt',
+            captureMethod: 'dom_observer',  // Track capture method for diagnostics
+            confidence: role === 'unknown' ? 'low' : 'medium'  // DOM inference less reliable than fetch
+          };
+
+          console.log(`🧠 KYT ChatGPT DOM: ${role.toUpperCase()} message captured (${text.length} chars)`);
+          console.log(`📝 Preview: ${text.substring(0, 100)}...`);
+
+          // Use same event mechanism as fetch interception
+          window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+            detail: message
+          }));
+
+        } catch (error) {
+          console.warn('⚠️ KYT ChatGPT DOM: Capture error:', error.message);
+        }
+      }
+    }
+  });
+
+  // Start observing entire document body
+  if (document.body) {
+    domObserver.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    console.log('👁️ KYT ChatGPT: DOM observer initialized for voice capture');
+  } else {
+    // Body not ready yet, wait for DOMContentLoaded
+    document.addEventListener('DOMContentLoaded', () => {
+      domObserver.observe(document.body, {
+        childList: true,
+        subtree: true
+      });
+      console.log('👁️ KYT ChatGPT: DOM observer initialized (delayed)');
+    });
+  }
+
   // Expose health check
   window.KYT_HEALTH_CHECK = function() {
     return {
@@ -505,9 +628,11 @@
       totalErrors: totalErrors,
       lastInterceptionTime: lastInterceptionTime,
       timeSinceLastIntercept: Date.now() - lastInterceptionTime,
-      errorRate: totalInterceptions > 0 ? `${((totalErrors / totalInterceptions) * 100).toFixed(1)}%` : 'N/A'
+      errorRate: totalInterceptions > 0 ? `${((totalErrors / totalInterceptions) * 100).toFixed(1)}%` : 'N/A',
+      domCaptureCount: domCaptureCount  // Add DOM capture stats
     };
   };
 
   console.log('✅ KYT ChatGPT: Fetch override installed in PAGE CONTEXT');
+  console.log('✅ KYT ChatGPT: DOM observer active for voice input');
 })();
