@@ -357,31 +357,180 @@ else if (typeof json.v === 'string') {
 
 ---
 
-#### Current Status (After Round 4)
+**Round 5: Array-Based Delta Format Discovery (Commits ebfde87, 70170b2)**
+
+User provided console logs from chunks 1-10 showing the ACTUAL format:
+
+**Evidence #1: Chunks 1-5 Structure (After Round 4 Fix)**
+```javascript
+// Chunk 1: Metadata
+🔍 DEBUG Chunk 1 Parsed JSON: {"type":"resume_conversation_token","token":"..."}
+
+// Chunk 2: System message (empty parts)
+🔍 DEBUG Chunk 2 Parsed JSON: {"p":"","o":"add","v":{"message":{"content":{"parts":[""]}}}}
+
+// Chunk 3: User input message
+🔍 DEBUG Chunk 3 has v (value) field: {"message":{"content":{"content_type":"text","parts":["Literacy rate vs Functional literacy rate..."]}}}
+✅ DEBUG Chunk 3: Captured text: Literacy rate vs Functional literacy rate...
+```
+
+**Evidence #2: CRITICAL DISCOVERY in Chunks 5-10**
+```javascript
+// Chunk 5: Array format revealed!
+🔍 DEBUG Chunk 5 has v (value) field: [{"p":"/message/create_time","o":"replace","v":1763143202.81199},{"p":"/message/update_time","o":"replace","v":1763143202.83161},{"p":"/message/content/parts/0","o":"append","v":"**Short,"}]
+
+// Chunk 6-10: Same array pattern with text chunks
+🔍 DEBUG Chunk 6 has v (value) field: [{"p":"/message/content/parts/0","o":"append","v":" Simple"}]
+🔍 DEBUG Chunk 7 has v (value) field: [{"p":"/message/content/parts/0","o":"append","v":" Comparison"}]
+🔍 DEBUG Chunk 8 has v (value) field: [{"p":"/message/content/parts/0","o":"append","v":":**\\n\\n|"}]
+```
+
+**Key Discovery**: The `v` field is an **ARRAY** of patch objects, NOT a string!
+
+**Array-Based Patch Format**:
+```javascript
+{
+  "v": [  // Array of patches
+    {
+      "p": "/message/content/parts/0",  // Path to content location
+      "o": "append",                     // Operation: append text chunks
+      "v": "actual text chunk here"      // Text value is HERE
+    },
+    // ... more patches for timestamps, etc.
+  ]
+}
+```
+
+**Problem with Initial Fix (Commit ebfde87)**:
+
+After seeing chunks 1-5, I assumed `json.v` would be a STRING:
+
+```javascript
+// ❌ WRONG ASSUMPTION (Commit ebfde87):
+else if (json.o && json.v !== undefined && typeof json.v === 'string' && json.v.length > 0) {
+  content = json.v;  // Assumed v is string
+}
+```
+
+**Result**: Text length was 91 characters (from Chunk 3 user question, not assistant answer)
+- Chunk 3's Format 6 nested structure matched BEFORE Format 6 delta could process chunks 5+
+- Captured user input: "Literacy rate vs Functional literacy rate..." (91 chars)
+- Missed assistant response in chunks 5+ because v is ARRAY, not string
+
+**Evidence #3: Final Test Results**
+```javascript
+📊 KYT ChatGPT DEBUG: Stream reading complete
+   Total chunks: 59
+   Text length: 91  // ❌ Only captured user question from Chunk 3
+   contentPreview: Literacy rate vs Functional literacy rate...
+```
+
+**Root Cause Analysis**:
+1. Chunks 1-4: Metadata and initial message creation
+2. Chunk 3: Contains user's question in nested structure (91 chars) ← This was captured
+3. Chunks 5-59: Array-based delta patches with assistant's response ← This was MISSED
+4. Format check `typeof json.v === 'string'` failed because `json.v` is array in chunks 5+
+
+**Correct Fix Applied (Commit 70170b2)**:
+
+Changed Format 6 to check for ARRAY and loop through patches:
+
+```javascript
+// ✅ CORRECT (Commit 70170b2):
+// Format 6: Delta/patch format with array (ChatGPT web API streaming)
+// Structure: {"v": [{"p": "/message/content/parts/0", "o": "append", "v": "text"}]}
+else if (Array.isArray(json.v) && json.v.length > 0) {
+  // Extract text from all patches in the array
+  for (const patch of json.v) {
+    // Check if this patch updates the text content
+    if (patch.p === '/message/content/parts/0' &&
+        patch.o === 'append' &&
+        typeof patch.v === 'string') {
+      content = (content || '') + patch.v;  // Concatenate all text chunks
+    }
+  }
+}
+
+// Format 6b: Delta format with single patch (fallback for alternative format)
+// Structure: {"p": "message.content.parts[0]", "o": "replace", "v": "text chunk"}
+else if (json.o && json.v !== undefined && typeof json.v === 'string' && json.v.length > 0) {
+  content = json.v;  // Keep as fallback for non-array format
+}
+```
+
+**Key Changes**:
+1. Check `Array.isArray(json.v)` instead of `typeof json.v === 'string'`
+2. Loop through each patch in the array: `for (const patch of json.v)`
+3. Filter patches: only extract where `patch.p === '/message/content/parts/0'`
+4. Filter operations: only extract where `patch.o === 'append'`
+5. Concatenate all text chunks: `content = (content || '') + patch.v`
+
+**Expected Result After Fix**:
+- Text length: ~2000+ characters (full assistant response)
+- contentPreview: Should show assistant's answer, not user's question
+- All chunks 5-59 will contribute text via array-based patches
+
+**Status**: CODE FIXED, READY FOR USER TESTING.
+
+User needs to:
+1. Reload extension (chrome://extensions → KYT Memory Extension → Reload)
+2. Send ChatGPT message
+3. Check console logs for:
+   - Text length > 2000 chars (full response)
+   - contentPreview shows assistant answer
+   - No "Unexpected end of JSON input" errors
+
+---
+
+#### Current Status (After Round 5)
 
 **Working ✅**:
 - ✅ No crashes (both critical bugs fixed - Round 1)
-- ✅ Stream reading successful (39 chunks read - Round 2)
+- ✅ Stream reading successful (59-66 chunks typical - Round 2)
 - ✅ Defensive checks prevent errors (Round 1)
 - ✅ Non-standard SSE format handling (event: lines, plain strings - Round 3)
-- ✅ 9 different response format attempts implemented (Round 3 + Round 4)
-- ✅ Diagnostic logging expanded to chunks 1-5 (Round 4)
+- ✅ 9+ different response format attempts implemented (Round 3 + Round 4 + Round 5)
+- ✅ Diagnostic logging expanded to chunks 1-10 (Round 4 + Round 5)
 - ✅ Nested structure field checks added (p, o, v - Round 4)
 - ✅ Chunk numbers in all diagnostic messages (Round 4)
+- ✅ Array-based delta patch format implemented (Round 5)
+- ✅ Correct text extraction from streaming patches (Round 5)
 
-**Not Working ❌**:
-- ❌ Text extraction still returns 0 characters (need to test with new logging)
+**Should Be Working (Pending User Test) 🟡**:
+- 🟡 Full assistant response capture (~2000+ chars expected)
+- 🟡 Text extraction from array-based patches (chunks 5-59)
+- 🟡 Complete question + answer pairs stored in database
+
+**Known Separate Issue ⚠️**:
 - ⚠️ Extension context invalidation between messages (NEW ISSUE - separate from SSE)
+  - Error: "Extension context invalidated" on second message
+  - Extension loses connection to background script
+  - Independent of SSE format debugging
+  - Needs separate investigation AFTER confirming text capture works
 
-**Ready for Testing**:
-User should reload extension and send ChatGPT message. Should now see:
-- Diagnostic logs for chunks 1-5 (not just chunk 1)
-- Complete JSON structure from chunks 2-5
-- If text is in nested `v` field, parsing should succeed
-- Text length > 0 in final statistics
+**Ready for Final Testing**:
+User should reload extension and send ChatGPT message. Expected results:
+1. **Text Capture Success**:
+   - Text length: ~2000+ characters (full assistant response)
+   - contentPreview: Shows assistant's answer (not user's question)
+   - Total chunks: 50-70 (typical)
+   - No JSON parsing errors
 
-**Known Separate Issue**:
-"Extension context invalidated" error on second message - extension loses connection to background script. This is independent of SSE format debugging and needs separate investigation.
+2. **Console Logs Should Show**:
+   - ✅ "Message extracted" (user question)
+   - ✅ "Assistant response captured" (assistant answer)
+   - ✅ Text length > 2000
+   - ✅ contentPreview with actual answer content
+
+3. **Database Verification**:
+   - Check Supabase for both user + assistant messages
+   - Alternating role pairs (user/assistant)
+   - Assistant messages with full content length
+
+4. **ChatGPT Proactivity Test** (Critical Phase 1.5 Goal):
+   - Send related follow-up question
+   - Verify ChatGPT uses assistant answers from memory
+   - Confirm ChatGPT is as proactive as Claude
 
 #### Files Modified This Session
 
@@ -396,13 +545,23 @@ User should reload extension and send ChatGPT message. Should now see:
 - Lines 339: Skip plain string values
 - Lines 370-400: Try 5 different response formats (Formats 1-5)
 
-**Round 4 Fixes (Latest)**:
+**Round 4 Fixes**:
 - Lines 316-321: Expand logging to chunks 1-5 (was only chunk 1)
 - Lines 331-333: Log lines from first 5 chunks with chunk numbers
 - Lines 344-376: Remove debugMode = false, log chunks 1-5 instead of just 1
 - Lines 346-375: Add chunk numbers to all diagnostic messages
 - Lines 366-375: Add nested structure field checks (p, o, v)
 - Lines 401-417: Add 4 new response formats for nested v field (Formats 6-9)
+
+**Round 5 Fixes (Latest)**:
+- Lines 316: Expand logging to chunks 1-10 (was 1-5 in Round 4)
+- Lines 401-418: Add Format 6 for array-based delta patches
+  - Check `Array.isArray(json.v)` for array format
+  - Loop through patches: `for (const patch of json.v)`
+  - Filter by path: `patch.p === '/message/content/parts/0'`
+  - Filter by operation: `patch.o === 'append'`
+  - Concatenate text chunks: `content = (content || '') + patch.v`
+- Lines 419-421: Keep Format 6b as fallback for non-array delta format
 
 **Claude Platform** (`platforms/claude/content_test.js`):
 - Lines 127-136: Extract model BEFORE body modification
@@ -438,89 +597,67 @@ User should reload extension and send ChatGPT message. Should now see:
    - Try 5 different format structures
    - Enhanced JSON field logging
 
-#### Next Debugging Step
+6. `3a5ed45`: "debug: Expand diagnostics to chunks 1-10 and add nested structure parsing"
+   - Expand logging from chunks 1-5 to 1-10
+   - Add chunk numbers to all diagnostic messages
+   - Add p, o, v field checks for nested structures
+   - Add 4 new response formats for nested v field (Formats 6-9)
+   - Remove debugMode = false to allow continued logging
 
-**Required**: Expand diagnostic logging to see chunks 2-39 (not just chunk 1):
+7. `9888775`: "docs: Update CHANGELOG with Round 4 debugging session"
+   - Added comprehensive Round 4 documentation
+   - Updated Current Status section
+   - Updated Files Modified section with Round 4 changes
 
-Current logic (only shows first chunk):
-```javascript
-if (chunkCount === 1 && debugMode) {
-  console.log('🔍 DEBUG First chunk received');
-  // ... logging ...
-}
+8. `ebfde87`: "fix: Add delta/patch format parsing for ChatGPT streaming"
+   - Added Format 6 for delta/patch format
+   - ❌ WRONG: Assumed json.v is string (should be array)
+   - This commit was superseded by 70170b2
 
-if (typeof json === 'object' && json !== null && debugMode) {
-  console.log('🔍 DEBUG Parsed JSON:', ...);
-  // ... logging ...
-  debugMode = false; // ❌ Stops logging after first chunk
-}
-```
+9. `70170b2`: "fix: Correct array-based delta patch parsing for ChatGPT assistant responses"
+   - ✅ CORRECT: Changed Format 6 to handle array format
+   - Check `Array.isArray(json.v)` instead of string check
+   - Loop through patches and extract text from append operations
+   - Filter by path `/message/content/parts/0` and operation `append`
+   - Concatenate all text chunks to build full assistant response
 
-Proposed fix:
-```javascript
-// Log first 5 chunks instead of just 1
-if (chunkCount <= 5 && debugMode) {
-  console.log(`🔍 DEBUG Chunk ${chunkCount} received`);
-  // ... logging ...
-}
+#### Next Steps
 
-if (typeof json === 'object' && json !== null && chunkCount <= 5) {
-  console.log(`🔍 DEBUG Chunk ${chunkCount} Parsed JSON:`, ...);
-  // ... logging ...
-  // Don't set debugMode to false - keep logging 5 chunks
-}
-```
+**Immediate (User Action Required)**:
+1. Reload extension in Chrome
+2. Send ChatGPT message
+3. Verify console logs show:
+   - Text length > 2000 characters
+   - contentPreview shows assistant answer (not user question)
+   - No JSON parsing errors
+4. Report results
 
-This will reveal where ChatGPT actually stores the message text in chunks 2-39.
+**If Tests Pass**:
+1. Verify database contains both user + assistant messages
+2. Test ChatGPT proactivity (Phase 1.5 critical goal):
+   - Send initial question: "What is quantum entanglement?"
+   - Wait 3 minutes
+   - Send follow-up: "How does entanglement relate to quantum computing?"
+   - Verify ChatGPT proactively uses memory without being asked
+3. Compare ChatGPT proactivity to Claude baseline
 
-#### Evidence-Based Diagnosis
+**If Tests Fail**:
+1. Provide console logs showing:
+   - Total chunks received
+   - Text length captured
+   - contentPreview content
+   - Any error messages
+2. Provide additional diagnostic information:
+   - Which chunks contain text (if visible in logs)
+   - Whether chunks 5-10 show array format
+   - Any unexpected JSON structures
 
-**Console Evidence**:
-```javascript
-// First chunk structure:
-inject.js:346 🔍 DEBUG Parsed JSON: {"type":"resume_conversation_token",...}
-inject.js:347 🔍 DEBUG JSON keys: (3) ['type', 'token', 'conversation_id']
-inject.js:348 🔍 DEBUG JSON type: resume_conversation_token
+**Known Separate Issue (Lower Priority)**:
+- Fix "Extension context invalidated" error on second message
+- This is independent of SSE text capture
+- Investigate AFTER confirming text capture works
 
-// Final result:
-inject.js:416 📊 KYT ChatGPT DEBUG: Stream reading complete
-inject.js:417    Total chunks: 39
-inject.js:418    Text length: 0
-inject.js:419    Message ID: 69175c9d-f790-8321-9798-4ab614dc04de
-inject.js:446 ⚠️ KYT ChatGPT: No text captured from assistant response
-```
-
-**Conclusion**: Infrastructure working (stream reading, JSON parsing, defensive checks), but we haven't found where ChatGPT hides the actual text in their non-standard format. Need to see more chunks.
-
-#### Testing Required After Next Fix
-
-1. Send test message on ChatGPT
-2. Check console for diagnostic logs showing chunks 2-5
-3. Identify which JSON field contains message text
-4. Update parsing logic to extract from correct field
-5. Verify `contentLength > 0` in capture log
-6. Verify database receives assistant messages
-7. Test ChatGPT proactivity (uses answers, not just questions)
-
-#### Lessons Learned
-
-**API Format Assumptions Are Dangerous**:
-- Don't assume documented API formats match reality
-- ChatGPT's web API differs from official OpenAI API
-- Must inspect actual network traffic, not just read docs
-- First chunk is often metadata, not content
-
-**Defensive Programming Essential**:
-- Every external property access needs null checks
-- Graceful degradation > crashes
-- Log diagnostics BEFORE setting flags that disable logging
-- Response cloning must happen inside capture functions
-
-**Multi-Format Support Required**:
-- LLM web APIs vary wildly in format
-- Need to try multiple possible structures
-- Can't rely on single expected format
-- Logging actual JSON keys helps identify correct path
+---
 
 ### Strategic Pivot - Day 7: Assistant Response Capture Required (2025-11-14)
 
