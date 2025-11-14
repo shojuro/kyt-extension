@@ -233,6 +233,7 @@ async function getContextForInjection(userMessage, config) {
       threshold: config?.threshold || 0.5,
       maxContextItems: config?.maxContextItems || 3,
       minDistance: config?.minDistance || 0.0,
+      excludeRecentSeconds: config?.excludeRecentSeconds || 120, // CONTEXT POLLUTION FIX: Exclude last 2 minutes
       debugMode: config?.debugMode || false
     };
 
@@ -271,7 +272,8 @@ async function getContextForInjection(userMessage, config) {
         body: JSON.stringify({
           query_embedding: queryEmbedding,
           match_threshold: contextConfig.threshold,
-          match_count: contextConfig.maxContextItems
+          match_count: contextConfig.maxContextItems,
+          exclude_recent_seconds: contextConfig.excludeRecentSeconds
         })
       }
     );
@@ -341,26 +343,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       saveMessage(message.data)
         .then(async (success) => {
           if (success) {
-            // Day 4: Hybrid sync logic
-            const result = await chrome.storage.local.get(['last_sync_status']);
-            const lastSync = result.last_sync_status?.lastSyncTime || 0;
-            const timeSinceSync = Date.now() - lastSync;
-
-            // If more than 4 minutes since last sync, trigger immediate sync
-            if (timeSinceSync > 4 * 60 * 1000) {
-              console.log('🚀 First message in window - immediate sync');
-              syncToSupabase()
-                .then(syncResult => {
-                  if (syncResult.success) {
-                    console.log(`✅ Immediate sync: ${syncResult.synced} messages synced`);
-                  }
-                })
-                .catch(err => {
-                  console.warn('⚠️ Immediate sync failed:', err);
-                });
-            } else {
-              console.log('📦 Message batched for next periodic sync');
-            }
+            // CONTEXT POLLUTION FIX: Always sync immediately
+            // Removed 4-minute batching window to prevent rapid-fire questions
+            // from clustering in database before next query
+            console.log('🚀 Immediate sync triggered');
+            syncToSupabase()
+              .then(syncResult => {
+                if (syncResult.success) {
+                  console.log(`✅ Immediate sync: ${syncResult.synced} messages synced`);
+                }
+              })
+              .catch(err => {
+                console.warn('⚠️ Immediate sync failed:', err);
+              });
 
             sendResponse({ success: true });
           } else {

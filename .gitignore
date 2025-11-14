@@ -106,5 +106,9 @@ validation/user_data/
 # DIAGNOSTIC SCRIPTS WITH HARDCODED SECRETS
 # ============================================
 check_sources.js
-*_diagnostic.js
+*_diagnostic*.js
+*_diagnostic*.mjs
 verify_*.js
+phase0_*.js
+phase0_*.mjs
+check_message_count.mjs
