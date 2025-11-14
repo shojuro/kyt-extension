@@ -7,6 +7,365 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Day 7 Session 2: Phase 1.5 Critical Bugs + SSE Format Discovery (2025-11-14)
+
+#### Problem Statement
+- **Issue**: Phase 1.5 implementation (assistant response capture) encountering runtime errors
+- **Impact**: Assistant responses not being captured despite implementation complete
+- **User Report**: Console logs showing JSON parsing errors and undefined property access
+- **Root Causes**:
+  1. Request body parsed AFTER modification (invalid JSON)
+  2. No defensive checks on response.body (crashed on undefined)
+  3. ChatGPT SSE format differs from OpenAI API documentation
+
+#### Debugging Session Timeline
+
+**Round 1: Critical Crashes (Commit 33f937a)**
+
+User provided console logs showing TWO crashes:
+
+**Bug #1: Request Body Parsing After Modification**
+```javascript
+// ERROR LOG:
+🟢 KYT ChatGPT: Failed to parse request body: SyntaxError: Unexpected end of JSON input
+```
+
+**Root Cause**: We were extracting metadata (conversation_id, model) from `options.body` AFTER context injection modified it. The modified body string caused JSON.parse() to fail.
+
+**Fix Applied** (ChatGPT inject.js lines 208-219, Claude content_test.js lines 127-136):
+```javascript
+// BEFORE (BROKEN):
+options.body = await getAndInjectContext(options.body); // Modifies body
+// ...later...
+const requestBody = JSON.parse(options.body); // ❌ Parsing modified body fails
+
+// AFTER (FIXED):
+let conversationId = 'unknown';
+let modelName = 'gpt-unknown';
+if (options.body) {
+  try {
+    const originalBody = JSON.parse(options.body); // ✅ Parse BEFORE modification
+    conversationId = originalBody.conversation_id || 'unknown';
+    modelName = originalBody.model || 'gpt-unknown';
+  } catch (e) {
+    console.warn('⚠️ Could not parse request body for metadata');
+  }
+}
+// THEN modify body:
+options.body = await getAndInjectContext(options.body); // Safe now
+```
+
+**Bug #2: Response Body Undefined**
+```javascript
+// ERROR LOG:
+❌ KYT ChatGPT: Error capturing assistant response:
+   TypeError: Cannot read properties of undefined (reading 'getReader')
+```
+
+**Root Cause**: `response.body` was undefined when trying to call `getReader()`. No defensive checks existed, immediate crash.
+
+**Fix Applied** (ChatGPT inject.js lines 276-300, Claude content_test.js lines 228-252):
+```javascript
+// BEFORE (BROKEN):
+async function captureAssistantResponse(response, metadata) {
+  const reader = response.body.getReader(); // ❌ Crashes if undefined
+  // ...
+}
+
+// AFTER (FIXED):
+async function captureAssistantResponse(response, metadata) {
+  // Defensive checks
+  if (!response) {
+    console.warn('⚠️ Response is null/undefined');
+    return;
+  }
+
+  if (!response.body) {
+    console.warn('⚠️ Response body is null/undefined');
+    console.log('📊 Response object:', {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers ? 'present' : 'missing',
+      bodyUsed: response.bodyUsed
+    });
+    return; // Graceful degradation
+  }
+
+  // Clone response inside function
+  const clonedResponse = response.clone();
+
+  if (!clonedResponse.body) {
+    console.warn('⚠️ Cloned response body is null/undefined');
+    return;
+  }
+
+  const reader = clonedResponse.body.getReader(); // ✅ Safe now
+  // ...
+}
+```
+
+**Result**: Both crashes eliminated. Extension no longer throws errors.
+
+---
+
+**Round 2: No Text Captured (Commit 32bcf59)**
+
+User tested after crash fixes:
+```javascript
+// CONSOLE OUTPUT:
+⚠️ KYT ChatGPT: No text captured from assistant response
+📊 Stream reading complete
+   Total chunks: 39
+   Text length: 0
+```
+
+**Problem**: Stream reads successfully (39 chunks), but text extraction logic returns 0 characters.
+
+**Diagnosis**: Initial parsing logic assumed standard OpenAI API format:
+```javascript
+// EXPECTED FORMAT (didn't work):
+{ "choices": [{ "delta": { "content": "text" } }] }
+```
+
+**Action Taken**: Added extensive diagnostic logging to see ACTUAL format (commit 32bcf59):
+- Log first chunk preview (first 500 chars)
+- Log individual line formats
+- Log parsed JSON structure with keys
+- Log final statistics (chunks, text length, message ID)
+
+---
+
+**Round 3: Format Discovery (Commit f219efb)**
+
+User provided crucial diagnostic output showing ChatGPT's ACTUAL SSE format:
+
+```javascript
+// CONSOLE OUTPUT (First chunk):
+🔍 DEBUG Line: event: delta_encoding
+🔍 DEBUG Line: data: "v1"
+🔍 DEBUG Line: data: {"type":"resume_conversation_token","token":"...","conversation_id":"..."}
+
+// Parsed JSON:
+🔍 DEBUG JSON keys: ['type', 'token', 'conversation_id']
+🔍 DEBUG JSON type: resume_conversation_token
+
+// Final statistics:
+📊 Total chunks: 39
+   Text length: 0
+   Message ID: 69175c9d-f790-8321-9798-4ab614dc04de
+```
+
+**Key Discoveries**:
+1. ChatGPT uses non-standard SSE format with `event:` lines (must skip these)
+2. Sends plain string values like `"v1"` (must skip these)
+3. First chunk is metadata only (`resume_conversation_token`)
+4. Uses `type` field instead of `choices` array
+5. Actual message text must be in chunks 2-39 (but we only logged chunk 1)
+
+**Fix Applied** (inject.js lines 325-404):
+
+1. **Skip event lines** (lines 326-328):
+```javascript
+for (const line of lines) {
+  // Skip empty lines and event: lines
+  if (line.trim().length === 0) continue;
+  if (line.startsWith('event:')) continue; // NEW
+```
+
+2. **Skip plain string values** (line 339):
+```javascript
+const data = line.substring(6).trim();
+if (data === '[DONE]' || data === '' || data === '""') continue; // Added '""'
+```
+
+3. **Try 5 different response formats** (lines 370-392):
+```javascript
+// Try multiple possible ChatGPT response formats
+let content = null;
+
+// Format 1: Standard SSE with choices array (OpenAI API style)
+if (json.choices?.[0]?.delta?.content) {
+  content = json.choices[0].delta.content;
+}
+// Format 2: Direct message content
+else if (json.message?.content?.parts?.[0]) {
+  content = json.message.content.parts[0];
+}
+// Format 3: Direct content field
+else if (typeof json.content === 'string') {
+  content = json.content;
+}
+// Format 4: Delta field directly
+else if (typeof json.delta === 'string') {
+  content = json.delta;
+}
+// Format 5: Text field
+else if (typeof json.text === 'string') {
+  content = json.text;
+}
+
+if (content) {
+  fullText += content;
+  if (chunkCount <= 5) {
+    console.log('✅ DEBUG: Captured text chunk:', content.substring(0, 50));
+  }
+}
+```
+
+4. **Enhanced diagnostic logging** (lines 345-367):
+- Log JSON keys and type field
+- Log all possible field locations (message, content, choices, delta, text)
+- Only runs on first valid JSON object (performance optimization)
+
+**Result**: Multi-format support added, but text length still 0.
+
+---
+
+#### Current Status
+
+**Working ✅**:
+- ✅ No crashes (both critical bugs fixed)
+- ✅ Stream reading successful (39 chunks read)
+- ✅ Defensive checks prevent errors
+- ✅ Multiple format attempts implemented
+- ✅ Diagnostic logging in place
+
+**Not Working ❌**:
+- ❌ Text extraction still returns 0 characters
+- ❌ Only seeing first chunk in diagnostics (metadata)
+- ❌ Chunks 2-39 not logged (where actual text likely is)
+
+**Hypothesis**: The diagnostic logging only triggers on `chunkCount === 1` and when `debugMode = true` (lines 317-320, 345-367). After logging the first chunk, `debugMode` is set to `false`, so we never see what's in chunks 2-39. The actual message text is probably in those chunks but we're not logging them to see the format.
+
+#### Files Modified This Session
+
+**ChatGPT Platform** (`platforms/chatgpt/inject.js`):
+- Lines 208-219: Extract metadata BEFORE body modification
+- Lines 276-300: Defensive checks for response.body
+- Lines 325-328: Skip event: lines in SSE stream
+- Lines 339: Skip plain string values
+- Lines 345-367: Enhanced diagnostic logging
+- Lines 370-404: Try 5 different response formats
+
+**Claude Platform** (`platforms/claude/content_test.js`):
+- Lines 127-136: Extract model BEFORE body modification
+- Lines 228-252: Defensive checks for response.body (same pattern as ChatGPT)
+
+**Documentation**:
+- `PHASE_1.5_DEBUGGING.md`: Comprehensive bug analysis and fixes (334 lines)
+- `QUICK_START_TESTING.md`: User-friendly 5-minute test guide (174 lines)
+
+#### Git Commits
+
+1. `33f937a`: "fix: Phase 1.5 critical bugs - response body parsing and metadata extraction"
+   - Fixed Bug #1: Request body parsing
+   - Fixed Bug #2: Response body undefined
+   - Added defensive checks for both platforms
+
+2. `7ec2483`: "docs: Add Phase 1.5 debugging summary with fix details"
+   - Created PHASE_1.5_DEBUGGING.md
+   - Documented both bugs with before/after code comparisons
+
+3. `d0e9054`: "docs: Add quick start testing guide for Phase 1.5"
+   - Created QUICK_START_TESTING.md
+   - Simple 5-minute test protocol
+
+4. `32bcf59`: "debug: Add diagnostic logging to ChatGPT assistant response capture"
+   - First chunk preview (500 chars)
+   - Parsed JSON structure logging
+   - Final statistics logging
+
+5. `f219efb`: "fix: Handle ChatGPT's actual SSE format with multiple possible structures"
+   - Skip event: lines
+   - Skip plain string values
+   - Try 5 different format structures
+   - Enhanced JSON field logging
+
+#### Next Debugging Step
+
+**Required**: Expand diagnostic logging to see chunks 2-39 (not just chunk 1):
+
+Current logic (only shows first chunk):
+```javascript
+if (chunkCount === 1 && debugMode) {
+  console.log('🔍 DEBUG First chunk received');
+  // ... logging ...
+}
+
+if (typeof json === 'object' && json !== null && debugMode) {
+  console.log('🔍 DEBUG Parsed JSON:', ...);
+  // ... logging ...
+  debugMode = false; // ❌ Stops logging after first chunk
+}
+```
+
+Proposed fix:
+```javascript
+// Log first 5 chunks instead of just 1
+if (chunkCount <= 5 && debugMode) {
+  console.log(`🔍 DEBUG Chunk ${chunkCount} received`);
+  // ... logging ...
+}
+
+if (typeof json === 'object' && json !== null && chunkCount <= 5) {
+  console.log(`🔍 DEBUG Chunk ${chunkCount} Parsed JSON:`, ...);
+  // ... logging ...
+  // Don't set debugMode to false - keep logging 5 chunks
+}
+```
+
+This will reveal where ChatGPT actually stores the message text in chunks 2-39.
+
+#### Evidence-Based Diagnosis
+
+**Console Evidence**:
+```javascript
+// First chunk structure:
+inject.js:346 🔍 DEBUG Parsed JSON: {"type":"resume_conversation_token",...}
+inject.js:347 🔍 DEBUG JSON keys: (3) ['type', 'token', 'conversation_id']
+inject.js:348 🔍 DEBUG JSON type: resume_conversation_token
+
+// Final result:
+inject.js:416 📊 KYT ChatGPT DEBUG: Stream reading complete
+inject.js:417    Total chunks: 39
+inject.js:418    Text length: 0
+inject.js:419    Message ID: 69175c9d-f790-8321-9798-4ab614dc04de
+inject.js:446 ⚠️ KYT ChatGPT: No text captured from assistant response
+```
+
+**Conclusion**: Infrastructure working (stream reading, JSON parsing, defensive checks), but we haven't found where ChatGPT hides the actual text in their non-standard format. Need to see more chunks.
+
+#### Testing Required After Next Fix
+
+1. Send test message on ChatGPT
+2. Check console for diagnostic logs showing chunks 2-5
+3. Identify which JSON field contains message text
+4. Update parsing logic to extract from correct field
+5. Verify `contentLength > 0` in capture log
+6. Verify database receives assistant messages
+7. Test ChatGPT proactivity (uses answers, not just questions)
+
+#### Lessons Learned
+
+**API Format Assumptions Are Dangerous**:
+- Don't assume documented API formats match reality
+- ChatGPT's web API differs from official OpenAI API
+- Must inspect actual network traffic, not just read docs
+- First chunk is often metadata, not content
+
+**Defensive Programming Essential**:
+- Every external property access needs null checks
+- Graceful degradation > crashes
+- Log diagnostics BEFORE setting flags that disable logging
+- Response cloning must happen inside capture functions
+
+**Multi-Format Support Required**:
+- LLM web APIs vary wildly in format
+- Need to try multiple possible structures
+- Can't rely on single expected format
+- Logging actual JSON keys helps identify correct path
+
 ### Strategic Pivot - Day 7: Assistant Response Capture Required (2025-11-14)
 
 #### Phase 1 Complete: Critical Gap Identified
