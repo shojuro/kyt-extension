@@ -323,44 +323,90 @@
         const lines = chunk.split('\n');
 
         for (const line of lines) {
+          // Skip empty lines and event: lines
+          if (line.trim().length === 0) continue;
+          if (line.startsWith('event:')) continue;
+
           // DIAGNOSTIC: Log line format
-          if (chunkCount <= 2 && debugMode && line.trim().length > 0) {
+          if (chunkCount <= 3 && debugMode && line.trim().length > 0) {
             console.log('🔍 DEBUG Line:', line.substring(0, 200));
           }
 
+          // ChatGPT format: "data: {json}" or "data: \"string\""
           if (!line.startsWith('data: ')) continue;
 
           const data = line.substring(6).trim();
-          if (data === '[DONE]' || data === '') continue;
+          if (data === '[DONE]' || data === '' || data === '""') continue;
 
           try {
             const json = JSON.parse(data);
 
-            // DIAGNOSTIC: Log parsed JSON structure (first occurrence only)
-            if (chunkCount === 1 && debugMode) {
+            // DIAGNOSTIC: Log parsed JSON structure (first valid JSON only)
+            if (typeof json === 'object' && json !== null && debugMode) {
               console.log('🔍 DEBUG Parsed JSON:', JSON.stringify(json).substring(0, 300));
               console.log('🔍 DEBUG JSON keys:', Object.keys(json));
-              if (json.choices) {
-                console.log('🔍 DEBUG choices[0]:', JSON.stringify(json.choices[0]).substring(0, 200));
+              console.log('🔍 DEBUG JSON type:', json.type || 'no type field');
+
+              // Check multiple possible structures
+              if (json.message) {
+                console.log('🔍 DEBUG has message field:', JSON.stringify(json.message).substring(0, 150));
               }
+              if (json.content) {
+                console.log('🔍 DEBUG has content field:', JSON.stringify(json.content).substring(0, 150));
+              }
+              if (json.choices) {
+                console.log('🔍 DEBUG has choices[0]:', JSON.stringify(json.choices[0]).substring(0, 150));
+              }
+              if (json.delta) {
+                console.log('🔍 DEBUG has delta field:', JSON.stringify(json.delta).substring(0, 150));
+              }
+              if (json.text) {
+                console.log('🔍 DEBUG has text field:', json.text.substring(0, 100));
+              }
+
               debugMode = false; // Only log once
             }
 
-            // Extract text from ChatGPT SSE format
-            // Format: {"id":"chatcmpl-...","choices":[{"delta":{"content":"text"}}]}
-            const content = json.choices?.[0]?.delta?.content;
-            if (content) {
-              fullText += content;
+            // Try multiple possible ChatGPT response formats
+            let content = null;
+
+            // Format 1: Standard SSE with choices array (OpenAI API style)
+            if (json.choices?.[0]?.delta?.content) {
+              content = json.choices[0].delta.content;
+            }
+            // Format 2: Direct message content
+            else if (json.message?.content?.parts?.[0]) {
+              content = json.message.content.parts[0];
+            }
+            // Format 3: Direct content field
+            else if (typeof json.content === 'string') {
+              content = json.content;
+            }
+            // Format 4: Delta field directly
+            else if (typeof json.delta === 'string') {
+              content = json.delta;
+            }
+            // Format 5: Text field
+            else if (typeof json.text === 'string') {
+              content = json.text;
             }
 
-            // Capture message ID from first chunk
-            if (!messageId && json.id) {
-              messageId = json.id;
+            if (content) {
+              fullText += content;
+              if (chunkCount <= 5) {
+                console.log('✅ DEBUG: Captured text chunk:', content.substring(0, 50));
+              }
+            }
+
+            // Capture message ID from various possible locations
+            if (!messageId) {
+              messageId = json.id || json.message_id || json.conversation_id;
             }
           } catch (parseError) {
-            // DIAGNOSTIC: Log parse errors
-            console.warn('⚠️ DEBUG Parse error:', parseError.message);
-            console.warn('   Failed to parse:', data.substring(0, 100));
+            // Skip non-JSON lines (like plain strings)
+            if (chunkCount <= 3 && debugMode) {
+              console.log('⚠️ DEBUG: Skipping non-JSON line:', data.substring(0, 100));
+            }
             continue;
           }
         }
