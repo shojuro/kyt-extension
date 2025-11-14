@@ -313,8 +313,8 @@
         chunkCount++;
         const chunk = decoder.decode(value, {stream: true});
 
-        // DIAGNOSTIC: Log first 5 chunks to see actual format
-        if (chunkCount <= 5) {
+        // DIAGNOSTIC: Log first 10 chunks to see actual format (including text chunks)
+        if (chunkCount <= 10) {
           console.log(`🔍 KYT ChatGPT DEBUG: Chunk ${chunkCount} received`);
           console.log('   Chunk length:', chunk.length);
           console.log('   Chunk preview (first 500 chars):', chunk.substring(0, 500));
@@ -327,8 +327,8 @@
           if (line.trim().length === 0) continue;
           if (line.startsWith('event:')) continue;
 
-          // DIAGNOSTIC: Log line format from first 5 chunks
-          if (chunkCount <= 5 && line.trim().length > 0) {
+          // DIAGNOSTIC: Log line format from first 10 chunks
+          if (chunkCount <= 10 && line.trim().length > 0) {
             console.log(`🔍 DEBUG Chunk ${chunkCount} Line:`, line.substring(0, 200));
           }
 
@@ -341,8 +341,8 @@
           try {
             const json = JSON.parse(data);
 
-            // DIAGNOSTIC: Log parsed JSON structure from first 5 chunks
-            if (typeof json === 'object' && json !== null && chunkCount <= 5) {
+            // DIAGNOSTIC: Log parsed JSON structure from first 10 chunks
+            if (typeof json === 'object' && json !== null && chunkCount <= 10) {
               console.log(`🔍 DEBUG Chunk ${chunkCount} Parsed JSON:`, JSON.stringify(json).substring(0, 300));
               console.log(`🔍 DEBUG Chunk ${chunkCount} JSON keys:`, Object.keys(json));
               console.log(`🔍 DEBUG Chunk ${chunkCount} JSON type:`, json.type || 'no type field');
@@ -364,8 +364,8 @@
                 console.log(`🔍 DEBUG Chunk ${chunkCount} has text field:`, json.text.substring(0, 100));
               }
               // Check nested structure seen in user logs: {"p": "", "o": "add", "v": {"message": ...}}
-              if (json.v) {
-                console.log(`🔍 DEBUG Chunk ${chunkCount} has v (value) field:`, JSON.stringify(json.v).substring(0, 300));
+              if (json.v !== undefined) {
+                console.log(`🔍 DEBUG Chunk ${chunkCount} has v (value) field:`, typeof json.v === 'string' ? `"${json.v.substring(0, 100)}"` : JSON.stringify(json.v).substring(0, 300));
               }
               if (json.p !== undefined) {
                 console.log(`🔍 DEBUG Chunk ${chunkCount} has p (path) field:`, json.p);
@@ -398,28 +398,32 @@
             else if (typeof json.text === 'string') {
               content = json.text;
             }
-            // Format 6: Nested v.message structure (ChatGPT web API format)
+            // Format 6: Delta/patch format (ChatGPT web API streaming)
+            // Structure: {"p": "message.content.parts[0]", "o": "replace", "v": "text chunk"}
+            // This is used for streaming text updates after the initial message is created
+            else if (json.o && json.v !== undefined && typeof json.v === 'string' && json.v.length > 0) {
+              // Delta format: v contains the text chunk directly as string
+              content = json.v;
+            }
+            // Format 7: Nested v.message structure (ChatGPT initial message creation)
             // Structure: {"p": "", "o": "add", "v": {"message": {"content": {"parts": ["text"]}}}}
-            else if (json.v?.message?.content?.parts?.[0]) {
+            else if (json.v?.message?.content?.parts?.[0] && json.v.message.content.parts[0].length > 0) {
+              // Only capture if parts[0] has actual content (not empty string)
               content = json.v.message.content.parts[0];
             }
-            // Format 7: Nested v.content directly
-            else if (typeof json.v?.content === 'string') {
+            // Format 8: Nested v.content directly
+            else if (typeof json.v?.content === 'string' && json.v.content.length > 0) {
               content = json.v.content;
             }
-            // Format 8: Nested v.text
-            else if (typeof json.v?.text === 'string') {
+            // Format 9: Nested v.text
+            else if (typeof json.v?.text === 'string' && json.v.text.length > 0) {
               content = json.v.text;
-            }
-            // Format 9: Nested v as string
-            else if (typeof json.v === 'string') {
-              content = json.v;
             }
 
             if (content) {
               fullText += content;
-              if (chunkCount <= 5) {
-                console.log('✅ DEBUG: Captured text chunk:', content.substring(0, 50));
+              if (chunkCount <= 10) {
+                console.log(`✅ DEBUG Chunk ${chunkCount}: Captured text:`, content.substring(0, 50));
               }
             }
 
