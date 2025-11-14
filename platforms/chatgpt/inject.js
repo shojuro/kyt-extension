@@ -231,8 +231,106 @@
     }
 
     // Continue with original fetch (with modified body if context was injected)
-    return originalFetch.apply(this, args);
+    const response = await originalFetch.apply(this, args);
+
+    // PHASE 1.5: Capture assistant response
+    if (platform.detectAPICall(url, options) && response.ok) {
+      // Clone response to avoid consuming the original stream
+      const clonedResponse = response.clone();
+
+      // Extract conversation ID for linking
+      const requestBody = options.body ? JSON.parse(options.body) : {};
+      const conversationId = requestBody.conversation_id || 'unknown';
+
+      // Capture response asynchronously (don't block UI)
+      captureAssistantResponse(clonedResponse, {
+        conversationId: conversationId,
+        platform: 'chatgpt',
+        model: requestBody.model || 'gpt-unknown',
+        timestamp: Date.now()
+      }).catch(error => {
+        console.error('❌ KYT ChatGPT: Failed to capture assistant response:', error);
+      });
+    }
+
+    return response;
   };
+
+  /**
+   * PHASE 1.5: Capture streaming assistant response
+   * Reads SSE stream and extracts assistant message
+   */
+  async function captureAssistantResponse(response, metadata) {
+    try {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = '';
+      let messageId = null;
+
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, {stream: true});
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+
+          const data = line.substring(6).trim();
+          if (data === '[DONE]' || data === '') continue;
+
+          try {
+            const json = JSON.parse(data);
+
+            // Extract text from ChatGPT SSE format
+            // Format: {"id":"chatcmpl-...","choices":[{"delta":{"content":"text"}}]}
+            const content = json.choices?.[0]?.delta?.content;
+            if (content) {
+              fullText += content;
+            }
+
+            // Capture message ID from first chunk
+            if (!messageId && json.id) {
+              messageId = json.id;
+            }
+          } catch (parseError) {
+            // Skip malformed JSON chunks
+            continue;
+          }
+        }
+      }
+
+      // Only store if we captured meaningful text
+      if (fullText.trim().length > 0) {
+        const assistantMessage = {
+          content: fullText.trim(),
+          role: 'assistant',
+          conversationId: metadata.conversationId,
+          model: metadata.model,
+          timestamp: Date.now(),
+          messageId: messageId || `msg_assistant_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          platform: metadata.platform
+        };
+
+        console.log('🤖 KYT ChatGPT: Assistant response captured:', {
+          conversationId: assistantMessage.conversationId,
+          contentLength: assistantMessage.content.length,
+          contentPreview: assistantMessage.content.substring(0, 100) + '...'
+        });
+
+        // Dispatch event to content script
+        window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+          detail: assistantMessage
+        }));
+
+        console.log('🤖 KYT ChatGPT: Assistant message event dispatched');
+      }
+    } catch (error) {
+      console.error('❌ KYT ChatGPT: Error capturing assistant response:', error);
+      throw error;
+    }
+  }
 
   // Expose health check
   window.KYT_HEALTH_CHECK = function() {

@@ -174,9 +174,122 @@ window.fetch = async function(...args) {
     }
   }
 
-    // Always call the original fetch (with modified body if context was injected)
-    return originalFetch.apply(this, args);
-  };
+  // Always call the original fetch (with modified body if context was injected)
+  const response = await originalFetch.apply(this, args);
 
-  console.log('🟢 KYT Claude: Fetch wrapper installed - ready to capture messages');
+  // PHASE 1.5: Capture assistant response
+  if (typeof url === 'string' && url.includes('/chat_conversations/') && url.includes('/completion') && response.ok) {
+    // Clone response to avoid consuming the original stream
+    const clonedResponse = response.clone();
+
+    // Extract conversation ID from URL
+    const conversationIdMatch = url.match(/chat_conversations\/([^\/]+)\/completion/);
+    const conversationId = conversationIdMatch ? conversationIdMatch[1] : 'unknown';
+
+    // Extract model from request body
+    let model = 'claude-unknown';
+    if (options && options.body) {
+      try {
+        const body = JSON.parse(options.body);
+        model = body.model || 'claude-unknown';
+      } catch (e) {
+        // Keep default
+      }
+    }
+
+    // Capture response asynchronously (don't block UI)
+    captureClaudeAssistantResponse(clonedResponse, {
+      conversationId: conversationId,
+      platform: 'claude',
+      model: model,
+      timestamp: Date.now()
+    }).catch(error => {
+      console.error('❌ KYT Claude: Failed to capture assistant response:', error);
+    });
+  }
+
+  return response;
+};
+
+/**
+ * PHASE 1.5: Capture streaming Claude assistant response
+ * Reads SSE stream and extracts assistant message
+ */
+async function captureClaudeAssistantResponse(response, metadata) {
+  try {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+    let messageId = null;
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, {stream: true});
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+
+        const data = line.substring(6).trim();
+        if (data === '' || data === '[DONE]') continue;
+
+        try {
+          const json = JSON.parse(data);
+
+          // Extract text from Claude SSE format
+          // Format: {"type":"content_block_delta","delta":{"text":"content"}}
+          if (json.type === 'content_block_delta' && json.delta?.text) {
+            fullText += json.delta.text;
+          }
+
+          // Capture message ID if available
+          if (!messageId && json.message?.id) {
+            messageId = json.message.id;
+          }
+
+          // Alternative: message_start event may contain ID
+          if (!messageId && json.type === 'message_start' && json.message?.id) {
+            messageId = json.message.id;
+          }
+        } catch (parseError) {
+          // Skip malformed JSON chunks
+          continue;
+        }
+      }
+    }
+
+    // Only store if we captured meaningful text
+    if (fullText.trim().length > 0) {
+      const assistantMessage = {
+        content: fullText.trim(),
+        role: 'assistant',
+        conversationId: metadata.conversationId,
+        model: metadata.model,
+        timestamp: Date.now(),
+        messageId: messageId || `msg_assistant_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        platform: metadata.platform
+      };
+
+      console.log('🤖 KYT Claude: Assistant response captured:', {
+        conversationId: assistantMessage.conversationId,
+        contentLength: assistantMessage.content.length,
+        contentPreview: assistantMessage.content.substring(0, 100) + '...'
+      });
+
+      // Dispatch event to bridge
+      window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+        detail: assistantMessage
+      }));
+
+      console.log('🤖 KYT Claude: Assistant message event dispatched');
+    }
+  } catch (error) {
+    console.error('❌ KYT Claude: Error capturing assistant response:', error);
+    throw error;
+  }
+}
+
+console.log('🟢 KYT Claude: Fetch wrapper installed - ready to capture messages');
 }
