@@ -21,6 +21,38 @@ let totalMessagesSaved = 0;
 let totalErrors = 0;
 let lastSaveTime = Date.now();
 
+// PHASE 1 FIX #2: Service worker state preservation
+let cachedApiConfig = null;
+let configLoadTime = 0;
+const CONFIG_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Get API config with caching to survive service worker sleep
+ */
+async function getApiConfig() {
+  if (cachedApiConfig && (Date.now() - configLoadTime) < CONFIG_CACHE_TTL) {
+    console.log('📦 Using cached API config');
+    return cachedApiConfig;
+  }
+
+  console.log('📥 Loading API config from storage');
+  const result = await chrome.storage.local.get(['api_config']);
+  if (!result.api_config) {
+    throw new Error('API configuration not found - run setup.html');
+  }
+
+  cachedApiConfig = result.api_config;
+  configLoadTime = Date.now();
+  return cachedApiConfig;
+}
+
+// Clear cache before service worker suspends
+chrome.runtime.onSuspend.addListener(() => {
+  console.log('⏸️ Service worker suspending - clearing config cache');
+  cachedApiConfig = null;
+  configLoadTime = 0;
+});
+
 // Day 4: Extension lifecycle - sync existing messages on install/update
 chrome.runtime.onInstalled.addListener(async (details) => {
   console.log('🔄 KYT Background: Extension installed/updated');
@@ -193,13 +225,8 @@ async function getContextForInjection(userMessage, config) {
   const startTime = performance.now();
 
   try {
-    // Get API configuration
-    const result = await chrome.storage.local.get(['api_config']);
-    if (!result.api_config) {
-      throw new Error('API configuration not found');
-    }
-
-    const apiConfig = result.api_config;
+    // PHASE 1 FIX #2: Use cached API config (survives service worker sleep)
+    const apiConfig = await getApiConfig();
 
     // Use provided config or defaults
     const contextConfig = {

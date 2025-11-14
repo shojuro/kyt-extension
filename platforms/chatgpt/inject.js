@@ -10,6 +10,13 @@
 (function() {
   'use strict';
 
+  // PHASE 1 FIX #3: Duplicate injection guard
+  if (window.KYT_CHATGPT_INJECTED) {
+    console.log('⚠️ KYT ChatGPT already injected, skipping duplicate injection');
+    return;
+  }
+  window.KYT_CHATGPT_INJECTED = true;
+
   console.log('🚀 KYT ChatGPT Inject: Initializing in page context...');
 
   // Track interception health
@@ -69,6 +76,52 @@
   };
 
   /**
+   * PHASE 1 FIX #1: Persistent event listener pattern
+   * Map to track pending context requests - prevents garbage collection
+   */
+  const pendingContextRequests = new Map();
+
+  /**
+   * Persistent listener for context responses
+   * Lives at module level - never garbage collected
+   */
+  window.addEventListener('KYT_CONTEXT_RESPONSE', (event) => {
+    const { requestId } = event.detail;
+    const pending = pendingContextRequests.get(requestId);
+
+    if (pending) {
+      clearTimeout(pending.timeout);
+      pendingContextRequests.delete(requestId);
+
+      if (event.detail.success && event.detail.formattedContext) {
+        console.log('✅ KYT ChatGPT: Context received, injecting...');
+        console.log('📝 Context items:', event.detail.items?.length || 0);
+        console.log('📄 Context preview:', event.detail.formattedContext?.substring(0, 200) + '...');
+
+        // Inject context as a system message
+        const contextMessage = {
+          author: { role: 'system' },
+          content: { content_type: 'text', parts: [event.detail.formattedContext] },
+          metadata: { kyt_context: true }
+        };
+
+        pending.body.messages.splice(pending.body.messages.length - 1, 0, contextMessage);
+
+        console.log('🔧 Modified request body (messages count):', pending.body.messages.length);
+        console.log('🔧 System message injected at position:', pending.body.messages.length - 2);
+
+        pending.resolve(JSON.stringify(pending.body));
+      } else {
+        console.log('ℹ️ KYT ChatGPT: No context found or error');
+        console.log('   Response success:', event.detail.success);
+        console.log('   Has formattedContext:', !!event.detail.formattedContext);
+        console.log('   Error:', event.detail.error);
+        pending.resolve(pending.originalBody);
+      }
+    }
+  });
+
+  /**
    * Request context from background and inject into message
    */
   async function getAndInjectContext(bodyString) {
@@ -95,49 +148,28 @@
 
       console.log('🔍 KYT ChatGPT: Requesting context for:', userContent.substring(0, 50) + '...');
 
-      // Request context from content script
+      // Generate unique request ID
       const requestId = `ctx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
       return new Promise((resolve) => {
+        // PHASE 1 FIX #5: Increase timeout to 10s with better error logging
         const timeout = setTimeout(() => {
-          console.warn('⏱️ KYT ChatGPT: Context request timeout');
-          resolve(bodyString); // Timeout - proceed without context
-        }, 5000); // 5 seconds to match Claude (embedding + search time)
+          pendingContextRequests.delete(requestId);
+          console.error('⏱️ KYT ChatGPT: Context timeout after 10s', {
+            requestId: requestId,
+            userMessage: userContent.substring(0, 50),
+            pendingRequests: pendingContextRequests.size
+          });
+          resolve(bodyString);
+        }, 10000); // Increased from 5000ms
 
-        const responseHandler = (event) => {
-          if (event.detail.requestId === requestId) {
-            clearTimeout(timeout);
-            window.removeEventListener('KYT_CONTEXT_RESPONSE', responseHandler);
-
-            if (event.detail.success && event.detail.formattedContext) {
-              console.log('✅ KYT ChatGPT: Context received, injecting...');
-              console.log('📝 Context items:', event.detail.items?.length || 0);
-              console.log('📄 Context preview:', event.detail.formattedContext?.substring(0, 200) + '...');
-
-              // Inject context as a system message
-              const contextMessage = {
-                author: { role: 'system' },
-                content: { content_type: 'text', parts: [event.detail.formattedContext] },
-                metadata: { kyt_context: true }
-              };
-
-              body.messages.splice(body.messages.length - 1, 0, contextMessage);
-
-              console.log('🔧 Modified request body (messages count):', body.messages.length);
-              console.log('🔧 System message injected at position:', body.messages.length - 2);
-
-              resolve(JSON.stringify(body));
-            } else {
-              console.log('ℹ️ KYT ChatGPT: No context found or error');
-              console.log('   Response success:', event.detail.success);
-              console.log('   Has formattedContext:', !!event.detail.formattedContext);
-              console.log('   Error:', event.detail.error);
-              resolve(bodyString); // No context - proceed with original
-            }
-          }
-        };
-
-        window.addEventListener('KYT_CONTEXT_RESPONSE', responseHandler);
+        // Store request in Map - prevents garbage collection
+        pendingContextRequests.set(requestId, {
+          resolve: resolve,
+          timeout: timeout,
+          body: body,
+          originalBody: bodyString
+        });
 
         // Dispatch context request
         console.log('📤 KYT ChatGPT: Dispatching context request:', requestId);

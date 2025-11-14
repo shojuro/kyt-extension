@@ -112,6 +112,16 @@ export async function syncToSupabase() {
     }, {});
     console.log(`📊 KYT Sync: Syncing ${messagesToSync.length} messages -`, platformCounts);
 
+    // PHASE 0 DIAGNOSTIC: Log source field attribution for each message
+    messagesToSync.forEach(msg => {
+      console.log('📊 SYNC DEBUG:', {
+        messageId: msg.messageId.substring(0, 20),
+        original_platform: msg.platform,
+        will_store_as: msg.platform || 'chatgpt',
+        timestamp: new Date(msg.timestamp).toISOString()
+      });
+    });
+
     // Prepare data for Supabase
     const messagesWithEmbeddings = messagesToSync.map((msg, idx) => ({
       content: msg.content,

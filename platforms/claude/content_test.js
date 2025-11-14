@@ -8,69 +8,100 @@
  * MAIN world (this file) → CustomEvent → ISOLATED world (content_bridge.js) → chrome.runtime → background.js
  */
 
-console.log('🟢 KYT Claude: Content script loaded in MAIN world at:', new Date().toISOString());
+// PHASE 1 FIX #3: Duplicate injection guard
+if (window.KYT_CLAUDE_INJECTED) {
+  console.log('⚠️ KYT Claude already injected, skipping duplicate injection');
+} else {
+  window.KYT_CLAUDE_INJECTED = true;
 
-/**
- * Request context from bridge and inject into message
- */
-async function getAndInjectContext(bodyString) {
-  try {
-    const body = JSON.parse(bodyString);
+  console.log('🟢 KYT Claude: Content script loaded in MAIN world at:', new Date().toISOString());
 
-    // Claude API uses prompt string
-    if (!body.prompt || typeof body.prompt !== 'string') {
-      return bodyString; // No modification
+  /**
+   * PHASE 1 FIX #1: Persistent event listener pattern
+   * Map to track pending context requests - prevents garbage collection
+   */
+  const pendingContextRequests = new Map();
+
+  /**
+   * Persistent listener for context responses
+   * Lives at module level - never garbage collected
+   */
+  window.addEventListener('KYT_CONTEXT_RESPONSE', (event) => {
+    const { requestId } = event.detail;
+    const pending = pendingContextRequests.get(requestId);
+
+    if (pending) {
+      clearTimeout(pending.timeout);
+      pendingContextRequests.delete(requestId);
+
+      if (event.detail.success && event.detail.formattedContext) {
+        console.log('✅ KYT Claude: Context received, injecting...');
+
+        // Prepend context to prompt
+        pending.body.prompt = `${event.detail.formattedContext}\n\n---\n\n${pending.body.prompt}`;
+        pending.resolve(JSON.stringify(pending.body));
+      } else {
+        console.log('ℹ️ KYT Claude: No context found or error');
+        pending.resolve(pending.originalBody);
+      }
     }
+  });
 
-    console.log('🔍 KYT Claude: Requesting context for:', body.prompt.substring(0, 50) + '...');
+  /**
+   * Request context from bridge and inject into message
+   */
+  async function getAndInjectContext(bodyString) {
+    try {
+      const body = JSON.parse(bodyString);
 
-    // Request context from bridge
-    const requestId = `ctx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      // Claude API uses prompt string
+      if (!body.prompt || typeof body.prompt !== 'string') {
+        return bodyString; // No modification
+      }
 
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        console.warn('⏱️ KYT Claude: Context request timeout');
-        resolve(bodyString); // Timeout - proceed without context
-      }, 5000); // 5 seconds for embedding + search
+      console.log('🔍 KYT Claude: Requesting context for:', body.prompt.substring(0, 50) + '...');
 
-      const responseHandler = (event) => {
-        if (event.detail.requestId === requestId) {
-          clearTimeout(timeout);
-          window.removeEventListener('KYT_CONTEXT_RESPONSE', responseHandler);
+      // Generate unique request ID
+      const requestId = `ctx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-          if (event.detail.success && event.detail.formattedContext) {
-            console.log('✅ KYT Claude: Context received, injecting...');
+      return new Promise((resolve) => {
+        // PHASE 1 FIX #5: Increase timeout to 10s with better error logging
+        const timeout = setTimeout(() => {
+          pendingContextRequests.delete(requestId);
+          console.error('⏱️ KYT Claude: Context timeout after 10s', {
+            requestId: requestId,
+            userMessage: body.prompt.substring(0, 50),
+            pendingRequests: pendingContextRequests.size
+          });
+          resolve(bodyString);
+        }, 10000); // Increased from 5000ms
 
-            // Prepend context to prompt
-            body.prompt = `${event.detail.formattedContext}\n\n---\n\n${body.prompt}`;
-            resolve(JSON.stringify(body));
-          } else {
-            console.log('ℹ️ KYT Claude: No context found or error');
-            resolve(bodyString); // No context - proceed with original
+        // Store request in Map - prevents garbage collection
+        pendingContextRequests.set(requestId, {
+          resolve: resolve,
+          timeout: timeout,
+          body: body,
+          originalBody: bodyString
+        });
+
+        // Dispatch context request
+        window.dispatchEvent(new CustomEvent('KYT_CONTEXT_REQUEST', {
+          detail: {
+            requestId: requestId,
+            userMessage: body.prompt,
+            config: {
+              threshold: 0.5, // pgvector distance: lower = stricter, 0.5 = balanced
+              maxContextItems: 5, // Increased from 3 for more context
+              debugMode: false
+            }
           }
-        }
-      };
-
-      window.addEventListener('KYT_CONTEXT_RESPONSE', responseHandler);
-
-      // Dispatch context request
-      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_REQUEST', {
-        detail: {
-          requestId: requestId,
-          userMessage: body.prompt,
-          config: {
-            threshold: 0.5, // pgvector distance: lower = stricter, 0.5 = balanced
-            maxContextItems: 5, // Increased from 3 for more context
-            debugMode: false
-          }
-        }
-      }));
-    });
-  } catch (error) {
-    console.error('❌ KYT Claude: Context injection error:', error);
-    return bodyString; // Error - proceed with original
+        }));
+      });
+    } catch (error) {
+      console.error('❌ KYT Claude: Context injection error:', error);
+      return bodyString; // Error - proceed with original
+    }
   }
-}
 
 // Wrap window.fetch to intercept Claude API calls
 const originalFetch = window.fetch;
@@ -143,8 +174,9 @@ window.fetch = async function(...args) {
     }
   }
 
-  // Always call the original fetch (with modified body if context was injected)
-  return originalFetch.apply(this, args);
-};
+    // Always call the original fetch (with modified body if context was injected)
+    return originalFetch.apply(this, args);
+  };
 
-console.log('🟢 KYT Claude: Fetch wrapper installed - ready to capture messages');
+  console.log('🟢 KYT Claude: Fetch wrapper installed - ready to capture messages');
+}
