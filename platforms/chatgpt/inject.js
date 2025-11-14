@@ -205,6 +205,19 @@
       totalInterceptions++;
       lastInterceptionTime = Date.now();
 
+      // FIX: Extract metadata BEFORE modifying options.body
+      let conversationId = 'unknown';
+      let modelName = 'gpt-unknown';
+      if (options.body) {
+        try {
+          const originalBody = JSON.parse(options.body);
+          conversationId = originalBody.conversation_id || 'unknown';
+          modelName = originalBody.model || 'gpt-unknown';
+        } catch (e) {
+          console.warn('⚠️ KYT ChatGPT: Could not parse request body for metadata');
+        }
+      }
+
       // PHASE 1: Get context and inject BEFORE sending
       if (options.body) {
         try {
@@ -228,30 +241,28 @@
         console.warn('⚠️ KYT ChatGPT: Failed to extract message');
         totalErrors++;
       }
+
+      // Continue with original fetch (with modified body if context was injected)
+      const response = await originalFetch.apply(this, args);
+
+      // PHASE 1.5: Capture assistant response
+      if (response.ok) {
+        // Capture response asynchronously (don't block UI)
+        captureAssistantResponse(response, {
+          conversationId: conversationId,
+          platform: 'chatgpt',
+          model: modelName,
+          timestamp: Date.now()
+        }).catch(error => {
+          console.error('❌ KYT ChatGPT: Failed to capture assistant response:', error);
+        });
+      }
+
+      return response;
     }
 
     // Continue with original fetch (with modified body if context was injected)
     const response = await originalFetch.apply(this, args);
-
-    // PHASE 1.5: Capture assistant response
-    if (platform.detectAPICall(url, options) && response.ok) {
-      // Clone response to avoid consuming the original stream
-      const clonedResponse = response.clone();
-
-      // Extract conversation ID for linking
-      const requestBody = options.body ? JSON.parse(options.body) : {};
-      const conversationId = requestBody.conversation_id || 'unknown';
-
-      // Capture response asynchronously (don't block UI)
-      captureAssistantResponse(clonedResponse, {
-        conversationId: conversationId,
-        platform: 'chatgpt',
-        model: requestBody.model || 'gpt-unknown',
-        timestamp: Date.now()
-      }).catch(error => {
-        console.error('❌ KYT ChatGPT: Failed to capture assistant response:', error);
-      });
-    }
 
     return response;
   };
@@ -262,7 +273,33 @@
    */
   async function captureAssistantResponse(response, metadata) {
     try {
-      const reader = response.body.getReader();
+      // FIX: Defensive checks for response.body
+      if (!response) {
+        console.warn('⚠️ KYT ChatGPT: Response is null/undefined');
+        return;
+      }
+
+      if (!response.body) {
+        console.warn('⚠️ KYT ChatGPT: Response body is null/undefined');
+        console.log('📊 Response object:', {
+          ok: response.ok,
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers ? 'present' : 'missing',
+          bodyUsed: response.bodyUsed
+        });
+        return;
+      }
+
+      // Clone response to avoid consuming original stream
+      const clonedResponse = response.clone();
+
+      if (!clonedResponse.body) {
+        console.warn('⚠️ KYT ChatGPT: Cloned response body is null/undefined');
+        return;
+      }
+
+      const reader = clonedResponse.body.getReader();
       const decoder = new TextDecoder();
       let fullText = '';
       let messageId = null;
@@ -325,10 +362,17 @@
         }));
 
         console.log('🤖 KYT ChatGPT: Assistant message event dispatched');
+      } else {
+        console.warn('⚠️ KYT ChatGPT: No text captured from assistant response');
       }
     } catch (error) {
       console.error('❌ KYT ChatGPT: Error capturing assistant response:', error);
-      throw error;
+      console.error('   Error details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack?.split('\n')[0]
+      });
+      // Don't throw - graceful degradation
     }
   }
 

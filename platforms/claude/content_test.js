@@ -124,6 +124,17 @@ window.fetch = async function(...args) {
       const conversationIdMatch = url.match(/chat_conversations\/([^\/]+)\/completion/);
       const conversationId = conversationIdMatch ? conversationIdMatch[1] : null;
 
+      // FIX: Extract model BEFORE modifying options.body
+      let modelName = 'claude-unknown';
+      if (options && options.body) {
+        try {
+          const originalBody = JSON.parse(options.body);
+          modelName = originalBody.model || 'claude-unknown';
+        } catch (e) {
+          console.warn('⚠️ KYT Claude: Could not parse request body for model');
+        }
+      }
+
       // PHASE 1: Get context and inject BEFORE sending
       if (options && options.body) {
         try {
@@ -145,7 +156,7 @@ window.fetch = async function(...args) {
               content: body.prompt,
               role: 'user',
               conversationId: conversationId,
-              model: body.model || 'claude-unknown',
+              model: modelName,
               timestamp: Date.now(),
               messageId: `msg_${conversationId}_${Date.now()}`,
               platform: 'claude',
@@ -179,14 +190,11 @@ window.fetch = async function(...args) {
 
   // PHASE 1.5: Capture assistant response
   if (typeof url === 'string' && url.includes('/chat_conversations/') && url.includes('/completion') && response.ok) {
-    // Clone response to avoid consuming the original stream
-    const clonedResponse = response.clone();
-
     // Extract conversation ID from URL
     const conversationIdMatch = url.match(/chat_conversations\/([^\/]+)\/completion/);
     const conversationId = conversationIdMatch ? conversationIdMatch[1] : 'unknown';
 
-    // Extract model from request body
+    // FIX: Use modelName extracted BEFORE body modification
     let model = 'claude-unknown';
     if (options && options.body) {
       try {
@@ -198,7 +206,7 @@ window.fetch = async function(...args) {
     }
 
     // Capture response asynchronously (don't block UI)
-    captureClaudeAssistantResponse(clonedResponse, {
+    captureClaudeAssistantResponse(response, {
       conversationId: conversationId,
       platform: 'claude',
       model: model,
@@ -217,7 +225,33 @@ window.fetch = async function(...args) {
  */
 async function captureClaudeAssistantResponse(response, metadata) {
   try {
-    const reader = response.body.getReader();
+    // FIX: Defensive checks for response.body
+    if (!response) {
+      console.warn('⚠️ KYT Claude: Response is null/undefined');
+      return;
+    }
+
+    if (!response.body) {
+      console.warn('⚠️ KYT Claude: Response body is null/undefined');
+      console.log('📊 Response object:', {
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers ? 'present' : 'missing',
+        bodyUsed: response.bodyUsed
+      });
+      return;
+    }
+
+    // Clone response to avoid consuming original stream
+    const clonedResponse = response.clone();
+
+    if (!clonedResponse.body) {
+      console.warn('⚠️ KYT Claude: Cloned response body is null/undefined');
+      return;
+    }
+
+    const reader = clonedResponse.body.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
     let messageId = null;
@@ -284,10 +318,17 @@ async function captureClaudeAssistantResponse(response, metadata) {
       }));
 
       console.log('🤖 KYT Claude: Assistant message event dispatched');
+    } else {
+      console.warn('⚠️ KYT Claude: No text captured from assistant response');
     }
   } catch (error) {
     console.error('❌ KYT Claude: Error capturing assistant response:', error);
-    throw error;
+    console.error('   Error details:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack?.split('\n')[0]
+    });
+    // Don't throw - graceful degradation
   }
 }
 
