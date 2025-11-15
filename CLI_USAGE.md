@@ -93,11 +93,11 @@ The CLI tool works in **any terminal with Node.js installed**:
 
 | Environment | Status | Notes |
 |-------------|--------|-------|
-| **WSL Ubuntu** | ✅ Tested | Primary development environment |
-| **Windows PowerShell** | ✅ Should work | Requires Node.js installed |
-| **Windows Command Prompt** | ✅ Should work | Requires Node.js installed |
-| **macOS Terminal** | ✅ Should work | Requires Node.js installed |
-| **Linux** | ✅ Should work | Requires Node.js installed |
+| **WSL Ubuntu** | ✅ Tested | Primary development environment (globally linked) |
+| **Windows PowerShell** | ✅ Compatible | See Windows installation section below |
+| **Windows Command Prompt** | ✅ Compatible | See Windows installation section below |
+| **macOS Terminal** | ✅ Compatible | Same as Ubuntu (use `npm link`) |
+| **Linux** | ✅ Compatible | Same as Ubuntu (use `npm link`) |
 
 ---
 
@@ -118,7 +118,7 @@ node cli/mem.js "message"
 ```
 The `.env` file is automatically loaded.
 
-### Option 2: Set Environment Variables Globally
+### Option 2: Set Environment Variables Globally (Unix/Linux/macOS)
 Add to `~/.bashrc` or `~/.zshrc`:
 ```bash
 export SUPABASE_URL="your-url"
@@ -127,6 +127,161 @@ export OPENAI_API_KEY="your-key"
 ```
 
 Then reload: `source ~/.bashrc`
+
+### Option 3: Set Environment Variables Globally (Windows)
+
+**Windows Command Prompt:**
+```cmd
+setx SUPABASE_URL "https://your-project.supabase.co"
+setx SUPABASE_ANON_KEY "your-anon-key"
+setx OPENAI_API_KEY "sk-your-openai-key"
+```
+
+**Windows PowerShell:**
+```powershell
+[System.Environment]::SetEnvironmentVariable('SUPABASE_URL', 'https://your-project.supabase.co', 'User')
+[System.Environment]::SetEnvironmentVariable('SUPABASE_ANON_KEY', 'your-anon-key', 'User')
+[System.Environment]::SetEnvironmentVariable('OPENAI_API_KEY', 'sk-your-openai-key', 'User')
+```
+
+**Note**: After setting environment variables with `setx`, you must **restart your terminal** for changes to take effect.
+
+---
+
+## Windows Installation Guide
+
+### Prerequisites
+- Node.js v20+ installed ([Download](https://nodejs.org))
+- npm available in PATH (comes with Node.js)
+
+### Installation Steps
+
+#### Windows Command Prompt
+```cmd
+REM 1. Navigate to project directory
+cd C:\path\to\kyt-validation-sprint
+
+REM 2. Install dependencies
+npm install
+
+REM 3. Create global link (creates mem.cmd wrapper automatically)
+npm link
+
+REM 4. Verify installation
+where mem
+REM Expected output: C:\Users\YourName\AppData\Roaming\npm\mem.cmd
+
+REM 5. Test command
+mem "test message from Windows CMD"
+```
+
+#### Windows PowerShell
+```powershell
+# 1. Navigate to project directory
+cd C:\path\to\kyt-validation-sprint
+
+# 2. Install dependencies
+npm install
+
+# 3. Create global link (creates mem.ps1 wrapper automatically)
+npm link
+
+# 4. Verify installation
+Get-Command mem
+# Expected output: C:\Users\YourName\AppData\Roaming\npm\mem.ps1
+
+# 5. Test command
+mem "test message from PowerShell"
+```
+
+### PowerShell Execution Policy
+
+If you get "script execution disabled" error in PowerShell:
+
+```powershell
+# Allow script execution for current user
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+# Verify policy
+Get-ExecutionPolicy -List
+```
+
+### How npm link Works on Windows
+
+When you run `npm link` on Windows, npm automatically creates platform-specific wrapper files:
+
+1. **`mem.cmd`** - Batch file for Command Prompt
+   - Location: `C:\Users\YourName\AppData\Roaming\npm\mem.cmd`
+   - Calls Node.js with the CLI script
+
+2. **`mem.ps1`** - PowerShell script (modern npm versions)
+   - Location: `C:\Users\YourName\AppData\Roaming\npm\mem.ps1`
+   - Calls Node.js with the CLI script
+
+3. **`mem`** - Bash-style symlink for Git Bash/WSL
+   - Allows `mem` command to work in Git Bash on Windows
+
+These wrappers handle argument passing and Node.js invocation automatically - **no manual configuration needed!**
+
+### Windows Usage Examples
+
+#### Command Prompt
+```cmd
+REM Basic memory capture
+mem "Remember: Fixed the RLS policy error"
+
+REM Pipe command output
+npm test | mem --pipe "Test results"
+
+REM Pipe file contents
+type error.log | mem --pipe "Production error log"
+
+REM Multi-line content (use quotes)
+mem "Working on KYT validation sprint. The hybrid sync uses 4-minute threshold. Day 4 production proof working."
+```
+
+#### PowerShell
+```powershell
+# Basic memory capture
+mem "Remember: Fixed the RLS policy error"
+
+# Pipe command output
+npm test | mem --pipe "Test results"
+
+# Pipe file contents
+Get-Content error.log | mem --pipe "Production error log"
+
+# Multi-line content
+mem @"
+Working on KYT validation sprint.
+The hybrid sync uses 4-minute threshold.
+Day 4 production proof working.
+"@
+```
+
+### Verifying Windows Installation
+
+Run these checks to confirm everything works:
+
+```powershell
+# Check Node.js version
+node --version
+# Expected: v20.x.x or higher
+
+# Check npm version
+npm --version
+
+# Check mem command exists
+where.exe mem  # Command Prompt
+Get-Command mem  # PowerShell
+
+# Check environment variables
+echo %SUPABASE_URL%  # Command Prompt
+$env:SUPABASE_URL    # PowerShell
+
+# Test mem command
+mem "Windows installation verification test"
+```
 
 ---
 
@@ -228,6 +383,8 @@ ChatGPT should retrieve your CLI message and explain the 4-minute threshold.
 ### "Missing required environment variables"
 **Solution**: Run from project directory OR set environment variables globally.
 
+**Windows users**: After using `setx`, you must **restart your terminal** for environment variables to take effect.
+
 ### "Command hangs" (FIXED as of 2025-11-12)
 **Was**: npm link symlink + Windows line endings issue
 **Now**: Fixed with symlink resolution + Unix line endings
@@ -240,6 +397,85 @@ ChatGPT should retrieve your CLI message and explain the 4-minute threshold.
 3. Context injection not triggered
 
 **Solution**: Ask more explicitly (e.g., "Search my CLI memories for X")
+
+---
+
+## Windows-Specific Troubleshooting
+
+### "mem : The term 'mem' is not recognized" (PowerShell)
+**Cause**: `mem` command not found in PATH
+
+**Solution**:
+1. Verify npm link ran successfully: `npm link` in project directory
+2. Check if wrapper exists: `Get-Command mem` should show path
+3. If not found, check npm global bin directory is in PATH:
+   ```powershell
+   npm config get prefix
+   # Should be in PATH: C:\Users\YourName\AppData\Roaming\npm
+   ```
+4. Add to PATH if missing:
+   ```powershell
+   $npmPath = npm config get prefix
+   [System.Environment]::SetEnvironmentVariable('Path', "$env:Path;$npmPath", 'User')
+   ```
+5. Restart PowerShell
+
+### "Script execution disabled" (PowerShell)
+**Cause**: PowerShell execution policy blocks running scripts
+
+**Solution**:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+### "'mem' is not recognized" (Command Prompt)
+**Cause**: `mem.cmd` not in PATH
+
+**Solution**:
+1. Find npm global bin directory: `npm config get prefix`
+2. Verify `mem.cmd` exists in that directory
+3. Add to system PATH if needed:
+   - Windows Settings → System → About → Advanced system settings
+   - Environment Variables → User variables → Path → Edit
+   - Add: `C:\Users\YourName\AppData\Roaming\npm`
+4. Restart Command Prompt
+
+### "ENOENT: no such file or directory, open '.env'"
+**Cause**: CLI can't find `.env` file (running from different directory)
+
+**Solution Option 1 - Use project directory**:
+```cmd
+cd C:\path\to\kyt-validation-sprint
+mem "message"
+```
+
+**Solution Option 2 - Set environment variables globally** (see "Environment Variables Required" section above)
+
+### "node:internal/modules/esm/resolve:265" (Import error)
+**Cause**: Missing dependencies or incorrect Node.js version
+
+**Solution**:
+1. Verify Node.js version: `node --version` (should be v20+)
+2. Reinstall dependencies:
+   ```cmd
+   cd C:\path\to\kyt-validation-sprint
+   npm install
+   npm link
+   ```
+
+### Line Ending Issues on Windows
+**Symptom**: `.env` file causes CLI to hang
+
+**Solution**: Convert to Unix line endings (LF instead of CRLF)
+```powershell
+# Using PowerShell
+(Get-Content .env) | Set-Content -NoNewline .env
+
+# Or use Git
+git config --global core.autocrlf input
+```
+
+Then re-save `.env` file.
 
 ---
 

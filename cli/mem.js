@@ -20,17 +20,55 @@ import OpenAI from 'openai';
 import { stdin } from 'process';
 import { fileURLToPath } from 'url';
 import { realpathSync } from 'fs';
+import os from 'os';
 
 // Configuration from .env
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
+// Platform detection
+const platform = os.platform();
+const isWindows = platform === 'win32';
+
 // Validate config
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !OPENAI_API_KEY) {
   console.error('❌ Missing required environment variables');
   console.error('   Required: SUPABASE_URL, SUPABASE_ANON_KEY, OPENAI_API_KEY');
-  console.error('   Check your .env file');
+  console.error('');
+
+  if (isWindows) {
+    console.error('💡 Windows users - Set environment variables with:');
+    console.error('');
+    console.error('   Option 1: Use .env file (recommended for testing)');
+    console.error('   - Keep .env file in project directory');
+    console.error('   - Run mem from project directory');
+    console.error('');
+    console.error('   Option 2: Set globally (PowerShell):');
+    console.error('   [System.Environment]::SetEnvironmentVariable(\'SUPABASE_URL\', \'your-url\', \'User\')');
+    console.error('   [System.Environment]::SetEnvironmentVariable(\'SUPABASE_ANON_KEY\', \'your-key\', \'User\')');
+    console.error('   [System.Environment]::SetEnvironmentVariable(\'OPENAI_API_KEY\', \'your-key\', \'User\')');
+    console.error('');
+    console.error('   Option 3: Set globally (Command Prompt):');
+    console.error('   setx SUPABASE_URL "your-url"');
+    console.error('   setx SUPABASE_ANON_KEY "your-key"');
+    console.error('   setx OPENAI_API_KEY "your-key"');
+    console.error('   (Then restart your terminal)');
+  } else {
+    console.error('💡 Set environment variables with:');
+    console.error('');
+    console.error('   Option 1: Use .env file in project directory');
+    console.error('');
+    console.error('   Option 2: Add to ~/.bashrc or ~/.zshrc:');
+    console.error('   export SUPABASE_URL="your-url"');
+    console.error('   export SUPABASE_ANON_KEY="your-key"');
+    console.error('   export OPENAI_API_KEY="your-key"');
+    console.error('');
+    console.error('   Then reload: source ~/.bashrc');
+  }
+
+  console.error('');
+  console.error('📖 See CLI_USAGE.md for full documentation');
   process.exit(1);
 }
 
@@ -187,6 +225,7 @@ async function main() {
     console.log(`   ID: ${saved.message_id}`);
     console.log(`   Length: ${content.length} characters`);
     console.log(`   Source: CLI`);
+    console.log(`   Platform: ${platform}${isWindows ? ' (Windows)' : ''}`);
     console.log('');
     console.log('💡 This memory is now searchable from ChatGPT and CLI');
 
