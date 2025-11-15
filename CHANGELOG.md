@@ -186,11 +186,108 @@ CREATE FUNCTION search_chat_turns(
 **Files Created**:
 - `supabase_chat_turns_schema.sql` (370 lines with comments)
 
+**Status**: Schema designed and documented, ready for application
+
 **Next Steps**:
-1. Apply schema to Supabase (SQL Editor)
-2. Implement conversation chunker (Phase 3)
-3. Integrate HyDE preprocessing (Phase 4)
-4. Update browser-sync.js (Phase 5)
+1. **USER ACTION REQUIRED**: Apply schema to Supabase via SQL Editor
+2. Verify schema creation with provided queries
+3. Implement conversation chunker (Phase 3)
+4. Integrate HyDE preprocessing (Phase 4)
+5. Update browser-sync.js (Phase 5)
+
+**Application Guide**: See `PHASE_2_SCHEMA_APPLICATION.md` for step-by-step instructions
+
+---
+
+### Added - Phase 2 Schema Application Guide (2025-11-15)
+
+**Purpose**: Provide comprehensive instructions for applying `chat_turns` schema to Supabase
+
+**Created**: `PHASE_2_SCHEMA_APPLICATION.md` (291 lines, 233 content lines)
+
+**Guide Contents**:
+
+**1. Prerequisites Checklist**
+- Supabase project access
+- SQL Editor permissions
+- pgvector extension (should be enabled from existing `messages` table)
+
+**2. Step-by-Step SQL Execution**
+Six sections for incremental application:
+- Section 1: Create `chat_turns` table (17 columns)
+- Section 2: Create 6 performance indexes (HNSW, composite, GIN)
+- Section 3: Enable Row Level Security with user isolation policy
+- Section 4: Create `chat_turns_free` view for free tier filtering
+- Section 5: Create `search_chat_turns()` function for semantic search
+- Section 6: Add table and column comments for documentation
+
+**3. Verification Queries**
+Four verification checks with expected outputs:
+
+```sql
+-- Table structure (expect 17 columns)
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_name = 'chat_turns'
+ORDER BY ordinal_position;
+
+-- Indexes (expect 6 indexes)
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE tablename = 'chat_turns'
+ORDER BY indexname;
+
+-- RLS policies (expect 1 policy)
+SELECT schemaname, tablename, policyname, permissive, roles, qual
+FROM pg_policies
+WHERE tablename = 'chat_turns';
+
+-- Constraints (expect 4 constraints)
+SELECT tc.constraint_name, tc.constraint_type, cc.check_clause
+FROM information_schema.table_constraints tc
+LEFT JOIN information_schema.check_constraints cc
+  ON tc.constraint_name = cc.constraint_name
+WHERE tc.table_name = 'chat_turns'
+ORDER BY tc.constraint_type, tc.constraint_name;
+```
+
+**4. Troubleshooting Section**
+Common errors and fixes:
+- **Missing pgvector**: `CREATE EXTENSION IF NOT EXISTS vector;`
+- **Duplicate table**: Handled by `CREATE TABLE IF NOT EXISTS`
+- **Duplicate policy**: Drop and recreate instructions
+- **Duplicate function**: Handled by `CREATE OR REPLACE FUNCTION`
+
+**5. Success Criteria**
+Schema application is complete when:
+- ✅ `chat_turns` table exists with 17 columns
+- ✅ 6 indexes created (including HNSW vector index)
+- ✅ RLS enabled with `chat_turns_user_isolation` policy
+- ✅ 4 constraints enforced (valid_turn_count, valid_timestamps, platform, primary key)
+- ✅ `search_chat_turns()` function created
+- ✅ `chat_turns_free` view created
+- ✅ No errors in SQL execution
+
+**Why This Guide Matters**:
+- **Self-service**: User can apply schema without developer intervention
+- **Verification**: Clear expected outputs prevent silent failures
+- **Troubleshooting**: Common errors documented with fixes
+- **Evidence-based**: Success criteria based on actual database state
+
+**Files Created**:
+- `PHASE_2_SCHEMA_APPLICATION.md` (comprehensive application guide)
+
+**Verification Status**: PENDING USER APPLICATION
+- Schema file ready: `supabase_chat_turns_schema.sql`
+- Application guide ready: `PHASE_2_SCHEMA_APPLICATION.md`
+- Awaiting user to execute SQL and verify results
+
+**Next Actions**:
+1. User applies schema via Supabase SQL Editor
+2. User runs verification queries
+3. User reports results (success or errors)
+4. If successful: Document Phase 2 completion in CHANGELOG
+5. If errors: Debug based on error messages in troubleshooting guide
 
 ---
 
