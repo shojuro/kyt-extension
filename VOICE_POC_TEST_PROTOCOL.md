@@ -41,16 +41,18 @@
 
 1. **Reload ChatGPT** (https://chat.openai.com)
 2. **Open Console** (F12)
-3. **Look for initialization logs:**
+3. **Wait 3+ seconds** (observer has delayed start to avoid capturing conversation history)
+4. **Look for initialization logs:**
    ```
    🚀 KYT ChatGPT Inject: Initializing in page context...
    ✅ KYT ChatGPT: Fetch override installed in PAGE CONTEXT
    ✅ KYT ChatGPT: DOM observer active for voice input
-   👁️ KYT ChatGPT: DOM observer initialized for voice capture
+   👁️ KYT ChatGPT: DOM observer initialized for voice capture (delayed start to avoid history)
    ```
 
 **Expected:**
 - ✅ All 4 logs appear
+- ✅ Observer initialization happens ~3 seconds after page load (delayed to filter noise)
 - ✅ No errors
 
 **If Failed:**

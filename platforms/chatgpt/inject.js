@@ -512,26 +512,42 @@
   const seenNodes = new WeakSet();
   let domCaptureCount = 0;
 
-  // DOM-agnostic text extraction
+  // DOM-agnostic text extraction with noise filtering
   function extractTextFromNode(node) {
     if (!node || seenNodes.has(node)) return null;
 
     // Only process element nodes
     if (node.nodeType !== Node.ELEMENT_NODE) return null;
 
+    // Filter out code blocks entirely (major noise source from testing)
+    if (node.closest('code, pre, [class*="code"], [class*="Code"]')) return null;
+
     const text = node.textContent?.trim();
 
     // Filter out empty, whitespace-only, or very short text
-    if (!text || text.length < 2 || /^\s*$/.test(text)) return null;
+    // INCREASED from 2 chars to 50 chars based on user testing
+    if (!text || text.length < 50 || /^\s*$/.test(text)) return null;
 
-    // Filter out common UI noise
+    // Enhanced noise filtering based on actual test captures
     const ignorePatterns = [
-      /^(copy code|regenerate|stop generating|send|cancel)$/i,
+      /^(copy code|regenerate|stop generating|send|cancel|dictate)$/i,
       /^[\d\s:]+$/,  // timestamps
-      /^[•\-\*]+$/   // bullets
+      /^[•\-\*]+$/,  // bullets
+      /^(OriginalWebSocket|originalFetch|MutationObserver)/i,  // JS variable names
+      /^(const|let|var|function|class|import|export)\s/i,  // JS keywords
+      /^[\{\}\[\]\(\)]+$/,  // Just brackets/parens
+      /^(true|false|null|undefined)$/i,  // JS literals
+      /You said:Hello.*ChatGPT said:/s  // Conversation history pattern
     ];
 
     if (ignorePatterns.some(pattern => pattern.test(text))) return null;
+
+    // Filter massive text blobs (likely full conversation history)
+    // Based on testing: captured 104,918 char blob of history
+    if (text.length > 10000) {
+      console.log(`⚠️ KYT ChatGPT DOM: Skipping oversized text (${text.length} chars) - likely conversation history`);
+      return null;
+    }
 
     seenNodes.add(node);
     return text;
@@ -570,7 +586,10 @@
           const role = inferMessageRole(text, node);
 
           // Only capture substantial messages (not single words or UI elements)
-          if (text.length < 10) continue;
+          // INCREASED from 10 chars to 100 chars based on user testing
+          // This ensures we capture real messages like "Testing, testing, one, two, three"
+          // but filter out UI noise like "DictateDictate"
+          if (text.length < 100) continue;
 
           domCaptureCount++;
 
@@ -601,23 +620,29 @@
     }
   });
 
-  // Start observing entire document body
-  if (document.body) {
-    domObserver.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-    console.log('👁️ KYT ChatGPT: DOM observer initialized for voice capture');
-  } else {
-    // Body not ready yet, wait for DOMContentLoaded
-    document.addEventListener('DOMContentLoaded', () => {
-      domObserver.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-      console.log('👁️ KYT ChatGPT: DOM observer initialized (delayed)');
-    });
+  // Start observing with delay to avoid capturing initial page load/history
+  // DELAY ADDED based on user testing: prevents capturing conversation history on page load
+  function startDOMObserver() {
+    const startObserving = () => {
+      // Wait 3 seconds after page load to avoid capturing conversation history
+      setTimeout(() => {
+        domObserver.observe(document.body, {
+          childList: true,
+          subtree: true
+        });
+        console.log('👁️ KYT ChatGPT: DOM observer initialized for voice capture (delayed start to avoid history)');
+      }, 3000);
+    };
+
+    if (document.body) {
+      startObserving();
+    } else {
+      // Body not ready yet, wait for DOMContentLoaded
+      document.addEventListener('DOMContentLoaded', startObserving);
+    }
   }
+
+  startDOMObserver();
 
   // Expose health check
   window.KYT_HEALTH_CHECK = function() {

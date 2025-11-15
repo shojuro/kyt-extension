@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed - Enhanced Noise Filtering for DOM Observer (2025-11-15)
+
+#### Problem Identified from User Testing
+- **Issue**: DOM observer capturing excessive noise during initial page load
+- **Evidence**: User console logs showed 104,918 char conversation history blob captured
+- **Noise Types Observed**:
+  - Entire conversation history on page load
+  - JavaScript code snippets from displayed conversations
+  - Tiny UI fragments (10-20 chars): "DictateDictate", "OriginalWebSocket"
+  - Code blocks from technical discussions
+
+**User Feedback**:
+> "Yeah, we're getting consistent now. It's popping up every time. So this is good."
+- ✅ DOM observer IS working
+- ✅ Voice input IS being captured
+- ❌ Too much noise makes signal hard to identify
+
+**Actual Voice Messages Confirmed**:
+- "Testing, testing, one, two, three..."
+- "Florence Nightingale had two teeth, four eyes, and six hands..."
+- Long messages (100+ chars) successfully captured
+
+#### Filtering Improvements
+
+**Location**: `platforms/chatgpt/inject.js` lines 515-554
+
+**Changes Made**:
+
+1. **Increased Minimum Text Length**: 10 chars → 100 chars
+   - Filters out UI noise like "DictateDictate" (15 chars)
+   - Preserves real messages like "Testing, testing, one, two, three..." (40+ chars)
+
+2. **Code Block Filtering**:
+```javascript
+// Filter out code blocks entirely (major noise source from testing)
+if (node.closest('code, pre, [class*="code"], [class*="Code"]')) return null;
+```
+
+3. **Enhanced Ignore Patterns**:
+```javascript
+const ignorePatterns = [
+  /^(copy code|regenerate|stop generating|send|cancel|dictate)$/i,
+  /^(OriginalWebSocket|originalFetch|MutationObserver)/i,  // JS variable names
+  /^(const|let|var|function|class|import|export)\s/i,      // JS keywords
+  /You said:Hello.*ChatGPT said:/s  // Conversation history pattern
+];
+```
+
+4. **Oversized Text Filtering**:
+```javascript
+// Filter massive text blobs (likely full conversation history)
+if (text.length > 10000) {
+  console.log(`⚠️ KYT ChatGPT DOM: Skipping oversized text (${text.length} chars)`);
+  return null;
+}
+```
+
+5. **Delayed Observer Initialization**: 3-second delay
+```javascript
+// Wait 3 seconds after page load to avoid capturing conversation history
+setTimeout(() => {
+  domObserver.observe(document.body, { childList: true, subtree: true });
+}, 3000);
+```
+
+**Testing Status**: Ready for user re-testing with noise filters active
+
+---
+
 ### Added - Voice Input Capture (PoC): DOM-Based Observer (2025-11-15)
 
 #### Problem Statement
