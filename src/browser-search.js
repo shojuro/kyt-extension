@@ -3,7 +3,14 @@
  *
  * Performs vector similarity search on stored messages
  * Uses fetch() and chrome.storage APIs (works in extension context)
+ *
+ * Phase 7: Query Transformation Integration
+ * - Transforms vague queries into optimized search terms
+ * - Improves search precision via LLM-powered rewriting
+ * - Graceful fallback to original query if transformation fails
  */
+
+import { transformQuery, extractRecentTopics } from './query-transformer.js';
 
 /**
  * Get API configuration from chrome.storage
@@ -61,7 +68,8 @@ export async function searchMessages(query, options = {}) {
     limit = 5,
     threshold = 0.5,
     role = null,
-    source = null
+    source = null,
+    skipTransformation = false // Option to bypass transformation for testing
   } = options;
 
   console.log(`🔍 Searching for: "${query}" (limit: ${limit}, threshold: ${threshold})`);
@@ -70,8 +78,34 @@ export async function searchMessages(query, options = {}) {
     // Get config
     const config = await getConfig();
 
-    // Generate query embedding
-    const queryEmbedding = await generateQueryEmbedding(query, config.openaiKey);
+    // PHASE 7: Query Transformation
+    let searchQuery = query;
+    if (!skipTransformation) {
+      // Get recent messages for context
+      const storageResult = await chrome.storage.local.get(['captured_messages']);
+      const recentMessages = storageResult.captured_messages || [];
+      const recentTopics = extractRecentTopics(recentMessages);
+
+      // Transform query
+      const transformResult = await transformQuery(
+        query,
+        {
+          recentTopics: recentTopics,
+          searchContext: 'chat_history'
+        },
+        config.openaiKey
+      );
+
+      if (transformResult.success && transformResult.transformed) {
+        searchQuery = transformResult.optimizedQuery;
+        console.log(`🔄 Query transformed: "${query}" → "${searchQuery}"`);
+      } else {
+        console.log(`📊 Using original query (transformation ${transformResult.transformed ? 'succeeded' : 'failed'})`);
+      }
+    }
+
+    // Generate query embedding (using transformed or original query)
+    const queryEmbedding = await generateQueryEmbedding(searchQuery, config.openaiKey);
 
     // Call Supabase RPC function
     const params = new URLSearchParams({

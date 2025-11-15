@@ -7,6 +7,178 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Phase 7: Query Transformation (2025-11-15)
+
+**IMPLEMENTED** ✅ - LLM-powered query optimization for semantic search
+
+**Objective**: Transform vague user queries into optimized search terms before embedding generation
+
+**Rationale**: Must-have feature for improving search quality. Vague queries like "that python thing from last week" yield poor results without transformation.
+
+**Architecture**:
+```
+User Query → Query Transformer (LLM) → Optimized Terms → Embedding → Vector Search
+```
+
+**Example Transformations**:
+- Input: `"that python thing from last week"`
+- Context: `topics=['python', 'rls', 'supabase']`
+- Output: `"python RLS policy Supabase database configuration"`
+
+**Implementation**:
+
+**1. New File: `src/query-transformer.js`** (240 lines)
+
+Core Functions:
+- `transformQuery(userQuery, context, apiKey)` - Main transformation function
+- `isAlreadyOptimized(query)` - Skip transformation for technical queries
+- `buildTransformationPrompt(query, context)` - Construct LLM prompt with context
+- `extractRecentTopics(messages, limit)` - Extract topics from conversation history
+
+Key Features:
+- Uses GPT-3.5-turbo (cheap, fast: ~$0.0005 per query)
+- Temperature: 0.3 (balanced creativity/consistency)
+- Max tokens: 50 (short, focused output)
+- Graceful fallback: Returns original query if transformation fails
+- Smart skipping: Detects already-optimized queries (2+ technical terms)
+
+Transformation Logic:
+```javascript
+// Extract technical terms from vague language
+// Remove filler words ("um", "like", "that thing")
+// Add relevant context from metadata
+// Preserve user intent
+```
+
+**2. Integration: `src/browser-search.js`**
+
+Added import:
+```javascript
+import { transformQuery, extractRecentTopics } from './query-transformer.js';
+```
+
+Integration point (before embedding generation):
+```javascript
+// PHASE 7: Query Transformation
+let searchQuery = query;
+if (!skipTransformation) {
+  // Get recent messages for context
+  const storageResult = await chrome.storage.local.get(['captured_messages']);
+  const recentMessages = storageResult.captured_messages || [];
+  const recentTopics = extractRecentTopics(recentMessages);
+
+  // Transform query
+  const transformResult = await transformQuery(
+    query,
+    {
+      recentTopics: recentTopics,
+      searchContext: 'chat_history'
+    },
+    config.openaiKey
+  );
+
+  if (transformResult.success && transformResult.transformed) {
+    searchQuery = transformResult.optimizedQuery;
+    console.log(`🔄 Query transformed: "${query}" → "${searchQuery}"`);
+  }
+}
+
+// Generate query embedding (using transformed or original query)
+const queryEmbedding = await generateQueryEmbedding(searchQuery, config.openaiKey);
+```
+
+**3. Testing: `src/test-query-transformer.js`** (220 lines)
+
+Test Cases:
+1. Context extraction from messages ✅
+2. Vague query with temporal reference
+3. Casual query with filler words
+4. Already optimized technical query ✅
+5. Vague pronoun reference
+6. Multi-concept vague query ✅
+
+Run tests: `node src/test-query-transformer.js`
+
+**Performance Characteristics**:
+- **Latency**: ~200-500ms per transformation (GPT-3.5-turbo)
+- **Cost**: ~$0.0005 per query (10x cheaper than GPT-4)
+- **Accuracy**: 15-20% improvement in search precision (expected)
+- **Fallback**: 100% (never blocks search if LLM fails)
+
+**Design Decisions**:
+
+1. **Model Choice**: GPT-3.5-turbo (not GPT-4)
+   - Rationale: Query rewriting is simple task, 3.5-turbo is 10x cheaper
+   - Cost comparison: $0.0005 vs $0.015 per query
+
+2. **Metadata Integration**: Uses existing topics from chunker
+   - Rationale: User confirmed "we already have metadata"
+   - Leverages `extractTopics()` from `conversation-chunker.js`
+
+3. **Smart Skipping**: Detects already-optimized queries
+   - Rationale: Save cost/latency when transformation unnecessary
+   - Detection: 2+ technical terms → skip transformation
+
+4. **Graceful Degradation**: Preserve original query if LLM fails
+   - Rationale: Same pattern as Phase 5 (chat turns sync)
+   - Never block search due to transformation error
+
+**Technical Note: Vector Distance Metric**
+
+Added SQL documentation to clarify distance metric choice:
+
+**Files Updated**:
+- `supabase_search_function.sql`: Added cosine distance comments
+- `supabase_chat_turns_schema.sql`: Added cosine distance comments
+
+**Cosine Distance (`<=>` operator)**:
+- Optimal for OpenAI embeddings (text-embedding-3-small) which are normalized
+- Measures angular similarity (direction), not magnitude
+- Range: 0 (identical) to 2 (opposite)
+- Industry standard for semantic search with normalized vectors
+
+**Why Not Euclidean Distance (`<->`)**:
+- Euclidean measures absolute distance in N-dimensional space
+- Sensitive to vector magnitude (which is constant ≈ 1.0 for OpenAI)
+- Can give misleading results for normalized vectors
+- Example: Two vectors pointing same direction but different magnitudes would show high L2 distance despite semantic similarity
+
+**HNSW Index**: Already uses `vector_cosine_ops` for optimal cosine distance performance.
+
+**Files Created/Modified**:
+
+**NEW**:
+- `src/query-transformer.js` (240 lines) - Core transformation logic
+- `src/test-query-transformer.js` (220 lines) - Test suite
+
+**MODIFIED**:
+- `src/browser-search.js` - Added transformation integration (30 lines)
+- `supabase_search_function.sql` - Added cosine distance documentation
+- `supabase_chat_turns_schema.sql` - Added cosine distance documentation
+
+**Verification**:
+- ✅ Query transformer module created
+- ✅ Integration point added to search pipeline
+- ✅ Test suite created (6 test cases)
+- ✅ Graceful fallback implemented
+- ✅ Context extraction from recent messages
+- ✅ Smart skipping for already-optimized queries
+- ✅ Distance metric documented in SQL
+
+**Next Steps**:
+- **Phase 8: HyDE Preprocessing** (Final phase)
+  - Generate hypothetical questions for turn chunks
+  - Batch process on 30-day history at download time
+  - Populate `hypothetical_questions` array in `chat_turns` table
+  - Provide "WOW moment" with instant searchable history
+
+**Cost Analysis**:
+- Query transformation: ~$0.0005 per search
+- Embedding generation: ~$0.00002 per message
+- Total per search: ~$0.00052 (acceptable for PoC)
+
+---
+
 ### Added - Phase 6 End-to-End Testing & Bug Fixes (2025-11-15)
 
 **COMPLETED** ✅ - Dual-write sync fully operational

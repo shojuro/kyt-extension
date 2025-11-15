@@ -128,6 +128,11 @@ WHERE platform = 'chatgpt'
 
 -- Function: Search chat turns by semantic similarity
 -- Usage: SELECT * FROM search_chat_turns('python bug', 5);
+--
+-- DISTANCE METRIC: Cosine Distance (<=> operator)
+-- - Optimal for OpenAI embeddings (text-embedding-3-small) which are normalized
+-- - Measures angular similarity (direction), not magnitude
+-- - Converted to similarity score: 1 - distance (higher = better match)
 CREATE OR REPLACE FUNCTION search_chat_turns(
   query_embedding VECTOR(1536),
   match_threshold FLOAT DEFAULT 0.5,
@@ -152,6 +157,9 @@ BEGIN
     ct.conversation_id,
     ct.content,
     ct.topics,
+    -- Convert cosine distance to similarity: 1 - distance
+    -- Distance 0 (perfect) → similarity 1.0
+    -- Distance 2 (opposite) → similarity -1.0
     1 - (ct.embedding <=> query_embedding) AS similarity
   FROM chat_turns ct
   WHERE
