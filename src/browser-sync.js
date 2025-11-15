@@ -7,9 +7,14 @@
  * Phase 5: Dual-write strategy
  * - Syncs to 'messages' table (existing, message-level)
  * - Syncs to 'chat_turns' table (new, conversation-turn chunks)
+ *
+ * Phase 8: HyDE Preprocessing
+ * - Generates hypothetical questions for turn chunks
+ * - Improves retrieval quality with question-based indexing
  */
 
 import { messagesToTurnChunks } from './conversation-chunker.js';
+import { generateHypotheticalQuestions } from './hyde-preprocessor.js';
 
 /**
  * Get API configuration from chrome.storage
@@ -237,12 +242,31 @@ export async function syncToSupabase() {
     const turnChunks = messagesToTurnChunks(messagesToSync, tempUserId);
 
     if (turnChunks.length > 0) {
+      // PHASE 8: HyDE Preprocessing - Generate hypothetical questions
+      // This improves retrieval by indexing what users MIGHT ask about the content
+      console.log('🔮 Generating hypothetical questions for chunks...');
+
+      const chunksWithHyDE = [];
+      for (const chunk of turnChunks) {
+        const hydeResult = await generateHypotheticalQuestions(chunk, config.openaiKey, 3);
+
+        chunksWithHyDE.push({
+          ...chunk,
+          hypothetical_questions: hydeResult.success ? hydeResult.questions : []
+        });
+
+        // Small delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      console.log(`✅ HyDE preprocessing complete for ${chunksWithHyDE.length} chunks`);
+
       // Generate embeddings for turn chunks
-      const turnTexts = turnChunks.map(chunk => chunk.content);
+      const turnTexts = chunksWithHyDE.map(chunk => chunk.content);
       const turnEmbeddings = await generateEmbeddings(turnTexts, config.openaiKey);
 
-      // Prepare turn chunks with embeddings
-      const chunksWithEmbeddings = turnChunks.map((chunk, idx) => ({
+      // Prepare turn chunks with embeddings and HyDE questions
+      const chunksWithEmbeddings = chunksWithHyDE.map((chunk, idx) => ({
         ...chunk,
         embedding: turnEmbeddings[idx],
       }));
