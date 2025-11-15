@@ -191,7 +191,7 @@ export async function syncToSupabase() {
     // Prepare data for Supabase
     const messagesWithEmbeddings = messagesToSync.map((msg, idx) => ({
       content: msg.content,
-      role: msg.role || 'unknown',
+      role: msg.role || 'user', // Default to 'user' (DB constraint: user|assistant|system)
       conversation_id: msg.conversationId || null,
       model: msg.model || null,
       timestamp: msg.timestamp || msg.capturedAt,
