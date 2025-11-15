@@ -3,7 +3,13 @@
  *
  * Syncs messages from Chrome storage to Supabase with OpenAI embeddings
  * Uses fetch() and chrome.storage APIs (works in extension context)
+ *
+ * Phase 5: Dual-write strategy
+ * - Syncs to 'messages' table (existing, message-level)
+ * - Syncs to 'chat_turns' table (new, conversation-turn chunks)
  */
+
+import { messagesToTurnChunks } from './conversation-chunker.js';
 
 /**
  * Get API configuration from chrome.storage
@@ -219,6 +225,49 @@ export async function syncToSupabase() {
       throw new Error(`Supabase error: ${error.message || response.statusText}`);
     }
 
+    console.log(`✅ Messages synced to 'messages' table: ${messagesToSync.length}`);
+
+    // PHASE 5: Sync to chat_turns table (conversation-turn chunks)
+    // Note: user_id will be 'temp-user' until Supabase Auth is implemented (Day 2 task)
+    const tempUserId = 'temp-user'; // TODO: Replace with auth.uid() after Day 2 auth implementation
+
+    console.log('📦 Creating conversation-turn chunks...');
+    const turnChunks = messagesToTurnChunks(messagesToSync, tempUserId);
+
+    if (turnChunks.length > 0) {
+      // Generate embeddings for turn chunks
+      const turnTexts = turnChunks.map(chunk => chunk.content);
+      const turnEmbeddings = await generateEmbeddings(turnTexts, config.openaiKey);
+
+      // Prepare turn chunks with embeddings
+      const chunksWithEmbeddings = turnChunks.map((chunk, idx) => ({
+        ...chunk,
+        embedding: turnEmbeddings[idx],
+      }));
+
+      // Insert to chat_turns table
+      const turnsResponse = await fetch(`${config.supabaseUrl}/rest/v1/chat_turns`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': config.supabaseKey,
+          'Authorization': `Bearer ${config.supabaseKey}`,
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify(chunksWithEmbeddings)
+      });
+
+      if (!turnsResponse.ok) {
+        const turnError = await turnsResponse.json();
+        console.warn(`⚠️ Chat turns sync failed: ${turnError.message || turnsResponse.statusText}`);
+        console.warn('Continuing with message-level sync only...');
+      } else {
+        console.log(`✅ Chat turns synced to 'chat_turns' table: ${turnChunks.length} chunks`);
+      }
+    } else {
+      console.log('📊 No conversation turns created (insufficient messages for chunking)');
+    }
+
     // Update sync status
     const result = await chrome.storage.local.get(['last_sync_status']);
     const syncStatus = result.last_sync_status || { syncedMessageIds: [] };
@@ -232,12 +281,14 @@ export async function syncToSupabase() {
 
     await chrome.storage.local.set({ last_sync_status: syncStatus });
 
-    console.log(`✅ Sync complete: ${messagesToSync.length} messages synced`);
+    const chunkCount = turnChunks.length;
+    console.log(`✅ Sync complete: ${messagesToSync.length} messages + ${chunkCount} turn chunks`);
 
     return {
       success: true,
       synced: messagesToSync.length,
-      message: `Successfully synced ${messagesToSync.length} messages`
+      chunks: chunkCount,
+      message: `Successfully synced ${messagesToSync.length} messages + ${chunkCount} turn chunks`
     };
 
   } catch (error) {
