@@ -86,7 +86,8 @@ async function generateEmbeddings(texts, apiKey) {
   const allEmbeddings = [];
 
   // Batch by tokens, not count (fixes 26,916 token error)
-  const batches = batchByTokens(texts, 8000); // 8k tokens per batch (192 token safety buffer)
+  // REDUCED from 8000 to 6000: OpenAI's actual tokenizer counts higher than our estimate (1 token ≈ 4 chars)
+  const batches = batchByTokens(texts, 6000); // 6k tokens per batch (2,192 token safety buffer)
 
   console.log(`📊 Generating embeddings: ${batches.length} batches for ${texts.length} messages`);
 

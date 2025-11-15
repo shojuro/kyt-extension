@@ -7,6 +7,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - chat_turns Table Schema for Conversation Chunking (2025-11-15)
+
+**Goal**: Enable conversation-aware semantic search with turn-level chunks
+
+**Why Needed**:
+- Message-level storage loses conversational context
+- User query: "How did I fix that Python bug?" needs multi-turn context
+- Solution: Store 5-7 turn pairs (user-assistant exchanges) per chunk
+- Enables retrieval of entire conversation segments, not isolated messages
+
+**Schema Design** (`supabase_chat_turns_schema.sql`):
+
+**Core Table**:
+```sql
+CREATE TABLE chat_turns (
+  id UUID PRIMARY KEY,
+  turn_range TEXT NOT NULL,           -- e.g., "1-5"
+  conversation_id TEXT NOT NULL,
+  platform TEXT NOT NULL,             -- 'chatgpt', 'claude', 'cli'
+  content TEXT NOT NULL,              -- "User: ...\nAssistant: ..."
+  speakers TEXT[] NOT NULL,            -- ['user', 'assistant']
+  turn_count INTEGER NOT NULL,
+  start_timestamp BIGINT NOT NULL,
+  end_timestamp BIGINT NOT NULL,
+  topics TEXT[],                      -- ['python', 'debugging', 'RLS']
+  hypothetical_questions TEXT[],      -- HyDE preprocessing
+  embedding VECTOR(1536),             -- text-embedding-3-small
+  user_id UUID NOT NULL,              -- Supabase Auth (RLS)
+  created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+**Key Features**:
+
+1. **Conversational Context Preservation**
+   - `content`: Formatted as `"User: ...\nAssistant: ...\n..."`
+   - `turn_range`: Tracks which turns (e.g., "1-5" = turns 1-5)
+   - `speakers`: Array of participants in chunk
+
+2. **HyDE Preprocessing Support**
+   - `hypothetical_questions`: Stores generated questions
+   - Example: Turn about "Python RLS bug" → ["How to fix RLS?", "Python Supabase auth error"]
+   - Improves retrieval: User searches "auth problem" → matches "Supabase auth error"
+
+3. **Multi-Tenant Security (RLS)**
+   - `user_id`: Enforces isolation via Row Level Security
+   - Policy: `WHERE user_id = auth.uid()`
+   - Critical for MVP: Prevents data leakage between users
+
+4. **Free Tier Filtering**
+   - `platform`: Enables tier-based access control
+   - Free tier: `WHERE platform = 'chatgpt'`
+   - Pro tier: Includes 'claude' and 'cli'
+   - View: `chat_turns_free` simplifies queries
+
+**Indexes** (Performance Optimization):
+```sql
+-- Vector search (HNSW for fast approximate NN)
+CREATE INDEX chat_turns_embedding_idx USING hnsw (embedding vector_cosine_ops);
+
+-- Platform + user filtering (composite for efficiency)
+CREATE INDEX chat_turns_platform_user_idx ON (platform, user_id);
+
+-- Topic searches (GIN index for array contains)
+CREATE INDEX chat_turns_topics_idx USING GIN (topics);
+
+-- Time range queries
+CREATE INDEX chat_turns_timestamp_idx ON (start_timestamp DESC);
+```
+
+**Helper Functions**:
+```sql
+-- Semantic search with RLS enforcement
+CREATE FUNCTION search_chat_turns(
+  query_embedding VECTOR(1536),
+  match_threshold FLOAT DEFAULT 0.5,
+  match_count INT DEFAULT 5,
+  filter_platform TEXT DEFAULT NULL
+) RETURNS TABLE (...)
+```
+
+**Migration Strategy**:
+- **Coexistence**: Keep `messages` table for backward compatibility
+- **Dual-write**: Sync writes to both tables temporarily
+- **30-day batch**: Populate `chat_turns` from existing `messages` with HyDE
+- **WOW moment**: User gets instant value on download (searchable history)
+
+**Performance Estimates**:
+- 1 user × 30 days × 20 messages/day = 600 messages → ~120 turn chunks
+- 10,000 users = 1.2GB storage
+- HNSW search: <10ms for top-5 results
+- Platform filtering: <1ms (indexed)
+
+**Security**:
+- RLS enforced at PostgreSQL level (database-level security)
+- `auth.uid()` extracted from Supabase Auth JWT (automatic validation)
+- No SQL injection risk (parameterized queries)
+- No data leakage (RLS policy)
+
+**Files Created**:
+- `supabase_chat_turns_schema.sql` (370 lines with comments)
+
+**Next Steps**:
+1. Apply schema to Supabase (SQL Editor)
+2. Implement conversation chunker (Phase 3)
+3. Integrate HyDE preprocessing (Phase 4)
+4. Update browser-sync.js (Phase 5)
+
+---
+
 ### Fixed - Token Limit Error on Sync (26,916 tokens) (2025-11-15)
 
 **Problem**: Extension reload triggered sync error
