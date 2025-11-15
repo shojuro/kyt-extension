@@ -229,7 +229,9 @@ export async function syncToSupabase() {
 
     // PHASE 5: Sync to chat_turns table (conversation-turn chunks)
     // Note: user_id will be 'temp-user' until Supabase Auth is implemented (Day 2 task)
-    const tempUserId = 'temp-user'; // TODO: Replace with auth.uid() after Day 2 auth implementation
+    // Use a valid UUID for temp user (all zeros - reserved for system/anonymous users)
+    // TODO: Replace with auth.uid() after Day 2 Supabase Auth implementation
+    const tempUserId = '00000000-0000-0000-0000-000000000000';
 
     console.log('📦 Creating conversation-turn chunks...');
     const turnChunks = messagesToTurnChunks(messagesToSync, tempUserId);
