@@ -7,6 +7,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Phase 5 Dual-Write Sync Integration (2025-11-15)
+
+**IMPLEMENTED** ✅ - Ready for testing
+
+**Objective**: Integrate conversation chunker into sync pipeline with dual-write strategy
+
+**Strategy**: Sync to BOTH tables for gradual migration
+- **messages table**: Existing message-level storage (backward compatible)
+- **chat_turns table**: New conversation-turn chunks (context-aware search)
+
+**Implementation Changes** (`src/browser-sync.js`):
+
+**1. Import Chunker**:
+```javascript
+import { messagesToTurnChunks } from './conversation-chunker.js';
+```
+
+**2. Dual-Write Flow** (after line 227):
+```
+1. Sync messages to 'messages' table ✅
+2. Create conversation-turn chunks
+3. Generate embeddings for chunk content
+4. Sync chunks to 'chat_turns' table ✅
+```
+
+**3. Code Added** (lines 230-269):
+```javascript
+// PHASE 5: Sync to chat_turns table
+const tempUserId = 'temp-user'; // TODO: Replace with auth.uid() (Day 2)
+
+console.log('📦 Creating conversation-turn chunks...');
+const turnChunks = messagesToTurnChunks(messagesToSync, tempUserId);
+
+if (turnChunks.length > 0) {
+  // Generate embeddings for turn chunks
+  const turnTexts = turnChunks.map(chunk => chunk.content);
+  const turnEmbeddings = await generateEmbeddings(turnTexts, config.openaiKey);
+
+  // Prepare chunks with embeddings
+  const chunksWithEmbeddings = turnChunks.map((chunk, idx) => ({
+    ...chunk,
+    embedding: turnEmbeddings[idx],
+  }));
+
+  // Insert to chat_turns table
+  const turnsResponse = await fetch(`${config.supabaseUrl}/rest/v1/chat_turns`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': config.supabaseKey,
+      'Authorization': `Bearer ${config.supabaseKey}`,
+      'Prefer': 'return=minimal'
+    },
+    body: JSON.stringify(chunksWithEmbeddings)
+  });
+
+  if (!turnsResponse.ok) {
+    const turnError = await turnsResponse.json();
+    console.warn(`⚠️ Chat turns sync failed: ${turnError.message}`);
+    console.warn('Continuing with message-level sync only...');
+  } else {
+    console.log(`✅ Chat turns synced: ${turnChunks.length} chunks`);
+  }
+}
+```
+
+**4. Updated Return Value**:
+```javascript
+return {
+  success: true,
+  synced: messagesToSync.length,
+  chunks: chunkCount,  // NEW
+  message: `Successfully synced ${messagesToSync.length} messages + ${chunkCount} turn chunks`
+};
+```
+
+**Error Handling** (Graceful Degradation):
+- Chat turns sync failure does NOT fail entire sync
+- Logs warning and continues with message-only sync
+- Ensures backward compatibility if chat_turns unavailable
+- Example: RLS policy failure won't break message sync
+
+**Temporary User ID**:
+- Uses `'temp-user'` until Supabase Auth implemented
+- Day 2 task: Replace with `auth.uid()` from Supabase JWT
+- TODO comment marks future replacement location
+- All chunks will have same temp user_id for now
+
+**Console Logging**:
+```
+📦 Creating conversation-turn chunks...
+📊 Chunking 14 messages from 2 conversations
+  📝 Conversation conv1: 8 messages → 4 turns
+  📝 Conversation conv2: 6 messages → 3 turns
+✅ Created 3 turn chunks from 14 messages
+📊 Generating embeddings: 1 batches for 3 messages
+📊 Batch 1/1: 3 messages (~1200 tokens)
+✅ Messages synced to 'messages' table: 14
+✅ Chat turns synced to 'chat_turns' table: 3 chunks
+✅ Sync complete: 14 messages + 3 turn chunks
+```
+
+**Example Flow**:
+```
+Input: 14 messages (2 conversations, 7 turns total)
+↓
+Step 1: Sync to 'messages' table
+  - 14 message rows with embeddings
+
+Step 2: Chunk into turns
+  - Conversation 1: 4 turns → 2 chunks (5 turns, 2 overlap)
+  - Conversation 2: 3 turns → 1 chunk
+  - Total: 3 chunks
+
+Step 3: Generate embeddings
+  - 3 chunk embeddings (token-batched at 4000)
+
+Step 4: Sync to 'chat_turns' table
+  - 3 turn chunk rows with embeddings
+↓
+Output: "Successfully synced 14 messages + 3 turn chunks"
+```
+
+**Data in Supabase**:
+
+**messages table** (14 rows):
+- Each row = 1 message
+- Columns: content, role, conversation_id, embedding, etc.
+- Searchable at message granularity
+
+**chat_turns table** (3 rows):
+- Each row = 1 turn chunk (5-7 turn pairs)
+- Columns: content, turn_range, conversation_id, topics, embedding, etc.
+- Searchable at conversation granularity
+- Formatted: `"User: ...\n\nAssistant: ...\n\n..."`
+
+**Benefits**:
+1. **Backward compatibility**: Existing message-level search still works
+2. **Context-aware search**: New turn-based search available
+3. **Gradual migration**: Can deprecate messages table later
+4. **Independent queries**: Use whichever table fits use case
+5. **WOW moment**: User gets conversation context immediately
+
+**Migration Path**:
+- **Now**: Dual-write to both tables (coexistence)
+- **Later**: Switch search to chat_turns only
+- **Eventually**: Deprecate messages table
+- **Data preserved**: No data loss during transition
+
+**Next Steps**:
+1. ✅ Phase 5 complete - Integration implemented
+2. ⏭️ Phase 6 - Test end-to-end sync (USER ACTION)
+3. ⏭️ Query Transformation - Improve search queries
+4. ⏭️ HyDE - Generate hypothetical questions (30-day batch)
+
+---
+
 ### Added - Phase 3 Conversation Chunker (2025-11-15)
 
 **VERIFIED WORKING** ✅ - All tests pass
