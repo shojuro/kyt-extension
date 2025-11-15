@@ -7,6 +7,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Phase 3 Conversation Chunker (2025-11-15)
+
+**VERIFIED WORKING** ✅ - All tests pass
+
+**Objective**: Convert raw messages into conversation-turn chunks for context-aware search
+
+**Implementation**: `src/conversation-chunker.js` (262 lines)
+
+**Pipeline**: Group → Pair → Chunk → Format
+1. Group messages by conversation_id
+2. Pair user-assistant messages into "turns"
+3. Chunk turns with sliding window (5 turns, 2 overlap)
+4. Format as "User: ...\n\nAssistant: ...\n\n..."
+
+**Core Functions**:
+
+**1. `groupByConversation(messages)`**
+- Groups messages by conversation_id
+- Sorts each conversation by timestamp
+- Returns Map<conversationId, messages[]>
+
+**2. `pairIntoTurns(messages)`**
+- Pairs user-assistant messages into "turns"
+- A "turn" = user message + assistant response
+- Handles incomplete turns (user-only or assistant-only)
+- Ignores 'system' role messages
+- Example: [{user: msg, assistant: msg}, ...]
+
+**3. `extractTopics(content)`**
+- Pattern matching for programming languages (13 languages)
+- Pattern matching for tech terms (100+ terms)
+- Returns max 10 most relevant topics
+- Examples: ['python', 'rls', 'supabase', 'jwt', 'auth', 'debugging']
+
+**4. `chunkTurns(turns, windowSize=5, overlap=2)`**
+- Sliding window chunking
+- Default: 5 turns per chunk, 2 turn overlap
+- Formats content: `"User: ...\n\nAssistant: ...\n\n..."`
+- Calculates turn_range (e.g., "1-5", "4-8")
+- Extracts topics, speakers, timestamps
+- Returns turn chunks ready for database
+
+**5. `messagesToTurnChunks(messages, userId)` [MAIN EXPORT]**
+- Complete pipeline: group → pair → chunk → add metadata
+- Adds conversation_id, platform, user_id
+- Prepares hypothetical_questions array (empty for now, Phase 4 will fill)
+- Returns chunks ready for chat_turns table
+
+**6. `getChunkingStats(chunks)` [HELPER]**
+- Returns statistics: total chunks, avg turns per chunk, avg content length
+- Platform distribution
+- Topic distribution
+
+**Sliding Window Example** (windowSize=5, overlap=2):
+```
+Turns: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+Chunk 1: turns 1-5 (window size = 5)
+Chunk 2: turns 4-8 (overlap = 2, step = 3)
+Chunk 3: turns 7-10 (overlap = 2, step = 3)
+Chunk 4: turns 10-10 (final incomplete window)
+```
+
+**Output Format**:
+```javascript
+{
+  turn_range: "1-5",
+  content: "User: How do I fix RLS?\n\nAssistant: Check your policies...",
+  speakers: ['user', 'assistant'],
+  turn_count: 5,
+  start_timestamp: 1700000000000,
+  end_timestamp: 1700000007000,
+  topics: ['python', 'rls', 'supabase'],
+  conversation_id: 'conv1',
+  platform: 'chatgpt',
+  user_id: 'user-123',
+  hypothetical_questions: [] // Will be filled by HyDE (Phase 4)
+}
+```
+
+**Test Results** (`src/test-chunker.js`):
+
+**Test 1: Basic chunking**
+- Input: 14 messages (2 conversations)
+- Output: 3 turn chunks ✅
+- Topics extracted: python, rls, javascript, api, auth, debugging
+- Content formatted correctly
+- Timestamps preserved
+
+**Test 2: Statistics**
+- Avg turns per chunk: 2.67
+- Avg content length: 429 chars
+- Platform distribution: chatgpt (3 chunks)
+- Topic distribution: 17 unique topics
+
+**Test 3: Edge cases**
+- Empty input: 0 chunks ✅
+- Single message: 1 chunk ✅
+- Incomplete turn: 1 chunk ✅
+
+**Test 4: Overlap verification**
+- Input: 10 turns
+- Output: 4 chunks ✅
+  - Chunk 1: turns 1-5
+  - Chunk 2: turns 4-8 (overlaps turns 4-5)
+  - Chunk 3: turns 7-10 (overlaps turns 7-8)
+  - Chunk 4: turns 10-10 (final incomplete window)
+
+**Verification**: Run `node src/test-chunker.js` to see all tests pass
+
+**Files Created**:
+- `src/conversation-chunker.js` (262 lines) - Main implementation
+- `src/test-chunker.js` (210 lines) - Comprehensive tests
+
+**Why This Works**:
+- **Context preservation**: 5-7 turn chunks preserve conversational flow
+- **Overlap prevents context loss**: User sees complete conversation segments
+- **Topic extraction**: Enables filtering (e.g., "show me Python conversations")
+- **Formatted content**: `"User: ...\nAssistant: ..."` preserves speaker attribution
+- **Sliding window**: Ensures no conversation gaps
+
+**Next Steps**:
+1. ✅ Phase 3 complete - Chunker implemented and tested
+2. ⏭️ Phase 4 - Implement HyDE preprocessing (`src/hyde-preprocessor.js`)
+3. ⏭️ Phase 5 - Integrate chunker into sync pipeline (`src/browser-sync.js`)
+4. ⏭️ Phase 6 - Test end-to-end turn-based sync
+
+---
+
 ### Fixed - Phase 1 Complete: Token Batching Sync Error (2025-11-15)
 
 **VERIFIED WORKING** ✅
