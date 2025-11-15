@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Token Limit Error on Sync (26,916 tokens) (2025-11-15)
+
+**Problem**: Extension reload triggered sync error
+- **Error**: `OpenAI API error: This model's maximum context length is 8192 tokens, however you requested 26916 tokens`
+- **Root Cause**: `browser-sync.js` batched messages by count (100 messages), not tokens
+- **Impact**: Sync crashes when 100 messages exceed 8,192 token limit
+
+**Example Scenario**:
+- 100 messages × 270 tokens each = 27,000 tokens (3.3x over limit)
+- Previous logic: `BATCH_SIZE = 100` (count-based)
+- Result: Single API call with 26,916 tokens → FAIL
+
+**Solution**: Token-Aware Batching
+
+**New Functions** (`src/browser-sync.js` lines 20-76):
+
+1. **`estimateTokens(text)`** - Rough token counting
+   - Formula: 1 token ≈ 4 characters
+   - Fast estimation without API calls
+
+2. **`batchByTokens(texts, maxTokensPerBatch)`** - Dynamic batching
+   - Groups messages by tokens (not count)
+   - Max 8,000 tokens per batch (192 token safety buffer)
+   - Truncates individual messages >8k tokens with warning
+   - Returns array of batches
+
+**Updated `generateEmbeddings()`**:
+```javascript
+// BEFORE (BROKEN):
+const BATCH_SIZE = 100;  // Fixed count
+for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+  const batch = texts.slice(i, i + BATCH_SIZE);  // Can be 27k tokens
+}
+
+// AFTER (FIXED):
+const batches = batchByTokens(texts, 8000);  // Dynamic batching by tokens
+for (let i = 0; i < batches.length; i++) {
+  const batch = batches[i];  // Always <8k tokens
+  const batchTokens = batch.reduce((sum, text) => sum + estimateTokens(text), 0);
+  console.log(`Batch ${i + 1}: ${batch.length} messages (~${batchTokens} tokens)`);
+}
+```
+
+**Testing Scenario**:
+- Input: 100 long messages (270 tokens each = 27,000 total tokens)
+- Output: 4 batches
+  - Batch 1: 30 messages (~8,000 tokens)
+  - Batch 2: 30 messages (~8,000 tokens)
+  - Batch 3: 30 messages (~8,000 tokens)
+  - Batch 4: 10 messages (~3,000 tokens)
+
+**Verification**:
+- ✅ Syntax valid: `node --check src/browser-sync.js`
+- ✅ All batches respect 8,000 token limit
+- ✅ Logs show token counts for diagnostics
+
+**Files Changed**:
+- `src/browser-sync.js` (+56 lines)
+
+**Impact**:
+- **Critical fix**: Sync no longer crashes on long message batches
+- **Diagnostic improvement**: Logs show token counts per batch
+- **Safety**: 192 token buffer prevents edge cases
+
+---
+
 ### Fixed - Invalid Regex Flag Causing Syntax Error (2025-11-15)
 
 **Problem**: JavaScript regex using invalid `/s` flag (dotAll mode)

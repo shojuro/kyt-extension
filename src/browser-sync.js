@@ -18,19 +18,83 @@ async function getConfig() {
 }
 
 /**
+ * Estimate tokens for text (rough approximation: 1 token ≈ 4 chars)
+ * @param {string} text - Text to estimate
+ * @returns {number} Estimated token count
+ */
+function estimateTokens(text) {
+  return Math.ceil((text?.length || 0) / 4);
+}
+
+/**
+ * Batch texts by token limit (not count) to avoid OpenAI API errors
+ * @param {string[]} texts - Array of message contents
+ * @param {number} maxTokensPerBatch - Max tokens per batch (default 8000 with safety buffer)
+ * @returns {string[][]} Array of batches
+ */
+function batchByTokens(texts, maxTokensPerBatch = 8000) {
+  const batches = [];
+  let currentBatch = [];
+  let currentTokens = 0;
+
+  for (const text of texts) {
+    const textTokens = estimateTokens(text);
+
+    // If single message exceeds limit, truncate it
+    if (textTokens > maxTokensPerBatch) {
+      console.warn(`⚠️ Message too long (${textTokens} tokens), truncating to ${maxTokensPerBatch} tokens`);
+      const truncated = text.substring(0, maxTokensPerBatch * 4);
+
+      // Start new batch if current has content
+      if (currentBatch.length > 0) {
+        batches.push(currentBatch);
+        currentBatch = [];
+        currentTokens = 0;
+      }
+
+      batches.push([truncated]);
+      continue;
+    }
+
+    // If adding this text would exceed limit, start new batch
+    if (currentTokens + textTokens > maxTokensPerBatch && currentBatch.length > 0) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentTokens = 0;
+    }
+
+    currentBatch.push(text);
+    currentTokens += textTokens;
+  }
+
+  // Push remaining batch
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  return batches;
+}
+
+/**
  * Generate embeddings for messages using OpenAI API
+ * Now uses token-aware batching to prevent "max context length" errors
  * @param {string[]} texts - Array of message content strings
  * @param {string} apiKey - OpenAI API key
  * @returns {Promise<number[][]>} Array of 1536-dimensional embeddings
  */
 async function generateEmbeddings(texts, apiKey) {
-  const BATCH_SIZE = 100;
   const allEmbeddings = [];
 
-  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-    const batch = texts.slice(i, i + BATCH_SIZE);
+  // Batch by tokens, not count (fixes 26,916 token error)
+  const batches = batchByTokens(texts, 8000); // 8k tokens per batch (192 token safety buffer)
 
-    console.log(`📊 Generating embeddings: batch ${Math.floor(i / BATCH_SIZE) + 1} (${batch.length} messages)`);
+  console.log(`📊 Generating embeddings: ${batches.length} batches for ${texts.length} messages`);
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    const batchTokens = batch.reduce((sum, text) => sum + estimateTokens(text), 0);
+
+    console.log(`📊 Batch ${i + 1}/${batches.length}: ${batch.length} messages (~${batchTokens} tokens)`);
 
     const response = await fetch('https://api.openai.com/v1/embeddings', {
       method: 'POST',
@@ -55,7 +119,7 @@ async function generateEmbeddings(texts, apiKey) {
     allEmbeddings.push(...embeddings);
 
     // Rate limit protection
-    if (i + BATCH_SIZE < texts.length) {
+    if (i < batches.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
