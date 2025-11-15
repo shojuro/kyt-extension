@@ -47,7 +47,7 @@
 
         const lastMessage = body.messages[body.messages.length - 1];
         let content = null;
-        let role = lastMessage?.author?.role || lastMessage?.role || 'unknown';
+        let role = lastMessage?.author?.role || lastMessage?.role || 'user'; // Default to 'user' (DB constraint)
 
         if (lastMessage?.content?.parts && Array.isArray(lastMessage.content.parts)) {
           content = lastMessage.content.parts[0];
@@ -571,8 +571,8 @@
     if (text.startsWith('You said:') || text.includes('🎤')) return 'user';
     if (text.startsWith('ChatGPT said:') || text.includes('🤖')) return 'assistant';
 
-    // Default to unknown - will still capture but mark as uncertain
-    return 'unknown';
+    // Default to 'user' (DB constraint: user|assistant|system only)
+    return 'user';
   }
 
   // Mutation observer for DOM-based capture

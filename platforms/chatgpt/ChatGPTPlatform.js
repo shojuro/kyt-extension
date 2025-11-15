@@ -55,7 +55,7 @@ export class ChatGPTPlatform extends Platform {
       // Get the last message (user's latest message)
       const lastMessage = body.messages[body.messages.length - 1];
       let content = null;
-      let role = lastMessage?.author?.role || lastMessage?.role || 'unknown';
+      let role = lastMessage?.author?.role || lastMessage?.role || 'user'; // Default to 'user' (DB constraint)
 
       // Extract content (ChatGPT has multiple content formats)
       if (lastMessage?.content?.parts && Array.isArray(lastMessage.content.parts)) {
