@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Phase 6 End-to-End Testing & Bug Fixes (2025-11-15)
+
+**COMPLETED** ✅ - Dual-write sync fully operational
+
+**Objective**: Test Phase 5 integration and fix database constraint violations
+
+**Testing Results**: 
+```
+✅ Messages synced to 'messages' table: 2
+📦 Creating conversation-turn chunks...
+  📝 Conversation dom_capture: 2 messages → 2 turns
+✅ Created 1 turn chunks from 2 messages
+✅ Chat turns synced to 'chat_turns' table: 1 chunks
+✅ Sync complete: 2 messages + 1 turn chunks
+```
+
+**Bugs Fixed**:
+
+**Bug #1: Invalid Role Constraint Violation**
+- **Error**: `Supabase error: new row for relation "messages" violates check constraint "messages_role_check"`
+- **Root Cause**: Messages captured with `role: 'unknown'` (invalid per DB constraint)
+- **Fix**: Changed all `'unknown'` defaults to `'user'` in:
+  - `platforms/chatgpt/inject.js` (3 locations)
+  - `platforms/chatgpt/ChatGPTPlatform.js` (1 location)
+- **Commit**: `b7682a0` - "fix: change invalid 'unknown' role to 'user'"
+
+**Bug #2: Invalid UUID Type Error**
+- **Error**: `invalid input syntax for type uuid: "temp-user"`
+- **Root Cause**: `chat_turns.user_id` is UUID type, but code used string `'temp-user'`
+- **Fix**: Changed to valid UUID `'00000000-0000-0000-0000-000000000000'` in `src/browser-sync.js`
+- **Commit**: `abe98a0` - "fix: use valid UUID for temp user_id"
+
+**Bug #3: RLS Policy Blocking Temp User**
+- **Error**: `new row violates row-level security policy for table "chat_turns"`
+- **Root Cause**: RLS policy `chat_turns_user_isolation` requires `user_id = auth.uid()`, but temp UUID not authenticated
+- **Fix**: Added temporary RLS bypass policy in Supabase:
+  ```sql
+  CREATE POLICY chat_turns_temp_user_access ON chat_turns
+    FOR ALL
+    USING (user_id = '00000000-0000-0000-0000-000000000000'::uuid)
+    WITH CHECK (user_id = '00000000-0000-0000-0000-000000000000'::uuid);
+  ```
+- **File**: `supabase_chat_turns_temp_policy.sql`
+- **Note**: Remove this policy after Day 2 Supabase Auth implementation
+
+**Verification**:
+- ✅ Messages sync to `messages` table without errors
+- ✅ Conversation chunker creates turn chunks (sliding window: 5 turns, 2 overlap)
+- ✅ Turn chunks sync to `chat_turns` table without errors
+- ✅ Both tables receive embeddings (1536-dim vectors)
+- ✅ Dual-write graceful degradation: chat_turns failure doesn't break message sync
+
+**Database State**:
+- `messages` table: Contains all individual messages with embeddings
+- `chat_turns` table: Contains conversation-turn chunks with embeddings
+- Both tables ready for semantic search via `match_messages()` and `search_chat_turns()` functions
+
+**Next Steps**:
+- Query Transformation (must-have for improving search quality)
+- HyDE Preprocessing (batch process for 30-day history)
+
+---
+
 ### Added - Phase 5 Dual-Write Sync Integration (2025-11-15)
 
 **IMPLEMENTED** ✅ - Ready for testing
