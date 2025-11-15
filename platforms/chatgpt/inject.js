@@ -537,7 +537,7 @@
       /^(const|let|var|function|class|import|export)\s/i,  // JS keywords
       /^[\{\}\[\]\(\)]+$/,  // Just brackets/parens
       /^(true|false|null|undefined)$/i,  // JS literals
-      /You said:Hello.*ChatGPT said:/s  // Conversation history pattern
+      /You said:Hello[\s\S]*ChatGPT said:/  // Conversation history pattern ([\s\S] matches any char including newlines)
     ];
 
     if (ignorePatterns.some(pattern => pattern.test(text))) return null;

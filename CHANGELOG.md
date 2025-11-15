@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Invalid Regex Flag Causing Syntax Error (2025-11-15)
+
+**Problem**: JavaScript regex using invalid `/s` flag (dotAll mode)
+- **Location**: `platforms/chatgpt/inject.js` line 540
+- **Error**: `Uncaught SyntaxError: Invalid regular expression flags`
+- **Impact**: Extension fails to load due to syntax error
+
+**Root Cause**:
+JavaScript regex literal `/pattern/s` is invalid. The `s` flag (dotAll) is only valid in `new RegExp()` constructor, not regex literals. However, `[\s\S]` is the standard cross-platform approach for matching any character including newlines.
+
+**Fix**:
+```javascript
+// BEFORE (BROKEN):
+/You said:Hello.*ChatGPT said:/s
+
+// AFTER (FIXED):
+/You said:Hello[\s\S]*ChatGPT said:/
+```
+
+**Why `[\s\S]` instead of dotAll**:
+- ✅ Works in all JavaScript environments (browsers, Node.js)
+- ✅ More readable than `/pattern/s` flag
+- ✅ Standard pattern for "match any character"
+- ✅ Equivalent to Perl's `/s` modifier
+
+**Verification**:
+```bash
+node --check platforms/chatgpt/inject.js  # No output = success
+```
+
+**Testing**: Extension loads without syntax errors
+
+---
+
 ### Changed - Enhanced Noise Filtering for DOM Observer (2025-11-15)
 
 #### Problem Identified from User Testing
