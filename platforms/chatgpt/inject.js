@@ -508,9 +508,119 @@
    * This is a PoC - robust solutions to be brainstormed after validation.
    */
 
+  // Configuration: DOM observer is OPT-IN (disabled by default)
+  // Fetch interception handles 95% of message capture
+  const KYT_CONFIG = {
+    enableDOMObserver: false,  // Set to true for voice input capture
+    enableVoiceCapture: false  // Alternative flag for voice-specific features
+  };
+
+  // ChatGPT-specific message container selectors
+  // These are the actual DOM elements that contain real conversation messages
+  const MESSAGE_SELECTORS = [
+    '[data-message-author-role="user"]',
+    '[data-message-author-role="assistant"]',
+    '[data-testid*="conversation-turn"]',
+    'article[data-scroll-anchor]'
+  ];
+
+  // Check if a node is within a message container
+  function isMessageContainer(node) {
+    if (!node || !node.matches) return false;
+    return MESSAGE_SELECTORS.some(selector => {
+      try {
+        return node.matches(selector) || node.closest(selector);
+      } catch (e) {
+        return false;
+      }
+    });
+  }
+
   // Track seen nodes to avoid duplicate captures
   const seenNodes = new WeakSet();
   let domCaptureCount = 0;
+
+  // Track recent captures for deduplication
+  const recentCaptures = new Map(); // messageHash -> timestamp
+  const DEDUP_WINDOW = 5000; // 5 seconds
+
+  // Simple hash function for content deduplication
+  function simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return hash.toString(36);
+  }
+
+  // Check if content was recently captured
+  function isDuplicate(content) {
+    const hash = simpleHash(content.substring(0, 100));
+    const now = Date.now();
+
+    // Clean old entries
+    for (const [h, timestamp] of recentCaptures) {
+      if (now - timestamp > DEDUP_WINDOW) {
+        recentCaptures.delete(h);
+      }
+    }
+
+    if (recentCaptures.has(hash)) {
+      return true;
+    }
+
+    recentCaptures.set(hash, now);
+    return false;
+  }
+
+  // Detect CSS code
+  function looksLikeCSS(text) {
+    const cssIndicators = [
+      /\{[^}]*:[^}]*;[^}]*\}/,  // Has CSS property syntax
+      /\.[a-zA-Z][\w-]*\s*\{/,   // Class selector
+      /@(media|keyframes|import|font-face)/i, // At-rules
+      /!important/i,              // !important
+      /:\s*var\(--[\w-]+\)/       // CSS variables
+    ];
+    return cssIndicators.some(pattern => pattern.test(text));
+  }
+
+  // Detect JavaScript code
+  function looksLikeCode(text) {
+    const codeIndicators = [
+      /window\.|document\./,
+      /function\s*\(/,
+      /const\s+\w+\s*=/,
+      /let\s+\w+\s*=/,
+      /var\s+\w+\s*=/,
+      /=>\s*\{/,  // Arrow functions
+      /console\.(log|error|warn)/,
+      /__oai_|__webpack_/,  // ChatGPT-specific JS
+      /\[\[Prototype\]\]/,  // Console object inspection
+      /Symbol\(Symbol\./,   // Symbol properties
+      /ƒ\s+\w+\(\)/,       // Function representations (ƒ at(), ƒ map())
+      /Array\(0\)/         // Array constructor in console
+    ];
+    return codeIndicators.some(pattern => pattern.test(text));
+  }
+
+  // Detect UI navigation/buttons
+  function looksLikeUI(text) {
+    const uiElements = [
+      'Log in', 'Sign up', 'ChatGPT', 'Attach', 'Search', 'Study',
+      'Create image', 'Voice', 'Terms', 'Privacy Policy', 'Temporary Chat',
+      'This chat won', 'For safety purposes', 'messaging ChatGPT',
+      'Where should we begin', 'Send a message', 'New chat'
+    ];
+
+    // Check if text is short and matches UI elements
+    if (text.length < 300) {
+      return uiElements.some(ui => text.includes(ui));
+    }
+
+    return false;
+  }
 
   // DOM-agnostic text extraction with noise filtering
   function extractTextFromNode(node) {
@@ -519,14 +629,36 @@
     // Only process element nodes
     if (node.nodeType !== Node.ELEMENT_NODE) return null;
 
-    // Filter out code blocks entirely (major noise source from testing)
-    if (node.closest('code, pre, [class*="code"], [class*="Code"]')) return null;
+    // WHITELIST APPROACH: Only process nodes within message containers
+    if (!isMessageContainer(node)) {
+      return null;
+    }
+
+    // Filter out code blocks, style tags, script tags entirely
+    if (node.closest('code, pre, style, script, noscript, [class*="code"], [class*="Code"]')) {
+      return null;
+    }
 
     const text = node.textContent?.trim();
 
     // Filter out empty, whitespace-only, or very short text
-    // INCREASED from 2 chars to 50 chars based on user testing
     if (!text || text.length < 50 || /^\s*$/.test(text)) return null;
+
+    // CONTENT-TYPE VALIDATION: Detect CSS, JavaScript, UI chrome
+    if (looksLikeCSS(text)) {
+      console.log('⚠️ KYT ChatGPT DOM: Skipping CSS content');
+      return null;
+    }
+
+    if (looksLikeCode(text)) {
+      console.log('⚠️ KYT ChatGPT DOM: Skipping JavaScript content');
+      return null;
+    }
+
+    if (looksLikeUI(text)) {
+      console.log('⚠️ KYT ChatGPT DOM: Skipping UI element');
+      return null;
+    }
 
     // Enhanced noise filtering based on actual test captures
     const ignorePatterns = [
@@ -537,13 +669,22 @@
       /^(const|let|var|function|class|import|export)\s/i,  // JS keywords
       /^[\{\}\[\]\(\)]+$/,  // Just brackets/parens
       /^(true|false|null|undefined)$/i,  // JS literals
-      /You said:Hello[\s\S]*ChatGPT said:/  // Conversation history pattern ([\s\S] matches any char including newlines)
+      /You said:Hello[\s\S]*ChatGPT said:/,  // Conversation history pattern
+      /^\s*\.[\w-]+\s*\{/,  // CSS class selectors
+      /^\s*#[\w-]+\s*\{/,   // CSS ID selectors
+      /^[\s\w-]+:\s*[\w\s#(),.-]+;/,  // CSS properties
+      /@media|@keyframes|@import/i,  // CSS at-rules
+      /window\.|document\.|function\s*\(/,  // JavaScript
+      /^(ChatGPT|Log in|Sign up|Attach|Search|Study|Create image|Voice)$/i,  // UI buttons
+      /^(Temporary Chat|This chat won|For safety purposes)/i,  // UI text
+      /Terms|Privacy Policy|messaging ChatGPT/i  // Footer text
     ];
 
-    if (ignorePatterns.some(pattern => pattern.test(text))) return null;
+    if (ignorePatterns.some(pattern => pattern.test(text))) {
+      return null;
+    }
 
     // Filter massive text blobs (likely full conversation history)
-    // Based on testing: captured 104,918 char blob of history
     if (text.length > 10000) {
       console.log(`⚠️ KYT ChatGPT DOM: Skipping oversized text (${text.length} chars) - likely conversation history`);
       return null;
@@ -590,6 +731,12 @@
           // This ensures we capture real messages like "Testing, testing, one, two, three"
           // but filter out UI noise like "DictateDictate"
           if (text.length < 100) continue;
+
+          // DEDUPLICATION: Check if we already captured this content recently
+          if (isDuplicate(text)) {
+            console.log('⚠️ KYT ChatGPT DOM: Skipping duplicate content');
+            continue;
+          }
 
           domCaptureCount++;
 
@@ -642,7 +789,16 @@
     }
   }
 
-  startDOMObserver();
+  // OPT-IN: Only start DOM observer if explicitly enabled
+  // Fetch interception handles 95% of message capture (typed messages)
+  // DOM observer only needed for voice input (WebSocket-based)
+  if (KYT_CONFIG.enableDOMObserver || KYT_CONFIG.enableVoiceCapture) {
+    console.log('🔍 KYT ChatGPT DOM: Starting DOM observer (voice capture enabled)');
+    startDOMObserver();
+  } else {
+    console.log('✅ KYT ChatGPT: Using fetch interception only (recommended)');
+    console.log('💡 To enable voice capture, set KYT_CONFIG.enableVoiceCapture = true');
+  }
 
   // Expose health check
   window.KYT_HEALTH_CHECK = function() {
@@ -659,5 +815,5 @@
   };
 
   console.log('✅ KYT ChatGPT: Fetch override installed in PAGE CONTEXT');
-  console.log('✅ KYT ChatGPT: DOM observer active for voice input');
+  console.log(`ℹ️ KYT ChatGPT: DOM observer ${KYT_CONFIG.enableDOMObserver || KYT_CONFIG.enableVoiceCapture ? 'ENABLED' : 'DISABLED (fetch-only mode)'}`);
 })();

@@ -135,14 +135,16 @@ window.fetch = async function(...args) {
         }
       }
 
-      // PHASE 1: Get context and inject BEFORE sending
-      if (options && options.body) {
-        try {
-          options.body = await getAndInjectContext(options.body);
-        } catch (error) {
-          console.error('❌ KYT Claude: Pre-send context injection failed:', error);
-        }
-      }
+      // PHASE 1: Context injection DISABLED (prevents memory context from being added to prompts)
+      // Memory context was polluting the database - messages should be clean
+      // if (options && options.body) {
+      //   try {
+      //     options.body = await getAndInjectContext(options.body);
+      //   } catch (error) {
+      //     console.error('❌ KYT Claude: Pre-send context injection failed:', error);
+      //   }
+      // }
+      console.log('ℹ️ KYT Claude: Context injection disabled - clean prompt mode');
 
       // PHASE 2: Extract message data for storage AFTER injection
       let messageData = null;
