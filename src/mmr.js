@@ -1,0 +1,241 @@
+/**
+ * MMR (Maximal Marginal Relevance) Implementation
+ * 
+ * Purpose: Rerank search results to balance relevance and diversity
+ * Critical for: Preventing similar results from dominating (e.g., "Jennifer" vs "Jenn")
+ * 
+ * Algorithm:
+ * 1. Start with highest-relevance item
+ * 2. For each subsequent item, score = λ * relevance - (1-λ) * max_similarity_to_selected
+ * 3. Select item with highest MMR score
+ * 4. Repeat until desired count reached
+ * 
+ * Parameters:
+ * - lambda (λ): Trade-off between relevance and diversity (0.5 = balanced, 0.7 = favor relevance, 0.3 = favor diversity)
+ * - Higher λ = more weight on relevance
+ * - Lower λ = more weight on diversity
+ * 
+ * References:
+ * - Original paper: Carbonell & Goldstein (1998) "The Use of MMR, Diversity-Based Reranking for Reordering Documents and Producing Summaries"
+ * - pgvector cosine distance: 0 (identical) to 2 (opposite)
+ */
+
+/**
+ * Calculate cosine similarity from pgvector distance
+ * pgvector uses cosine distance: distance = 1 - similarity
+ * So: similarity = 1 - distance
+ * 
+ * @param {number} distance - Cosine distance from pgvector (0 to 2)
+ * @returns {number} Cosine similarity (-1 to 1, typically 0 to 1 for normalized vectors)
+ */
+function distanceToSimilarity(distance) {
+  return 1 - distance;
+}
+
+/**
+ * Calculate similarity to relevance score (0 to 1)
+ * Higher similarity = higher relevance
+ * 
+ * @param {number} similarity - Cosine similarity (-1 to 1)
+ * @returns {number} Relevance score (0 to 1)
+ */
+function similarityToRelevance(similarity) {
+  // Normalize from [-1, 1] to [0, 1]
+  return (similarity + 1) / 2;
+}
+
+/**
+ * Calculate cosine similarity between two embeddings
+ * Used for computing similarity between candidate items
+ * 
+ * @param {number[]} embedding1 - First embedding vector
+ * @param {number[]} embedding2 - Second embedding vector
+ * @returns {number} Cosine similarity (-1 to 1)
+ */
+function cosineSimilarity(embedding1, embedding2) {
+  if (!embedding1 || !embedding2) {
+    throw new Error('Both embeddings required for similarity calculation');
+  }
+  
+  if (embedding1.length !== embedding2.length) {
+    throw new Error(`Embedding dimension mismatch: ${embedding1.length} vs ${embedding2.length}`);
+  }
+
+  let dotProduct = 0;
+  let norm1 = 0;
+  let norm2 = 0;
+
+  for (let i = 0; i < embedding1.length; i++) {
+    dotProduct += embedding1[i] * embedding2[i];
+    norm1 += embedding1[i] * embedding1[i];
+    norm2 += embedding2[i] * embedding2[i];
+  }
+
+  // Avoid division by zero
+  if (norm1 === 0 || norm2 === 0) {
+    return 0;
+  }
+
+  return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
+}
+
+/**
+ * Apply MMR (Maximal Marginal Relevance) reranking to search results
+ * 
+ * This balances relevance (similarity to query) with diversity (dissimilarity to already-selected items).
+ * Critical for preventing similar items from dominating results (e.g., multiple mentions of "Jennifer" 
+ * vs "Jenn" the dog would be diversified to include both contexts).
+ * 
+ * @param {Array<Object>} candidates - Search results from Supabase, each with:
+ *   - distance: number (cosine distance from pgvector)
+ *   - embedding: number[] (optional, for inter-item similarity calculation)
+ *   - content: string
+ *   - other fields...
+ * @param {number} maxResults - Maximum number of results to return
+ * @param {number} lambda - Trade-off parameter (0 to 1):
+ *   - 1.0 = pure relevance (ignore diversity)
+ *   - 0.5 = balanced (default)
+ *   - 0.0 = pure diversity (ignore relevance)
+ * @param {Object} options - Additional options:
+ *   - requireEmbeddings: boolean - If true, throw error if embeddings missing (default: false)
+ *   - fallbackToRelevance: boolean - If true and no embeddings, return top-k by relevance (default: true)
+ *   - debugMode: boolean - If true, log MMR scoring details (default: false)
+ * @returns {Array<Object>} Reranked results (up to maxResults items)
+ */
+export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
+  const {
+    requireEmbeddings = false,
+    fallbackToRelevance = true,
+    debugMode = false
+  } = options;
+
+  // Validate inputs
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return [];
+  }
+
+  if (maxResults <= 0) {
+    return [];
+  }
+
+  if (lambda < 0 || lambda > 1) {
+    throw new Error('Lambda must be between 0 and 1');
+  }
+
+  // If we don't need MMR (only 1 result or only 1 candidate), return top result
+  if (maxResults === 1 || candidates.length === 1) {
+    return candidates.slice(0, 1);
+  }
+
+  // Check if embeddings are available for inter-item similarity
+  const hasEmbeddings = candidates.every(c => Array.isArray(c.embedding) && c.embedding.length > 0);
+
+  if (!hasEmbeddings) {
+    if (requireEmbeddings) {
+      throw new Error('MMR requires embeddings for all candidates');
+    }
+    
+    if (fallbackToRelevance) {
+      if (debugMode) {
+        console.log('⚠️ MMR: No embeddings available, falling back to relevance ranking');
+      }
+      // Sort by distance (ascending = most relevant first) and return top-k
+      return candidates
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, maxResults);
+    }
+    
+    // No fallback, return empty
+    return [];
+  }
+
+  // MMR algorithm
+  const selected = [];
+  const remaining = [...candidates];
+
+  if (debugMode) {
+    console.log(`🎯 MMR: Starting with ${candidates.length} candidates, selecting ${maxResults}, λ=${lambda}`);
+  }
+
+  // Step 1: Select the most relevant item (lowest distance)
+  remaining.sort((a, b) => a.distance - b.distance);
+  const firstItem = remaining.shift();
+  selected.push(firstItem);
+
+  if (debugMode) {
+    const firstRelevance = distanceToSimilarity(firstItem.distance);
+    console.log(`   1. Selected (most relevant): distance=${firstItem.distance.toFixed(3)}, similarity=${firstRelevance.toFixed(3)}, content="${firstItem.content.substring(0, 50)}..."`);
+  }
+
+  // Step 2: Iteratively select items with highest MMR score
+  while (selected.length < maxResults && remaining.length > 0) {
+    let bestScore = -Infinity;
+    let bestIndex = -1;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const candidate = remaining[i];
+      
+      // Relevance score (similarity to query)
+      const relevance = similarityToRelevance(distanceToSimilarity(candidate.distance));
+
+      // Max similarity to any selected item (diversity penalty)
+      let maxSimilarityToSelected = -Infinity;
+      for (const selectedItem of selected) {
+        const similarity = cosineSimilarity(candidate.embedding, selectedItem.embedding);
+        if (similarity > maxSimilarityToSelected) {
+          maxSimilarityToSelected = similarity;
+        }
+      }
+
+      // MMR score: λ * relevance - (1-λ) * max_similarity_to_selected
+      const mmrScore = lambda * relevance - (1 - lambda) * similarityToRelevance(maxSimilarityToSelected);
+
+      if (mmrScore > bestScore) {
+        bestScore = mmrScore;
+        bestIndex = i;
+      }
+
+      if (debugMode && i < 3) { // Log first 3 candidates
+        console.log(`   Candidate: relevance=${relevance.toFixed(3)}, max_sim=${maxSimilarityToSelected.toFixed(3)}, MMR=${mmrScore.toFixed(3)}, content="${candidate.content.substring(0, 40)}..."`);
+      }
+    }
+
+    // Select item with best MMR score
+    const selectedItem = remaining.splice(bestIndex, 1)[0];
+    selected.push(selectedItem);
+
+    if (debugMode) {
+      const selectedRelevance = similarityToRelevance(distanceToSimilarity(selectedItem.distance));
+      console.log(`   ${selected.length}. Selected: MMR=${bestScore.toFixed(3)}, relevance=${selectedRelevance.toFixed(3)}, distance=${selectedItem.distance.toFixed(3)}, content="${selectedItem.content.substring(0, 50)}..."`);
+    }
+  }
+
+  if (debugMode) {
+    console.log(`✅ MMR: Selected ${selected.length} items`);
+  }
+
+  return selected;
+}
+
+/**
+ * Default MMR configuration for KYT
+ * 
+ * Tuned for "Lonely ICP" use case where precision is critical
+ * (e.g., must distinguish "sister Jennifer" from "dog Jenn")
+ */
+export const MMR_PRESETS = {
+  // Balanced: Equal weight to relevance and diversity (default)
+  BALANCED: { lambda: 0.5, maxResults: 3 },
+  
+  // Precision: Favor diversity to avoid confusion (e.g., Jennifer vs Jenn)
+  // Tuned for "Lonely ICP" use case - prevents entity confusion while maintaining relevance
+  PRECISION: { lambda: 0.4, maxResults: 3 },
+  
+  // Relevance: Favor most relevant items (less diversity)
+  // Higher lambda = more weight on relevance = more similar items allowed
+  RELEVANCE: { lambda: 0.7, maxResults: 5 },
+  
+  // Conservative: Very high diversity, avoid any confusion
+  // Lowest lambda = maximum diversity = no similar items
+  CONSERVATIVE: { lambda: 0.2, maxResults: 2 }
+};

@@ -13,6 +13,7 @@
 // Day 2: Import browser-compatible sync and search modules
 import { syncToSupabase, setApiConfig } from './src/browser-sync.js';
 import { searchMessages, findSimilarMessages } from './src/browser-search.js';
+import { applyMMR, MMR_PRESETS } from './src/mmr.js';
 
 console.log('🚀 KYT Background: Service worker starting...');
 
@@ -285,7 +286,7 @@ async function getContextForInjection(userMessage, config) {
 
     const contextItems = await searchResponse.json();
 
-    // DEBUG: Log what we got back from Supabase
+    // DEBUG: Log what we got back from Supabase (before MMR)
     console.log(`🔍 Context search returned ${contextItems.length} items (threshold: ${contextConfig.threshold}, exclude: ${contextConfig.excludeRecentSeconds}s)`);
     if (contextItems.length > 0) {
       const now = Date.now();
@@ -296,7 +297,29 @@ async function getContextForInjection(userMessage, config) {
     }
 
     // Filter by minimum distance
-    const filteredItems = contextItems.filter(r => r.distance >= contextConfig.minDistance);
+    let filteredItems = contextItems.filter(r => r.distance >= contextConfig.minDistance);
+
+    // Apply MMR (Maximal Marginal Relevance) reranking for precision and diversity
+    // Critical for "Lonely ICP" use case - prevents confusing "sister Jennifer" with "dog Jenn"
+    if (filteredItems.length > 1) {
+      const mmrConfig = contextConfig.mmrPreset || 'PRECISION'; // Default to PRECISION preset
+      const mmrParams = MMR_PRESETS[mmrConfig] || MMR_PRESETS.PRECISION;
+      
+      console.log(`🎯 Applying MMR reranking (preset: ${mmrConfig}, λ=${mmrParams.lambda})`);
+      
+      filteredItems = applyMMR(
+        filteredItems,
+        contextConfig.maxContextItems,
+        mmrParams.lambda,
+        {
+          requireEmbeddings: false,
+          fallbackToRelevance: true,
+          debugMode: contextConfig.debugMode || false
+        }
+      );
+      
+      console.log(`✅ MMR reranking complete: ${filteredItems.length} items selected`);
+    }
 
     // Format context for injection
     let formattedContext = null;
