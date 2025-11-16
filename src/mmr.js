@@ -80,16 +80,82 @@ function cosineSimilarity(embedding1, embedding2) {
 }
 
 /**
+ * Extract entity identifiers from content for deduplication
+ *
+ * Heuristics:
+ * 1. Use 'entity' field if present (from test data)
+ * 2. Extract proper nouns (capitalized words) from content
+ * 3. Normalize to lowercase for matching
+ *
+ * @param {Object} item - Candidate item with content field
+ * @returns {Set<string>} Set of entity identifiers
+ */
+function extractEntities(item) {
+  const entities = new Set();
+
+  // If explicit entity field exists (test data), use it
+  if (item.entity) {
+    entities.add(item.entity.toLowerCase());
+    return entities;
+  }
+
+  // Extract proper nouns from content (capitalized words)
+  const content = item.content || '';
+
+  // Pattern: word at start of sentence or after punctuation, or standalone capitalized word
+  // This catches names like "Jennifer", "Sarah", "Mike", "Dr. Sarah", "Jenn"
+  const properNouns = content.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b/g) || [];
+
+  properNouns.forEach(noun => {
+    // Normalize: lowercase, remove common titles
+    const normalized = noun
+      .replace(/^(Dr|Mr|Mrs|Ms|Miss)\.\s*/i, '')
+      .toLowerCase()
+      .trim();
+
+    if (normalized.length > 0) {
+      entities.add(normalized);
+    }
+  });
+
+  return entities;
+}
+
+/**
+ * Check if two items refer to the same entity
+ *
+ * @param {Object} item1 - First item
+ * @param {Object} item2 - Second item
+ * @returns {boolean} True if items share any entity
+ */
+function isSameEntity(item1, item2) {
+  const entities1 = extractEntities(item1);
+  const entities2 = extractEntities(item2);
+
+  // Check for any overlap in entity sets
+  for (const entity of entities1) {
+    if (entities2.has(entity)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Apply MMR (Maximal Marginal Relevance) reranking to search results
- * 
+ *
  * This balances relevance (similarity to query) with diversity (dissimilarity to already-selected items).
- * Critical for preventing similar items from dominating results (e.g., multiple mentions of "Jennifer" 
+ * Critical for preventing similar items from dominating results (e.g., multiple mentions of "Jennifer"
  * vs "Jenn" the dog would be diversified to include both contexts).
- * 
+ *
+ * NEW: Entity deduplication ensures no duplicate entities in results (hard constraint)
+ *
  * @param {Array<Object>} candidates - Search results from Supabase, each with:
  *   - distance: number (cosine distance from pgvector)
  *   - embedding: number[] (optional, for inter-item similarity calculation)
  *   - content: string
+ *   - entity: string (optional, for explicit entity identification)
  *   - other fields...
  * @param {number} maxResults - Maximum number of results to return
  * @param {number} lambda - Trade-off parameter (0 to 1):
@@ -100,13 +166,15 @@ function cosineSimilarity(embedding1, embedding2) {
  *   - requireEmbeddings: boolean - If true, throw error if embeddings missing (default: false)
  *   - fallbackToRelevance: boolean - If true and no embeddings, return top-k by relevance (default: true)
  *   - debugMode: boolean - If true, log MMR scoring details (default: false)
+ *   - enableEntityDeduplication: boolean - If true, prevent duplicate entities (default: true)
  * @returns {Array<Object>} Reranked results (up to maxResults items)
  */
 export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
   const {
     requireEmbeddings = false,
     fallbackToRelevance = true,
-    debugMode = false
+    debugMode = false,
+    enableEntityDeduplication = true
   } = options;
 
   // Validate inputs
@@ -174,7 +242,26 @@ export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
 
     for (let i = 0; i < remaining.length; i++) {
       const candidate = remaining[i];
-      
+
+      // Entity deduplication: Skip if candidate shares entity with any selected item
+      if (enableEntityDeduplication) {
+        let isDuplicate = false;
+        for (const selectedItem of selected) {
+          if (isSameEntity(candidate, selectedItem)) {
+            isDuplicate = true;
+            if (debugMode) {
+              const candidateEntities = Array.from(extractEntities(candidate)).join(', ');
+              const selectedEntities = Array.from(extractEntities(selectedItem)).join(', ');
+              console.log(`   ⏭️  Skipping duplicate entity: candidate="${candidateEntities}" matches selected="${selectedEntities}"`);
+            }
+            break;
+          }
+        }
+        if (isDuplicate) {
+          continue; // Skip this candidate
+        }
+      }
+
       // Relevance score (similarity to query)
       const relevance = similarityToRelevance(distanceToSimilarity(candidate.distance));
 
@@ -200,13 +287,22 @@ export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
       }
     }
 
+    // If no valid candidate found (all remaining are duplicates), stop
+    if (bestIndex === -1) {
+      if (debugMode) {
+        console.log(`   ⚠️  No more unique entities available, stopping at ${selected.length} items`);
+      }
+      break;
+    }
+
     // Select item with best MMR score
     const selectedItem = remaining.splice(bestIndex, 1)[0];
     selected.push(selectedItem);
 
     if (debugMode) {
       const selectedRelevance = similarityToRelevance(distanceToSimilarity(selectedItem.distance));
-      console.log(`   ${selected.length}. Selected: MMR=${bestScore.toFixed(3)}, relevance=${selectedRelevance.toFixed(3)}, distance=${selectedItem.distance.toFixed(3)}, content="${selectedItem.content.substring(0, 50)}..."`);
+      const selectedEntities = Array.from(extractEntities(selectedItem)).join(', ');
+      console.log(`   ${selected.length}. Selected: MMR=${bestScore.toFixed(3)}, relevance=${selectedRelevance.toFixed(3)}, distance=${selectedItem.distance.toFixed(3)}, entities=[${selectedEntities}], content="${selectedItem.content.substring(0, 50)}..."`);
     }
   }
 
@@ -229,7 +325,7 @@ export const MMR_PRESETS = {
   
   // Precision: Favor diversity to avoid confusion (e.g., Jennifer vs Jenn)
   // Tuned for "Lonely ICP" use case - prevents entity confusion while maintaining relevance
-  PRECISION: { lambda: 0.4, maxResults: 3 },
+  PRECISION: { lambda: 0.3, maxResults: 3 },
   
   // Relevance: Favor most relevant items (less diversity)
   // Higher lambda = more weight on relevance = more similar items allowed
