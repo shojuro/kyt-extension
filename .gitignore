@@ -52,6 +52,7 @@ htmlcov/
 # ============================================
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -81,7 +82,9 @@ yarn.lock
 # ============================================
 # BUILD AND DISTRIBUTION
 # ============================================
-build/
+build/dist/
+build/output/
+build/*.log
 dist/
 *.egg-info/
 .webpack/
@@ -98,3 +101,14 @@ dist/
 # ============================================
 test_data/captured_*.json
 validation/user_data/
+
+# ============================================
+# DIAGNOSTIC SCRIPTS WITH HARDCODED SECRETS
+# ============================================
+check_sources.js
+*_diagnostic*.js
+*_diagnostic*.mjs
+verify_*.js
+phase0_*.js
+phase0_*.mjs
+check_message_count.mjs

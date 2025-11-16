@@ -1,38 +1,31 @@
 /**
- * KYT Memory Extension - Content Script (Day 1 Validation)
+ * KYT Memory Extension - Claude Content Script
  *
- * Purpose: Inject page context script to intercept ChatGPT API calls
- * Strategy: Run fetch override in PAGE CONTEXT to avoid extension conflicts
- *
- * Compliance: CLAUDE.md Anti-Theater Rules
- * - Real error handling (not console.log theater)
- * - Actual validation (can fail meaningfully)
- * - No hard-coded success patterns
+ * Purpose: Inject page context script and relay messages to background
+ * Platform: Claude
  */
 
 (function() {
   'use strict';
 
-  console.log('🚀 KYT Content Script: Initializing...');
+  console.log('🚀 KYT Claude Content: Initializing...');
 
   // === PAGE CONTEXT INJECTION ===
-  // Day 3: Inject inject-day3-fixed.js with context injection (RAG) support (CSP FIXED)
   const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('inject-day3-fixed.js');
+  script.src = chrome.runtime.getURL('platforms/claude/inject.js');
   script.onload = function() {
-    console.log('✅ KYT Content Script: inject-day3-fixed.js loaded into page context');
+    console.log('✅ KYT Claude Content: inject.js loaded into page context');
     this.remove();
   };
   script.onerror = function() {
-    console.error('❌ KYT Content Script: Failed to load inject-day3-fixed.js');
+    console.error('❌ KYT Claude Content: Failed to load inject.js');
   };
   (document.head || document.documentElement).appendChild(script);
 
   // === EVENT LISTENER FOR PAGE CONTEXT MESSAGES ===
-  // Listen for messages from injected script via CustomEvent
   window.addEventListener('KYT_MESSAGE_CAPTURED', function(event) {
     const messageData = event.detail;
-    console.log('📨 KYT Content Script: Received message from page context');
+    console.log('📨 KYT Claude Content: Received message from page context');
     console.log('   Content preview:', messageData.content.substring(0, 50) + '...');
 
     // Forward to background script for storage
@@ -40,19 +33,18 @@
       type: 'SAVE_MESSAGE',
       data: messageData
     }).then(() => {
-      console.log('✅ KYT Content Script: Message forwarded to background for storage');
+      console.log('✅ KYT Claude Content: Message forwarded to background');
     }).catch(error => {
-      console.error('❌ KYT Content Script: Failed to forward message to background:', error);
+      console.error('❌ KYT Claude Content: Failed to forward message:', error);
     });
   });
 
-  // === DAY 3: CONTEXT REQUEST HANDLER (CSP FIX) ===
-  // Listen for context requests from page context
+  // === CONTEXT REQUEST HANDLER ===
   // Page context cannot call OpenAI/Supabase directly (CSP blocks)
   // So we forward to background script which has no CSP restrictions
   window.addEventListener('KYT_CONTEXT_REQUEST', async function(event) {
     const { requestId, userMessage, config } = event.detail;
-    console.log('🔍 KYT Content Script: Context request from page context');
+    console.log('🔍 KYT Claude Content: Context request from page context');
 
     try {
       // Forward to background script (no CSP restrictions there!)
@@ -74,9 +66,9 @@
         }
       }));
 
-      console.log('✅ KYT Content Script: Context response sent to page context');
+      console.log('✅ KYT Claude Content: Context response sent to page context');
     } catch (error) {
-      console.error('❌ KYT Content Script: Failed to get context:', error);
+      console.error('❌ KYT Claude Content: Failed to get context:', error);
 
       // Send error response
       window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
@@ -91,18 +83,5 @@
     }
   });
 
-  console.log('✅ KYT Content Script: Listening for messages from page context');
-
-  // === HEALTH CHECK PROXY ===
-  // Expose health check that calls into page context
-  window.KYT_HEALTH_CHECK = function() {
-    if (typeof window.KYT_HEALTH_CHECK === 'undefined') {
-      return {
-        error: 'Page context script not loaded yet',
-        contentScriptActive: true
-      };
-    }
-    return window.KYT_HEALTH_CHECK();
-  };
-
+  console.log('✅ KYT Claude Content: Listening for messages from page context');
 })();

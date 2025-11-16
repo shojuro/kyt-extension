@@ -33,7 +33,7 @@ kyt-validation-sprint/
 
 ---
 
-## 🚀 Quick Start (3 Steps)
+## 🚀 Quick Start (4 Steps)
 
 ### Step 1: Load Extension in Chrome
 
@@ -49,7 +49,37 @@ kyt-validation-sprint/
 
 ---
 
-### Step 2: Have 10 Conversations in ChatGPT
+### Step 2: Configure API Keys (Required for Day 3+)
+
+For context retrieval features to work, you need to configure your API keys:
+
+```bash
+# 1. Make sure you have a .env file with:
+#    - SUPABASE_URL
+#    - SUPABASE_ANON_KEY
+#    - OPENAI_API_KEY
+#
+# 2. Open the setup page in Chrome:
+#    - Right-click on extension icon → "Inspect popup" OR
+#    - Navigate to: chrome-extension://<your-extension-id>/setup.html
+#
+# 3. Copy values from .env and paste into the form
+# 4. Click "Save Configuration"
+# 5. Verify "✅ Configuration saved successfully!" message appears
+```
+
+**Alternative method**: Open `setup.html` directly by:
+1. Go to `chrome://extensions`
+2. Find "KYT Memory" extension
+3. Click "Details"
+4. Find "Extension ID" (e.g., `abcdefghijklmnop`)
+5. Open: `chrome-extension://abcdefghijklmnop/setup.html`
+
+**Security note**: API keys are stored in `chrome.storage.local` (stays on your machine, never sent to servers except when making legitimate API calls to Supabase/OpenAI).
+
+---
+
+### Step 3: Have 10 Conversations in ChatGPT
 
 ```bash
 # 1. Open: https://chat.openai.com (or https://chatgpt.com)
@@ -76,7 +106,7 @@ kyt-validation-sprint/
 
 ---
 
-### Step 3: Run Validation Tests
+### Step 4: Run Validation Tests
 
 ```bash
 # In ChatGPT page's DevTools console:

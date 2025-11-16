@@ -1,46 +1,78 @@
 {
   "manifest_version": 3,
-  "name": "KYT Memory Extension - Day 1 Validation",
-  "version": "0.1.0",
-  "description": "Validation Sprint Day 1: Automatic ChatGPT conversation capture via API interception",
-
+  "name": "KYT Memory - Multi-Platform",
+  "version": "1.0.0",
+  "description": "Capture and search conversations across ChatGPT, Claude, and more with long-term semantic memory",
   "permissions": [
     "storage",
     "alarms"
   ],
-
-  "host_permissions": [
-    "https://chat.openai.com/*",
-    "https://chatgpt.com/*"
-  ],
-
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
-
-  "content_scripts": [
-    {
-      "matches": [
-        "https://chat.openai.com/*",
-        "https://chatgpt.com/*"
-      ],
-      "js": ["content.js"],
-      "run_at": "document_start",
-      "all_frames": false
-    }
-  ],
-
   "icons": {
     "16": "icon.svg",
     "48": "icon.svg",
     "128": "icon.svg"
   },
-
-  "web_accessible_resources": [{
-    "resources": ["inject.js"],
-    "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"]
-  }],
-
-  "minimum_chrome_version": "88"
+  "minimum_chrome_version": "88",
+  "host_permissions": [
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "platforms/chatgpt/content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "platforms/claude/content_test.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "platforms/claude/content_bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "platforms/chatgpt/inject.js"
+      ],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ]
+    },
+    {
+      "resources": [
+        "platforms/claude/inject.js"
+      ],
+      "matches": [
+        "https://claude.ai/*"
+      ]
+    }
+  ]
 }
