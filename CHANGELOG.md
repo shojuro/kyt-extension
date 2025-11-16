@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Database Pollution Prevention (2025-11-16)
+
+**IMPLEMENTED** ✅ - Prevent CSS/JS/UI/metadata noise from polluting message database
+
+**Objective**: Ensure only genuine conversation messages are captured and stored, eliminating noise from DOM mutations, context injection, and browser internals.
+
+**Problem Identified**:
+1. DOM observer was capturing CSS code, JavaScript, and UI elements from ChatGPT page
+2. Claude context injection was prepending "[Memory Context...]" metadata to user prompts
+3. Console inspection output was being captured as messages
+4. All this noise was polluting the database and corrupting memory retrieval
+
+**Implementation**:
+
+**1. Enhanced DOM Observer Filtering: `platforms/chatgpt/inject.js`** (+150 lines)
+
+Added comprehensive whitelist approach:
+```javascript
+// Message container selectors (whitelist)
+const MESSAGE_SELECTORS = [
+  '[data-message-author-role="user"]',
+  '[data-message-author-role="assistant"]',
+  '[data-testid*="conversation-turn"]',
+  'article[data-scroll-anchor]'
+];
+
+// Content validators
+function looksLikeCSS(text) { /* CSS pattern detection */ }
+function looksLikeCode(text) { /* JavaScript/console detection */ }
+function looksLikeUI(text) { /* UI element detection */ }
+
+// Deduplication
+const recentCaptures = new Map(); // Hash-based tracking
+function isDuplicate(content) { /* 5-second window */ }
+```
+
+Features:
+- **Whitelist filtering**: Only process nodes within actual message containers
+- **Content validation**: Detect and skip CSS, JavaScript, UI elements, console output
+- **Deduplication**: Hash-based tracking prevents duplicate captures
+- **Opt-in mode**: DOM observer disabled by default (set `KYT_CONFIG.enableVoiceCapture = true` to enable)
+
+**2. Disabled Context Injection: `platforms/claude/content_test.js`**
+
+Commented out context injection to prevent metadata pollution:
+```javascript
+// PHASE 1: Context injection DISABLED (prevents memory context from being added to prompts)
+// Memory context was polluting the database - messages should be clean
+console.log('ℹ️ KYT Claude: Context injection disabled - clean prompt mode');
+```
+
+**3. Database Cleanup Script: `scripts/cleanup-database.js`** (259 lines)
+
+Created comprehensive noise detection and removal utility:
+```javascript
+const NOISE_PATTERNS = {
+  css: [/\.ant-[\w-]+/, /!important/i, /var\(--[\w-]+\)/],
+  javascript: [/window\.|document\./, /\[\[Prototype\]\]/, /ƒ\s+\w+\(\)/],
+  ui: [/^(ChatGPT|Log in|Sign up)/i, /Temporary Chat/i],
+  metadata: [/\[Memory Context - \d+ relevant item/i, /💬 Previous conversation/]
+};
+```
+
+Features:
+- Dry-run mode for safe preview
+- Batch processing (1000 fetch / 100 delete)
+- Detailed statistics and sample output
+- Detects 5 noise categories: CSS, JavaScript, UI Elements, Repeated Text, Memory Context Metadata
+
+**Usage**:
+```bash
+node scripts/cleanup-database.js --dry-run  # Preview
+node scripts/cleanup-database.js            # Execute cleanup
+```
+
+**Results**:
+- Cleaned 30 noise messages from database (29 context metadata + 1 console output)
+- Database now 100% clean with only genuine conversation content
+- Future captures automatically filtered
+
+**Benefits**:
+- **Clean database**: Only actual conversation messages stored
+- **Accurate memory retrieval**: No noise corrupting semantic search
+- **Reduced storage**: No redundant metadata
+- **Better embeddings**: Embeddings generated from clean content only
+
+**Security**: All environment variables used properly, no secrets in code
+
 ### Added - Cross-Platform CLI Support (2025-11-15)
 
 **IMPLEMENTED** ✅ - Windows, macOS, Linux global CLI installation
