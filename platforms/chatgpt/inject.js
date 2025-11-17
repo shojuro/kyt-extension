@@ -268,6 +268,95 @@
   };
 
   /**
+   * Override WebSocket in page context for voice input capture
+   * Voice messages use WebSocket (not fetch), so we need a separate interceptor
+   * This captures voice transcripts at protocol level, immune to DOM changes
+   */
+  const OriginalWebSocket = window.WebSocket;
+
+  window.WebSocket = function(...args) {
+    const socket = new OriginalWebSocket(...args);
+    const wsUrl = args[0];
+
+    // Detect ChatGPT voice WebSocket
+    // Pattern: wss://chatgpt.com/ws/user/* or similar voice endpoints
+    if (typeof wsUrl === 'string' && (
+      wsUrl.includes('ws.chatgpt.com') ||
+      wsUrl.includes('chatgpt.com/ws') ||
+      wsUrl.includes('/ws/user/')
+    )) {
+      console.log('🎤 KYT ChatGPT: WebSocket intercepted (likely voice):', wsUrl);
+
+      // Intercept incoming messages
+      socket.addEventListener('message', (event) => {
+        try {
+          // WebSocket messages are typically JSON
+          if (typeof event.data === 'string') {
+            const data = JSON.parse(event.data);
+
+            // Voice transcripts come in various formats, try to detect:
+            // - data.type === 'transcript'
+            // - data.text (transcript text)
+            // - data.message.content (alternate format)
+            let transcriptText = null;
+
+            if (data.type === 'transcript' && data.text) {
+              transcriptText = data.text;
+            } else if (data.text) {
+              transcriptText = data.text;
+            } else if (data.message?.content) {
+              transcriptText = data.message.content;
+            } else if (data.transcript) {
+              transcriptText = data.transcript;
+            }
+
+            if (transcriptText && transcriptText.trim().length > 0) {
+              console.log('🎤 KYT ChatGPT: Voice transcript captured:', transcriptText.substring(0, 50) + '...');
+
+              // Dispatch captured voice message
+              window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+                detail: {
+                  content: transcriptText,
+                  role: 'user',
+                  source: 'chatgpt',
+                  captureMethod: 'websocket',
+                  timestamp: Date.now(),
+                  conversationId: data.conversation_id || 'unknown',
+                  platform: 'chatgpt'
+                }
+              }));
+
+              totalInterceptions++;
+              lastInterceptionTime = Date.now();
+            }
+          }
+        } catch (error) {
+          // Silently ignore parse errors (WebSocket may send non-JSON data like pings)
+          if (error.name !== 'SyntaxError') {
+            console.warn('⚠️ KYT ChatGPT: WebSocket message parse error:', error);
+          }
+        }
+      });
+
+      // Log WebSocket connection lifecycle for debugging
+      socket.addEventListener('open', () => {
+        console.log('🎤 KYT ChatGPT: WebSocket opened');
+      });
+
+      socket.addEventListener('close', () => {
+        console.log('🎤 KYT ChatGPT: WebSocket closed');
+      });
+
+      socket.addEventListener('error', (error) => {
+        console.error('❌ KYT ChatGPT: WebSocket error:', error);
+        totalErrors++;
+      });
+    }
+
+    return socket;
+  };
+
+  /**
    * PHASE 1.5: Capture streaming assistant response
    * Reads SSE stream and extracts assistant message
    */
@@ -517,12 +606,82 @@
 
   // ChatGPT-specific message container selectors
   // These are the actual DOM elements that contain real conversation messages
+  // Updated with more resilient patterns for UI changes
   const MESSAGE_SELECTORS = [
+    // Primary selectors (high specificity)
     '[data-message-author-role="user"]',
     '[data-message-author-role="assistant"]',
+
+    // Conversation turn selectors (multiple patterns)
     '[data-testid*="conversation-turn"]',
-    'article[data-scroll-anchor]'
+    '[data-testid^="turn-"]',
+
+    // Article-based selectors (common ChatGPT pattern)
+    'article[data-scroll-anchor]',
+    'article[class*="group"]',
+
+    // Fallback selectors (broader but still specific to messages)
+    '.text-message',
+    '[role="article"]',
+    'div[class*="message"]',
+
+    // Structural fallback (wider net, more likely to catch changes)
+    'main article',
+    'main .group'
   ];
+
+  // Noise filter patterns - DOM elements to IGNORE
+  const NOISE_PATTERNS = [
+    // UI elements
+    'button', 'input', 'textarea', 'select',
+    'nav', 'header', 'footer', 'aside',
+
+    // ChatGPT-specific UI noise
+    '[class*="timestamp"]',
+    '[class*="copy-button"]',
+    '[class*="regenerate"]',
+    '[class*="feedback"]',
+    '[aria-label*="Copy"]',
+    '[aria-label*="Edit"]',
+    '[aria-label*="Regenerate"]',
+
+    // Code elements (will be captured with context, not alone)
+    'code', 'pre',
+
+    // Empty or whitespace-only containers
+    '.empty', '[data-empty="true"]'
+  ];
+
+  // Check if node should be ignored (noise filtering)
+  function isNoiseElement(node) {
+    if (!node || !node.tagName) return true;
+
+    const tagName = node.tagName.toLowerCase();
+    const className = node.className || '';
+    const ariaLabel = node.getAttribute('aria-label') || '';
+
+    // Check tag names
+    if (NOISE_PATTERNS.slice(0, 4).includes(tagName)) {
+      return true;
+    }
+
+    // Check class and aria-label patterns
+    for (const pattern of NOISE_PATTERNS.slice(4)) {
+      if (pattern.startsWith('[class*=')) {
+        const classPattern = pattern.match(/\[class\*="(.+?)"\]/)?.[1];
+        if (classPattern && className.includes(classPattern)) {
+          return true;
+        }
+      } else if (pattern.startsWith('[aria-label*=')) {
+        const ariaPattern = pattern.match(/\[aria-label\*="(.+?)"\]/)?.[1];
+        if (ariaPattern && ariaLabel.includes(ariaPattern)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
 
   // Check if a node is within a message container
   function isMessageContainer(node) {
@@ -628,6 +787,11 @@
 
     // Only process element nodes
     if (node.nodeType !== Node.ELEMENT_NODE) return null;
+
+    // NOISE FILTERING: Skip UI elements, buttons, timestamps, etc.
+    if (isNoiseElement(node)) {
+      return null;
+    }
 
     // WHITELIST APPROACH: Only process nodes within message containers
     if (!isMessageContainer(node)) {
@@ -748,8 +912,8 @@
             timestamp: Date.now(),
             messageId: `msg_dom_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             platform: 'chatgpt',
-            captureMethod: 'dom_observer',  // Track capture method for diagnostics
-            confidence: role === 'unknown' ? 'low' : 'medium'  // DOM inference less reliable than fetch
+            captureMethod: 'dom',  // Track capture method for deduplication (vs 'websocket' or 'fetch')
+            confidence: 70  // DOM observer = 70% confidence (protocol-level = 95%)
           };
 
           console.log(`🧠 KYT ChatGPT DOM: ${role.toUpperCase()} message captured (${text.length} chars)`);

@@ -29,6 +29,7 @@
         "https://chat.openai.com/*"
       ],
       "js": [
+        "platforms/chatgpt/deduplication.js",
         "platforms/chatgpt/content.js"
       ],
       "run_at": "document_start",

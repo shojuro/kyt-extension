@@ -3,12 +3,23 @@
  *
  * Purpose: Inject page context script and relay messages to background
  * Platform: ChatGPT
+ *
+ * Note: deduplication.js is loaded first (see manifest.json) and provides window.KYT_Deduplicator
  */
 
 (function() {
   'use strict';
 
   console.log('🚀 KYT ChatGPT Content: Initializing...');
+
+  // Access deduplicator from window (loaded via separate script tag)
+  const deduplicator = window.KYT_Deduplicator;
+
+  if (deduplicator) {
+    console.log('🔄 KYT ChatGPT Content: Deduplication layer active');
+  } else {
+    console.warn('⚠️ KYT ChatGPT Content: Deduplication layer not found - duplicates may occur');
+  }
 
   // === PAGE CONTEXT INJECTION ===
   const script = document.createElement('script');
@@ -27,11 +38,19 @@
     const messageData = event.detail;
     console.log('📨 KYT ChatGPT Content: Received message from page context');
     console.log('   Content preview:', messageData.content.substring(0, 50) + '...');
+    console.log('   Capture method:', messageData.captureMethod || 'fetch');
 
     // Check if extension context is still valid
     if (!chrome.runtime?.id) {
       console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated - message not saved');
       console.warn('   Please reload the page to restore functionality');
+      return;
+    }
+
+    // DEDUPLICATION CHECK: Skip duplicates from multiple capture sources
+    const captureMethod = messageData.captureMethod || 'fetch';
+    if (deduplicator && !deduplicator.shouldCapture(messageData.content, captureMethod)) {
+      console.log('⏭️ KYT ChatGPT Content: Duplicate message skipped by deduplicator');
       return;
     }
 
