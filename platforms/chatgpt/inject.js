@@ -19,6 +19,116 @@
 
   console.log('🚀 KYT ChatGPT Inject: Initializing in page context...');
 
+  // === DEDUPLICATION LAYER ===
+  /**
+   * Message Deduplication Layer
+   * Prevents duplicate captures from multiple sources (WebSocket, fetch, DOM)
+   * Uses content hashing and confidence-based priority
+   */
+  class MessageDeduplicator {
+    constructor(options = {}) {
+      this.recentMessages = new Map();
+      this.dedupeWindow = options.dedupeWindow || 5000; // 5 seconds
+      this.cleanupInterval = setInterval(() => this.cleanup(), 10000);
+      this.stats = {
+        totalAttempts: 0,
+        captured: 0,
+        duplicatesSkipped: 0,
+        upgradeCaptures: 0
+      };
+    }
+
+    shouldCapture(content, captureMethod) {
+      this.stats.totalAttempts++;
+      const normalizedContent = this.normalizeContent(content);
+      const hash = this.hashContent(normalizedContent);
+      const now = Date.now();
+      const confidence = this.getConfidence(captureMethod);
+
+      if (this.recentMessages.has(hash)) {
+        const lastCapture = this.recentMessages.get(hash);
+        const timeSinceCapture = now - lastCapture.timestamp;
+
+        if (timeSinceCapture < this.dedupeWindow) {
+          if (confidence > lastCapture.confidence) {
+            console.log(`🔄 KYT Dedupe: Upgrading ${lastCapture.captureMethod} (${lastCapture.confidence}%) → ${captureMethod} (${confidence}%)`);
+            this.recentMessages.set(hash, { timestamp: now, confidence, captureMethod });
+            this.stats.upgradeCaptures++;
+            return true;
+          } else {
+            console.log(`⏭️ KYT Dedupe: Skipping duplicate (${captureMethod} ${confidence}% <= ${lastCapture.captureMethod} ${lastCapture.confidence}%)`);
+            this.stats.duplicatesSkipped++;
+            return false;
+          }
+        }
+      }
+
+      this.recentMessages.set(hash, { timestamp: now, confidence, captureMethod });
+      this.stats.captured++;
+      return true;
+    }
+
+    getConfidence(method) {
+      const map = { 'websocket': 95, 'fetch': 95, 'dom': 70 };
+      return map[method] || 50;
+    }
+
+    normalizeContent(content) {
+      return String(content).trim().replace(/\s+/g, ' ').toLowerCase();
+    }
+
+    hashContent(content) {
+      let hash = 0;
+      for (let i = 0; i < content.length; i++) {
+        const char = content.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      return hash.toString(36);
+    }
+
+    cleanup() {
+      const now = Date.now();
+      const cutoff = now - this.dedupeWindow;
+      let removed = 0;
+      for (const [hash, entry] of this.recentMessages.entries()) {
+        if (entry.timestamp < cutoff) {
+          this.recentMessages.delete(hash);
+          removed++;
+        }
+      }
+      if (removed > 0) {
+        console.log(`🧹 KYT Dedupe: Cleaned up ${removed} old entries`);
+      }
+    }
+
+    getStats() {
+      return {
+        ...this.stats,
+        mapSize: this.recentMessages.size,
+        duplicateRate: this.stats.totalAttempts > 0
+          ? (this.stats.duplicatesSkipped / this.stats.totalAttempts * 100).toFixed(1) + '%'
+          : '0%'
+      };
+    }
+
+    resetStats() {
+      this.stats = { totalAttempts: 0, captured: 0, duplicatesSkipped: 0, upgradeCaptures: 0 };
+    }
+
+    destroy() {
+      if (this.cleanupInterval) {
+        clearInterval(this.cleanupInterval);
+        this.cleanupInterval = null;
+      }
+      this.recentMessages.clear();
+    }
+  }
+
+  // Create singleton deduplicator instance
+  window.KYT_Deduplicator = new MessageDeduplicator();
+  console.log('🔄 KYT ChatGPT: Deduplication layer initialized in page context');
+
   // Track interception health
   let lastInterceptionTime = Date.now();
   let totalInterceptions = 0;
@@ -233,6 +343,12 @@
       if (messageData) {
         console.log('✅ KYT ChatGPT: Message extracted:', messageData.content.substring(0, 50) + '...');
 
+        // DEDUPLICATION CHECK: Skip duplicates from multiple capture sources
+        if (window.KYT_Deduplicator && !window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch')) {
+          console.log('⏭️ KYT ChatGPT: Duplicate message skipped by deduplicator');
+          return await originalFetch.apply(this, args); // Return response without dispatching event
+        }
+
         // Send to content script via custom event
         window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
           detail: messageData
@@ -312,6 +428,12 @@
 
             if (transcriptText && transcriptText.trim().length > 0) {
               console.log('🎤 KYT ChatGPT: Voice transcript captured:', transcriptText.substring(0, 50) + '...');
+
+              // DEDUPLICATION CHECK: Skip duplicates
+              if (window.KYT_Deduplicator && !window.KYT_Deduplicator.shouldCapture(transcriptText, 'websocket')) {
+                console.log('⏭️ KYT ChatGPT: Duplicate voice message skipped by deduplicator');
+                return; // Skip dispatch
+              }
 
               // Dispatch captured voice message
               window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
@@ -918,6 +1040,12 @@
 
           console.log(`🧠 KYT ChatGPT DOM: ${role.toUpperCase()} message captured (${text.length} chars)`);
           console.log(`📝 Preview: ${text.substring(0, 100)}...`);
+
+          // DEDUPLICATION CHECK: Skip duplicates (DOM has lowest priority)
+          if (window.KYT_Deduplicator && !window.KYT_Deduplicator.shouldCapture(text, 'dom')) {
+            console.log('⏭️ KYT ChatGPT DOM: Duplicate message skipped by deduplicator');
+            return; // Skip dispatch
+          }
 
           // Use same event mechanism as fetch interception
           window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {

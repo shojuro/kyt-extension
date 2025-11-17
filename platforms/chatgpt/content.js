@@ -12,15 +12,6 @@
 
   console.log('🚀 KYT ChatGPT Content: Initializing...');
 
-  // Access deduplicator from window (loaded via separate script tag)
-  const deduplicator = window.KYT_Deduplicator;
-
-  if (deduplicator) {
-    console.log('🔄 KYT ChatGPT Content: Deduplication layer active');
-  } else {
-    console.warn('⚠️ KYT ChatGPT Content: Deduplication layer not found - duplicates may occur');
-  }
-
   // === PAGE CONTEXT INJECTION ===
   const script = document.createElement('script');
   script.src = chrome.runtime.getURL('platforms/chatgpt/inject.js');
@@ -47,12 +38,8 @@
       return;
     }
 
-    // DEDUPLICATION CHECK: Skip duplicates from multiple capture sources
-    const captureMethod = messageData.captureMethod || 'fetch';
-    if (deduplicator && !deduplicator.shouldCapture(messageData.content, captureMethod)) {
-      console.log('⏭️ KYT ChatGPT Content: Duplicate message skipped by deduplicator');
-      return;
-    }
+    // Note: Deduplication now happens in page context (inject.js) before dispatch
+    // This ensures it works across all capture methods and is accessible from console
 
     // Forward to background script for storage
     chrome.runtime.sendMessage({
