@@ -103,6 +103,12 @@ test_data/captured_*.json
 validation/user_data/
 
 # ============================================
+# BASELINE DATA (Validation Results)
+# ============================================
+baselines/
+*.baseline.json
+
+# ============================================
 # DIAGNOSTIC SCRIPTS WITH HARDCODED SECRETS
 # ============================================
 check_sources.js

@@ -29,7 +29,7 @@
     constructor(options = {}) {
       this.recentMessages = new Map();
       this.dedupeWindow = options.dedupeWindow || 5000; // 5 seconds
-      this.cleanupInterval = setInterval(() => this.cleanup(), 10000);
+      this.cleanupInterval = setInterval(() => this.cleanup(), 2000); // Run every 2s (faster than 5s dedupe window)
       this.stats = {
         totalAttempts: 0,
         captured: 0,

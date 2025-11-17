@@ -1,0 +1,87 @@
+
+╔═══════════════════════════════════════════════════════════════════╗
+║         BATCH 2: QUERY COMPLEXITY TEST SUITE                     ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+   Completed 10/50 scenarios...
+   Completed 20/50 scenarios...
+   Completed 30/50 scenarios...
+   Completed 40/50 scenarios...
+   Completed 50/50 scenarios...
+
+
+╔═══════════════════════════════════════════════════════════════════╗
+║                    TEST RESULTS SUMMARY                           ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+📊 OVERALL METRICS:
+   Total Scenarios: 50
+   Position #1 Accuracy: 98.0%
+   False Positive Rate: 0.0%
+
+💻 DEVELOPER POWER USER (25 scenarios):
+   Position #1 Accuracy: 100.0% (target: ≥95%)
+   False Positive Rate: 0.0% (target: ≤30%)
+
+   By Query Type:
+   - single_word         : 100.0% accurate, 0.0% FP (5 scenarios)
+   - context_query       : 100.0% accurate, 0.0% FP (5 scenarios)
+   - full_sentence       : 100.0% accurate, 0.0% FP (5 scenarios)
+   - vague               : 100.0% accurate, 0.0% FP (5 scenarios)
+   - clarified           : 100.0% accurate, 0.0% FP (5 scenarios)
+
+💬 AI COMPANION USER (25 scenarios):
+   Position #1 Accuracy: 96.0% (target: ≥85%)
+   False Positive Rate: 0.0% (target: ≤40%)
+
+   By Query Type:
+   - single_word         : 100.0% accurate, 0.0% FP (5 scenarios)
+   - context_query       : 80.0% accurate, 0.0% FP (5 scenarios)
+   - full_sentence       : 100.0% accurate, 0.0% FP (5 scenarios)
+   - vague               : 100.0% accurate, 0.0% FP (5 scenarios)
+   - clarified           : 100.0% accurate, 0.0% FP (5 scenarios)
+
+
+🎯 SUCCESS CRITERIA:
+
+   Developer Position #1 ≥95%:  ✅ PASS (100.0%)
+   Developer FP Rate ≤30%:      ✅ PASS (0.0%)
+   Companion Position #1 ≥85%:  ✅ PASS (96.0%)
+   Companion FP Rate ≤40%:      ✅ PASS (0.0%)
+
+✅ BATCH 2 TEST SUITE PASSED
+
+   → Both ICPs meet position #1 accuracy targets
+   → Query complexity handled across all formulations
+   → Safe to proceed with Batch 3 (Temporal Diversity)
+
+══════════════════════════════════════════════════════════════════════
+❌ FAILURES (1 scenarios)
+
+Failure Type Breakdown:
+   confused_with_high_similarity_competitor     : 1
+
+Detailed Failures (first 10):
+
+   Scenario 84: Context: "my therapy goals for this year"
+   ICP: companion, Query Type: context_query
+   Expected: "therapy_goals"
+   Got:      "therapy_sessions"
+   Type:     confused_with_high_similarity_competitor
+   Top 3:    therapy_sessions, therapy_goals
+
+══════════════════════════════════════════════════════════════════════
+💡 KEY INSIGHTS
+
+Query Type Performance:
+- Single-word queries: Test if embeddings handle minimal context
+- Context queries: Test if additional context improves accuracy
+- Full sentence: Test natural language understanding
+- Vague queries: Hardest case, expect lower accuracy
+- Clarified: Test explicit disambiguation
+
+Next Steps:
+1. Proceed to Batch 3 (Temporal Diversity)
+2. Monitor if FP rates trend upward across batches
+3. Consider λ adjustment if Developer FP > 30% consistently
+
