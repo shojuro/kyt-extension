@@ -45,14 +45,6 @@
     const now = Date.now();
     const confidence = this.getConfidence(captureMethod);
 
-    // DEBUG LOGGING
-    console.log('🔍 KYT Dedupe DEBUG: shouldCapture called');
-    console.log('   Content preview:', content.substring(0, 50));
-    console.log('   Capture method:', captureMethod);
-    console.log('   Content hash:', hash);
-    console.log('   Map size before check:', this.recentMessages.size);
-    console.log('   Has hash in map:', this.recentMessages.has(hash));
-
       if (this.recentMessages.has(hash)) {
         const lastCapture = this.recentMessages.get(hash);
         const timeSinceCapture = now - lastCapture.timestamp;
@@ -73,11 +65,6 @@
 
       this.recentMessages.set(hash, { timestamp: now, confidence, captureMethod });
     this.stats.captured++;
-    
-    // DEBUG LOGGING
-    console.log('✅ KYT Dedupe DEBUG: Message CAPTURED (new message)');
-    console.log('   Map size after adding:', this.recentMessages.size);
-    
     return true;
     }
 
@@ -104,27 +91,12 @@
     const now = Date.now();
     const cutoff = now - this.dedupeWindow;
     let removed = 0;
-    
-    // DEBUG LOGGING
-    console.log('🧹 KYT Dedupe DEBUG: Cleanup starting');
-    console.log('   Map size before cleanup:', this.recentMessages.size);
-    console.log('   Current time:', now);
-    console.log('   Cutoff time:', cutoff);
-    console.log('   Dedupe window:', this.dedupeWindow);
       for (const [hash, entry] of this.recentMessages.entries()) {
-      const age = now - entry.timestamp;
-      console.log(`   Checking entry: hash=${hash}, age=${age}ms, cutoff=${this.dedupeWindow}ms`);
-      
       if (entry.timestamp < cutoff) {
-        console.log(`   ❌ Removing old entry (age ${age}ms > ${this.dedupeWindow}ms)`);
         this.recentMessages.delete(hash);
         removed++;
-      } else {
-        console.log(`   ✅ Keeping entry (age ${age}ms < ${this.dedupeWindow}ms)`);
       }
     }
-      console.log(`🧹 KYT Dedupe DEBUG: Cleanup complete - removed ${removed} entries`);
-    console.log('   Map size after cleanup:', this.recentMessages.size);
     
     if (removed > 0) {
       console.log(`🧹 KYT Dedupe: Cleaned up ${removed} old entries`);
