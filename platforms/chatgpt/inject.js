@@ -344,8 +344,20 @@
       if (messageData) {
         console.log('✅ KYT ChatGPT: Message extracted:', messageData.content.substring(0, 50) + '...');
 
-        // DEDUPLICATION CHECK: Skip duplicates from multiple capture sources
-        if (window.KYT_Deduplicator && !window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch')) {
+        // DEDUPLICATION CHECK: Skip duplicates from multiple capture sources (with error boundary)
+        let shouldCapture = true; // Default: always capture (fail-open)
+        try {
+          if (window.KYT_Deduplicator) {
+            shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch');
+          }
+        } catch (dedupeError) {
+          console.error('❌ KYT ChatGPT: Deduplication error, capturing anyway:', dedupeError);
+          if (window.KYT_Deduplicator?._recordError) {
+            window.KYT_Deduplicator._recordError(dedupeError);
+          }
+        }
+
+        if (!shouldCapture) {
           console.log('⏭️ KYT ChatGPT: Duplicate message skipped by deduplicator');
           return await originalFetch.apply(this, args); // Return response without dispatching event
         }
@@ -430,8 +442,20 @@
             if (transcriptText && transcriptText.trim().length > 0) {
               console.log('🎤 KYT ChatGPT: Voice transcript captured:', transcriptText.substring(0, 50) + '...');
 
-              // DEDUPLICATION CHECK: Skip duplicates
-              if (window.KYT_Deduplicator && !window.KYT_Deduplicator.shouldCapture(transcriptText, 'websocket')) {
+              // DEDUPLICATION CHECK: Skip duplicates (with error boundary)
+              let shouldCapture = true; // Default: always capture (fail-open)
+              try {
+                if (window.KYT_Deduplicator) {
+                  shouldCapture = window.KYT_Deduplicator.shouldCapture(transcriptText, 'websocket');
+                }
+              } catch (dedupeError) {
+                console.error('❌ KYT ChatGPT: Deduplication error, capturing anyway:', dedupeError);
+                if (window.KYT_Deduplicator?._recordError) {
+                  window.KYT_Deduplicator._recordError(dedupeError);
+                }
+              }
+
+              if (!shouldCapture) {
                 console.log('⏭️ KYT ChatGPT: Duplicate voice message skipped by deduplicator');
                 return; // Skip dispatch
               }
@@ -1042,8 +1066,20 @@
           console.log(`🧠 KYT ChatGPT DOM: ${role.toUpperCase()} message captured (${text.length} chars)`);
           console.log(`📝 Preview: ${text.substring(0, 100)}...`);
 
-          // DEDUPLICATION CHECK: Skip duplicates (DOM has lowest priority)
-          if (window.KYT_Deduplicator && !window.KYT_Deduplicator.shouldCapture(text, 'dom')) {
+          // DEDUPLICATION CHECK: Skip duplicates (DOM has lowest priority) (with error boundary)
+          let shouldCapture = true; // Default: always capture (fail-open)
+          try {
+            if (window.KYT_Deduplicator) {
+              shouldCapture = window.KYT_Deduplicator.shouldCapture(text, 'dom');
+            }
+          } catch (dedupeError) {
+            console.error('❌ KYT ChatGPT DOM: Deduplication error, capturing anyway:', dedupeError);
+            if (window.KYT_Deduplicator?._recordError) {
+              window.KYT_Deduplicator._recordError(dedupeError);
+            }
+          }
+
+          if (!shouldCapture) {
             console.log('⏭️ KYT ChatGPT DOM: Duplicate message skipped by deduplicator');
             return; // Skip dispatch
           }

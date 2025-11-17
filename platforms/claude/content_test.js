@@ -24,8 +24,15 @@ if (window.KYT_CLAUDE_INJECTED) {
    */
   class MessageDeduplicator {
     constructor(options = {}) {
+      // Input validation
+      if (options && typeof options !== 'object') {
+        console.error('❌ KYT Dedupe: Invalid constructor options, using defaults');
+        options = {};
+      }
+
       this.recentMessages = new Map();
       this.dedupeWindow = options.dedupeWindow || 5000; // 5 seconds
+      this.maxMapSize = options.maxMapSize || 1000; // Max entries to prevent DoS
       this.cleanupInterval = setInterval(() => this.cleanup(), 2000); // Run every 2s
       this.stats = {
         totalAttempts: 0,
@@ -33,9 +40,32 @@ if (window.KYT_CLAUDE_INJECTED) {
         duplicatesSkipped: 0,
         upgradeCaptures: 0
       };
+
+      // Error tracking
+      this.errorLog = [];
+      this.maxErrorLogSize = options.maxErrorLogSize || 100;
+
+      // Concurrent access protection
+      this._cleanupInProgress = false;
     }
 
     shouldCapture(content, captureMethod) {
+      // Input validation
+      if (content === undefined || content === null || content === '') {
+        console.warn('⚠️ KYT Dedupe: Invalid content (empty/null/undefined), skipping deduplication');
+        return true; // Fail-open: capture anyway
+      }
+
+      if (typeof content !== 'string' && typeof content !== 'number') {
+        console.warn('⚠️ KYT Dedupe: Invalid content type:', typeof content, 'skipping deduplication');
+        return true; // Fail-open: capture anyway
+      }
+
+      if (!captureMethod || typeof captureMethod !== 'string') {
+        console.warn('⚠️ KYT Dedupe: Invalid captureMethod:', captureMethod, 'defaulting to "unknown"');
+        captureMethod = 'unknown';
+      }
+
       this.stats.totalAttempts++;
       const normalizedContent = this.normalizeContent(content);
       const hash = this.hashContent(normalizedContent);
@@ -60,6 +90,13 @@ if (window.KYT_CLAUDE_INJECTED) {
         }
       }
 
+      // FIFO eviction if Map is at max size
+      if (this.recentMessages.size >= this.maxMapSize) {
+        const oldestKey = this.recentMessages.keys().next().value;
+        this.recentMessages.delete(oldestKey);
+        console.log('🗑️ KYT Dedupe: FIFO eviction, Map at max size:', this.maxMapSize);
+      }
+
       this.recentMessages.set(hash, { timestamp: now, confidence, captureMethod });
       this.stats.captured++;
       return true;
@@ -71,24 +108,68 @@ if (window.KYT_CLAUDE_INJECTED) {
     }
 
     normalizeContent(content) {
-      return String(content).trim().replace(/\s+/g, ' ').toLowerCase();
+      let normalized = String(content).trim().replace(/\s+/g, ' ').toLowerCase();
+      
+      // Unicode normalization (NFKC)
+      if (typeof normalized.normalize === 'function') {
+        try {
+          normalized = normalized.normalize('NFKC');
+        } catch (e) {
+          console.warn('⚠️ KYT Dedupe: Unicode normalization failed:', e);
+        }
+      }
+      
+      return normalized;
     }
 
     hashContent(content) {
-      let hash = 0;
+      // FNV-1a 32-bit hash algorithm for better distribution
+      const FNV_PRIME = 0x01000193;
+      const FNV_OFFSET_BASIS = 0x811c9dc5;
+      
+      let hash = FNV_OFFSET_BASIS;
+      
       for (let i = 0; i < content.length; i++) {
-        const char = content.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash;
+        hash ^= content.charCodeAt(i);
+        hash = Math.imul(hash, FNV_PRIME);
       }
-      return hash.toString(36);
+      
+      return (hash >>> 0).toString(16);
     }
 
     cleanup() {
-      const now = Date.now();
-      const cutoff = now - this.dedupeWindow;
-      let removed = 0;
+      // Concurrent access protection
+      if (this._cleanupInProgress) {
+        console.log('⏭️ KYT Dedupe: Cleanup already in progress, skipping');
+        return;
+      }
+
+      this._cleanupInProgress = true;
+
+      try {
+        const now = Date.now();
+        const cutoff = now - this.dedupeWindow;
+        let removed = 0;
+
+        // Safety checks
+      if (this.dedupeWindow <= 0 || this.dedupeWindow > 3600000) {
+        console.warn('⚠️ KYT Dedupe: Invalid dedup window, skipping cleanup');
+        return;
+      }
+
+      if (now < 1600000000000) {
+        console.error('❌ KYT Dedupe: System time incorrect, skipping cleanup');
+        return;
+      }
+
       for (const [hash, entry] of this.recentMessages.entries()) {
+        if (!entry || typeof entry.timestamp !== 'number') {
+          console.warn('⚠️ KYT Dedupe: Invalid entry, removing:', hash);
+          this.recentMessages.delete(hash);
+          removed++;
+          continue;
+        }
+
         if (entry.timestamp < cutoff) {
           this.recentMessages.delete(hash);
           removed++;
@@ -96,18 +177,45 @@ if (window.KYT_CLAUDE_INJECTED) {
       }
 
       if (removed > 0) {
-        console.log(`🧹 KYT Dedupe: Cleaned up ${removed} old entries`);
+          console.log(`🧹 KYT Dedupe: Cleaned up ${removed} old entries`);
+        }
+      } finally {
+        this._cleanupInProgress = false;
       }
     }
 
     getStats() {
+      const now = Date.now();
+      const recentErrors = this.errorLog.filter(e => now - e.timestamp < 60000);
+
       return {
         ...this.stats,
         mapSize: this.recentMessages.size,
         duplicateRate: this.stats.totalAttempts > 0
           ? (this.stats.duplicatesSkipped / this.stats.totalAttempts * 100).toFixed(1) + '%'
-          : '0%'
+          : '0%',
+        health: {
+          totalErrors: this.errorLog.length,
+          recentErrors: recentErrors.length,
+          lastError: this.errorLog.length > 0 
+            ? this.errorLog[this.errorLog.length - 1] 
+            : null
+        }
       };
+    }
+
+    _recordError(error) {
+      const errorEntry = {
+        timestamp: Date.now(),
+        message: error?.message || String(error),
+        stack: error?.stack || null
+      };
+
+      this.errorLog.push(errorEntry);
+
+      if (this.errorLog.length > this.maxErrorLogSize) {
+        this.errorLog.shift();
+      }
     }
 
     resetStats() {
@@ -281,8 +389,19 @@ window.fetch = async function(...args) {
               contentLength: messageData.content.length
             });
 
-            // Check deduplication before dispatching
-            if (window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch')) {
+            // Check deduplication before dispatching (with error boundary)
+            let shouldCapture = true; // Default: always capture (fail-open)
+            try {
+              shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch');
+            } catch (dedupeError) {
+              console.error('❌ KYT Claude: Deduplication error, capturing anyway:', dedupeError);
+              // Record error for health monitoring
+              if (window.KYT_Deduplicator?._recordError) {
+                window.KYT_Deduplicator._recordError(dedupeError);
+              }
+            }
+
+            if (shouldCapture) {
               // Send to bridge via CustomEvent
               window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
                 detail: messageData

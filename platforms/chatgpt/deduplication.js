@@ -16,14 +16,23 @@
 
 class MessageDeduplicator {
   constructor(options = {}) {
+    // Input validation
+    if (options && typeof options !== 'object') {
+      console.error('❌ KYT Dedupe: Invalid constructor options, using defaults');
+      options = {};
+    }
+
     // Recent messages: content_hash -> { timestamp, confidence, captureMethod }
     this.recentMessages = new Map();
 
     // Deduplication window in milliseconds (default: 5 seconds)
     this.dedupeWindow = options.dedupeWindow || 5000;
 
-    // Cleanup interval (every 10 seconds)
-    this.cleanupInterval = setInterval(() => this.cleanup(), 10000);
+    // Maximum Map size to prevent DoS attacks (default: 1000 entries)
+    this.maxMapSize = options.maxMapSize || 1000;
+
+    // Cleanup interval (every 2 seconds - must be faster than 5s dedup window)
+    this.cleanupInterval = setInterval(() => this.cleanup(), 2000);
 
     // Statistics
     this.stats = {
@@ -32,6 +41,13 @@ class MessageDeduplicator {
       duplicatesSkipped: 0,
       upgradeCaptures: 0
     };
+
+    // Error tracking for health monitoring
+    this.errorLog = [];
+    this.maxErrorLogSize = options.maxErrorLogSize || 100;
+
+    // Concurrent access protection
+    this._cleanupInProgress = false;
   }
 
   /**
@@ -42,6 +58,22 @@ class MessageDeduplicator {
    * @returns {boolean} True if message should be captured, false if duplicate
    */
   shouldCapture(content, captureMethod) {
+    // Input validation
+    if (content === undefined || content === null || content === '') {
+      console.warn('⚠️ KYT Dedupe: Invalid content (empty/null/undefined), skipping deduplication');
+      return true; // Fail-open: capture anyway
+    }
+
+    if (typeof content !== 'string' && typeof content !== 'number') {
+      console.warn('⚠️ KYT Dedupe: Invalid content type:', typeof content, 'skipping deduplication');
+      return true; // Fail-open: capture anyway
+    }
+
+    if (!captureMethod || typeof captureMethod !== 'string') {
+      console.warn('⚠️ KYT Dedupe: Invalid captureMethod:', captureMethod, 'defaulting to "unknown"');
+      captureMethod = 'unknown';
+    }
+
     this.stats.totalAttempts++;
 
     // Normalize content for hashing
@@ -78,6 +110,13 @@ class MessageDeduplicator {
     }
 
     // First time or outside window - capture it
+    // FIFO eviction if Map is at max size
+    if (this.recentMessages.size >= this.maxMapSize) {
+      const oldestKey = this.recentMessages.keys().next().value;
+      this.recentMessages.delete(oldestKey);
+      console.log('🗑️ KYT Dedupe: FIFO eviction, Map at max size:', this.maxMapSize);
+    }
+
     this.recentMessages.set(hash, {
       timestamp: now,
       confidence: confidence,
@@ -114,27 +153,46 @@ class MessageDeduplicator {
       return String(content);
     }
 
-    return content
-      .trim()                        // Remove leading/trailing whitespace
-      .replace(/\s+/g, ' ')          // Normalize multiple spaces to single space
-      .toLowerCase();                 // Case-insensitive matching
+    let normalized = content
+      .trim()
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+    
+    // Unicode normalization (NFKC): handles composed vs decomposed characters
+    if (typeof normalized.normalize === 'function') {
+      try {
+        normalized = normalized.normalize('NFKC');
+      } catch (e) {
+        console.warn('⚠️ KYT Dedupe: Unicode normalization failed:', e);
+      }
+    }
+    
+    return normalized;
   }
 
   /**
-   * Hash content for deduplication key
-   * Simple hash function - good enough for deduplication
-   *
+   * Hash content for deduplication key using FNV-1a algorithm
+   * FNV-1a provides better distribution and fewer collisions than simple hash
+   * 
    * @param {string} content - Normalized content
-   * @returns {string} Hash string
+   * @returns {string} Hash string (hex encoded)
    */
   hashContent(content) {
-    let hash = 0;
+    // FNV-1a 32-bit hash algorithm
+    const FNV_PRIME = 0x01000193;
+    const FNV_OFFSET_BASIS = 0x811c9dc5;
+    
+    let hash = FNV_OFFSET_BASIS;
+    
     for (let i = 0; i < content.length; i++) {
-      const char = content.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32bit integer
+      // XOR with byte value
+      hash ^= content.charCodeAt(i);
+      // Multiply by FNV prime (with 32-bit overflow)
+      hash = Math.imul(hash, FNV_PRIME);
     }
-    return hash.toString(36); // Base36 encoding (alphanumeric)
+    
+    // Convert to unsigned 32-bit and return as hex string
+    return (hash >>> 0).toString(16);
   }
 
   /**
@@ -142,11 +200,40 @@ class MessageDeduplicator {
    * Prevents memory leak from unbounded Map growth
    */
   cleanup() {
-    const now = Date.now();
+    // Concurrent access protection: skip if cleanup already running
+    if (this._cleanupInProgress) {
+      console.log('⏭️ KYT Dedupe: Cleanup already in progress, skipping');
+      return;
+    }
+
+    this._cleanupInProgress = true;
+
+    try {
+      const now = Date.now();
     const cutoff = now - this.dedupeWindow;
     let removed = 0;
 
+    // Safety check: only cleanup if window is reasonable
+    if (this.dedupeWindow <= 0 || this.dedupeWindow > 3600000) {
+      console.warn('⚠️ KYT Dedupe: Invalid dedup window, skipping cleanup');
+      return;
+    }
+
+    // Safety check: verify timestamp is reasonable
+    if (now < 1600000000000) { // Sep 2020 sanity check
+      console.error('❌ KYT Dedupe: System time appears incorrect, skipping cleanup');
+      return;
+    }
+
     for (const [hash, entry] of this.recentMessages.entries()) {
+      // Safety: verify entry has required properties
+      if (!entry || typeof entry.timestamp !== 'number') {
+        console.warn('⚠️ KYT Dedupe: Invalid entry found, removing:', hash);
+        this.recentMessages.delete(hash);
+        removed++;
+        continue;
+      }
+
       if (entry.timestamp < cutoff) {
         this.recentMessages.delete(hash);
         removed++;
@@ -154,7 +241,11 @@ class MessageDeduplicator {
     }
 
     if (removed > 0) {
-      console.log(`🧹 KYT Dedupe: Cleaned up ${removed} old entries`);
+        console.log(`🧹 KYT Dedupe: Cleaned up ${removed} old entries`);
+      }
+    } finally {
+      // Always release lock, even if error occurs
+      this._cleanupInProgress = false;
     }
   }
 
@@ -164,13 +255,42 @@ class MessageDeduplicator {
    * @returns {object} Statistics
    */
   getStats() {
+    const now = Date.now();
+    const recentErrors = this.errorLog.filter(e => now - e.timestamp < 60000); // Last minute
+
     return {
       ...this.stats,
       mapSize: this.recentMessages.size,
       duplicateRate: this.stats.totalAttempts > 0
         ? (this.stats.duplicatesSkipped / this.stats.totalAttempts * 100).toFixed(1) + '%'
-        : '0%'
+        : '0%',
+      health: {
+        totalErrors: this.errorLog.length,
+        recentErrors: recentErrors.length,
+        lastError: this.errorLog.length > 0 
+          ? this.errorLog[this.errorLog.length - 1] 
+          : null
+      }
     };
+  }
+
+  /**
+   * Record an error for health monitoring
+   * @private
+   */
+  _recordError(error) {
+    const errorEntry = {
+      timestamp: Date.now(),
+      message: error?.message || String(error),
+      stack: error?.stack || null
+    };
+
+    this.errorLog.push(errorEntry);
+
+    // FIFO eviction if log is too large
+    if (this.errorLog.length > this.maxErrorLogSize) {
+      this.errorLog.shift();
+    }
   }
 
   /**
