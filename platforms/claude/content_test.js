@@ -16,6 +16,117 @@ if (window.KYT_CLAUDE_INJECTED) {
 
   console.log('🟢 KYT Claude: Content script loaded in MAIN world at:', new Date().toISOString());
 
+  // === DEDUPLICATION LAYER ===
+  /**
+   * Message Deduplication Layer
+   * Prevents duplicate captures from multiple sources (fetch, WebSocket, DOM)
+   * Uses content hashing and confidence-based priority
+   */
+  class MessageDeduplicator {
+    constructor(options = {}) {
+      this.recentMessages = new Map();
+      this.dedupeWindow = options.dedupeWindow || 5000; // 5 seconds
+      this.cleanupInterval = setInterval(() => this.cleanup(), 2000); // Run every 2s
+      this.stats = {
+        totalAttempts: 0,
+        captured: 0,
+        duplicatesSkipped: 0,
+        upgradeCaptures: 0
+      };
+    }
+
+    shouldCapture(content, captureMethod) {
+      this.stats.totalAttempts++;
+      const normalizedContent = this.normalizeContent(content);
+      const hash = this.hashContent(normalizedContent);
+      const now = Date.now();
+      const confidence = this.getConfidence(captureMethod);
+
+      if (this.recentMessages.has(hash)) {
+        const lastCapture = this.recentMessages.get(hash);
+        const timeSinceCapture = now - lastCapture.timestamp;
+
+        if (timeSinceCapture < this.dedupeWindow) {
+          if (confidence > lastCapture.confidence) {
+            console.log(`🔄 KYT Dedupe: Upgrading ${lastCapture.captureMethod} (${lastCapture.confidence}%) → ${captureMethod} (${confidence}%)`);
+            this.recentMessages.set(hash, { timestamp: now, confidence, captureMethod });
+            this.stats.upgradeCaptures++;
+            return true;
+          } else {
+            console.log(`⏭️ KYT Dedupe: Skipping duplicate (${captureMethod} ${confidence}% <= ${lastCapture.captureMethod} ${lastCapture.confidence}%)`);
+            this.stats.duplicatesSkipped++;
+            return false;
+          }
+        }
+      }
+
+      this.recentMessages.set(hash, { timestamp: now, confidence, captureMethod });
+      this.stats.captured++;
+      return true;
+    }
+
+    getConfidence(method) {
+      const map = { 'websocket': 95, 'fetch': 95, 'dom': 70 };
+      return map[method] || 50;
+    }
+
+    normalizeContent(content) {
+      return String(content).trim().replace(/\s+/g, ' ').toLowerCase();
+    }
+
+    hashContent(content) {
+      let hash = 0;
+      for (let i = 0; i < content.length; i++) {
+        const char = content.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      return hash.toString(36);
+    }
+
+    cleanup() {
+      const now = Date.now();
+      const cutoff = now - this.dedupeWindow;
+      let removed = 0;
+      for (const [hash, entry] of this.recentMessages.entries()) {
+        if (entry.timestamp < cutoff) {
+          this.recentMessages.delete(hash);
+          removed++;
+        }
+      }
+
+      if (removed > 0) {
+        console.log(`🧹 KYT Dedupe: Cleaned up ${removed} old entries`);
+      }
+    }
+
+    getStats() {
+      return {
+        ...this.stats,
+        mapSize: this.recentMessages.size,
+        duplicateRate: this.stats.totalAttempts > 0
+          ? (this.stats.duplicatesSkipped / this.stats.totalAttempts * 100).toFixed(1) + '%'
+          : '0%'
+      };
+    }
+
+    resetStats() {
+      this.stats = { totalAttempts: 0, captured: 0, duplicatesSkipped: 0, upgradeCaptures: 0 };
+    }
+
+    destroy() {
+      if (this.cleanupInterval) {
+        clearInterval(this.cleanupInterval);
+        this.cleanupInterval = null;
+      }
+      this.recentMessages.clear();
+    }
+  }
+
+  // Create singleton deduplicator instance
+  window.KYT_Deduplicator = new MessageDeduplicator();
+  console.log('🔄 KYT Claude: Deduplication layer initialized in page context');
+
   /**
    * PHASE 1 FIX #1: Persistent event listener pattern
    * Map to track pending context requests - prevents garbage collection
@@ -135,16 +246,15 @@ window.fetch = async function(...args) {
         }
       }
 
-      // PHASE 1: Context injection DISABLED (prevents memory context from being added to prompts)
-      // Memory context was polluting the database - messages should be clean
-      // if (options && options.body) {
-      //   try {
-      //     options.body = await getAndInjectContext(options.body);
-      //   } catch (error) {
-      //     console.error('❌ KYT Claude: Pre-send context injection failed:', error);
-      //   }
-      // }
-      console.log('ℹ️ KYT Claude: Context injection disabled - clean prompt mode');
+      // PHASE 1: Context injection ENABLED - RAG memory retrieval
+      if (options && options.body) {
+        try {
+          options.body = await getAndInjectContext(options.body);
+          console.log('✅ KYT Claude: Context injection completed');
+        } catch (error) {
+          console.error('❌ KYT Claude: Pre-send context injection failed:', error);
+        }
+      }
 
       // PHASE 2: Extract message data for storage AFTER injection
       let messageData = null;
@@ -171,12 +281,17 @@ window.fetch = async function(...args) {
               contentLength: messageData.content.length
             });
 
-            // Send to bridge via CustomEvent
-            window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
-              detail: messageData
-            }));
+            // Check deduplication before dispatching
+            if (window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch')) {
+              // Send to bridge via CustomEvent
+              window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+                detail: messageData
+              }));
 
-            console.log('🟢 KYT Claude: Event dispatched to bridge');
+              console.log('🟢 KYT Claude: Event dispatched to bridge');
+            } else {
+              console.log('⏭️ KYT Claude: Duplicate message skipped by deduplicator');
+            }
           }
         } catch (parseError) {
           console.error('🟢 KYT Claude: Failed to parse request body:', parseError);
@@ -334,5 +449,27 @@ async function captureClaudeAssistantResponse(response, metadata) {
   }
 }
 
-console.log('🟢 KYT Claude: Fetch wrapper installed - ready to capture messages');
+  // === HEALTH CHECK API ===
+  window.KYT_Claude_Health = {
+    getStats: function() {
+      return {
+        deduplication: window.KYT_Deduplicator.getStats(),
+        contextInjection: {
+          enabled: true,
+          status: 'Context injection is ENABLED - RAG memory retrieval active'
+        },
+        platform: 'claude',
+        timestamp: Date.now()
+      };
+    },
+
+    resetStats: function() {
+      window.KYT_Deduplicator.resetStats();
+      console.log('✅ KYT Claude: Stats reset');
+    }
+  };
+
+  console.log('🟢 KYT Claude: Fetch wrapper installed - ready to capture messages');
+  console.log('ℹ️ Use window.KYT_Deduplicator.getStats() to check deduplication stats');
+  console.log('ℹ️ Use window.KYT_Claude_Health.getStats() for full health check');
 }

@@ -7,6 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Claude Network Interception with Deduplication & Context Injection (2025-01-17)
+
+**IMPLEMENTED** ✅ - Complete Claude.ai message capture with deduplication and RAG context injection
+
+**Objective**: Implement deduplication and re-enable context injection for Claude platform to match ChatGPT functionality.
+
+**Endpoint Verification**:
+- Confirmed endpoint: `https://claude.ai/api/organizations/{org}/chat_conversations/{conv}/completion`
+- Request format verified: `{ prompt: "text", attachments: [], files: [], ... }`
+- Existing code at content_test.js:41 uses correct field: `pending.body.prompt`
+
+**Implementation**:
+
+**1. Deduplication Layer: `platforms/claude/content_test.js`** (lines 19-128)
+
+Added MessageDeduplicator class identical to ChatGPT implementation:
+```javascript
+class MessageDeduplicator {
+  constructor(options = {}) {
+    this.recentMessages = new Map();
+    this.dedupeWindow = options.dedupeWindow || 5000; // 5 seconds
+    this.cleanupInterval = setInterval(() => this.cleanup(), 2000);
+  }
+
+  shouldCapture(content, captureMethod) {
+    const confidence = this.getConfidence(captureMethod); // fetch: 95%
+    // Check hash collision with 5-second window
+    // Upgrade if higher confidence
+    // Skip if duplicate with same/lower confidence
+  }
+}
+
+window.KYT_Deduplicator = new MessageDeduplicator();
+```
+
+**2. Integration Point: `platforms/claude/content_test.js`** (lines 285-295)
+
+Added deduplication check before message dispatch:
+```javascript
+if (window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch')) {
+  window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+    detail: messageData
+  }));
+  console.log('🟢 KYT Claude: Event dispatched to bridge');
+} else {
+  console.log('⏭️ KYT Claude: Duplicate message skipped by deduplicator');
+}
+```
+
+**3. Context Injection Re-enabled: `platforms/claude/content_test.js`** (lines 249-257)
+
+Uncommented context injection to enable RAG memory retrieval:
+```javascript
+// PHASE 1: Context injection ENABLED - RAG memory retrieval
+if (options && options.body) {
+  try {
+    options.body = await getAndInjectContext(options.body);
+    console.log('✅ KYT Claude: Context injection completed');
+  } catch (error) {
+    console.error('❌ KYT Claude: Pre-send context injection failed:', error);
+  }
+}
+```
+
+**4. Health Check API: `platforms/claude/content_test.js`** (lines 452-470)
+
+Added unified health check for monitoring:
+```javascript
+window.KYT_Claude_Health = {
+  getStats: function() {
+    return {
+      deduplication: window.KYT_Deduplicator.getStats(),
+      contextInjection: {
+        enabled: true,
+        status: 'Context injection is ENABLED - RAG memory retrieval active'
+      },
+      platform: 'claude',
+      timestamp: Date.now()
+    };
+  }
+};
+```
+
+**Architecture Notes**:
+- Claude uses Manifest V3 "world": "MAIN" - content_test.js runs directly in page context
+- No separate inject.js injection needed (unlike ChatGPT which uses script tag injection)
+- Deduplication layer lives in content_test.js, not inject.js
+- Context injection uses `prompt` field (string), NOT `system` parameter (PUBLIC API)
+
+**Commits**:
+- feat: Add deduplication layer to Claude content_test.js
+- feat: Re-enable context injection for Claude platform
+- feat: Add health check API for Claude deduplication stats
+
+**Console API**:
+- `window.KYT_Deduplicator.getStats()` - Deduplication statistics
+- `window.KYT_Claude_Health.getStats()` - Full health check
+- `window.KYT_Deduplicator.resetStats()` - Reset statistics
+
+**Files Modified**:
+- `platforms/claude/content_test.js` - Added deduplication class, re-enabled context injection, added health check
+- `platforms/claude/inject.js` - Updated with deduplication (reference implementation, not actively used)
+
+---
+
 ### Added - Protocol-Level Message Deduplication (2025-01-17)
 
 **IMPLEMENTED** ✅ - Zero-duplicate message capture across all input methods (typed, voice, DOM)
