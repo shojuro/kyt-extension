@@ -642,14 +642,92 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true; // Keep message channel open
 
     case 'GET_STATS':
-      // Async stats retrieval
-      getStorageStats()
-        .then(stats => {
-          sendResponse({ success: true, stats: stats });
-        })
-        .catch(error => {
+      // Phase 2: Get diagnostic statistics for popup UI
+      (async () => {
+        try {
+          // Get storage stats
+          const storageStats = await getStorageStats();
+          
+          // Get API config
+          const apiResult = await chrome.storage.local.get(['api_config']);
+          const apiConfig = apiResult.api_config;
+          
+          // Get page-level stats from active tab's inject script
+          let pageStats = null;
+          try {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (tab && tab.id) {
+              // Send message to content script on active tab
+              const response = await chrome.tabs.sendMessage(tab.id, { 
+                type: 'GET_PAGE_STATS' 
+              });
+              
+              if (response && response.success) {
+                pageStats = response.stats;
+              }
+            }
+          } catch (error) {
+            console.warn('⚠️ Could not get page stats:', error.message);
+            // Non-fatal - popup will show as inactive
+          }
+          
+          const stats = {
+            // Interception status (from inject script if available)
+            fetch: pageStats?.fetch || { active: false },
+            websocket: pageStats?.websocket || { active: false },
+            domObserver: pageStats?.domObserver || { active: false },
+            
+            // Message counts
+            totalMessages: storageStats?.totalMessages || 0,
+            sessionMessages: pageStats?.totalInterceptions || 0,
+            lastCaptureTime: pageStats?.lastInterceptionTime || storageStats?.lastSaveTime || null,
+            
+            // Platform detection
+            platform: pageStats?.platform || null
+          };
+          
+          sendResponse({ success: true, stats });
+        } catch (error) {
           sendResponse({ success: false, error: error.message });
-        });
+        }
+      })();
+      return true; // Keep channel open
+
+    case 'TEST_CAPTURE':
+      // Phase 2: Test message capture functionality
+      (async () => {
+        try {
+          // Create a test message
+          const testMessage = {
+            content: 'Test message from diagnostic popup',
+            role: 'user',
+            source: 'test',
+            timestamp: Date.now()
+          };
+          
+          // Save it
+          const saved = await saveMessage(testMessage);
+          
+          if (saved) {
+            // Get updated count
+            const stats = await getStorageStats();
+            sendResponse({ 
+              success: true, 
+              messageCount: stats.totalMessages 
+            });
+          } else {
+            sendResponse({ 
+              success: false, 
+              error: 'Failed to save test message' 
+            });
+          }
+        } catch (error) {
+          sendResponse({ 
+            success: false, 
+            error: error.message 
+          });
+        }
+      })();
       return true; // Keep channel open
 
     case 'SYNC_TO_SUPABASE':
@@ -772,11 +850,38 @@ chrome.runtime.onInstalled.addListener((details) => {
       captured_messages: [],
       error_log: [],
       install_date: Date.now(),
-      version: chrome.runtime.getManifest().version
+      version: chrome.runtime.getManifest().version,
+      api_config: {
+        // Phase 1 Fix: Enable semantic search by default
+        // Disables query transformation that breaks semantic matching
+        disableQueryTransformation: true
+      }
     }).then(() => {
       console.log('✅ KYT: Storage initialized');
+      console.log('   Phase 1 fix enabled: disableQueryTransformation = true');
     }).catch(error => {
       console.error('❌ KYT: Failed to initialize storage:', error);
+    });
+  } else if (details.reason === 'update') {
+    // Migration: Set Phase 1 default for existing users
+    chrome.storage.local.get(['api_config'], (result) => {
+      const existingConfig = result.api_config || {};
+      
+      // Only set default if user hasn't explicitly configured this flag
+      if (existingConfig.disableQueryTransformation === undefined) {
+        const updatedConfig = {
+          ...existingConfig,
+          disableQueryTransformation: true
+        };
+        
+        chrome.storage.local.set({ api_config: updatedConfig }, () => {
+          console.log('✅ KYT: Phase 1 migration complete');
+          console.log('   disableQueryTransformation = true (default)');
+        });
+      } else {
+        console.log('⏩ KYT: User has existing preference, preserving it');
+        console.log(`   disableQueryTransformation = ${existingConfig.disableQueryTransformation}`);
+      }
     });
   }
 });

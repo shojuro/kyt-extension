@@ -16,14 +16,20 @@ loadBtn.addEventListener('click', async () => {
         <strong>Current Configuration:</strong><br>
         Supabase URL: ${config.supabaseUrl ? '✅ Set' : '❌ Missing'}<br>
         Supabase Key: ${config.supabaseKey ? '✅ Set (' + config.supabaseKey.substring(0, 20) + '...)' : '❌ Missing'}<br>
-        OpenAI Key: ${config.openaiKey ? '✅ Set (' + config.openaiKey.substring(0, 15) + '...)' : '❌ Missing'}
+        OpenAI Key: ${config.openaiKey ? '✅ Set (' + config.openaiKey.substring(0, 15) + '...)' : '❌ Missing'}<br>
+        Query Transformation: ${config.disableQueryTransformation ? '❌ Disabled (Phase 1 fix)' : '✅ Enabled'}
       `;
 
       // Populate form fields
       if (config.supabaseUrl) document.getElementById('supabaseUrl').value = config.supabaseUrl;
       if (config.supabaseKey) document.getElementById('supabaseKey').value = config.supabaseKey;
       if (config.openaiKey) document.getElementById('openaiKey').value = config.openaiKey;
+      // Phase 1 Fix: Default to true (enabled) for semantic search fix
+      document.getElementById('disableQueryTransformation').checked = 
+        config.disableQueryTransformation !== undefined ? config.disableQueryTransformation : true;
     } else {
+      // Phase 1 Fix: Pre-check checkbox for new users (semantic search fix enabled by default)
+      document.getElementById('disableQueryTransformation').checked = true;
       showStatus('No configuration found. Please enter your API keys.', 'error');
     }
   } catch (error) {
@@ -38,7 +44,8 @@ form.addEventListener('submit', async (e) => {
   const config = {
     supabaseUrl: document.getElementById('supabaseUrl').value.trim(),
     supabaseKey: document.getElementById('supabaseKey').value.trim(),
-    openaiKey: document.getElementById('openaiKey').value.trim()
+    openaiKey: document.getElementById('openaiKey').value.trim(),
+    disableQueryTransformation: document.getElementById('disableQueryTransformation').checked
   };
 
   try {
@@ -51,7 +58,8 @@ form.addEventListener('submit', async (e) => {
       <strong>Saved Configuration:</strong><br>
       Supabase URL: ${config.supabaseUrl}<br>
       Supabase Key: ${config.supabaseKey.substring(0, 20)}...<br>
-      OpenAI Key: ${config.openaiKey.substring(0, 15)}...
+      OpenAI Key: ${config.openaiKey.substring(0, 15)}...<br>
+      Query Transformation: ${config.disableQueryTransformation ? '❌ Disabled (Phase 1 fix)' : '✅ Enabled'}
     `;
   } catch (error) {
     showStatus('❌ Error saving configuration: ' + error.message, 'error');
