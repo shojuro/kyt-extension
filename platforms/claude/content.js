@@ -83,5 +83,30 @@
     }
   });
 
+  // === PHASE 2: DIAGNOSTIC STATS HANDLER ===
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'GET_PAGE_STATS') {
+      console.log('📊 KYT Claude Content: Stats request received');
+      
+      // Get stats from page context (inject.js)
+      if (typeof window.getInterceptionStats === 'function') {
+        try {
+          const stats = window.getInterceptionStats();
+          sendResponse({ success: true, stats });
+        } catch (error) {
+          console.error('❌ Stats retrieval error:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      } else {
+        sendResponse({ 
+          success: false, 
+          error: 'Stats function not available (page may still be loading)' 
+        });
+      }
+      
+      return true; // Keep message channel open
+    }
+  });
+
   console.log('✅ KYT Claude Content: Listening for messages from page context');
 })();

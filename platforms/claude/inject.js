@@ -244,7 +244,31 @@
   // Backward compatibility
   window.KYT_HEALTH_CHECK = window.KYT_Claude_Health.getStats;
 
+  // Phase 2: Standardized stats function for diagnostic popup
+  window.getInterceptionStats = function() {
+    return {
+      platform: 'claude',
+      fetch: {
+        active: totalInterceptions > 0,
+        count: totalInterceptions
+      },
+      websocket: {
+        active: false, // Claude uses fetch, not WebSocket
+        count: 0
+      },
+      domObserver: {
+        active: false, // Not implemented for Claude
+        count: 0
+      },
+      deduplication: window.KYT_Deduplicator ? window.KYT_Deduplicator.getStats() : null,
+      totalInterceptions: totalInterceptions,
+      totalErrors: totalErrors,
+      lastInterceptionTime: lastInterceptionTime
+    };
+  };
+
   console.log('✅ KYT Claude: Fetch override installed in PAGE CONTEXT');
   console.log('ℹ️ Use window.KYT_Deduplicator.getStats() to check deduplication stats');
   console.log('ℹ️ Use window.KYT_Claude_Health.getStats() for full health check');
+  console.log('ℹ️ Use window.getInterceptionStats() for diagnostic popup');
 })();
