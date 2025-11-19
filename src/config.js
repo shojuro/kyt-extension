@@ -42,7 +42,8 @@ export const config = {
   },
   search: {
     defaultLimit: 5,
-    defaultThreshold: 0.5
+    defaultThreshold: 0.5,
+    disableQueryTransformation: process.env.DISABLE_QUERY_TRANSFORMATION === 'true'
   }
 };
 

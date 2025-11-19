@@ -11,6 +11,15 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icon.svg",
+      "48": "icon.svg",
+      "128": "icon.svg"
+    },
+    "default_title": "K.Y.T. Memory Extension Status"
+  },
   "icons": {
     "16": "icon.svg",
     "48": "icon.svg",
