@@ -123,5 +123,32 @@
     }
   });
 
+  // === PHASE 2: STATS REQUEST HANDLER ===
+  // Listen for stats requests from background script (via popup)
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'GET_PAGE_STATS') {
+      console.log('📊 KYT ChatGPT Content: Stats request received');
+      
+      // Check if page context has stats function
+      if (typeof window.getInterceptionStats === 'function') {
+        try {
+          const stats = window.getInterceptionStats();
+          sendResponse({ success: true, stats });
+        } catch (error) {
+          console.error('❌ Stats retrieval error:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      } else {
+        // Stats function not available (page not loaded yet or inject failed)
+        sendResponse({ 
+          success: false, 
+          error: 'Stats function not available (page may still be loading)' 
+        });
+      }
+      
+      return true; // Keep message channel open for async response
+    }
+  });
+
   console.log('✅ KYT ChatGPT Content: Listening for messages from page context');
 })();

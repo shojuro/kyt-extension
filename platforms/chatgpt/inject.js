@@ -1143,6 +1143,29 @@
     };
   };
 
+  // Phase 2: Expose interception stats for popup diagnostic UI
+  window.getInterceptionStats = function() {
+    return {
+      platform: 'chatgpt',
+      fetch: {
+        active: totalInterceptions > 0,
+        count: totalInterceptions
+      },
+      websocket: {
+        active: true, // WebSocket override is always active
+        count: 0 // TODO: Track WebSocket message count separately
+      },
+      domObserver: {
+        active: KYT_CONFIG.enableDOMObserver || KYT_CONFIG.enableVoiceCapture,
+        count: domCaptureCount
+      },
+      deduplication: window.KYT_Deduplicator ? window.KYT_Deduplicator.getStats() : null,
+      totalInterceptions: totalInterceptions,
+      totalErrors: totalErrors,
+      lastInterceptionTime: lastInterceptionTime
+    };
+  };
+
   console.log('✅ KYT ChatGPT: Fetch override installed in PAGE CONTEXT');
   console.log(`ℹ️ KYT ChatGPT: DOM observer ${KYT_CONFIG.enableDOMObserver || KYT_CONFIG.enableVoiceCapture ? 'ENABLED' : 'DISABLED (fetch-only mode)'}`);
 })();

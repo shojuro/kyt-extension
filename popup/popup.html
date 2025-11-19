@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>K.Y.T. Memory Extension - Status</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🧠 K.Y.T. Memory Extension</h1>
+      <p class="subtitle">Keep Your Thoughts</p>
+    </div>
+
+    <div class="section">
+      <h2>📊 Interception Status</h2>
+      <div class="status-grid">
+        <div class="status-item">
+          <span class="status-label">Fetch:</span>
+          <span id="fetchStatus" class="status-indicator">⏳ Checking...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">WebSocket:</span>
+          <span id="wsStatus" class="status-indicator">⏳ Checking...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">DOM Observer:</span>
+          <span id="domStatus" class="status-indicator">⏳ Checking...</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>💾 Capture Statistics</h2>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="totalMessages">0</div>
+          <div class="stat-label">Total Messages</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="sessionMessages">0</div>
+          <div class="stat-label">This Session</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="lastCaptureTime">Never</div>
+          <div class="stat-label">Last Capture</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>🔍 Platform Detection</h2>
+      <div class="platform-grid">
+        <div class="platform-item">
+          <span class="platform-label">ChatGPT:</span>
+          <span id="chatgptPlatform" class="platform-indicator">❌ Not Detected</span>
+        </div>
+        <div class="platform-item">
+          <span class="platform-label">Claude:</span>
+          <span id="claudePlatform" class="platform-indicator">❌ Not Detected</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>🧪 Testing</h2>
+      <button id="testCaptureBtn" class="btn-primary">
+        🔬 Test Message Capture
+      </button>
+      <div id="testResult" class="test-result hidden"></div>
+    </div>
+
+    <div class="section">
+      <h2>⚙️ Configuration</h2>
+      <div class="config-status">
+        <div class="config-item">
+          <span class="config-label">API Keys:</span>
+          <span id="apiStatus" class="config-value">⏳ Checking...</span>
+        </div>
+        <div class="config-item">
+          <span class="config-label">Query Transform:</span>
+          <span id="transformStatus" class="config-value">⏳ Checking...</span>
+        </div>
+      </div>
+      <button id="setupBtn" class="btn-secondary">
+        🔧 Configure API Keys
+      </button>
+    </div>
+
+    <div class="footer">
+      <p class="version">Phase 1 & 2 Complete • v1.2.0</p>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
