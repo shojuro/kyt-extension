@@ -14,6 +14,8 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run tests/e2e --no-coverage",
     "test:all": "vitest run && vitest run tests/e2e --no-coverage",
+    "test:phase1": "playwright test validation/test_phase1_extension.spec.js",
+    "test:phase2.5": "playwright test validation/test_phase2_5_diagnostic.spec.js",
     "validate": "node validation/verify_context_injection.js",
     "validate:all": "npm test && node validation/verify_context_injection.js",
     "sync": "node src/test_sync.js",
@@ -32,7 +34,9 @@
     "openai": "^6.8.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
     "@vitest/ui": "^1.0.4",
+    "playwright": "^1.56.1",
     "puppeteer": "^21.0.0",
     "vitest": "^1.0.4"
   }
