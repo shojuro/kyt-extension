@@ -241,6 +241,29 @@ if (window.KYT_CLAUDE_INJECTED) {
    */
   const pendingContextRequests = new Map();
 
+
+  /**
+   * VALIDATION FIX: Track in-flight context requests by message hash
+   * Prevents duplicate API calls for rapid-fire identical messages
+   */
+  const inflightContextByHash = new Map();
+  const DEDUP_WINDOW_MS = 500; // 500ms window for deduplication
+
+  /**
+   * Simple hash function for message deduplication
+   * @param {string} str - String to hash
+   * @returns {number} 32-bit hash
+   */
+  function simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return hash;
+  }
+
   /**
    * Persistent listener for context responses
    * Lives at module level - never garbage collected
@@ -252,6 +275,7 @@ if (window.KYT_CLAUDE_INJECTED) {
     if (pending) {
       clearTimeout(pending.timeout);
       pendingContextRequests.delete(requestId);
+      inflightContextByHash.delete(pending.messageHash); // VALIDATION FIX: Cleanup dedup map
 
       if (event.detail.success && event.detail.formattedContext) {
         console.log('✅ KYT Claude: Context received, injecting...');
@@ -278,15 +302,26 @@ if (window.KYT_CLAUDE_INJECTED) {
         return bodyString; // No modification
       }
 
+      // VALIDATION FIX: Check for duplicate in-flight requests
+      const messageHash = simpleHash(body.prompt);
+      const existingRequest = inflightContextByHash.get(messageHash);
+      
+      if (existingRequest && (Date.now() - existingRequest.timestamp) < DEDUP_WINDOW_MS) {
+        console.log('🔄 KYT Claude: Reusing in-flight context request for duplicate message');
+        return existingRequest.promise;
+      }
+
       console.log('🔍 KYT Claude: Requesting context for:', body.prompt.substring(0, 50) + '...');
 
       // Generate unique request ID
       const requestId = `ctx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-      return new Promise((resolve) => {
+      // VALIDATION FIX: Create promise and track for deduplication
+      const promise = new Promise((resolve) => {
         // PHASE 1 FIX #5: Increase timeout to 10s with better error logging
         const timeout = setTimeout(() => {
           pendingContextRequests.delete(requestId);
+          inflightContextByHash.delete(messageHash); // VALIDATION FIX: Cleanup dedup map
           console.error('⏱️ KYT Claude: Context timeout after 10s', {
             requestId: requestId,
             userMessage: body.prompt.substring(0, 50),
@@ -300,7 +335,8 @@ if (window.KYT_CLAUDE_INJECTED) {
           resolve: resolve,
           timeout: timeout,
           body: body,
-          originalBody: bodyString
+          originalBody: bodyString,
+          messageHash: messageHash // VALIDATION FIX: Store for dedup cleanup
         });
 
         // Dispatch context request
@@ -316,6 +352,14 @@ if (window.KYT_CLAUDE_INJECTED) {
           }
         }));
       });
+
+      // VALIDATION FIX: Store promise for deduplication and return it
+      inflightContextByHash.set(messageHash, {
+        promise: promise,
+        timestamp: Date.now()
+      });
+
+      return promise;
     } catch (error) {
       console.error('❌ KYT Claude: Context injection error:', error);
       return bodyString; // Error - proceed with original
@@ -558,6 +602,13 @@ async function captureClaudeAssistantResponse(response, metadata) {
       console.warn('⚠️ KYT Claude: No text captured from assistant response');
     }
   } catch (error) {
+    // VALIDATION FIX: Filter out expected AbortError (user stopped generation)
+    if (error.name === 'AbortError') {
+      console.debug('ℹ️ KYT Claude: Response stream aborted (user likely stopped generation)');
+      return; // Silent exit for expected behavior
+    }
+    
+    // Log unexpected errors only
     console.error('❌ KYT Claude: Error capturing assistant response:', error);
     console.error('   Error details:', {
       name: error.name,

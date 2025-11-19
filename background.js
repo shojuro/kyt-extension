@@ -27,6 +27,156 @@ let cachedApiConfig = null;
 let configLoadTime = 0;
 const CONFIG_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+// VALIDATION FIX: Circuit breaker and retry logic for API resilience
+let consecutiveApiFailures = 0;
+let circuitBreakerOpenUntil = 0;
+const CIRCUIT_BREAKER_THRESHOLD = 5; // Open circuit after 5 consecutive failures
+const CIRCUIT_BREAKER_RESET_MS = 60 * 1000; // Reset after 60 seconds
+const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY_MS = 1000; // 1 second
+
+// Performance metrics
+let apiMetrics = {
+  totalAttempts: 0,
+  successfulAttempts: 0,
+  failedAttempts: 0,
+  retriedAttempts: 0,
+  circuitBreakerTrips: 0
+};
+
+/**
+ * Check if circuit breaker is open
+ * @returns {boolean} True if circuit is open (API calls should be skipped)
+ */
+function isCircuitBreakerOpen() {
+  const now = Date.now();
+  if (circuitBreakerOpenUntil > now) {
+    return true;
+  }
+  
+  // Auto-reset if cooldown period has passed
+  if (circuitBreakerOpenUntil > 0 && now >= circuitBreakerOpenUntil) {
+    console.log('🔄 Circuit breaker auto-reset - resuming API calls');
+    consecutiveApiFailures = 0;
+    circuitBreakerOpenUntil = 0;
+  }
+  
+  return false;
+}
+
+/**
+ * Record API success (resets circuit breaker)
+ */
+function recordApiSuccess() {
+  consecutiveApiFailures = 0;
+  circuitBreakerOpenUntil = 0;
+  apiMetrics.successfulAttempts++;
+}
+
+/**
+ * Record API failure (may trip circuit breaker)
+ */
+function recordApiFailure() {
+  consecutiveApiFailures++;
+  apiMetrics.failedAttempts++;
+  
+  if (consecutiveApiFailures >= CIRCUIT_BREAKER_THRESHOLD && circuitBreakerOpenUntil === 0) {
+    circuitBreakerOpenUntil = Date.now() + CIRCUIT_BREAKER_RESET_MS;
+    apiMetrics.circuitBreakerTrips++;
+    console.error(
+      `⚠️ Circuit breaker OPENED - ${consecutiveApiFailures} consecutive failures. ` +
+      `API calls suspended for ${CIRCUIT_BREAKER_RESET_MS / 1000}s`
+    );
+  }
+}
+
+/**
+ * Retry a function with exponential backoff
+ * @param {Function} fn - Async function to retry
+ * @param {Object} options - Retry options
+ * @returns {Promise<any>} Result from successful execution
+ */
+async function retryWithBackoff(fn, options = {}) {
+  const {
+    maxRetries = MAX_RETRIES,
+    initialDelay = INITIAL_RETRY_DELAY_MS,
+    shouldRetry = (error) => {
+      // Retry on network errors and 503 (service unavailable)
+      if (error.message?.includes('503') || error.message?.includes('Overloaded')) {
+        return true;
+      }
+      // Retry on 500 (internal server error)
+      if (error.message?.includes('500') || error.message?.includes('Internal server error')) {
+        return true;
+      }
+      // Don't retry on 400-level errors (bad request, unauthorized, etc.)
+      return false;
+    },
+    onRetry = (attempt, error, delay) => {
+      console.warn(
+        `⚠️ Retry attempt ${attempt}/${maxRetries} after ${delay}ms delay. ` +
+        `Error: ${error.message}`
+      );
+    }
+  } = options;
+
+  let lastError;
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      apiMetrics.totalAttempts++;
+      const result = await fn();
+      
+      // Success! Record it and reset retries
+      if (attempt > 0) {
+        apiMetrics.retriedAttempts++;
+        console.log(`✅ Retry successful on attempt ${attempt + 1}`);
+      }
+      recordApiSuccess();
+      return result;
+      
+    } catch (error) {
+      lastError = error;
+      
+      // Don't retry if this is the last attempt or error is not retryable
+      if (attempt === maxRetries || !shouldRetry(error)) {
+        recordApiFailure();
+        throw error;
+      }
+      
+      // Calculate exponential backoff delay: 1s, 2s, 4s
+      const delay = initialDelay * Math.pow(2, attempt);
+      onRetry(attempt + 1, error, delay);
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  
+  // This should never be reached, but just in case
+  throw lastError;
+}
+
+/**
+ * Log API performance metrics
+ */
+function logApiMetrics() {
+  const successRate = apiMetrics.totalAttempts > 0
+    ? ((apiMetrics.successfulAttempts / apiMetrics.totalAttempts) * 100).toFixed(1)
+    : 0;
+  
+  const retryRate = apiMetrics.successfulAttempts > 0
+    ? ((apiMetrics.retriedAttempts / apiMetrics.successfulAttempts) * 100).toFixed(1)
+    : 0;
+  
+  console.log(
+    `📊 API Metrics: ${apiMetrics.successfulAttempts}/${apiMetrics.totalAttempts} successful (${successRate}%), ` +
+    `${apiMetrics.retriedAttempts} retried (${retryRate}%), ` +
+    `${apiMetrics.failedAttempts} failed, ` +
+    `${apiMetrics.circuitBreakerTrips} circuit breaker trips`
+  );
+}
+
 /**
  * Get API config with caching to survive service worker sleep
  */
@@ -238,27 +388,75 @@ async function getContextForInjection(userMessage, config) {
       debugMode: config?.debugMode || false
     };
 
-    // Generate embedding using OpenAI (no CSP in background!)
-    const embeddingResponse = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiConfig.openaiKey}`
-      },
-      body: JSON.stringify({
-        model: 'text-embedding-3-small',
-        input: userMessage,
-        encoding_format: 'float'
-      })
-    });
-
-    if (!embeddingResponse.ok) {
-      const error = await embeddingResponse.json().catch(() => ({}));
-      throw new Error(`OpenAI API error: ${error.error?.message || embeddingResponse.statusText}`);
+    // VALIDATION FIX: Check circuit breaker before making API call
+    if (isCircuitBreakerOpen()) {
+      const waitSeconds = Math.ceil((circuitBreakerOpenUntil - Date.now()) / 1000);
+      console.warn(
+        `⚠️ Circuit breaker is OPEN - skipping context injection. ` +
+        `Resets in ${waitSeconds}s (${consecutiveApiFailures} failures)`
+      );
+      return {
+        contextString: '',
+        contextItems: [],
+        skippedReason: 'circuit_breaker_open',
+        performance: {
+          totalMs: performance.now() - startTime,
+          circuitBreakerWaitSeconds: waitSeconds
+        }
+      };
     }
 
-    const embeddingData = await embeddingResponse.json();
-    const queryEmbedding = embeddingData.data[0].embedding;
+    // VALIDATION FIX: Generate embedding with retry logic and exponential backoff
+    const { embeddingData, queryEmbedding } = await retryWithBackoff(async () => {
+      const embeddingResponse = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiConfig.openaiKey}`
+        },
+        body: JSON.stringify({
+          model: 'text-embedding-3-small',
+          input: userMessage,
+          encoding_format: 'float'
+        })
+      });
+
+      if (!embeddingResponse.ok) {
+        const error = await embeddingResponse.json().catch(() => ({}));
+        const statusCode = embeddingResponse.status;
+        throw new Error(
+          `OpenAI API error (${statusCode}): ${error.error?.message || embeddingResponse.statusText}`
+        );
+      }
+
+      const data = await embeddingResponse.json();
+      return {
+        embeddingData: data,
+        queryEmbedding: data.data[0].embedding
+      };
+    }, {
+      maxRetries: MAX_RETRIES,
+      initialDelay: INITIAL_RETRY_DELAY_MS,
+      shouldRetry: (error) => {
+        // Retry on 503 (Overloaded) and 500 (Internal Server Error)
+        const retryable = error.message?.includes('503') || 
+                          error.message?.includes('500') ||
+                          error.message?.includes('Overloaded') ||
+                          error.message?.includes('Internal server error');
+        
+        if (!retryable) {
+          console.error(`❌ Non-retryable error: ${error.message}`);
+        }
+        
+        return retryable;
+      },
+      onRetry: (attempt, error, delay) => {
+        console.warn(
+          `🔄 OpenAI API retry ${attempt}/${MAX_RETRIES} after ${delay}ms. ` +
+          `Error: ${error.message}`
+        );
+      }
+    });
 
     // Search Supabase for relevant context (no CSP in background!)
     const searchResponse = await fetch(
@@ -345,6 +543,11 @@ async function getContextForInjection(userMessage, config) {
 
     const elapsedTime = performance.now() - startTime;
 
+    // VALIDATION FIX: Log API metrics periodically
+    if (apiMetrics.totalAttempts % 10 === 0 && apiMetrics.totalAttempts > 0) {
+      logApiMetrics();
+    }
+
     return {
       success: true,
       items: filteredItems,
@@ -354,6 +557,10 @@ async function getContextForInjection(userMessage, config) {
 
   } catch (error) {
     console.error('❌ Context retrieval failed:', error);
+    
+    // VALIDATION FIX: Log metrics on failure
+    logApiMetrics();
+    
     return {
       success: false,
       error: error.message,
