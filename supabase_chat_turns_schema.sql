@@ -135,7 +135,7 @@ WHERE platform = 'chatgpt'
 -- - Converted to similarity score: 1 - distance (higher = better match)
 CREATE OR REPLACE FUNCTION search_chat_turns(
   query_embedding VECTOR(1536),
-  match_threshold FLOAT DEFAULT 0.5,
+  match_threshold FLOAT DEFAULT 0.8, -- HIGH PRECISION TUNING (was 0.5)
   match_count INT DEFAULT 5,
   filter_platform TEXT DEFAULT NULL
 )

@@ -9,13 +9,15 @@
 -- - Industry standard for semantic search with normalized vectors
 
 -- Drop function if exists (for re-running)
-DROP FUNCTION IF EXISTS match_messages(vector(1536), float, int);
+DROP FUNCTION IF EXISTS match_messages_v2(vector(1536), float, int, jsonb, bigint);
 
--- Create vector similarity search function
-CREATE OR REPLACE FUNCTION match_messages(
+-- Create vector similarity search function (v2 to avoid overload conflicts)
+CREATE OR REPLACE FUNCTION match_messages_v2(
   query_embedding vector(1536),
-  match_threshold float DEFAULT 0.5,
-  match_count int DEFAULT 5
+  match_threshold float DEFAULT 0.6, -- Calibrated optimal threshold (Distance)
+  match_count int DEFAULT 5,
+  filter jsonb DEFAULT '{}'::jsonb,
+  min_timestamp bigint DEFAULT 0
 )
 RETURNS TABLE (
   id uuid,
@@ -28,6 +30,7 @@ RETURNS TABLE (
   source text,
   created_at timestamp,
   synced_from_extension timestamp,
+  embedding vector(1536),
   distance float
 )
 LANGUAGE plpgsql
@@ -45,21 +48,25 @@ BEGIN
     messages.source,
     messages.created_at,
     messages.synced_from_extension,
-    -- Cosine distance: 0 (perfect match) to 2 (opposite)
-    -- <=> operator is optimized for normalized embeddings
+    messages.embedding,
     (messages.embedding <=> query_embedding) as distance
   FROM messages
   WHERE (messages.embedding <=> query_embedding) < match_threshold
+  -- Server-side filtering for Precision
+  AND (min_timestamp = 0 OR messages."timestamp" >= min_timestamp)
+  AND (filter->>'role' IS NULL OR messages.role = filter->>'role')
+  AND (filter->>'source' IS NULL OR messages.source = filter->>'source')
+  AND (filter->>'conversation_id' IS NULL OR messages.conversation_id = filter->>'conversation_id')
   ORDER BY messages.embedding <=> query_embedding
   LIMIT match_count;
 END;
 $$;
 
 -- Test the function (should return empty results if no messages synced yet)
-SELECT * FROM match_messages(
-  (SELECT embedding FROM messages LIMIT 1),
-  0.5,
-  5
+SELECT * FROM match_messages_v2(
+  query_embedding => (SELECT embedding FROM messages LIMIT 1),
+  match_threshold => 0.5::float,
+  match_count => 5
 );
 
 -- Verify function was created
