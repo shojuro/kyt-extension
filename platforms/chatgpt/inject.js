@@ -7,7 +7,7 @@
  * Platform: ChatGPT
  */
 
-(function() {
+(function () {
   'use strict';
 
   // PHASE 1 FIX #3: Duplicate injection guard
@@ -18,6 +18,15 @@
   window.KYT_CHATGPT_INJECTED = true;
 
   console.log('🚀 KYT ChatGPT Inject: Initializing in page context...');
+
+  // Helper to send logs to background
+  function logToBackground(message, data = null) {
+    window.dispatchEvent(new CustomEvent('KYT_DEBUG_LOG', {
+      detail: { message, data }
+    }));
+  }
+
+  logToBackground('Inject script initialized');
 
   // === DEDUPLICATION LAYER ===
   /**
@@ -39,11 +48,11 @@
     }
 
     shouldCapture(content, captureMethod) {
-    this.stats.totalAttempts++;
-    const normalizedContent = this.normalizeContent(content);
-    const hash = this.hashContent(normalizedContent);
-    const now = Date.now();
-    const confidence = this.getConfidence(captureMethod);
+      this.stats.totalAttempts++;
+      const normalizedContent = this.normalizeContent(content);
+      const hash = this.hashContent(normalizedContent);
+      const now = Date.now();
+      const confidence = this.getConfidence(captureMethod);
 
       if (this.recentMessages.has(hash)) {
         const lastCapture = this.recentMessages.get(hash);
@@ -64,8 +73,8 @@
       }
 
       this.recentMessages.set(hash, { timestamp: now, confidence, captureMethod });
-    this.stats.captured++;
-    return true;
+      this.stats.captured++;
+      return true;
     }
 
     getConfidence(method) {
@@ -88,19 +97,19 @@
     }
 
     cleanup() {
-    const now = Date.now();
-    const cutoff = now - this.dedupeWindow;
-    let removed = 0;
+      const now = Date.now();
+      const cutoff = now - this.dedupeWindow;
+      let removed = 0;
       for (const [hash, entry] of this.recentMessages.entries()) {
-      if (entry.timestamp < cutoff) {
-        this.recentMessages.delete(hash);
-        removed++;
+        if (entry.timestamp < cutoff) {
+          this.recentMessages.delete(hash);
+          removed++;
+        }
       }
-    }
-    
-    if (removed > 0) {
-      console.log(`🧹 KYT Dedupe: Cleaned up ${removed} old entries`);
-    }
+
+      if (removed > 0) {
+        console.log(`🧹 KYT Dedupe: Cleaned up ${removed} old entries`);
+      }
     }
 
     getStats() {
@@ -139,16 +148,64 @@
   const platform = {
     name: 'chatgpt',
 
-    detectAPICall: function(url, options) {
+    detectAPICall: function (url, options) {
+      // DEBUG: Log all fetch URLs to identify changes
+      // logToBackground('Fetch intercepted', { url: url.substring(0, 100), method: options?.method });
+
       const isChatGPTAPI = (
         typeof url === 'string' &&
-        (url.includes('/backend-api/conversation') || url.includes('/backend-api/f/conversation'))
+        (
+          url.includes('/backend-api/conversation') ||
+          url.includes('/backend-api/f/conversation') ||
+          url.includes('/backend-api/lat/r') || // Latency/Realtime endpoint
+          (url.includes('/conversation') && options?.method === 'POST') // Broader fallback
+        )
       );
       const isPostRequest = options?.method === 'POST' || options?.body;
       return isChatGPTAPI && isPostRequest;
     },
+    extractConversationId: function (url) {
+      // Extract from URL if possible (not always available in ChatGPT API calls)
+      return 'unknown'; // ChatGPT usually puts it in the body
+    },
 
-    extractMessage: function(bodyString) {
+    /**
+     * Strip K.Y.T. Memory Injection Protocol blocks from content
+     * Prevents recursive pollution where injection blocks get saved as memories
+     * @param {string} content - Message content that may contain injection blocks
+     * @returns {string} - Clean content without injection blocks
+     */
+    stripInjectionBlock: function (content) {
+      // AGGRESSIVE PATTERN: Strip ANYTHING that looks like a K.Y.T. injection block
+      // This catches blocks even if truncated, malformed, or missing end markers
+
+      // Pattern 1: Any content starting with K.Y.T. header until end marker OR next user message
+      const kytHeaderPattern = /={3,}[\s\S]*?K\.Y\.T\.[\s\S]*?(?:={3,}|$)/g;
+
+      // Pattern 2: SESSION_CONTEXT, RETRIEVAL_CONTEXT, DATA_PROVENANCE blocks
+      const contextBlockPattern = /\[(SESSION_CONTEXT|RETRIEVAL_CONTEXT|DATA_PROVENANCE|Retrieved Items)\][\s\S]*?(?=\n\n[^\[]|$)/g;
+
+      // Pattern 3: Standalone context markers
+      const standaloneMarkers = /\[(?:Memory Context|Query Optimized|End of (?:Memory|Knowledge Base) Context)\][^\n]*/g;
+
+      // Pattern 4: Separator lines (80+ equals signs)
+      const separatorPattern = /={80,}/g;
+
+      let cleaned = content;
+
+      // Apply all patterns
+      cleaned = cleaned.replace(kytHeaderPattern, '');
+      cleaned = cleaned.replace(contextBlockPattern, '');
+      cleaned = cleaned.replace(standaloneMarkers, '');
+      cleaned = cleaned.replace(separatorPattern, '');
+
+      // Clean up excessive whitespace/newlines left by removals
+      cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+      return cleaned;
+    },
+
+    extractMessage: function (bodyString) {
       try {
         const body = JSON.parse(bodyString);
 
@@ -170,8 +227,11 @@
           throw new Error('No valid content found');
         }
 
+        // CRITICAL: Strip injection blocks BEFORE saving
+        const cleanedContent = this.stripInjectionBlock(content);
+
         return {
-          content: content.trim(),
+          content: cleanedContent.trim(),
           role: role,
           conversationId: body.conversation_id || 'unknown',
           model: body.model || 'unknown',
@@ -307,8 +367,13 @@
    */
   const originalFetch = window.fetch;
 
-  window.fetch = async function(...args) {
+  window.fetch = async function (...args) {
     const [url, options] = args;
+
+    // DEBUG: Log potential API calls
+    if (typeof url === 'string' && url.includes('conversation')) {
+      logToBackground('Potential API call', { url: url, method: options?.method });
+    }
 
     // Check if this is a platform API call
     if (platform.detectAPICall(url, options)) {
@@ -403,7 +468,7 @@
    */
   const OriginalWebSocket = window.WebSocket;
 
-  window.WebSocket = function(...args) {
+  window.WebSocket = function (...args) {
     const socket = new OriginalWebSocket(...args);
     const wsUrl = args[0];
 
@@ -417,65 +482,79 @@
       console.log('🎤 KYT ChatGPT: WebSocket intercepted (likely voice):', wsUrl);
 
       // Intercept incoming messages
-      socket.addEventListener('message', (event) => {
+      socket.addEventListener('message', async (event) => {
         try {
-          // WebSocket messages are typically JSON
+          let dataStr = null;
+
+          // Handle different data types (Text, Blob, ArrayBuffer)
           if (typeof event.data === 'string') {
-            const data = JSON.parse(event.data);
+            dataStr = event.data;
+          } else if (event.data instanceof Blob) {
+            dataStr = await event.data.text();
+          } else if (event.data instanceof ArrayBuffer) {
+            dataStr = new TextDecoder().decode(event.data);
+          }
 
-            // Voice transcripts come in various formats, try to detect:
-            // - data.type === 'transcript'
-            // - data.text (transcript text)
-            // - data.message.content (alternate format)
-            let transcriptText = null;
+          if (!dataStr) return;
 
-            if (data.type === 'transcript' && data.text) {
-              transcriptText = data.text;
-            } else if (data.text) {
-              transcriptText = data.text;
-            } else if (data.message?.content) {
-              transcriptText = data.message.content;
-            } else if (data.transcript) {
-              transcriptText = data.transcript;
+          // WebSocket messages are typically JSON
+          const data = JSON.parse(dataStr);
+
+          // Voice transcripts come in various formats, try to detect:
+          // - data.type === 'transcript'
+          // - data.text (transcript text)
+          // - data.message.content (alternate format)
+          let transcriptText = null;
+
+          if (data.type === 'transcript' && data.text) {
+            transcriptText = data.text;
+          } else if (data.text) {
+            transcriptText = data.text;
+          } else if (data.message?.content) {
+            transcriptText = data.message.content;
+          } else if (data.transcript) {
+            transcriptText = data.transcript;
+          } else if (data.payload?.text) {
+            // Common pattern in some voice protocols
+            transcriptText = data.payload.text;
+          }
+
+          if (transcriptText && transcriptText.trim().length > 0) {
+            console.log('🎤 KYT ChatGPT: Voice transcript captured:', transcriptText.substring(0, 50) + '...');
+
+            // DEDUPLICATION CHECK: Skip duplicates (with error boundary)
+            let shouldCapture = true; // Default: always capture (fail-open)
+            try {
+              if (window.KYT_Deduplicator) {
+                shouldCapture = window.KYT_Deduplicator.shouldCapture(transcriptText, 'websocket');
+              }
+            } catch (dedupeError) {
+              console.error('❌ KYT ChatGPT: Deduplication error, capturing anyway:', dedupeError);
+              if (window.KYT_Deduplicator?._recordError) {
+                window.KYT_Deduplicator._recordError(dedupeError);
+              }
             }
 
-            if (transcriptText && transcriptText.trim().length > 0) {
-              console.log('🎤 KYT ChatGPT: Voice transcript captured:', transcriptText.substring(0, 50) + '...');
-
-              // DEDUPLICATION CHECK: Skip duplicates (with error boundary)
-              let shouldCapture = true; // Default: always capture (fail-open)
-              try {
-                if (window.KYT_Deduplicator) {
-                  shouldCapture = window.KYT_Deduplicator.shouldCapture(transcriptText, 'websocket');
-                }
-              } catch (dedupeError) {
-                console.error('❌ KYT ChatGPT: Deduplication error, capturing anyway:', dedupeError);
-                if (window.KYT_Deduplicator?._recordError) {
-                  window.KYT_Deduplicator._recordError(dedupeError);
-                }
-              }
-
-              if (!shouldCapture) {
-                console.log('⏭️ KYT ChatGPT: Duplicate voice message skipped by deduplicator');
-                return; // Skip dispatch
-              }
-
-              // Dispatch captured voice message
-              window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
-                detail: {
-                  content: transcriptText,
-                  role: 'user',
-                  source: 'chatgpt',
-                  captureMethod: 'websocket',
-                  timestamp: Date.now(),
-                  conversationId: data.conversation_id || 'unknown',
-                  platform: 'chatgpt'
-                }
-              }));
-
-              totalInterceptions++;
-              lastInterceptionTime = Date.now();
+            if (!shouldCapture) {
+              console.log('⏭️ KYT ChatGPT: Duplicate voice message skipped by deduplicator');
+              return; // Skip dispatch
             }
+
+            // Dispatch captured voice message
+            window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+              detail: {
+                content: transcriptText,
+                role: 'user',
+                source: 'chatgpt',
+                captureMethod: 'websocket',
+                timestamp: Date.now(),
+                conversationId: data.conversation_id || 'unknown',
+                platform: 'chatgpt'
+              }
+            }));
+
+            totalInterceptions++;
+            lastInterceptionTime = Date.now();
           }
         } catch (error) {
           // Silently ignore parse errors (WebSocket may send non-JSON data like pings)
@@ -543,11 +622,11 @@
       let debugMode = true; // Enable diagnostic logging
 
       while (true) {
-        const {done, value} = await reader.read();
+        const { done, value } = await reader.read();
         if (done) break;
 
         chunkCount++;
-        const chunk = decoder.decode(value, {stream: true});
+        const chunk = decoder.decode(value, { stream: true });
 
         // DIAGNOSTIC: Log first 10 chunks to see actual format (including text chunks)
         if (chunkCount <= 10) {
@@ -1009,14 +1088,14 @@
   function inferMessageRole(text, element) {
     // Check aria attributes (more stable than classes)
     const ariaLabel = element.getAttribute('aria-label') ||
-                      element.closest('[aria-label]')?.getAttribute('aria-label') || '';
+      element.closest('[aria-label]')?.getAttribute('aria-label') || '';
 
     if (ariaLabel.toLowerCase().includes('user')) return 'user';
     if (ariaLabel.toLowerCase().includes('assistant') || ariaLabel.toLowerCase().includes('chatgpt')) return 'assistant';
 
     // Check data attributes
     const dataAuthor = element.getAttribute('data-author') ||
-                       element.closest('[data-author]')?.getAttribute('data-author');
+      element.closest('[data-author]')?.getAttribute('data-author');
     if (dataAuthor) return dataAuthor === 'user' ? 'user' : 'assistant';
 
     // Fallback: content-based heuristics
@@ -1130,7 +1209,7 @@
   }
 
   // Expose health check
-  window.KYT_HEALTH_CHECK = function() {
+  window.KYT_HEALTH_CHECK = function () {
     return {
       platform: 'chatgpt',
       context: 'PAGE_CONTEXT',
@@ -1144,7 +1223,7 @@
   };
 
   // Phase 2: Expose interception stats for popup diagnostic UI
-  window.getInterceptionStats = function() {
+  window.getInterceptionStats = function () {
     return {
       platform: 'chatgpt',
       fetch: {

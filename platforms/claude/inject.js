@@ -7,7 +7,7 @@
  * Platform: Claude
  */
 
-(function() {
+(function () {
   'use strict';
 
   console.log('🚀 KYT Claude Inject: Initializing in page context...');
@@ -132,7 +132,7 @@
   const platform = {
     name: 'claude',
 
-    detectAPICall: function(url, options) {
+    detectAPICall: function (url, options) {
       const isClaudeAPI = (
         typeof url === 'string' &&
         url.includes('claude.ai/api/') &&
@@ -143,13 +143,49 @@
       return isClaudeAPI && isPostRequest;
     },
 
-    extractConversationId: function(url) {
+    extractConversationId: function (url) {
       // Extract from URL: /api/organizations/{org_id}/chat_conversations/{conv_id}/completion
       const match = url.match(/\/chat_conversations\/([^\/]+)\//);
       return match ? match[1] : 'unknown';
     },
 
-    extractMessage: function(bodyString, url) {
+    /**
+     * Strip K.Y.T. Memory Injection Protocol blocks from content
+     * Prevents recursive pollution where injection blocks get saved as memories
+     * @param {string} content - Message content that may contain injection blocks
+     * @returns {string} - Clean content without injection blocks
+     */
+    stripInjectionBlock: function (content) {
+      // AGGRESSIVE PATTERN: Strip ANYTHING that looks like a K.Y.T. injection block
+      // This catches blocks even if truncated, malformed, or missing end markers
+
+      // Pattern 1: Any content starting with K.Y.T. header until end marker OR next user message
+      const kytHeaderPattern = /={3,}[\s\S]*?K\.Y\.T\.[\s\S]*?(?:={3,}|$)/g;
+
+      // Pattern 2: SESSION_CONTEXT, RETRIEVAL_CONTEXT, DATA_PROVENANCE blocks
+      const contextBlockPattern = /\[(SESSION_CONTEXT|RETRIEVAL_CONTEXT|DATA_PROVENANCE|Retrieved Items)\][\s\S]*?(?=\n\n[^\[]|$)/g;
+
+      // Pattern 3: Standalone context markers
+      const standaloneMarkers = /\[(?:Memory Context|Query Optimized|End of (?:Memory|Knowledge Base) Context)\][^\n]*/g;
+
+      // Pattern 4: Separator lines (80+ equals signs)
+      const separatorPattern = /={80,}/g;
+
+      let cleaned = content;
+
+      // Apply all patterns
+      cleaned = cleaned.replace(kytHeaderPattern, '');
+      cleaned = cleaned.replace(contextBlockPattern, '');
+      cleaned = cleaned.replace(standaloneMarkers, '');
+      cleaned = cleaned.replace(separatorPattern, '');
+
+      // Clean up excessive whitespace/newlines left by removals
+      cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+      return cleaned;
+    },
+
+    extractMessage: function (bodyString, url) {
       try {
         const body = JSON.parse(bodyString);
 
@@ -157,11 +193,14 @@
           throw new Error('No prompt found in request body');
         }
 
+        // CRITICAL: Strip injection blocks BEFORE saving
+        const cleanedPrompt = this.stripInjectionBlock(body.prompt);
+
         // Extract conversation ID from URL (more reliable than body)
         const conversationId = this.extractConversationId(url);
 
         return {
-          content: body.prompt.trim(),
+          content: cleanedPrompt.trim(),
           role: 'user',
           conversationId: conversationId,
           model: body.model || 'claude-3-opus',
@@ -181,7 +220,7 @@
    */
   const originalFetch = window.fetch;
 
-  window.fetch = async function(...args) {
+  window.fetch = async function (...args) {
     const [url, options] = args;
 
     // Check if this is a platform API call
@@ -217,7 +256,7 @@
 
   // Expose enhanced health check
   window.KYT_Claude_Health = {
-    getStats: function() {
+    getStats: function () {
       return {
         platform: 'claude',
         context: 'PAGE_CONTEXT',
@@ -232,7 +271,7 @@
       };
     },
 
-    resetStats: function() {
+    resetStats: function () {
       window.KYT_Deduplicator.resetStats();
       totalInterceptions = 0;
       totalErrors = 0;
@@ -245,7 +284,7 @@
   window.KYT_HEALTH_CHECK = window.KYT_Claude_Health.getStats;
 
   // Phase 2: Standardized stats function for diagnostic popup
-  window.getInterceptionStats = function() {
+  window.getInterceptionStats = function () {
     return {
       platform: 'claude',
       fetch: {
