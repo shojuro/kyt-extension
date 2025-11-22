@@ -12,15 +12,60 @@
 
 // Day 2: Import browser-compatible sync and search modules
 import { syncToSupabase, setApiConfig } from './src/browser-sync.js';
-import { searchMessages, findSimilarMessages } from './src/browser-search.js';
+import { searchMessages, findSimilarMessages, searchHybrid } from './src/browser-search.js';
 import { applyMMR, MMR_PRESETS } from './src/mmr.js';
+import { transformQuery, extractRecentTopics, fetchRecentTopicsFromSupabase } from './src/query-transformer.js';
+import { queueProcessor } from './src/background/queue-processor.js';
+import { buildMemoryInjection, buildEmptyInjection, buildErrorInjection } from './kyt-memory-injection-builder.js';
+import { classifyContent } from './src/taxonomy-classifier.js';
 
-console.log('🚀 KYT Background: Service worker starting...');
+// ... existing imports ...
 
-// Track storage health
-let totalMessagesSaved = 0;
-let totalErrors = 0;
-let lastSaveTime = Date.now();
+// Initialize queue processor on startup
+chrome.runtime.onStartup.addListener(() => {
+  queueProcessor.initialize();
+  queueProcessor.processQueue();
+});
+
+// Also initialize on install
+chrome.runtime.onInstalled.addListener(() => {
+  queueProcessor.initialize();
+  queueProcessor.processQueue();
+});
+
+// Periodic queue processing (every 5 mins)
+chrome.alarms.create('processQueue', { periodInMinutes: 5 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'processQueue') {
+    queueProcessor.processQueue();
+  }
+});
+
+// ... existing code ...
+
+// ... existing code ...
+
+
+
+// Day 4: Extension lifecycle - sync existing messages on install/update
+chrome.runtime.onInstalled.addListener(async (details) => {
+  console.log('🔄 KYT Background: Extension installed/updated');
+  console.log(`   Reason: ${details.reason}`);
+
+  // Sync all existing messages
+  try {
+    const syncResult = await syncToSupabase();
+    if (syncResult.success) {
+      console.log(`✅ Initial sync completed: ${syncResult.synced} messages synced`);
+    } else {
+      console.warn('⚠️ Initial sync failed:', syncResult.error);
+    }
+  } catch (error) {
+    console.error('❌ Error during initial sync:', error);
+  }
+});
+
+
 
 // PHASE 1 FIX #2: Service worker state preservation
 let cachedApiConfig = null;
@@ -44,6 +89,11 @@ let apiMetrics = {
   circuitBreakerTrips: 0
 };
 
+// Storage metrics
+let totalMessagesSaved = 0;
+let lastSaveTime = 0;
+let totalErrors = 0;
+
 /**
  * Check if circuit breaker is open
  * @returns {boolean} True if circuit is open (API calls should be skipped)
@@ -53,14 +103,14 @@ function isCircuitBreakerOpen() {
   if (circuitBreakerOpenUntil > now) {
     return true;
   }
-  
+
   // Auto-reset if cooldown period has passed
   if (circuitBreakerOpenUntil > 0 && now >= circuitBreakerOpenUntil) {
     console.log('🔄 Circuit breaker auto-reset - resuming API calls');
     consecutiveApiFailures = 0;
     circuitBreakerOpenUntil = 0;
   }
-  
+
   return false;
 }
 
@@ -79,7 +129,7 @@ function recordApiSuccess() {
 function recordApiFailure() {
   consecutiveApiFailures++;
   apiMetrics.failedAttempts++;
-  
+
   if (consecutiveApiFailures >= CIRCUIT_BREAKER_THRESHOLD && circuitBreakerOpenUntil === 0) {
     circuitBreakerOpenUntil = Date.now() + CIRCUIT_BREAKER_RESET_MS;
     apiMetrics.circuitBreakerTrips++;
@@ -121,12 +171,12 @@ async function retryWithBackoff(fn, options = {}) {
   } = options;
 
   let lastError;
-  
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       apiMetrics.totalAttempts++;
       const result = await fn();
-      
+
       // Success! Record it and reset retries
       if (attempt > 0) {
         apiMetrics.retriedAttempts++;
@@ -134,25 +184,25 @@ async function retryWithBackoff(fn, options = {}) {
       }
       recordApiSuccess();
       return result;
-      
+
     } catch (error) {
       lastError = error;
-      
+
       // Don't retry if this is the last attempt or error is not retryable
       if (attempt === maxRetries || !shouldRetry(error)) {
         recordApiFailure();
         throw error;
       }
-      
+
       // Calculate exponential backoff delay: 1s, 2s, 4s
       const delay = initialDelay * Math.pow(2, attempt);
       onRetry(attempt + 1, error, delay);
-      
+
       // Wait before retrying
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
-  
+
   // This should never be reached, but just in case
   throw lastError;
 }
@@ -164,11 +214,11 @@ function logApiMetrics() {
   const successRate = apiMetrics.totalAttempts > 0
     ? ((apiMetrics.successfulAttempts / apiMetrics.totalAttempts) * 100).toFixed(1)
     : 0;
-  
+
   const retryRate = apiMetrics.successfulAttempts > 0
     ? ((apiMetrics.retriedAttempts / apiMetrics.successfulAttempts) * 100).toFixed(1)
     : 0;
-  
+
   console.log(
     `📊 API Metrics: ${apiMetrics.successfulAttempts}/${apiMetrics.totalAttempts} successful (${successRate}%), ` +
     `${apiMetrics.retriedAttempts} retried (${retryRate}%), ` +
@@ -364,6 +414,8 @@ async function getStorageStats() {
   }
 }
 
+
+
 /**
  * Day 3: Get context for injection (CSP fix)
  * Runs in background script (no CSP restrictions)
@@ -385,7 +437,8 @@ async function getContextForInjection(userMessage, config) {
       maxContextItems: config?.maxContextItems || 3,
       minDistance: config?.minDistance || 0.0,
       excludeRecentSeconds: config?.excludeRecentSeconds || 120, // CONTEXT POLLUTION FIX: Exclude last 2 minutes
-      debugMode: config?.debugMode || false
+      debugMode: config?.debugMode || false,
+      disableQueryTransformation: config?.disableQueryTransformation || false // Allow disabling via config
     };
 
     // VALIDATION FIX: Check circuit breaker before making API call
@@ -406,142 +459,220 @@ async function getContextForInjection(userMessage, config) {
       };
     }
 
-    // VALIDATION FIX: Generate embedding with retry logic and exponential backoff
-    const { embeddingData, queryEmbedding } = await retryWithBackoff(async () => {
-      const embeddingResponse = await fetch('https://api.openai.com/v1/embeddings', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiConfig.openaiKey}`
-        },
-        body: JSON.stringify({
-          model: 'text-embedding-3-small',
-          input: userMessage,
-          encoding_format: 'float'
-        })
+    // PHASE 7: Query Transformation (Dual ICP Support)
+    let searchQuery = userMessage;
+    let transformationMetadata = { transformed: false };
+
+    if (!contextConfig.disableQueryTransformation) {
+      try {
+        // Get recent messages for context (to extract topics/emotional state)
+        // PHASE 4 UPDATE: Fetch from Supabase for cross-device context
+        const recentTopics = await fetchRecentTopicsFromSupabase(apiConfig);
+
+        // Transform query
+        const transformResult = await transformQuery(
+          userMessage,
+          {
+            recentTopics: recentTopics,
+            searchContext: 'chat_history'
+          },
+          apiConfig.openaiKey
+        );
+
+        if (transformResult.success && transformResult.transformed) {
+          searchQuery = transformResult.optimizedQuery;
+          transformationMetadata = {
+            transformed: true,
+            original: userMessage,
+            optimized: searchQuery
+          };
+          console.log(`🔄 Query transformed: "${userMessage}" → "${searchQuery}"`);
+        } else {
+          console.log(`📊 Using original query (transformation ${transformResult.transformed ? 'succeeded' : 'skipped/failed'})`);
+        }
+      } catch (transformError) {
+        console.warn('⚠️ Query transformation failed, using original query:', transformError);
+      }
+    }
+
+    // VALIDATION FIX: Use searchHybrid for robust retrieval (Vector + BM25)
+    // This replaces the manual embedding generation and raw Supabase fetch
+    // Benefits:
+    // 1. Adds BM25 keyword search (fixes "Kobe Bryant" keyword miss)
+    // 2. Uses unified threshold (0.5)
+    // 3. Handles query expansion automatically
+
+    let contextItems = [];
+
+    try {
+      // Use transformed query if available, otherwise original
+      const queryToUse = transformationMetadata.transformed ? searchQuery : userMessage;
+
+      console.log(`🔍 Context Retrieval: Using query "${queryToUse}"`);
+
+      contextItems = await searchHybrid(queryToUse, {
+        limit: contextConfig.maxContextItems,
+        semanticThreshold: 0.65, // PRECISION TUNING: Increased to 0.65 (User: Precision > Recall)
+        bm25Threshold: 0.1,
+        enableBM25: true,
+        enableSemantic: true,
+        role: null, // Don't filter by role (get both user and assistant context)
+        source: null // Don't filter by source
       });
 
-      if (!embeddingResponse.ok) {
-        const error = await embeddingResponse.json().catch(() => ({}));
-        const statusCode = embeddingResponse.status;
-        throw new Error(
-          `OpenAI API error (${statusCode}): ${error.error?.message || embeddingResponse.statusText}`
-        );
-      }
+      console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search`);
 
-      const data = await embeddingResponse.json();
-      return {
-        embeddingData: data,
-        queryEmbedding: data.data[0].embedding
-      };
-    }, {
-      maxRetries: MAX_RETRIES,
-      initialDelay: INITIAL_RETRY_DELAY_MS,
-      shouldRetry: (error) => {
-        // Retry on 503 (Overloaded) and 500 (Internal Server Error)
-        const retryable = error.message?.includes('503') || 
-                          error.message?.includes('500') ||
-                          error.message?.includes('Overloaded') ||
-                          error.message?.includes('Internal server error');
-        
-        if (!retryable) {
-          console.error(`❌ Non-retryable error: ${error.message}`);
-        }
-        
-        return retryable;
-      },
-      onRetry: (attempt, error, delay) => {
-        console.warn(
-          `🔄 OpenAI API retry ${attempt}/${MAX_RETRIES} after ${delay}ms. ` +
-          `Error: ${error.message}`
-        );
+    } catch (searchError) {
+      console.error('❌ Context Retrieval failed:', searchError);
+      // Fallback to empty context
+      contextItems = [];
+    }
+
+    // RECURSION GUARD: Filter out items that contain K.Y.T. protocol headers or artifacts
+    // This prevents "turtles all the way down" if injection blocks were accidentally saved
+    // IMPORTANT: Must be precise to avoid filtering legitimate content
+    contextItems = contextItems.filter(item => {
+      const content = item.content || '';
+
+      // Check for specific injection block markers (high confidence)
+      const hasInjectionHeader = content.includes("K.Y.T. MEMORY INJECTION PROTOCOL") ||
+        content.includes("K.Y.T. — User's Personal Knowledge Base");
+
+      // Check for injection artifacts (medium confidence)
+      const hasInjectionArtifacts = content.includes("[RETRIEVAL_CONTEXT]") ||
+        content.includes("[SESSION_CONTEXT]") ||
+        content.includes("[DATA_PROVENANCE]") ||
+        content.includes("[Retrieved Items]");
+
+      // Check for nested injection markers (high confidence of recursion)
+      const hasNestedMarkers = content.includes("[Memory Context") ||
+        content.includes("[Query Optimized");
+
+      // Only filter if we have strong evidence of injection block
+      const isPolluted = hasInjectionHeader || hasInjectionArtifacts || hasNestedMarkers;
+
+      if (isPolluted) {
+        console.warn(`⚠️ Recursion Guard: Dropped polluted memory item (ID: ${item.id || 'unknown'})`);
       }
+      return !isPolluted;
     });
 
-    // Search Supabase for relevant context (no CSP in background!)
-    const searchResponse = await fetch(
-      `${apiConfig.supabaseUrl}/rest/v1/rpc/match_messages`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': apiConfig.supabaseKey,
-          'Authorization': `Bearer ${apiConfig.supabaseKey}`
-        },
-        body: JSON.stringify({
-          query_embedding: queryEmbedding,
-          match_threshold: contextConfig.threshold,
-          match_count: contextConfig.maxContextItems,
-          exclude_recent_seconds: contextConfig.excludeRecentSeconds
-        })
+    // META FLAG FILTER: Exclude debug/meta-conversations from retrieval
+    // This prevents conversations ABOUT the system from polluting actual user data
+    contextItems = contextItems.filter(item => {
+      if (item.meta === true) {
+        console.warn(`⚠️ Meta Filter: Dropped meta-conversation item (ID: ${item.id || 'unknown'})`);
+        return false;
       }
-    );
+      return true;
+    });
 
-    if (!searchResponse.ok) {
-      const error = await searchResponse.json().catch(() => ({}));
-      throw new Error(`Supabase search error: ${error.message || searchResponse.statusText}`);
-    }
-
-    const contextItems = await searchResponse.json();
-
-    // DEBUG: Log what we got back from Supabase (before MMR)
-    console.log(`🔍 Context search returned ${contextItems.length} items (threshold: ${contextConfig.threshold}, exclude: ${contextConfig.excludeRecentSeconds}s)`);
-    if (contextItems.length > 0) {
-      const now = Date.now();
-      contextItems.forEach((item, idx) => {
-        const ageSeconds = Math.floor((now - item.msg_timestamp) / 1000);
-        console.log(`   ${idx + 1}. Age: ${ageSeconds}s, Distance: ${item.distance.toFixed(3)}, Content: "${item.content.substring(0, 50)}..."`);
-      });
-    }
-
-    // Filter by minimum distance
-    let filteredItems = contextItems.filter(r => r.distance >= contextConfig.minDistance);
+    // Filter by minimum distance/score (client-side double check)
+    // Note: searchHybrid returns 'weighted_score' which combines distance and BM25
+    // We'll trust searchHybrid's filtering for now, but can add extra check if needed
+    let filteredItems = contextItems;
 
     // Apply MMR (Maximal Marginal Relevance) reranking for precision and diversity
     // Critical for "Lonely ICP" use case - prevents confusing "sister Jennifer" with "dog Jenn"
+    // CONTENT DEDUPLICATION: Remove exact duplicates
+    // MMR handles semantic diversity, but exact duplicates waste slots
+    const uniqueContent = new Set();
+    filteredItems = filteredItems.filter(item => {
+      const normalized = item.content.trim().toLowerCase();
+      if (uniqueContent.has(normalized)) {
+        if (contextConfig.debugMode) console.log(`Start duplicate filtered: ${item.id}`);
+        return false;
+      }
+      uniqueContent.add(normalized);
+      return true;
+    });
+
+    // Apply MMR (Maximal Marginal Relevance) reranking for precision and diversity
     if (filteredItems.length > 1) {
-      const mmrConfig = contextConfig.mmrPreset || 'PRECISION'; // Default to PRECISION preset
-      const mmrParams = MMR_PRESETS[mmrConfig] || MMR_PRESETS.PRECISION;
-      
-      console.log(`🎯 Applying MMR reranking (preset: ${mmrConfig}, λ=${mmrParams.lambda})`);
-      
+      const mmrConfig = contextConfig.mmrPreset || 'DIVERSITY'; // Default to DIVERSITY preset
+      // DIVERSITY TUNING: Override lambda to 0.3 for better entity separation
+      const mmrLambda = 0.3;
+
+      console.log(`🎯 Applying MMR reranking (preset: ${mmrConfig}, λ=${mmrLambda})`);
+
       filteredItems = applyMMR(
         filteredItems,
         contextConfig.maxContextItems,
-        mmrParams.lambda,
+        mmrLambda,
         {
           requireEmbeddings: false,
           fallbackToRelevance: true,
-          debugMode: contextConfig.debugMode || false
+          debugMode: contextConfig.debugMode || false,
+          // TAXONOMY BOOSTING: Prioritize facts/credentials over conversation chatter
+          boostFunction: (item) => {
+            const classification = classifyContent(item.content);
+            let boost = 0.0;
+
+            // 1. Content-Type Boosting
+            if (classification.type === 'reference_data' && classification.intent === 'explicit_save') {
+              boost += 0.25;
+            } else if (classification.type === 'instruction') {
+              boost += 0.20;
+            } else if (classification.type === 'user_preference') {
+              boost += 0.15;
+            } else if (classification.type === 'factual_note') {
+              boost += 0.15;
+            }
+
+            // 2. Source Boosting (Explicit Saves > Conversation Logs)
+            // Items saved via CLI are deliberate knowledge; conversation logs are noisy.
+            if (item.source === 'cli' || item.source === 'terminal') {
+              boost += 0.50;
+            }
+
+            return boost;
+          }
         }
       );
-      
+
       console.log(`✅ MMR reranking complete: ${filteredItems.length} items selected`);
     }
 
-    // Format context for injection
+    // === MEMORY INJECTION PROTOCOL v1.0 ===
+    // Format context using Anti-Defiance Protocol
+    const elapsedTime = performance.now() - startTime;
+
     let formattedContext = null;
+
     if (filteredItems.length > 0) {
-      formattedContext = `[Memory Context - ${filteredItems.length} relevant item${filteredItems.length > 1 ? 's' : ''}]\n\n`;
+      // Build retrieval result for injection builder
+      const retrievalResult = {
+        state: 'FOUND',
+        items: filteredItems.map(item => ({
+          id: item.message_id || item.id,
+          content: item.content,
+          platform: item.source === 'cli' ? 'terminal' : (item.platform || 'chatgpt'),
+          timestamp: new Date(item.msg_timestamp || item.timestamp).toISOString(),
+          similarity: item.distance ? (1 - item.distance) : (item.weighted_score || 0.5),
+          source_type: item.source || 'conversation'
+        })),
+        latencyMs: elapsedTime,
+        queryType: transformationMetadata.transformed ? 'HYBRID' : 'SEMANTIC',
+        queryOriginal: userMessage,
+        queryTransformed: transformationMetadata.transformed ? transformationMetadata.optimized : null
+      };
 
-      filteredItems.forEach((item, index) => {
-        const source = item.source === 'cli' ? '📝 Terminal' : '💬 Previous conversation';
-        const timestamp = new Date(item.msg_timestamp || item.timestamp).toLocaleDateString();
-
-        formattedContext += `${index + 1}. ${source} (${timestamp})\n`;
-        formattedContext += `   "${item.content}"\n`;
-
-        if (contextConfig.debugMode) {
-          formattedContext += `   [Distance: ${item.distance.toFixed(3)}, Source: ${item.source}]\n`;
-        }
-
-        formattedContext += '\n';
+      // Build injection block with anti-defiance directives
+      formattedContext = buildMemoryInjection(retrievalResult, {
+        debugMode: contextConfig.debugMode || false
       });
 
-      formattedContext += '[End of Memory Context]\n\n';
-    }
+      console.log('✅ Memory Injection Protocol: Injection block built with', filteredItems.length, 'items');
+    } else {
+      // Empty state - allow LLM to use native search
+      formattedContext = buildEmptyInjection(
+        userMessage,
+        transformationMetadata.transformed ? transformationMetadata.optimized : null,
+        elapsedTime
+      );
 
-    const elapsedTime = performance.now() - startTime;
+      console.log('ℹ️ Memory Injection Protocol: Empty injection (native search allowed)');
+    }
 
     // VALIDATION FIX: Log API metrics periodically
     if (apiMetrics.totalAttempts % 10 === 0 && apiMetrics.totalAttempts > 0) {
@@ -552,20 +683,28 @@ async function getContextForInjection(userMessage, config) {
       success: true,
       items: filteredItems,
       formattedContext: formattedContext,
-      elapsedMs: elapsedTime
+      elapsedMs: elapsedTime,
+      transformation: transformationMetadata
     };
 
   } catch (error) {
     console.error('❌ Context retrieval failed:', error);
-    
+
     // VALIDATION FIX: Log metrics on failure
     logApiMetrics();
-    
+
+    // Use Memory Injection Protocol error state
+    const errorInjection = buildErrorInjection(
+      error.code || 'RETRIEVAL_ERROR',
+      error.message,
+      userMessage
+    );
+
     return {
       success: false,
       error: error.message,
       items: [],
-      formattedContext: null
+      formattedContext: errorInjection
     };
   }
 }
@@ -578,6 +717,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Handle different message types
   switch (message.type) {
+    case 'FLUSH_QUEUE':
+      queueProcessor.processQueue()
+        .then(result => sendResponse(result))
+        .catch(err => sendResponse({ error: err.message }));
+      return true;
+
+    case 'SYNC_MESSAGE':
+      // Direct sync attempt from content script (via queue processor logic)
+      queueProcessor.syncSingle(message.payload)
+        .then(success => sendResponse({ success }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+      return true;
+
     case 'SAVE_MESSAGE':
       // Async save - respond immediately to avoid timeout
       saveMessage(message.data)
@@ -641,27 +793,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ acknowledged: true });
       return true; // Keep message channel open
 
+    case 'DEBUG_LOG':
+      console.log(`🐛 [Page Log]: ${message.message}`);
+      if (message.data) {
+        console.log('   Data:', message.data);
+      }
+      sendResponse({ received: true });
+      return true;
+
     case 'GET_STATS':
       // Phase 2: Get diagnostic statistics for popup UI
       (async () => {
         try {
           // Get storage stats
           const storageStats = await getStorageStats();
-          
+
           // Get API config
           const apiResult = await chrome.storage.local.get(['api_config']);
           const apiConfig = apiResult.api_config;
-          
+
           // Get page-level stats from active tab's inject script
           let pageStats = null;
           try {
             const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
             if (tab && tab.id) {
               // Send message to content script on active tab
-              const response = await chrome.tabs.sendMessage(tab.id, { 
-                type: 'GET_PAGE_STATS' 
+              const response = await chrome.tabs.sendMessage(tab.id, {
+                type: 'GET_PAGE_STATS'
               });
-              
+
               if (response && response.success) {
                 pageStats = response.stats;
               }
@@ -670,22 +830,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             console.warn('⚠️ Could not get page stats:', error.message);
             // Non-fatal - popup will show as inactive
           }
-          
+
           const stats = {
             // Interception status (from inject script if available)
             fetch: pageStats?.fetch || { active: false },
             websocket: pageStats?.websocket || { active: false },
             domObserver: pageStats?.domObserver || { active: false },
-            
+
             // Message counts
             totalMessages: storageStats?.totalMessages || 0,
             sessionMessages: pageStats?.totalInterceptions || 0,
             lastCaptureTime: pageStats?.lastInterceptionTime || storageStats?.lastSaveTime || null,
-            
+
             // Platform detection
             platform: pageStats?.platform || null
           };
-          
+
           sendResponse({ success: true, stats });
         } catch (error) {
           sendResponse({ success: false, error: error.message });
@@ -704,27 +864,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             source: 'test',
             timestamp: Date.now()
           };
-          
+
           // Save it
           const saved = await saveMessage(testMessage);
-          
+
           if (saved) {
             // Get updated count
             const stats = await getStorageStats();
-            sendResponse({ 
-              success: true, 
-              messageCount: stats.totalMessages 
+            sendResponse({
+              success: true,
+              messageCount: stats.totalMessages
             });
           } else {
-            sendResponse({ 
-              success: false, 
-              error: 'Failed to save test message' 
+            sendResponse({
+              success: false,
+              error: 'Failed to save test message'
             });
           }
         } catch (error) {
-          sendResponse({ 
-            success: false, 
-            error: error.message 
+          sendResponse({
+            success: false,
+            error: error.message
           });
         }
       })();
@@ -790,7 +950,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'GET_CONTEXT':
       // Day 3: Get context for RAG injection (CSP fix - runs in background, no CSP restrictions)
       console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
-      getContextForInjection(message.userMessage, message.config)
+
+      // Read debug mode from storage for Memory Injection Protocol
+      chrome.storage.local.get(['kytDebugMode']).then(result => {
+        const config = {
+          ...message.config,
+          debugMode: result.kytDebugMode || false
+        };
+
+        return getContextForInjection(message.userMessage, config);
+      })
         .then(contextData => {
           console.log('✅ Context retrieved:', contextData.items?.length || 0, 'items');
           sendResponse(contextData);
@@ -866,14 +1035,14 @@ chrome.runtime.onInstalled.addListener((details) => {
     // Migration: Set Phase 1 default for existing users
     chrome.storage.local.get(['api_config'], (result) => {
       const existingConfig = result.api_config || {};
-      
+
       // Only set default if user hasn't explicitly configured this flag
       if (existingConfig.disableQueryTransformation === undefined) {
         const updatedConfig = {
           ...existingConfig,
           disableQueryTransformation: true
         };
-        
+
         chrome.storage.local.set({ api_config: updatedConfig }, () => {
           console.log('✅ KYT: Phase 1 migration complete');
           console.log('   disableQueryTransformation = true (default)');
@@ -911,3 +1080,15 @@ console.log('   - KYT_DEBUG.getStats() - View storage statistics');
 console.log('   - KYT_DEBUG.getContext("test message") - Test context retrieval');
 console.log('   - KYT_DEBUG.viewStorage() - View all storage');
 console.log('   Note: chrome.runtime.sendMessage() from service worker to itself does not work');
+
+// Initialize queue processor
+queueProcessor.initialize();
+
+// Set up periodic alarm for queue processing
+chrome.alarms.create('process_queue', { periodInMinutes: 1 });
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'process_queue') {
+    queueProcessor.processQueue();
+  }
+});

@@ -20,6 +20,7 @@
     "validate:all": "npm test && node validation/verify_context_injection.js",
     "sync": "node src/test_sync.js",
     "search": "node src/test_search.js",
+    "search:interactive": "node validation/test_search_interactive.js",
     "mem": "node cli/mem.js"
   },
   "bin": {

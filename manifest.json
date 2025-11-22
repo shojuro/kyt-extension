@@ -82,6 +82,19 @@
       "matches": [
         "https://claude.ai/*"
       ]
+    },
+    {
+      "resources": [
+        "src/content/queue-manager.js",
+        "src/storage/local-queue.js",
+        "src/utils/crypto.js",
+        "kyt-memory-injection-builder.js"
+      ],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*"
+      ]
     }
   ]
 }
