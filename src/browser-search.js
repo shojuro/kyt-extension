@@ -12,6 +12,10 @@
 
 import { transformQuery, extractRecentTopics } from './query-transformer.js';
 import { searchBM25, getAdaptiveWeights, countQueryWords } from './bm25-search.js';
+import { QueryExpander } from './query-expansion.js';
+
+// Initialize expander
+const queryExpander = new QueryExpander();
 
 /**
  * Get API configuration from chrome.storage
@@ -112,13 +116,32 @@ export async function searchMessages(query, options = {}) {
     const queryEmbedding = await generateQueryEmbedding(searchQuery, config.openaiKey);
 
     // Call Supabase RPC function
-    const params = new URLSearchParams({
-      query_embedding: JSON.stringify(queryEmbedding),
-      match_threshold: threshold.toString(),
-      match_count: limit.toString()
-    });
+    // Prepare server-side filters
+    const filter = {};
+    if (role) filter.role = role;
+    if (source) filter.source = source;
 
-    let url = `${config.supabaseUrl}/rest/v1/rpc/match_messages`;
+    // Add user_id to filter
+    if (config.userId) {
+      filter.user_id = config.userId;
+    }
+
+    // Calculate min_timestamp if exclude_recent_seconds is provided
+    // Note: exclude_recent_seconds is usually handled by caller (background.js) but we can support it here
+    let minTimestamp = 0;
+    if (options.minTimestamp) {
+      minTimestamp = options.minTimestamp;
+    }
+
+    const rpcBody = {
+      query_embedding: queryEmbedding,
+      match_threshold: config.matchThreshold || 0.6, // Calibrated optimal threshold
+      match_count: limit,
+      filter: filter,
+      min_timestamp: minTimestamp
+    };
+
+    let url = `${config.supabaseUrl}/rest/v1/rpc/match_messages_v2`;
 
     // Build query
     const response = await fetch(url, {
@@ -128,11 +151,7 @@ export async function searchMessages(query, options = {}) {
         'apikey': config.supabaseKey,
         'Authorization': `Bearer ${config.supabaseKey}`
       },
-      body: JSON.stringify({
-        query_embedding: queryEmbedding,
-        match_threshold: threshold,
-        match_count: limit
-      })
+      body: JSON.stringify(rpcBody)
     });
 
     if (!response.ok) {
@@ -142,14 +161,8 @@ export async function searchMessages(query, options = {}) {
 
     let results = await response.json();
 
-    // Apply additional filters
-    if (role) {
-      results = results.filter(r => r.role === role);
-    }
-
-    if (source) {
-      results = results.filter(r => r.source === source);
-    }
+    // Client-side filtering removed as it is now handled server-side for better precision/recall balance
+    // (Supabase returns top N *matching* results, not top N then filtered)
 
     console.log(`✅ Found ${results.length} results`);
     return results;
@@ -172,7 +185,7 @@ export async function findSimilarMessages(messageId, limit = 5) {
 
     // Get the reference message with its embedding
     const response = await fetch(
-      `${config.supabaseUrl}/rest/v1/messages?message_id=eq.${messageId}&select=embedding,content`,
+      `${config.supabaseUrl}/rest/v1/messages?message_id=eq.${messageId}&user_id=eq.${config.userId || '00000000-0000-0000-0000-000000000000'}&select=embedding,content`,
       {
         headers: {
           'apikey': config.supabaseKey,
@@ -194,7 +207,7 @@ export async function findSimilarMessages(messageId, limit = 5) {
 
     // Search using the reference message's embedding
     const searchResponse = await fetch(
-      `${config.supabaseUrl}/rest/v1/rpc/match_messages`,
+      `${config.supabaseUrl}/rest/v1/rpc/match_messages_v2`,
       {
         method: 'POST',
         headers: {
@@ -205,7 +218,12 @@ export async function findSimilarMessages(messageId, limit = 5) {
         body: JSON.stringify({
           query_embedding: refMessage.embedding,
           match_threshold: 0.5,
-          match_count: limit + 1 // +1 because reference will match itself
+          query_embedding: refMessage.embedding,
+          match_threshold: 0.5,
+          match_count: limit + 1, // +1 because reference will match itself
+          filter: {
+            user_id: config.userId // Filter by User ID
+          }
         })
       }
     );
@@ -241,26 +259,26 @@ export async function findSimilarMessages(messageId, limit = 5) {
 function mergeResultsRRF(rankedLists, k = 60) {
   const rrfScores = new Map(); // message_id → RRF score
   const messageData = new Map(); // message_id → full message object
-  
+
   // Calculate RRF scores for each list
   rankedLists.forEach(list => {
     list.forEach((item, rank) => {
       const id = item.message_id || item.id;
       const currentScore = rrfScores.get(id) || 0;
-      
+
       // RRF formula: 1 / (k + rank)
       // rank is 0-based, so we add 1
       const rrfContribution = 1 / (k + rank + 1);
-      
+
       rrfScores.set(id, currentScore + rrfContribution);
-      
+
       // Store full message data (first occurrence)
       if (!messageData.has(id)) {
         messageData.set(id, item);
       }
     });
   });
-  
+
   // Convert to array and sort by RRF score
   const mergedResults = Array.from(rrfScores.entries())
     .map(([id, rrfScore]) => ({
@@ -268,7 +286,7 @@ function mergeResultsRRF(rankedLists, k = 60) {
       rrf_score: rrfScore
     }))
     .sort((a, b) => b.rrf_score - a.rrf_score);
-  
+
   return mergedResults;
 }
 
@@ -303,20 +321,20 @@ export async function searchHybrid(query, options = {}) {
     role = null,
     source = null
   } = options;
-  
+
   console.log(`\n🔍 Phase 3 Hybrid Search: "${query}"`);
-  
+
   // Determine adaptive weights based on query length
   const weights = getAdaptiveWeights(query);
   console.log(`   Strategy: ${weights.strategy}`);
   console.log(`   Query length: ${weights.queryLength} words`);
   console.log(`   Weights: BM25=${weights.bm25Weight}, Semantic=${weights.semanticWeight}`);
-  
+
   try {
     // Get local messages for BM25 search
     const storageResult = await chrome.storage.local.get(['captured_messages']);
     let localMessages = storageResult.captured_messages || [];
-    
+
     // Apply filters to local messages
     if (role) {
       localMessages = localMessages.filter(m => m.role === role);
@@ -324,20 +342,49 @@ export async function searchHybrid(query, options = {}) {
     if (source) {
       localMessages = localMessages.filter(m => m.source === source);
     }
-    
+
     const rankedLists = [];
-    
+
+
+
     // Run BM25 keyword search (local, fast)
     if (enableBM25 && localMessages.length > 0) {
       console.log(`   🔤 Running BM25 keyword search...`);
-      const bm25Results = searchBM25(query, localMessages, {
-        limit: limit * 2, // Fetch more for better RRF
-        threshold: bm25Threshold
-      });
-      console.log(`   ✅ BM25: ${bm25Results.length} results`);
+
+      // PHASE 5: Query Expansion
+      const expansion = queryExpander.expand(query);
+      console.log(`   🔄 Query Expansion: ${expansion.variants.length} variants applied (${expansion.expansionsApplied.join(', ') || 'none'})`);
+      if (expansion.variants.length > 1) {
+        console.log(`      Variants: ${expansion.variants.join(' | ')}`);
+      }
+
+      const bm25ResultsMap = new Map(); // message_id -> result
+
+      // Run BM25 on all variants
+      for (const variant of expansion.variants) {
+        const results = searchBM25(variant, localMessages, {
+          limit: limit * 2, // Fetch more for better RRF
+          threshold: bm25Threshold
+        });
+
+        // Merge results (keep highest score)
+        for (const result of results) {
+          const id = result.message_id || result.id;
+          const existing = bm25ResultsMap.get(id);
+          if (!existing || result.score > existing.score) {
+            bm25ResultsMap.set(id, result);
+          }
+        }
+      }
+
+      const bm25Results = Array.from(bm25ResultsMap.values())
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit * 2);
+
+      console.log(`   ✅ BM25: ${bm25Results.length} results (merged from ${expansion.variants.length} variants)`);
       rankedLists.push(bm25Results);
     }
-    
+
     // Run semantic vector search (Supabase, slower but powerful)
     if (enableSemantic) {
       console.log(`   🧠 Running semantic vector search...`);
@@ -349,59 +396,75 @@ export async function searchHybrid(query, options = {}) {
         skipTransformation: true // Phase 1 fix: no transformation for hybrid
       });
       console.log(`   ✅ Semantic: ${semanticResults.length} results`);
-      
+
       // Normalize semantic results to have message_id
       const normalizedSemanticResults = semanticResults.map(r => ({
         ...r,
         message_id: r.message_id || r.id
       }));
-      
+
       rankedLists.push(normalizedSemanticResults);
     }
-    
+
     // Merge results using RRF
     if (rankedLists.length === 0) {
       console.log(`   ⚠️  No search methods enabled`);
       return [];
     }
-    
+
     console.log(`   🔀 Merging ${rankedLists.length} ranked lists with RRF...`);
     let mergedResults = mergeResultsRRF(rankedLists);
-    
+
     // Apply adaptive weighting to RRF scores
     // Boost scores based on which method contributed more
     mergedResults = mergedResults.map(item => {
       let weightedScore = item.rrf_score;
-      
+
       // Boost if found by BM25 (keyword match)
       if (item.bm25_score !== undefined) {
         weightedScore *= (1 + weights.bm25Weight);
       }
-      
+
       // Boost if found by semantic search
       if (item.distance !== undefined) {
         weightedScore *= (1 + weights.semanticWeight);
       }
-      
+
       return {
         ...item,
         weighted_score: weightedScore,
         hybrid_strategy: weights.strategy
       };
     });
-    
+
     // Re-sort by weighted score and limit
     mergedResults.sort((a, b) => b.weighted_score - a.weighted_score);
+
+    // CRITICAL: Enforce minimum quality threshold on final results
+    // Drop items that don't meet the semantic threshold (based on distance/similarity)
+    // This prevents low-confidence garbage from polluting results
+    mergedResults = mergedResults.filter(item => {
+      // If item has distance (semantic search result), check threshold
+      if (item.distance !== undefined) {
+        const similarity = 1 - item.distance; // Convert distance to similarity
+        if (similarity < semanticThreshold) {
+          console.log(`   ⏭️  Dropped low-confidence item (similarity: ${similarity.toFixed(3)} < threshold: ${semanticThreshold})`);
+          return false;
+        }
+      }
+      return true;
+    });
+
     mergedResults = mergedResults.slice(0, limit);
-    
+
     console.log(`   ✅ Hybrid search complete: ${mergedResults.length} final results`);
     console.log(`   📊 Top result score: ${mergedResults[0]?.weighted_score.toFixed(4) || 'N/A'}\n`);
-    
+
     return mergedResults;
-    
+
   } catch (error) {
     console.error('❌ Hybrid search failed:', error);
-    
+
     // Fallback to semantic-only search
     console.warn('⚠️  Falling back to semantic-only search');
     return await searchMessages(query, {

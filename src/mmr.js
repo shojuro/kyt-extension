@@ -56,7 +56,7 @@ function cosineSimilarity(embedding1, embedding2) {
   if (!embedding1 || !embedding2) {
     throw new Error('Both embeddings required for similarity calculation');
   }
-  
+
   if (embedding1.length !== embedding2.length) {
     throw new Error(`Embedding dimension mismatch: ${embedding1.length} vs ${embedding2.length}`);
   }
@@ -202,7 +202,7 @@ export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
     if (requireEmbeddings) {
       throw new Error('MMR requires embeddings for all candidates');
     }
-    
+
     if (fallbackToRelevance) {
       if (debugMode) {
         console.log('⚠️ MMR: No embeddings available, falling back to relevance ranking');
@@ -212,7 +212,7 @@ export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
         .sort((a, b) => a.distance - b.distance)
         .slice(0, maxResults);
     }
-    
+
     // No fallback, return empty
     return [];
   }
@@ -263,7 +263,19 @@ export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
       }
 
       // Relevance score (similarity to query)
-      const relevance = similarityToRelevance(distanceToSimilarity(candidate.distance));
+      let relevance = similarityToRelevance(distanceToSimilarity(candidate.distance));
+
+      // Apply custom boost if provided (e.g., for taxonomy boosting)
+      if (options.boostFunction) {
+        const boost = options.boostFunction(candidate);
+        if (boost !== 0) {
+          const oldRelevance = relevance;
+          relevance = Math.min(1.0, relevance + boost); // Additive boost, capped at 1.0
+          if (debugMode && boost > 0) {
+            console.log(`   🚀 Boost applied: +${boost.toFixed(2)} (relevance ${oldRelevance.toFixed(3)} -> ${relevance.toFixed(3)}) for "${candidate.content.substring(0, 20)}..."`);
+          }
+        }
+      }
 
       // Max similarity to any selected item (diversity penalty)
       let maxSimilarityToSelected = -Infinity;
@@ -322,15 +334,15 @@ export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
 export const MMR_PRESETS = {
   // Balanced: Equal weight to relevance and diversity (default)
   BALANCED: { lambda: 0.5, maxResults: 3 },
-  
+
   // Precision: Favor diversity to avoid confusion (e.g., Jennifer vs Jenn)
   // Tuned for "Lonely ICP" use case - prevents entity confusion while maintaining relevance
   PRECISION: { lambda: 0.3, maxResults: 3 },
-  
+
   // Relevance: Favor most relevant items (less diversity)
   // Higher lambda = more weight on relevance = more similar items allowed
   RELEVANCE: { lambda: 0.7, maxResults: 5 },
-  
+
   // Conservative: Very high diversity, avoid any confusion
   // Lowest lambda = maximum diversity = no similar items
   CONSERVATIVE: { lambda: 0.2, maxResults: 2 }

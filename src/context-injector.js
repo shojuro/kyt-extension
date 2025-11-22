@@ -20,13 +20,18 @@
 
 'use strict';
 
+import { applyMMR, MMR_PRESETS } from './mmr.js';
+
 // Configuration defaults (can be overridden via chrome.storage)
 const DEFAULT_CONFIG = {
   enabled: true,
   threshold: 0.5,           // Distance threshold (lower = more strict)
   maxContextItems: 3,       // Max number of context items to inject
   minDistance: 0.0,         // Minimum distance (perfect match)
-  debugMode: false          // Enable detailed console logging
+  debugMode: false,         // Enable detailed console logging
+  mmrEnabled: true,         // Enable MMR reranking
+  mmrLambda: 0.5,           // MMR diversity trade-off (0.5 = balanced)
+  fetchCount: 20            // Number of candidates to fetch for reranking
 };
 
 /**
@@ -101,7 +106,14 @@ async function generateEmbedding(text, apiKey) {
  * @param {Object} contextConfig - Context injection config
  * @returns {Promise<Object[]>} Array of relevant messages with distance scores
  */
-async function searchRelevantContext(queryEmbedding, apiConfig, contextConfig) {
+export async function searchRelevantContext(queryEmbedding, apiConfig, contextConfig) {
+  // Determine how many items to fetch
+  // If MMR is enabled, fetch more candidates (fetchCount)
+  // Otherwise, just fetch the requested amount (maxContextItems)
+  const matchCount = contextConfig.mmrEnabled
+    ? (contextConfig.fetchCount || 20)
+    : contextConfig.maxContextItems;
+
   const response = await fetch(
     `${apiConfig.supabaseUrl}/rest/v1/rpc/match_messages`,
     {
@@ -114,7 +126,7 @@ async function searchRelevantContext(queryEmbedding, apiConfig, contextConfig) {
       body: JSON.stringify({
         query_embedding: queryEmbedding,
         match_threshold: contextConfig.threshold,
-        match_count: contextConfig.maxContextItems
+        match_count: matchCount
       })
     }
   );
@@ -124,10 +136,24 @@ async function searchRelevantContext(queryEmbedding, apiConfig, contextConfig) {
     throw new Error(`Supabase search error: ${error.message || response.statusText}`);
   }
 
-  const results = await response.json();
+  let results = await response.json();
 
   // Filter results by minimum distance
-  return results.filter(r => r.distance >= contextConfig.minDistance);
+  results = results.filter(r => r.distance >= contextConfig.minDistance);
+
+  // Apply MMR Reranking if enabled
+  if (contextConfig.mmrEnabled) {
+    if (contextConfig.debugMode) {
+      console.log(`🔄 Applying MMR Reranking (λ=${contextConfig.mmrLambda})...`);
+    }
+
+    results = applyMMR(results, contextConfig.maxContextItems, contextConfig.mmrLambda, {
+      debugMode: contextConfig.debugMode,
+      requireEmbeddings: false // Will fallback to relevance if embeddings missing (e.g. old SQL function)
+    });
+  }
+
+  return results;
 }
 
 /**

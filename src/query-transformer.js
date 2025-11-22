@@ -40,7 +40,7 @@ export async function transformQuery(userQuery, context = {}, apiKey) {
       throw new Error('OpenAI API key required for query transformation');
     }
 
-    // Already specific technical query - return as-is
+    // Check if already optimized (avoid double-transformation)
     if (isAlreadyOptimized(userQuery)) {
       console.log('📊 Query already optimized, skipping transformation');
       return {
@@ -69,7 +69,7 @@ export async function transformQuery(userQuery, context = {}, apiKey) {
         messages: [
           {
             role: 'system',
-            content: 'You are a query optimization assistant. Transform vague user queries into concise, technical search terms optimized for semantic search. Extract key concepts, remove filler words, preserve intent.'
+            content: 'You are a query optimization assistant for a dual-purpose memory system (Developer Tool + AI Companion). Your goal is to transform vague user queries into specific search terms optimized for semantic search.\n\nAnalyze the user\'s intent:\n1. **Technical/Developer**: Extract libraries, error codes, specific concepts (e.g., "fix that bug" -> "fix postgres RLS policy error").\n2. **Emotional/Companion**: Extract emotional themes, shared memories, relationship milestones, temporal references (e.g., "remember when we talked about my ex?" -> "breakup relationship advice ex-partner emotional support").\n\nOutput ONLY the optimized search terms. Keep it concise (5-10 words).'
           },
           {
             role: 'user',
@@ -88,7 +88,25 @@ export async function transformQuery(userQuery, context = {}, apiKey) {
     }
 
     const data = await response.json();
-    const optimizedQuery = data.choices[0].message.content.trim();
+    let optimizedQuery = data.choices[0].message.content.trim();
+
+    // SANITY CHECK: Detect query pollution
+    // If transformed query is much longer than original AND contains unrelated tech terms, it's polluted
+    const pollutionDetected = detectQueryPollution(userQuery, optimizedQuery, context.recentTopics || []);
+
+    if (pollutionDetected) {
+      console.warn('⚠️ Query pollution detected, using original query instead');
+      console.warn(`  Original: "${userQuery}"`);
+      console.warn(`  Polluted: "${optimizedQuery}"`);
+
+      return {
+        success: true,
+        originalQuery: userQuery,
+        optimizedQuery: userQuery, // Fall back to original
+        transformed: false,
+        reason: 'Pollution detected - transformed query contained irrelevant terms'
+      };
+    }
 
     console.log('✅ Query transformed:', optimizedQuery);
 
@@ -115,7 +133,57 @@ export async function transformQuery(userQuery, context = {}, apiKey) {
 }
 
 /**
- * Check if query is already optimized (contains technical terms)
+ * Detect if transformed query has been polluted with irrelevant context
+ * 
+ * @param {string} originalQuery - Original user query
+ * @param {string} transformedQuery - LLM-transformed query
+ * @param {string[]} recentTopics - Recent conversation topics provided as context
+ * @returns {boolean} True if pollution detected
+ */
+function detectQueryPollution(originalQuery, transformedQuery, recentTopics) {
+  // If transformed is much longer (>2x), it might be polluted
+  const lengthRatio = transformedQuery.length / originalQuery.length;
+
+  if (lengthRatio < 2) {
+    return false; // Length is reasonable
+  }
+
+  // Extract words from original query (lowercased)
+  const originalWords = new Set(
+    originalQuery.toLowerCase().match(/\b\w+\b/g) || []
+  );
+
+  // Extract words from transformed query
+  const transformedWords = transformedQuery.toLowerCase().match(/\b\w+\b/g) || [];
+
+  // Count how many transformed words are NOT in original and NOT in recent topics
+  let irrelevantCount = 0;
+  const recentTopicsSet = new Set(recentTopics.map(t => t.toLowerCase()));
+
+  for (const word of transformedWords) {
+    // Skip common words (the, and, or, etc.)
+    if (word.length <= 3) continue;
+
+    // Check if word is:
+    // 1. NOT in original query
+    // 2. NOT in recent topics
+    // 3. IS a technical term (implies pollution)
+    if (!originalWords.has(word) && !recentTopicsSet.has(word)) {
+      // Check if it's a technical term
+      const isTechnical = /^(javascript|supabase|api|function|debug|postgres|database|code|error|bug|sync|embed|vector)$/i.test(word);
+
+      if (isTechnical) {
+        irrelevantCount++;
+      }
+    }
+  }
+
+  // If we have 2+ irrelevant technical terms, it's likely polluted
+  return irrelevantCount >= 2;
+}
+
+/**
+ * Check if query is already optimized (contains technical or specific emotional terms)
  * If true, skip LLM transformation to save cost/latency
  *
  * @param {string} query - User query
@@ -140,15 +208,38 @@ function isAlreadyOptimized(query) {
     /\b(embedding|vector|similarity|search|cosine|distance|semantic)\b/i
   ];
 
-  // If query contains 2+ technical terms, likely already optimized
-  let technicalTermCount = 0;
-  for (const pattern of technicalPatterns) {
-    if (pattern.test(query)) {
-      technicalTermCount++;
-    }
+  // Emotional/Companion patterns (for "Lonely" ICP)
+  const emotionalPatterns = [
+    // Feelings/Emotions
+    /\b(happy|sad|angry|anxious|depressed|excited|love|hate|fear|joy|grief|lonely)\b/i,
+
+    // Relationship terms
+    /\b(friend|partner|ex|breakup|date|anniversary|birthday|wedding|family|mom|dad)\b/i,
+
+    // Memory triggers
+    /\b(remember|recall|memory|past|future|dream|goal|wish|hope)\b/i,
+
+    // Specific context
+    /\b(advice|support|help|listen|talk|chat|vent)\b/i
+  ];
+
+  const allPatterns = [...technicalPatterns, ...emotionalPatterns];
+
+  // If query contains 2+ specific terms, likely already optimized
+  let termCount = 0;
+
+  // Combine all patterns into a single regex for counting
+  // Extract the inner groups (remove / and flags)
+  const allSources = allPatterns.map(p => p.source);
+  // We need to be careful about flags, but here they are all 'i'.
+
+  // Simpler approach: iterate and match
+  for (const pattern of allPatterns) {
+    const matches = query.match(new RegExp(pattern.source, 'gi')) || [];
+    termCount += matches.length;
   }
 
-  return technicalTermCount >= 2;
+  return termCount >= 2;
 }
 
 /**
@@ -161,9 +252,10 @@ function isAlreadyOptimized(query) {
 function buildTransformationPrompt(userQuery, context) {
   let prompt = `Transform this vague query into specific search terms:\n"${userQuery}"\n\n`;
 
-  // Add recent topics as context
+  // Add recent topics as context ONLY if they seem relevant
   if (context.recentTopics && context.recentTopics.length > 0) {
     prompt += `Recent conversation topics: ${context.recentTopics.join(', ')}\n\n`;
+    prompt += `**IMPORTANT**: Only use these topics if they are relevant to the user's current query. If the query is about a completely different subject (e.g., user asks about "Christmas plans" but topics are about "JavaScript debugging"), IGNORE the recent topics entirely.\n\n`;
   }
 
   // Add search context
@@ -172,11 +264,13 @@ function buildTransformationPrompt(userQuery, context) {
   }
 
   prompt += `Instructions:
-1. Extract key technical concepts and terms
-2. Remove filler words ("that", "thing", "um", "like")
-3. Add relevant technical context from topics
-4. Keep output concise (5-10 words max)
-5. Preserve user's intent
+1. Identify intent: Technical (Dev) or Emotional (Companion)
+2. Extract key concepts from THE USER'S QUERY ONLY (Tech: libs, errors; Emotional: feelings, people, events)
+3. Remove filler words ("that", "thing", "um", "like")
+4. ONLY add context from recent topics if they are DIRECTLY RELEVANT to the query
+5. DO NOT add random technical terms if the query is non-technical
+6. Keep output concise (5-10 words max)
+7. Preserve user's intent
 
 Output only the optimized search terms, nothing else.`;
 
@@ -206,8 +300,59 @@ export function extractRecentTopics(recentMessages = [], limit = 10) {
     const techMatches = content.match(/\b(api|database|auth|rls|supabase|postgres|openai|embedding|vector|search|query|schema|function|bug|error|debug|test|sync)\b/gi) || [];
     techMatches.forEach(term => topics.add(term.toLowerCase()));
 
+    // Extract emotional/relationship terms (Dual ICP)
+    const emotionalMatches = content.match(/\b(happy|sad|love|hate|friend|partner|ex|breakup|family|dream|goal|anxious|lonely|support)\b/gi) || [];
+    emotionalMatches.forEach(term => topics.add(term.toLowerCase()));
+
     if (topics.size >= limit) break;
   }
 
   return Array.from(topics).slice(0, limit);
+}
+
+/**
+ * Fetch recent messages from Supabase and extract topics
+ * Replaces local storage topic extraction for cross-device consistency
+ *
+ * @param {Object} apiConfig - API configuration
+ * @param {number} limit - Max topics to extract
+ * @returns {Promise<string[]>} Array of topic keywords
+ */
+export async function fetchRecentTopicsFromSupabase(apiConfig, limit = 10) {
+  try {
+    if (!apiConfig || !apiConfig.supabaseUrl || !apiConfig.supabaseKey) {
+      console.warn('⚠️ Supabase config missing, skipping topic fetch');
+      return [];
+    }
+
+    const userId = apiConfig.userId || '00000000-0000-0000-0000-000000000000';
+
+    console.log(`🔄 Fetching recent topics for user: ${userId}`);
+
+    // Fetch last 20 messages for this user
+    const response = await fetch(
+      `${apiConfig.supabaseUrl}/rest/v1/messages?user_id=eq.${userId}&order=timestamp.desc&limit=20&select=content`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': apiConfig.supabaseKey,
+          'Authorization': `Bearer ${apiConfig.supabaseKey}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Supabase error: ${response.statusText}`);
+    }
+
+    const messages = await response.json();
+
+    // Reuse existing extraction logic
+    return extractRecentTopics(messages, limit);
+
+  } catch (error) {
+    console.error('❌ Failed to fetch recent topics from Supabase:', error);
+    return [];
+  }
 }

@@ -161,19 +161,23 @@ async function getMessagesToSync() {
  * Sync messages to Supabase with embeddings
  * @returns {Promise<Object>} Sync result
  */
-export async function syncToSupabase() {
+/**
+ * Sync specific messages to Supabase
+ * @param {Object[]} messagesToSync - Array of messages to sync
+ * @returns {Promise<Object>} Sync result
+ */
+export async function syncMessages(messagesToSync) {
   try {
-    console.log('🔄 Starting sync to Supabase...');
+    console.log('🔄 Starting syncMessages...');
 
-    // Get config and messages
+    // Get config
     const config = await getConfig();
-    const messagesToSync = await getMessagesToSync();
 
-    if (messagesToSync.length === 0) {
+    if (!messagesToSync || messagesToSync.length === 0) {
       return {
         success: true,
         synced: 0,
-        message: 'No new messages to sync'
+        message: 'No messages to sync'
       };
     }
 
@@ -193,6 +197,7 @@ export async function syncToSupabase() {
     messagesToSync.forEach(msg => {
       console.log('📊 SYNC DEBUG:', {
         messageId: msg.messageId.substring(0, 20),
+        user_id: config.userId || 'DEFAULT',
         original_platform: msg.platform,
         will_store_as: msg.platform || 'chatgpt',
         timestamp: new Date(msg.timestamp).toISOString()
@@ -209,6 +214,7 @@ export async function syncToSupabase() {
       message_id: msg.messageId,
       embedding: embeddings[idx],
       source: msg.platform || 'chatgpt', // Use actual platform or default to chatgpt
+      user_id: config.userId || '00000000-0000-0000-0000-000000000000', // Add user_id
       synced_from_extension: new Date().toISOString()
     }));
 
@@ -233,13 +239,11 @@ export async function syncToSupabase() {
     console.log(`✅ Messages synced to 'messages' table: ${messagesToSync.length}`);
 
     // PHASE 5: Sync to chat_turns table (conversation-turn chunks)
-    // Note: user_id will be 'temp-user' until Supabase Auth is implemented (Day 2 task)
-    // Use a valid UUID for temp user (all zeros - reserved for system/anonymous users)
-    // TODO: Replace with auth.uid() after Day 2 Supabase Auth implementation
-    const tempUserId = '00000000-0000-0000-0000-000000000000';
+    // Use userId from config or default to temp ID
+    const userId = config.userId || '00000000-0000-0000-0000-000000000000';
 
     console.log('📦 Creating conversation-turn chunks...');
-    const turnChunks = messagesToTurnChunks(messagesToSync, tempUserId);
+    const turnChunks = messagesToTurnChunks(messagesToSync, userId);
 
     if (turnChunks.length > 0) {
       // PHASE 8: HyDE Preprocessing - Generate hypothetical questions
@@ -328,11 +332,22 @@ export async function syncToSupabase() {
 }
 
 /**
+ * Sync messages to Supabase with embeddings (Legacy/Default wrapper)
+ * @returns {Promise<Object>} Sync result
+ */
+export async function syncToSupabase() {
+  const messagesToSync = await getMessagesToSync();
+  return syncMessages(messagesToSync);
+}
+
+/**
  * Set API configuration
  * @param {Object} config - API configuration
  * @param {string} config.supabaseUrl - Supabase project URL
  * @param {string} config.supabaseKey - Supabase anon key
+ * @param {string} config.supabaseKey - Supabase anon key
  * @param {string} config.openaiKey - OpenAI API key
+ * @param {string} [config.userId] - Optional User ID (UUID)
  */
 export async function setApiConfig(config) {
   await chrome.storage.local.set({ api_config: config });
