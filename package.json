@@ -1,6 +1,6 @@
 {
   "name": "kyt-validation-sprint",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "type": "module",
   "description": "**Goal**: Prove automatic ChatGPT conversation capture via API interception works reliably.",
   "main": "background.js",
@@ -16,6 +16,7 @@
     "test:all": "vitest run && vitest run tests/e2e --no-coverage",
     "test:phase1": "playwright test validation/test_phase1_extension.spec.js",
     "test:phase2.5": "playwright test validation/test_phase2_5_diagnostic.spec.js",
+    "test:mobile-voice": "node tests/run_mobile_voice_tests.cjs",
     "validate": "node validation/verify_context_injection.js",
     "validate:all": "npm test && node validation/verify_context_injection.js",
     "sync": "node src/test_sync.js",
@@ -36,9 +37,9 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
-    "@vitest/ui": "^1.0.4",
+    "@vitest/ui": "^4.0.13",
     "playwright": "^1.56.1",
-    "puppeteer": "^21.0.0",
-    "vitest": "^1.0.4"
+    "puppeteer": "^24.31.0",
+    "vitest": "^4.0.13"
   }
 }

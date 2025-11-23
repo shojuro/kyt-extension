@@ -21,6 +21,84 @@
   };
 
   /**
+   * Chrome API Bridge for Page Context
+   * Provides access to chrome.storage and chrome.runtime through content script
+   */
+  const chromeBridge = {
+    storage: {
+      local: {
+        get: function(keys, callback) {
+          const requestId = 'req_' + Date.now() + '_' + Math.random();
+          
+          const listener = (event) => {
+            if (event.detail.requestId === requestId) {
+              window.removeEventListener('KYT_TEST_STORAGE_RESPONSE', listener);
+              if (event.detail.success) {
+                callback(event.detail.result);
+              } else {
+                console.error('Storage get failed:', event.detail.error);
+                callback({});
+              }
+            }
+          };
+          
+          window.addEventListener('KYT_TEST_STORAGE_RESPONSE', listener);
+          
+          window.dispatchEvent(new CustomEvent('KYT_TEST_STORAGE_GET', {
+            detail: { requestId, keys }
+          }));
+        },
+        
+        set: function(items, callback) {
+          const requestId = 'req_' + Date.now() + '_' + Math.random();
+          
+          const listener = (event) => {
+            if (event.detail.requestId === requestId) {
+              window.removeEventListener('KYT_TEST_STORAGE_RESPONSE', listener);
+              if (callback) {
+                callback();
+              }
+            }
+          };
+          
+          window.addEventListener('KYT_TEST_STORAGE_RESPONSE', listener);
+          
+          window.dispatchEvent(new CustomEvent('KYT_TEST_STORAGE_SET', {
+            detail: { requestId, items }
+          }));
+        }
+      }
+    },
+    
+    runtime: {
+      sendMessage: function(message, callback) {
+        const requestId = 'req_' + Date.now() + '_' + Math.random();
+        
+        const listener = (event) => {
+          if (event.detail.requestId === requestId) {
+            window.removeEventListener('KYT_TEST_RUNTIME_RESPONSE', listener);
+            if (event.detail.success) {
+              callback(event.detail.response);
+            } else {
+              console.error('Runtime message failed:', event.detail.error);
+              callback({ success: false, error: event.detail.error });
+            }
+          }
+        };
+        
+        window.addEventListener('KYT_TEST_RUNTIME_RESPONSE', listener);
+        
+        window.dispatchEvent(new CustomEvent('KYT_TEST_RUNTIME_MESSAGE', {
+          detail: { requestId, message }
+        }));
+      }
+    }
+  };
+
+  // Use bridge instead of native chrome API in page context
+  const chrome = chromeBridge;
+
+  /**
    * Test utilities
    */
   function assert(condition, testName, errorMsg) {
@@ -440,17 +518,24 @@
     }
   }
 
-  // Auto-run tests
-  console.log('%cKYT Mobile Voice Capture - Validation Test Suite', 'font-size: 16px; font-weight: bold; color: #4CAF50');
-  console.log('Run: window.KYT_TEST_MOBILE_VOICE_CAPTURE()');
-
   // Export test function
   window.KYT_TEST_MOBILE_VOICE_CAPTURE = runAllTests;
-
-  // Auto-run if on ChatGPT
-  if (window.location.hostname.includes('chatgpt.com') || window.location.hostname.includes('chat.openai.com')) {
-    console.log('\n🎯 ChatGPT detected - Auto-running tests in 2 seconds...');
-    setTimeout(runAllTests, 2000);
+  
+  // Auto-run only if not already running (for manual browser console use)
+  if (!window.KYT_TEST_ALREADY_RUNNING) {
+    console.log('%cKYT Mobile Voice Capture - Validation Test Suite', 'font-size: 16px; font-weight: bold; color: #4CAF50');
+    console.log('Run: window.KYT_TEST_MOBILE_VOICE_CAPTURE()');
+    
+    // Auto-run if on ChatGPT (for manual testing)
+    if (window.location.hostname.includes('chatgpt.com') || window.location.hostname.includes('chat.openai.com')) {
+      console.log('\n🎯 ChatGPT detected - Auto-running tests in 2 seconds...');
+      console.log('   (Set window.KYT_TEST_ALREADY_RUNNING = true to disable auto-run)');
+      setTimeout(() => {
+        if (!window.KYT_TEST_ALREADY_RUNNING) {
+          runAllTests();
+        }
+      }, 2000);
+    }
   }
 
 })();

@@ -312,6 +312,58 @@ chrome.runtime.onStartup.addListener(async () => {
  * @param {Object} messageData - Extracted message data from content script
  * @returns {Promise<boolean>} Success status
  */
+/**
+ * Generate content-only hash for deduplication
+ * CRITICAL: Uses content only (no timestamp) to detect duplicates across sources
+ * @param {string} content - Message content
+ * @returns {Promise<string>} SHA-256 hash (hex)
+ */
+async function hashContent(content) {
+  // Normalize content first
+  const normalized = content.trim().normalize('NFC');
+
+  // Convert to UTF-8 bytes
+  const encoder = new TextEncoder();
+  const data = encoder.encode(normalized);
+
+  // SHA-256 hash
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+
+  // Convert to hex string
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+  return hashHex;
+}
+
+/**
+ * Check for duplicate message within time window
+ * @param {Array} messages - Existing messages
+ * @param {string} contentHash - Hash of new message content
+ * @param {number} timestamp - New message timestamp
+ * @param {number} windowMs - Dedup window in milliseconds (default 5000)
+ * @returns {Object|null} Duplicate message if found, null otherwise
+ */
+function findDuplicate(messages, contentHash, timestamp, windowMs = 5000) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+
+    // Check if within time window
+    const timeDiff = Math.abs(timestamp - (msg.timestamp || msg.capturedAt));
+    if (timeDiff > windowMs) {
+      // Messages are sorted by time, so we can stop here
+      break;
+    }
+
+    // Check hash match
+    if (msg.contentHash === contentHash) {
+      return msg;
+    }
+  }
+
+  return null;
+}
+
 async function saveMessage(messageData) {
   try {
     // Validate input
@@ -324,18 +376,60 @@ async function saveMessage(messageData) {
     }
 
     // Get existing messages
-    const result = await chrome.storage.local.get(['captured_messages']);
+    const result = await chrome.storage.local.get(['captured_messages', 'kyt_stats']);
     const messages = result.captured_messages || [];
+    const stats = {
+      messagesCaptured: { api: 0, dom: 0 },
+      lastCapture: { api: null, dom: null },
+      duplicatesBlocked: 0,
+      ...(result.kyt_stats || {})
+    };
 
-    // Add new message
-    messages.push({
+    // Ensure nested objects exist (in case of partial corruption)
+    if (!stats.messagesCaptured) stats.messagesCaptured = { api: 0, dom: 0 };
+    if (!stats.lastCapture) stats.lastCapture = { api: null, dom: null };
+
+    // Generate content-only hash for deduplication
+    const contentHash = await hashContent(messageData.content);
+    const timestamp = messageData.timestamp || Date.now();
+
+    // Check for duplicates within 5-second window
+    const duplicate = findDuplicate(messages, contentHash, timestamp, 5000);
+
+    if (duplicate) {
+      console.log(`🔄 KYT Background: Duplicate detected (blocked)`);
+      console.log(`   Content: "${messageData.content.substring(0, 50)}..."`);
+      console.log(`   Hash: ${contentHash.substring(0, 16)}...`);
+      console.log(`   Original source: ${duplicate.source || 'unknown'}`);
+      console.log(`   New source: ${messageData.source || 'unknown'}`);
+
+      stats.duplicatesBlocked = (stats.duplicatesBlocked || 0) + 1;
+      await chrome.storage.local.set({ kyt_stats: stats });
+
+      return { saved: false, reason: 'duplicate', duplicateOf: duplicate.messageId };
+    }
+
+    // Add new message with content hash
+    const newMessage = {
       ...messageData,
+      contentHash,
       capturedAt: Date.now(),
-      messageId: generateMessageId()
-    });
+      messageId: messageData.messageId || generateMessageId(),
+      timestamp: timestamp
+    };
 
-    // Store updated array
-    await chrome.storage.local.set({ captured_messages: messages });
+    messages.push(newMessage);
+
+    // Update stats by source
+    const source = messageData.source || 'api';
+    stats.messagesCaptured[source] = (stats.messagesCaptured[source] || 0) + 1;
+    stats.lastCapture[source] = Date.now();
+
+    // Store updated array and stats
+    await chrome.storage.local.set({
+      captured_messages: messages,
+      kyt_stats: stats
+    });
 
     // Update metrics
     totalMessagesSaved++;
@@ -343,8 +437,26 @@ async function saveMessage(messageData) {
 
     console.log(`✅ KYT Background: Message saved (total: ${messages.length})`);
     console.log(`   Content: "${messageData.content.substring(0, 50)}..."`);
+    console.log(`   Source: ${source}`);
+    console.log(`   Hash: ${contentHash.substring(0, 16)}...`);
 
-    return true;
+    // Check storage quota and evict if needed
+    const quotaStatus = await checkStorageQuota();
+    console.log(`📊 Storage: ${quotaStatus.usagePercent.toFixed(1)}% (${quotaStatus.messageCount} messages)`);
+
+    if (quotaStatus.isExceeded) {
+      console.warn(`⚠️  Storage quota exceeded (${quotaStatus.usagePercent.toFixed(1)}% > ${STORAGE_CONFIG.MAX_USAGE_PERCENT}%)`);
+      const evictionResult = await evictOldMessages();
+
+      if (evictionResult.evicted > 0) {
+        console.log(`✅ Evicted ${evictionResult.evicted} old messages`);
+        console.log(`   Storage reduced: ${evictionResult.oldUsagePercent.toFixed(1)}% → ${evictionResult.newUsagePercent.toFixed(1)}%`);
+      } else if (evictionResult.reason === 'at_minimum') {
+        console.warn(`⚠️  Cannot evict - at minimum message threshold (${STORAGE_CONFIG.MIN_MESSAGES_TO_KEEP})`);
+      }
+    }
+
+    return { saved: true, messageId: newMessage.messageId };
 
   } catch (error) {
     totalErrors++;
@@ -371,7 +483,7 @@ async function saveMessage(messageData) {
       console.error('❌ Failed to log error:', logError);
     }
 
-    return false;
+    return { saved: false, reason: 'error', error: error.message };
   }
 }
 
@@ -381,6 +493,121 @@ async function saveMessage(messageData) {
  */
 function generateMessageId() {
   return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+/**
+ * Storage Quota Management
+ * Implements LRU eviction to prevent hitting chrome.storage.local 10MB limit
+ */
+const STORAGE_CONFIG = {
+  MAX_USAGE_PERCENT: 80,  // Start eviction at 80% capacity
+  TARGET_USAGE_PERCENT: 70, // Evict down to 70% capacity
+  MIN_MESSAGES_TO_KEEP: 100 // Always keep at least 100 recent messages
+};
+
+/**
+ * Check if storage quota is exceeded
+ * @returns {Promise<Object>} Status object with usage info
+ */
+async function checkStorageQuota() {
+  try {
+    const result = await chrome.storage.local.get(['captured_messages']);
+    const messages = result.captured_messages || [];
+
+    // Calculate storage size (approximate)
+    const storageSize = JSON.stringify(messages).length;
+    const storageLimitBytes = chrome.storage.local.QUOTA_BYTES;
+    const usagePercent = (storageSize / storageLimitBytes) * 100;
+
+    return {
+      isExceeded: usagePercent > STORAGE_CONFIG.MAX_USAGE_PERCENT,
+      usagePercent: usagePercent,
+      storageSize: storageSize,
+      storageLimitBytes: storageLimitBytes,
+      messageCount: messages.length
+    };
+  } catch (error) {
+    console.error('❌ Failed to check storage quota:', error);
+    return { isExceeded: false, error: error.message };
+  }
+}
+
+/**
+ * Evict old messages using LRU (Least Recently Used) strategy
+ * @returns {Promise<Object>} Eviction result
+ */
+async function evictOldMessages() {
+  try {
+    console.log('🗑️  Storage quota exceeded - starting LRU eviction...');
+
+    const result = await chrome.storage.local.get(['captured_messages']);
+    const messages = result.captured_messages || [];
+
+    if (messages.length <= STORAGE_CONFIG.MIN_MESSAGES_TO_KEEP) {
+      console.warn('⚠️  Cannot evict - already at minimum message count');
+      return { evicted: 0, reason: 'at_minimum' };
+    }
+
+    // Sort by timestamp (oldest first)
+    const sorted = [...messages].sort((a, b) => {
+      const timeA = a.capturedAt || a.timestamp || 0;
+      const timeB = b.capturedAt || b.timestamp || 0;
+      return timeA - timeB;
+    });
+
+    // Calculate target size
+    const currentSize = JSON.stringify(messages).length;
+    const targetSize = chrome.storage.local.QUOTA_BYTES * (STORAGE_CONFIG.TARGET_USAGE_PERCENT / 100);
+
+    // Evict oldest messages until we reach target
+    let evictedCount = 0;
+    let currentMessages = [...messages];
+
+    while (currentMessages.length > STORAGE_CONFIG.MIN_MESSAGES_TO_KEEP) {
+      const newSize = JSON.stringify(currentMessages).length;
+
+      if (newSize <= targetSize) {
+        break;
+      }
+
+      // Remove oldest message
+      const oldestIndex = currentMessages.findIndex(msg => {
+        const time = msg.capturedAt || msg.timestamp || 0;
+        const oldestTime = sorted[evictedCount].capturedAt || sorted[evictedCount].timestamp || 0;
+        return time === oldestTime;
+      });
+
+      if (oldestIndex !== -1) {
+        currentMessages.splice(oldestIndex, 1);
+        evictedCount++;
+      } else {
+        break;
+      }
+    }
+
+    // Save reduced message set
+    await chrome.storage.local.set({ captured_messages: currentMessages });
+
+    const newSize = JSON.stringify(currentMessages).length;
+    const newUsagePercent = (newSize / chrome.storage.local.QUOTA_BYTES) * 100;
+
+    console.log(`✅ Eviction complete:`);
+    console.log(`   Evicted: ${evictedCount} messages`);
+    console.log(`   Remaining: ${currentMessages.length} messages`);
+    console.log(`   Old usage: ${(currentSize / chrome.storage.local.QUOTA_BYTES * 100).toFixed(1)}%`);
+    console.log(`   New usage: ${newUsagePercent.toFixed(1)}%`);
+
+    return {
+      evicted: evictedCount,
+      remaining: currentMessages.length,
+      oldUsagePercent: (currentSize / chrome.storage.local.QUOTA_BYTES * 100),
+      newUsagePercent: newUsagePercent
+    };
+
+  } catch (error) {
+    console.error('❌ Eviction failed:', error);
+    return { evicted: 0, error: error.message };
+  }
 }
 
 /**
@@ -798,8 +1025,107 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.data) {
         console.log('   Data:', message.data);
       }
-      sendResponse({ received: true });
+      sendResponse({ acknowledged: true });
       return true;
+
+    case 'DOM_OBSERVER_STATUS':
+      // DOM observer status updates from content script
+      console.log(`🔍 DOM Observer Status: ${message.status}`);
+      if (message.restartAttempts > 0) {
+        console.log(`   Restart attempts: ${message.restartAttempts}`);
+      }
+
+      // Update stats with observer health
+      chrome.storage.local.get(['kyt_stats'], (result) => {
+        const stats = result.kyt_stats || {};
+        stats.observerStatus = message.status;
+        stats.observerRestarts = message.restartAttempts;
+        stats.lastObserverUpdate = Date.now();
+        chrome.storage.local.set({ kyt_stats: stats });
+      });
+
+      sendResponse({ acknowledged: true });
+      return true;
+
+    case 'SYNC_TO_SUPABASE':
+      // Day 2: Sync messages to Supabase with embeddings
+      console.log('🔄 Manual sync requested');
+      syncToSupabase()
+        .then(result => {
+          console.log('✅ Sync result:', result);
+          sendResponse(result);
+        })
+        .catch(error => {
+          console.error('❌ Sync failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true;
+
+    case 'SEARCH_MESSAGES':
+      // Day 2: Search messages by semantic similarity
+      console.log('🔍 Search requested:', message.query);
+      searchMessages(message.query, message.limit)
+        .then(results => {
+          console.log('✅ Search results:', results.length, 'items');
+          sendResponse({ success: true, results });
+        })
+        .catch(error => {
+          console.error('❌ Search failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true;
+
+    case 'FIND_SIMILAR':
+      // Day 2: Find messages similar to a given message
+      console.log('🔍 Find similar requested for message:', message.messageId);
+      findSimilarMessages(message.messageId, message.threshold)
+        .then(results => {
+          console.log('✅ Similar messages found:', results.length, 'items');
+          sendResponse({ success: true, results });
+        })
+        .catch(error => {
+          console.error('❌ Find similar failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true;
+
+    case 'SET_API_CONFIG':
+      // Day 2: Set API configuration (Supabase + OpenAI keys)
+      // Inline implementation (no module dependency)
+      console.log('🔧 Saving API configuration...');
+      chrome.storage.local.set({ api_config: message.config })
+        .then(() => {
+          console.log('✅ API configuration saved');
+          sendResponse({ success: true });
+        })
+        .catch(error => {
+          console.error('❌ Config save error:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Keep channel open for async
+
+    case 'GET_CONTEXT':
+      // Day 3: Get context for RAG injection (CSP fix - runs in background, no CSP restrictions)
+      console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
+
+      // Read debug mode from storage for Memory Injection Protocol
+      chrome.storage.local.get(['kytDebugMode']).then(result => {
+        const config = {
+          ...message.config,
+          debugMode: result.kytDebugMode || false
+        };
+
+        return getContextForInjection(message.userMessage, config);
+      })
+        .then(contextData => {
+          console.log('✅ Context retrieved:', contextData.items?.length || 0, 'items');
+          sendResponse(contextData);
+        })
+        .catch(error => {
+          console.error('❌ Context retrieval error:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Keep channel open
 
     case 'GET_STATS':
       // Phase 2: Get diagnostic statistics for popup UI
@@ -890,86 +1216,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })();
       return true; // Keep channel open
 
-    case 'SYNC_TO_SUPABASE':
-      // Day 2: Sync messages to Supabase with embeddings
-      console.log('🔄 Manual sync requested');
-      syncToSupabase()
-        .then(result => {
-          console.log('✅ Sync result:', result);
-          sendResponse(result);
-        })
-        .catch(error => {
-          console.error('❌ Sync failed:', error);
-          sendResponse({ success: false, error: error.message });
-        });
-      return true;
-
-    case 'SEARCH_MESSAGES':
-      // Day 2: Search messages by semantic similarity
-      console.log('🔍 Search requested:', message.query);
-      searchMessages(message.query, message.limit)
-        .then(results => {
-          console.log('✅ Search results:', results.length, 'items');
-          sendResponse({ success: true, results });
-        })
-        .catch(error => {
-          console.error('❌ Search failed:', error);
-          sendResponse({ success: false, error: error.message });
-        });
-      return true;
-
-    case 'FIND_SIMILAR':
-      // Day 2: Find messages similar to a given message
-      console.log('🔍 Find similar requested for message:', message.messageId);
-      findSimilarMessages(message.messageId, message.threshold)
-        .then(results => {
-          console.log('✅ Similar messages found:', results.length, 'items');
-          sendResponse({ success: true, results });
-        })
-        .catch(error => {
-          console.error('❌ Find similar failed:', error);
-          sendResponse({ success: false, error: error.message });
-        });
-      return true;
-
-    case 'SET_API_CONFIG':
-      // Day 2: Set API configuration (Supabase + OpenAI keys)
-      // Inline implementation (no module dependency)
-      console.log('🔧 Saving API configuration...');
-      chrome.storage.local.set({ api_config: message.config })
-        .then(() => {
-          console.log('✅ API configuration saved');
-          sendResponse({ success: true });
-        })
-        .catch(error => {
-          console.error('❌ Config save error:', error);
-          sendResponse({ success: false, error: error.message });
-        });
-      return true; // Keep channel open for async
-
-    case 'GET_CONTEXT':
-      // Day 3: Get context for RAG injection (CSP fix - runs in background, no CSP restrictions)
-      console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
-
-      // Read debug mode from storage for Memory Injection Protocol
-      chrome.storage.local.get(['kytDebugMode']).then(result => {
-        const config = {
-          ...message.config,
-          debugMode: result.kytDebugMode || false
-        };
-
-        return getContextForInjection(message.userMessage, config);
-      })
-        .then(contextData => {
-          console.log('✅ Context retrieved:', contextData.items?.length || 0, 'items');
-          sendResponse(contextData);
-        })
-        .catch(error => {
-          console.error('❌ Context retrieval error:', error);
-          sendResponse({ success: false, error: error.message });
-        });
-      return true; // Keep channel open for async
-
     default:
       console.warn('⚠️ Unknown message type:', message.type);
       sendResponse({ success: false, error: 'Unknown message type' });
@@ -994,9 +1240,20 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         lastSave: `${Math.floor(stats.timeSinceLastSave / 1000)}s ago`
       });
 
-      // Warn if storage > 80%
-      if (parseFloat(stats.usagePercent) > 80) {
-        console.warn('⚠️ WARNING: Storage usage > 80%! Consider archiving old messages.');
+      // Proactive eviction if storage > 80%
+      if (parseFloat(stats.usagePercent) > STORAGE_CONFIG.MAX_USAGE_PERCENT) {
+        console.warn(`⚠️ Storage usage > ${STORAGE_CONFIG.MAX_USAGE_PERCENT}% - triggering eviction`);
+
+        evictOldMessages().then(evictionResult => {
+          if (evictionResult.evicted > 0) {
+            console.log(`✅ Health check eviction: ${evictionResult.evicted} messages removed`);
+            console.log(`   Storage reduced: ${evictionResult.oldUsagePercent.toFixed(1)}% → ${evictionResult.newUsagePercent.toFixed(1)}%`);
+          } else if (evictionResult.reason === 'at_minimum') {
+            console.warn(`⚠️ Cannot evict - at minimum message threshold (${STORAGE_CONFIG.MIN_MESSAGES_TO_KEEP})`);
+          }
+        }).catch(err => {
+          console.error('❌ Health check eviction failed:', err);
+        });
       }
 
       // Warn if no saves for 10 minutes
