@@ -19,6 +19,8 @@ import { queueProcessor } from './src/background/queue-processor.js';
 import { buildMemoryInjection, buildEmptyInjection, buildErrorInjection } from './kyt-memory-injection-builder.js';
 import { classifyContent } from './src/taxonomy-classifier.js';
 import { applyKeywordBoost } from './src/keyword-boost.js';
+import { rerankCandidates } from './src/cross-encoder-reranker.js';
+import { filterByConfidence } from './src/confidence-filter.js';
 
 // ... existing imports ...
 
@@ -873,6 +875,54 @@ async function getContextForInjection(userMessage, config) {
       });
 
       console.log(`✅ Keyword boost complete: candidates re-sorted by boosted scores`);
+    }
+
+    // === PRIORITY 2: CROSS-ENCODER RERANKING + CONFIDENCE FILTERING ===
+    // Apply semantic relevance scoring + threshold filtering
+    // Philosophy: No results > wrong results
+    if (filteredItems.length > 0) {
+      try {
+        console.log(`🎯 Applying cross-encoder reranking to ${filteredItems.length} candidates...`);
+
+        // Step 1: Rerank with cross-encoder (adds cross_encoder_score)
+        const rerankedItems = await rerankCandidates(
+          userMessage,  // Original query (not transformed)
+          filteredItems,
+          {
+            debugMode: contextConfig.debugMode || false
+          }
+        );
+
+        console.log(`✅ Cross-encoder reranking complete`);
+
+        // Step 2: Apply confidence threshold filter
+        const confidenceThreshold = contextConfig.confidenceThreshold || 0.70;
+        console.log(`🎯 Applying confidence filter (threshold: ${confidenceThreshold})...`);
+
+        const filterResult = filterByConfidence(rerankedItems, confidenceThreshold);
+
+        // Log filtering results
+        if (filterResult.status === 'success') {
+          console.log(`✅ Confidence filter: ${filterResult.results.length}/${rerankedItems.length} items passed (highest: ${filterResult.highestScore.toFixed(3)})`);
+          filteredItems = filterResult.results;
+        } else if (filterResult.status === 'low_confidence') {
+          console.warn(`⚠️ Confidence filter: All ${rerankedItems.length} items below threshold (highest: ${filterResult.highestScore.toFixed(3)})`);
+          if (filterResult.suggestions && contextConfig.debugMode) {
+            console.log(`💡 Suggestions:`, filterResult.suggestions);
+          }
+          // Philosophy: No results > wrong results
+          filteredItems = [];
+        } else {
+          // no_results status
+          console.log(`ℹ️ Confidence filter: No results to filter`);
+          filteredItems = [];
+        }
+
+      } catch (error) {
+        console.error('❌ Reranking/filtering failed, falling back to MMR results:', error.message);
+        // Graceful degradation: Keep MMR results if reranker/filter fails
+        // filteredItems unchanged
+      }
     }
 
     // === MEMORY INJECTION PROTOCOL v1.0 ===
