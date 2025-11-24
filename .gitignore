@@ -104,6 +104,12 @@ validation/user_data/
 .test-profile/
 test-results/
 
+# Test conversation exports
+conversation_export*.json
+tier_examples.json
+tier_test_results.txt
+*_test_results.txt
+
 # ============================================
 # BASELINE DATA (Validation Results)
 # ============================================
