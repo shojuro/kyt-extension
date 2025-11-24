@@ -1,0 +1,14 @@
+🧪 Running True Negative Test (Threshold: 0.8)
+   Querying for topics NOT in the database...
+❌ Unexpected match for: "What is the capital of Mars?"
+   -> Found: "The capital of Japan is Tokyo." (Score: undefined)
+   -> Found: "Elon Musk is the CEO of Tesla and SpaceX." (Score: undefined)
+   -> Found: "The Great Wall of China is visible from space (myth)." (Score: undefined)
+   -> Found: "TON 618 is so large that it could swallow the entire Solar System multiple times over." (Score: undefined)
+   -> Found: "Its Schwarzschild radius is approximately 190 billion kilometers." (Score: undefined)
+✅ Correctly found NOTHING for: "Who won the Super Bowl in 2050?"
+❌ Unexpected match for: "Recipe for kryptonite cake"
+   -> Found: "How to bake a chocolate cake: preheat oven to 350 degrees." (Score: undefined)
+❌ Unexpected match for: "History of the Klingon Empire"
+   -> Found: "TON 618 is a relic from the early universe, offering clues about galaxy formation." (Score: undefined)
+✅ Correctly found NOTHING for: "Details about the iPhone 50"

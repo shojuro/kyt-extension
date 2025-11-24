@@ -1,0 +1,10 @@
+file://wsl.localhost/Ubuntu-22.04/home/penguinzyue/kyt-validation-sprint/tests/test_mmr_simple.js:3
+import { searchRelevantContext } from '../src/context-injector.js';
+         ^^^^^^^^^^^^^^^^^^^^^
+SyntaxError: The requested module '../src/context-injector.js' does not provide an export named 'searchRelevantContext'
+    at ModuleJob._instantiate (node:internal/modules/esm/module_job:134:21)
+    at async ModuleJob.run (node:internal/modules/esm/module_job:217:5)
+    at async ModuleLoader.import (node:internal/modules/esm/loader:316:24)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:123:5)
+
+Node.js v20.15.0

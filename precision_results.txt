@@ -1,0 +1,368 @@
+🔑 Debug Config:
+   SUPABASE_URL: Set
+   SUPABASE_KEY: Set (219 chars)
+   OPENAI_KEY: Set (164 chars, starts with sk-proj...)
+🌱 Seeding test data...
+   Data already seeded (30 records). Skipping.
+
+🧪 Running tests with threshold: 0.5
+🔍 Searching for: "What is TON 618?" (limit: 5, threshold: 0.5)
+✅ Found 4 results
+🔍 Searching for: "How massive is the black hole?" (limit: 5, threshold: 0.5)
+✅ Found 2 results
+🔍 Searching for: "How far away is it?" (limit: 5, threshold: 0.5)
+✅ Found 0 results
+   ❌ Missed: "How far away is it?" (Expected: "10.4 billion light-years")
+🔍 Searching for: "What is its luminosity?" (limit: 5, threshold: 0.5)
+✅ Found 0 results
+   ❌ Missed: "What is its luminosity?" (Expected: "140 trillion Suns")
+🔍 Searching for: "When was it discovered?" (limit: 5, threshold: 0.5)
+✅ Found 0 results
+   ❌ Missed: "When was it discovered?" (Expected: "1957")
+🔍 Searching for: "How big is the event horizon?" (limit: 5, threshold: 0.5)
+✅ Found 2 results
+🔍 Searching for: "Can we see the galaxy?" (limit: 5, threshold: 0.5)
+✅ Found 0 results
+   ❌ Missed: "Can we see the galaxy?" (Expected: "not visible")
+🔍 Searching for: "What is the Schwarzschild radius?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+🔍 Searching for: "Is it bigger than the solar system?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+🔍 Searching for: "What constellation is it in?" (limit: 5, threshold: 0.5)
+✅ Found 0 results
+   ❌ Missed: "What constellation is it in?" (Expected: "Canes Venatici")
+🔍 Searching for: "What is the weather in Paris?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "What is the weather in Paris?" -> "The weather in Paris is currently 15 degrees Celsi..."
+🔍 Searching for: "How do I bake a cake?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "How do I bake a cake?" -> "How to bake a chocolate cake: preheat oven to 350 ..."
+🔍 Searching for: "Who created Python?" (limit: 5, threshold: 0.5)
+✅ Found 0 results
+🔍 Searching for: "What is the powerhouse of the cell?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "What is the powerhouse of the cell?" -> "The mitochondria is the powerhouse of the cell...."
+🔍 Searching for: "Tell me about React." (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Tell me about React." -> "React is a JavaScript library for building user in..."
+🔍 Searching for: "Is the Great Wall visible from space?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Is the Great Wall visible from space?" -> "The Great Wall of China is visible from space (myt..."
+🔍 Searching for: "Who is Elon Musk?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Who is Elon Musk?" -> "Elon Musk is the CEO of Tesla and SpaceX...."
+🔍 Searching for: "How does photosynthesis work?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "How does photosynthesis work?" -> "Photosynthesis converts light energy into chemical..."
+🔍 Searching for: "Capital of Japan?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Capital of Japan?" -> "The capital of Japan is Tokyo...."
+🔍 Searching for: "Explain E=mc^2" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Explain E=mc^2" -> "E=mc^2 is Einstein's famous equation...."
+🔍 Searching for: "What is Docker?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "What is Docker?" -> "Docker containers are lightweight and portable...."
+🔍 Searching for: "What is Kubernetes?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "What is Kubernetes?" -> "Kubernetes is an orchestration platform for contai..."
+🔍 Searching for: "What is Supabase?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "What is Supabase?" -> "Supabase is an open-source Firebase alternative...."
+🔍 Searching for: "Tell me about PostgreSQL." (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Tell me about PostgreSQL." -> "PostgreSQL is a powerful object-relational databas..."
+🔍 Searching for: "Who made JavaScript?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Who made JavaScript?" -> "JavaScript was created by Brendan Eich in 10 days...."
+🔍 Searching for: "Speed of light?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Speed of light?" -> "The speed of light is approximately 299,792,458 me..."
+🔍 Searching for: "Boiling point of water?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Boiling point of water?" -> "Water boils at 100 degrees Celsius at sea level...."
+🔍 Searching for: "How many bones in human body?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "How many bones in human body?" -> "The human body has 206 bones...."
+🔍 Searching for: "Where is Eiffel Tower?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Where is Eiffel Tower?" -> "The Eiffel Tower is located in Paris, France...."
+🔍 Searching for: "Future of AI?" (limit: 5, threshold: 0.5)
+✅ Found 1 results
+   ⚠️  False Positive: "Future of AI?" -> "Artificial Intelligence is transforming industries..."
+
+📊 Results (Threshold 0.5):
+   Precision (Recall for Relevant): 50.0% (5/10)
+   False Positive Rate: 95.0% (19/20)
+
+🧪 Running tests with threshold: 0.6
+🔍 Searching for: "What is TON 618?" (limit: 5, threshold: 0.6)
+✅ Found 5 results
+🔍 Searching for: "How massive is the black hole?" (limit: 5, threshold: 0.6)
+✅ Found 2 results
+🔍 Searching for: "How far away is it?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+🔍 Searching for: "What is its luminosity?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+🔍 Searching for: "When was it discovered?" (limit: 5, threshold: 0.6)
+✅ Found 0 results
+   ❌ Missed: "When was it discovered?" (Expected: "1957")
+🔍 Searching for: "How big is the event horizon?" (limit: 5, threshold: 0.6)
+✅ Found 3 results
+🔍 Searching for: "Can we see the galaxy?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+🔍 Searching for: "What is the Schwarzschild radius?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+🔍 Searching for: "Is it bigger than the solar system?" (limit: 5, threshold: 0.6)
+✅ Found 3 results
+🔍 Searching for: "What constellation is it in?" (limit: 5, threshold: 0.6)
+✅ Found 0 results
+   ❌ Missed: "What constellation is it in?" (Expected: "Canes Venatici")
+🔍 Searching for: "What is the weather in Paris?" (limit: 5, threshold: 0.6)
+✅ Found 2 results
+   ⚠️  False Positive: "What is the weather in Paris?" -> "The weather in Paris is currently 15 degrees Celsi..."
+🔍 Searching for: "How do I bake a cake?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "How do I bake a cake?" -> "How to bake a chocolate cake: preheat oven to 350 ..."
+🔍 Searching for: "Who created Python?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Who created Python?" -> "Python is a high-level programming language known ..."
+🔍 Searching for: "What is the powerhouse of the cell?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "What is the powerhouse of the cell?" -> "The mitochondria is the powerhouse of the cell...."
+🔍 Searching for: "Tell me about React." (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Tell me about React." -> "React is a JavaScript library for building user in..."
+🔍 Searching for: "Is the Great Wall visible from space?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Is the Great Wall visible from space?" -> "The Great Wall of China is visible from space (myt..."
+🔍 Searching for: "Who is Elon Musk?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Who is Elon Musk?" -> "Elon Musk is the CEO of Tesla and SpaceX...."
+🔍 Searching for: "How does photosynthesis work?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "How does photosynthesis work?" -> "Photosynthesis converts light energy into chemical..."
+🔍 Searching for: "Capital of Japan?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Capital of Japan?" -> "The capital of Japan is Tokyo...."
+🔍 Searching for: "Explain E=mc^2" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Explain E=mc^2" -> "E=mc^2 is Einstein's famous equation...."
+🔍 Searching for: "What is Docker?" (limit: 5, threshold: 0.6)
+✅ Found 2 results
+   ⚠️  False Positive: "What is Docker?" -> "Docker containers are lightweight and portable...."
+🔍 Searching for: "What is Kubernetes?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "What is Kubernetes?" -> "Kubernetes is an orchestration platform for contai..."
+🔍 Searching for: "What is Supabase?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "What is Supabase?" -> "Supabase is an open-source Firebase alternative...."
+🔍 Searching for: "Tell me about PostgreSQL." (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Tell me about PostgreSQL." -> "PostgreSQL is a powerful object-relational databas..."
+🔍 Searching for: "Who made JavaScript?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Who made JavaScript?" -> "JavaScript was created by Brendan Eich in 10 days...."
+🔍 Searching for: "Speed of light?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Speed of light?" -> "The speed of light is approximately 299,792,458 me..."
+🔍 Searching for: "Boiling point of water?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Boiling point of water?" -> "Water boils at 100 degrees Celsius at sea level...."
+🔍 Searching for: "How many bones in human body?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "How many bones in human body?" -> "The human body has 206 bones...."
+🔍 Searching for: "Where is Eiffel Tower?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Where is Eiffel Tower?" -> "The Eiffel Tower is located in Paris, France...."
+🔍 Searching for: "Future of AI?" (limit: 5, threshold: 0.6)
+✅ Found 1 results
+   ⚠️  False Positive: "Future of AI?" -> "Artificial Intelligence is transforming industries..."
+
+📊 Results (Threshold 0.6):
+   Precision (Recall for Relevant): 80.0% (8/10)
+   False Positive Rate: 100.0% (20/20)
+
+🧪 Running tests with threshold: 0.7
+🔍 Searching for: "What is TON 618?" (limit: 5, threshold: 0.7)
+✅ Found 5 results
+🔍 Searching for: "How massive is the black hole?" (limit: 5, threshold: 0.7)
+✅ Found 5 results
+🔍 Searching for: "How far away is it?" (limit: 5, threshold: 0.7)
+✅ Found 3 results
+🔍 Searching for: "What is its luminosity?" (limit: 5, threshold: 0.7)
+✅ Found 5 results
+🔍 Searching for: "When was it discovered?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+🔍 Searching for: "How big is the event horizon?" (limit: 5, threshold: 0.7)
+✅ Found 5 results
+🔍 Searching for: "Can we see the galaxy?" (limit: 5, threshold: 0.7)
+✅ Found 5 results
+🔍 Searching for: "What is the Schwarzschild radius?" (limit: 5, threshold: 0.7)
+✅ Found 3 results
+🔍 Searching for: "Is it bigger than the solar system?" (limit: 5, threshold: 0.7)
+✅ Found 5 results
+🔍 Searching for: "What constellation is it in?" (limit: 5, threshold: 0.7)
+✅ Found 3 results
+🔍 Searching for: "What is the weather in Paris?" (limit: 5, threshold: 0.7)
+✅ Found 2 results
+   ⚠️  False Positive: "What is the weather in Paris?" -> "The weather in Paris is currently 15 degrees Celsi..."
+🔍 Searching for: "How do I bake a cake?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "How do I bake a cake?" -> "How to bake a chocolate cake: preheat oven to 350 ..."
+🔍 Searching for: "Who created Python?" (limit: 5, threshold: 0.7)
+✅ Found 2 results
+   ⚠️  False Positive: "Who created Python?" -> "Python is a high-level programming language known ..."
+🔍 Searching for: "What is the powerhouse of the cell?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "What is the powerhouse of the cell?" -> "The mitochondria is the powerhouse of the cell...."
+🔍 Searching for: "Tell me about React." (limit: 5, threshold: 0.7)
+✅ Found 2 results
+   ⚠️  False Positive: "Tell me about React." -> "React is a JavaScript library for building user in..."
+🔍 Searching for: "Is the Great Wall visible from space?" (limit: 5, threshold: 0.7)
+✅ Found 2 results
+   ⚠️  False Positive: "Is the Great Wall visible from space?" -> "The Great Wall of China is visible from space (myt..."
+🔍 Searching for: "Who is Elon Musk?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "Who is Elon Musk?" -> "Elon Musk is the CEO of Tesla and SpaceX...."
+🔍 Searching for: "How does photosynthesis work?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "How does photosynthesis work?" -> "Photosynthesis converts light energy into chemical..."
+🔍 Searching for: "Capital of Japan?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "Capital of Japan?" -> "The capital of Japan is Tokyo...."
+🔍 Searching for: "Explain E=mc^2" (limit: 5, threshold: 0.7)
+✅ Found 2 results
+   ⚠️  False Positive: "Explain E=mc^2" -> "E=mc^2 is Einstein's famous equation...."
+🔍 Searching for: "What is Docker?" (limit: 5, threshold: 0.7)
+✅ Found 2 results
+   ⚠️  False Positive: "What is Docker?" -> "Docker containers are lightweight and portable...."
+🔍 Searching for: "What is Kubernetes?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "What is Kubernetes?" -> "Kubernetes is an orchestration platform for contai..."
+🔍 Searching for: "What is Supabase?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "What is Supabase?" -> "Supabase is an open-source Firebase alternative...."
+🔍 Searching for: "Tell me about PostgreSQL." (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "Tell me about PostgreSQL." -> "PostgreSQL is a powerful object-relational databas..."
+🔍 Searching for: "Who made JavaScript?" (limit: 5, threshold: 0.7)
+✅ Found 2 results
+   ⚠️  False Positive: "Who made JavaScript?" -> "JavaScript was created by Brendan Eich in 10 days...."
+🔍 Searching for: "Speed of light?" (limit: 5, threshold: 0.7)
+✅ Found 3 results
+   ⚠️  False Positive: "Speed of light?" -> "The speed of light is approximately 299,792,458 me..."
+🔍 Searching for: "Boiling point of water?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "Boiling point of water?" -> "Water boils at 100 degrees Celsius at sea level...."
+🔍 Searching for: "How many bones in human body?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "How many bones in human body?" -> "The human body has 206 bones...."
+🔍 Searching for: "Where is Eiffel Tower?" (limit: 5, threshold: 0.7)
+✅ Found 2 results
+   ⚠️  False Positive: "Where is Eiffel Tower?" -> "The Eiffel Tower is located in Paris, France...."
+🔍 Searching for: "Future of AI?" (limit: 5, threshold: 0.7)
+✅ Found 1 results
+   ⚠️  False Positive: "Future of AI?" -> "Artificial Intelligence is transforming industries..."
+
+📊 Results (Threshold 0.7):
+   Precision (Recall for Relevant): 100.0% (10/10)
+   False Positive Rate: 100.0% (20/20)
+
+🧪 Running tests with threshold: 0.8
+🔍 Searching for: "What is TON 618?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+🔍 Searching for: "How massive is the black hole?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+🔍 Searching for: "How far away is it?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+🔍 Searching for: "What is its luminosity?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+🔍 Searching for: "When was it discovered?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+🔍 Searching for: "How big is the event horizon?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+🔍 Searching for: "Can we see the galaxy?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+🔍 Searching for: "What is the Schwarzschild radius?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+🔍 Searching for: "Is it bigger than the solar system?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+🔍 Searching for: "What constellation is it in?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+🔍 Searching for: "What is the weather in Paris?" (limit: 5, threshold: 0.8)
+✅ Found 2 results
+   ⚠️  False Positive: "What is the weather in Paris?" -> "The weather in Paris is currently 15 degrees Celsi..."
+🔍 Searching for: "How do I bake a cake?" (limit: 5, threshold: 0.8)
+✅ Found 1 results
+   ⚠️  False Positive: "How do I bake a cake?" -> "How to bake a chocolate cake: preheat oven to 350 ..."
+🔍 Searching for: "Who created Python?" (limit: 5, threshold: 0.8)
+✅ Found 2 results
+   ⚠️  False Positive: "Who created Python?" -> "Python is a high-level programming language known ..."
+🔍 Searching for: "What is the powerhouse of the cell?" (limit: 5, threshold: 0.8)
+✅ Found 4 results
+   ⚠️  False Positive: "What is the powerhouse of the cell?" -> "The mitochondria is the powerhouse of the cell...."
+🔍 Searching for: "Tell me about React." (limit: 5, threshold: 0.8)
+✅ Found 2 results
+   ⚠️  False Positive: "Tell me about React." -> "React is a JavaScript library for building user in..."
+🔍 Searching for: "Is the Great Wall visible from space?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+   ⚠️  False Positive: "Is the Great Wall visible from space?" -> "The Great Wall of China is visible from space (myt..."
+🔍 Searching for: "Who is Elon Musk?" (limit: 5, threshold: 0.8)
+✅ Found 2 results
+   ⚠️  False Positive: "Who is Elon Musk?" -> "Elon Musk is the CEO of Tesla and SpaceX...."
+🔍 Searching for: "How does photosynthesis work?" (limit: 5, threshold: 0.8)
+✅ Found 1 results
+   ⚠️  False Positive: "How does photosynthesis work?" -> "Photosynthesis converts light energy into chemical..."
+🔍 Searching for: "Capital of Japan?" (limit: 5, threshold: 0.8)
+✅ Found 1 results
+   ⚠️  False Positive: "Capital of Japan?" -> "The capital of Japan is Tokyo...."
+🔍 Searching for: "Explain E=mc^2" (limit: 5, threshold: 0.8)
+✅ Found 4 results
+   ⚠️  False Positive: "Explain E=mc^2" -> "E=mc^2 is Einstein's famous equation...."
+🔍 Searching for: "What is Docker?" (limit: 5, threshold: 0.8)
+✅ Found 4 results
+   ⚠️  False Positive: "What is Docker?" -> "Docker containers are lightweight and portable...."
+🔍 Searching for: "What is Kubernetes?" (limit: 5, threshold: 0.8)
+✅ Found 5 results
+   ⚠️  False Positive: "What is Kubernetes?" -> "Kubernetes is an orchestration platform for contai..."
+🔍 Searching for: "What is Supabase?" (limit: 5, threshold: 0.8)
+✅ Found 2 results
+   ⚠️  False Positive: "What is Supabase?" -> "Supabase is an open-source Firebase alternative...."
+🔍 Searching for: "Tell me about PostgreSQL." (limit: 5, threshold: 0.8)
+✅ Found 2 results
+   ⚠️  False Positive: "Tell me about PostgreSQL." -> "PostgreSQL is a powerful object-relational databas..."
+🔍 Searching for: "Who made JavaScript?" (limit: 5, threshold: 0.8)
+✅ Found 3 results
+   ⚠️  False Positive: "Who made JavaScript?" -> "JavaScript was created by Brendan Eich in 10 days...."
+🔍 Searching for: "Speed of light?" (limit: 5, threshold: 0.8)
+✅ Found 4 results
+   ⚠️  False Positive: "Speed of light?" -> "The speed of light is approximately 299,792,458 me..."
+🔍 Searching for: "Boiling point of water?" (limit: 5, threshold: 0.8)
+✅ Found 1 results
+   ⚠️  False Positive: "Boiling point of water?" -> "Water boils at 100 degrees Celsius at sea level...."
+🔍 Searching for: "How many bones in human body?" (limit: 5, threshold: 0.8)
+✅ Found 1 results
+   ⚠️  False Positive: "How many bones in human body?" -> "The human body has 206 bones...."
+🔍 Searching for: "Where is Eiffel Tower?" (limit: 5, threshold: 0.8)
+✅ Found 3 results
+   ⚠️  False Positive: "Where is Eiffel Tower?" -> "The Eiffel Tower is located in Paris, France...."
+🔍 Searching for: "Future of AI?" (limit: 5, threshold: 0.8)
+✅ Found 1 results
+   ⚠️  False Positive: "Future of AI?" -> "Artificial Intelligence is transforming industries..."
+
+📊 Results (Threshold 0.8):
+   Precision (Recall for Relevant): 100.0% (10/10)
+   False Positive Rate: 100.0% (20/20)
+
+🏆 Final Summary:
+┌─────────┬───────────┬───────────┬────────┐
+│ (index) │ threshold │ precision │ fpRate │
+├─────────┼───────────┼───────────┼────────┤
+│ 0       │ 0.5       │ 0.5       │ 0.95   │
+│ 1       │ 0.6       │ 0.8       │ 1      │
+│ 2       │ 0.7       │ 1         │ 1      │
+│ 3       │ 0.8       │ 1         │ 1      │
+└─────────┴───────────┴───────────┴────────┘
+
+⚠️  No threshold met strict criteria (>90% Precision, <10% FP). Consider 0.7 or 0.8.

@@ -18,6 +18,7 @@ import { transformQuery, extractRecentTopics, fetchRecentTopicsFromSupabase } fr
 import { queueProcessor } from './src/background/queue-processor.js';
 import { buildMemoryInjection, buildEmptyInjection, buildErrorInjection } from './kyt-memory-injection-builder.js';
 import { classifyContent } from './src/taxonomy-classifier.js';
+import { applyKeywordBoost } from './src/keyword-boost.js';
 
 // ... existing imports ...
 
@@ -858,6 +859,20 @@ async function getContextForInjection(userMessage, config) {
       );
 
       console.log(`✅ MMR reranking complete: ${filteredItems.length} items selected`);
+    }
+
+    // Apply keyword coverage boost (v1.2.1)
+    // Addresses MMR diversity (λ=0.3) de-ranking keyword-rich candidates
+    // Critical for entity queries like "Jennifer's startup" or "PostgreSQL configuration"
+    if (filteredItems.length > 1) {
+      console.log(`🎯 Applying keyword boost for query: "${userMessage}"`);
+
+      filteredItems = applyKeywordBoost(userMessage, filteredItems, {
+        boostFactor: 0.3,  // 0-30% score increase based on keyword coverage
+        debugMode: contextConfig.debugMode || false
+      });
+
+      console.log(`✅ Keyword boost complete: candidates re-sorted by boosted scores`);
     }
 
     // === MEMORY INJECTION PROTOCOL v1.0 ===
