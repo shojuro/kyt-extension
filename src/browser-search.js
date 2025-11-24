@@ -113,7 +113,13 @@ export async function searchMessages(query, options = {}) {
     }
 
     // Generate query embedding (using transformed or original query)
-    const queryEmbedding = await generateQueryEmbedding(searchQuery, config.openaiKey);
+    let queryEmbedding;
+    try {
+      queryEmbedding = await generateQueryEmbedding(searchQuery, config.openaiKey);
+    } catch (embeddingError) {
+      console.error('❌ Failed to generate query embedding:', embeddingError);
+      throw new Error(`Embedding generation failed: ${embeddingError.message}. Check your OpenAI API key and network connection.`);
+    }
 
     // Call Supabase RPC function
     // Prepare server-side filters
@@ -339,12 +345,11 @@ export async function searchHybrid(query, options = {}) {
       localMessages = localMessages.filter(m => m.role === role);
     }
     if (source) {
-      if (source) {
-        localMessages = localMessages.filter(m => m.source === source);
-      }
-      if (minTimestamp > 0) {
-        localMessages = localMessages.filter(m => (m.timestamp || m.capturedAt || 0) >= minTimestamp);
-      }
+      localMessages = localMessages.filter(m => m.source === source);
+    }
+    if (minTimestamp > 0) {
+      localMessages = localMessages.filter(m => (m.timestamp || m.capturedAt || 0) >= minTimestamp);
+    }
 
       const rankedLists = [];
 
@@ -394,8 +399,6 @@ export async function searchHybrid(query, options = {}) {
         const semanticResults = await searchMessages(query, {
           limit: limit * 2,
           threshold: semanticThreshold,
-          role,
-          source,
           role,
           source,
           skipTransformation: true, // Phase 1 fix: no transformation for hybrid
@@ -474,9 +477,6 @@ export async function searchHybrid(query, options = {}) {
       // Fallback to semantic-only search
       console.warn('⚠️  Falling back to semantic-only search');
       return await searchMessages(query, {
-        limit,
-        threshold: semanticThreshold,
-        role,
         limit,
         threshold: semanticThreshold,
         role,

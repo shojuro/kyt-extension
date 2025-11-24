@@ -25,21 +25,66 @@ import { filterByConfidence } from './src/confidence-filter.js';
 
 // Initialize queue processor on startup
 chrome.runtime.onStartup.addListener(() => {
-  queueProcessor.initialize();
-  queueProcessor.processQueue();
+  try {
+    queueProcessor.initialize();
+    queueProcessor.processQueue();
+  } catch (error) {
+    console.error('❌ Failed to initialize queue processor on startup:', error);
+    // Store error for later diagnosis
+    chrome.storage.local.get(['error_log'], (result) => {
+      const errors = result.error_log || [];
+      errors.push({
+        timestamp: Date.now(),
+        context: 'queue_processor_startup',
+        error: error.message,
+        stack: error.stack
+      });
+      chrome.storage.local.set({ error_log: errors });
+    });
+  }
 });
 
 // Also initialize on install
 chrome.runtime.onInstalled.addListener(() => {
-  queueProcessor.initialize();
-  queueProcessor.processQueue();
+  try {
+    queueProcessor.initialize();
+    queueProcessor.processQueue();
+  } catch (error) {
+    console.error('❌ Failed to initialize queue processor on install:', error);
+    // Store error for later diagnosis
+    chrome.storage.local.get(['error_log'], (result) => {
+      const errors = result.error_log || [];
+      errors.push({
+        timestamp: Date.now(),
+        context: 'queue_processor_install',
+        error: error.message,
+        stack: error.stack
+      });
+      chrome.storage.local.set({ error_log: errors });
+    });
+  }
 });
 
 // Periodic queue processing (every 5 mins)
 chrome.alarms.create('processQueue', { periodInMinutes: 5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'processQueue') {
-    queueProcessor.processQueue();
+    try {
+      queueProcessor.processQueue();
+    } catch (error) {
+      console.error('❌ Failed to process queue on alarm:', error);
+      // Store error for later diagnosis
+      chrome.storage.local.get(['error_log'], (result) => {
+        const errors = result.error_log || [];
+        errors.push({
+          timestamp: Date.now(),
+          context: 'queue_processor_alarm',
+          error: error.message,
+          stack: error.stack
+        });
+        chrome.storage.local.set({ error_log: errors });
+      });
+    }
   }
 });
 
