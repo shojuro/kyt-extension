@@ -115,6 +115,15 @@ CREATE TABLE IF NOT EXISTS entity_relationships (
 );
 
 -- ============================================
+-- SCHEMA MODIFICATIONS FOR RELATIONSHIP-AWARE ENTITIES
+-- ============================================
+-- Add dedicated columns for relationship-based disambiguation
+ALTER TABLE entities ADD COLUMN IF NOT EXISTS normalized_name TEXT;
+ALTER TABLE entities ADD COLUMN IF NOT EXISTS display_name TEXT;
+ALTER TABLE entities ADD COLUMN IF NOT EXISTS relationship TEXT DEFAULT 'unknown';
+ALTER TABLE entities ADD COLUMN IF NOT EXISTS context_category TEXT DEFAULT 'general';
+
+-- ============================================
 -- INDEXES FOR PERFORMANCE
 -- ============================================
 
@@ -123,6 +132,10 @@ CREATE INDEX IF NOT EXISTS idx_entities_user_id ON entities(user_id);
 CREATE INDEX IF NOT EXISTS idx_entities_user_type ON entities(user_id, entity_type);
 CREATE INDEX IF NOT EXISTS idx_entities_canonical ON entities(user_id, canonical_name);
 CREATE INDEX IF NOT EXISTS idx_entities_last_seen ON entities(user_id, last_seen DESC);
+
+-- Relationship-aware lookup indexes (for disambiguation)
+CREATE INDEX IF NOT EXISTS idx_entities_lookup ON entities(user_id, normalized_name, entity_type);
+CREATE INDEX IF NOT EXISTS idx_entities_relationship ON entities(user_id, relationship);
 
 -- Vector similarity search (IVFFlat for now, can upgrade to HNSW later)
 CREATE INDEX IF NOT EXISTS idx_entities_embedding ON entities
