@@ -739,6 +739,9 @@ async function getContextForInjection(userMessage, config) {
 
       console.log(`🔍 Context Retrieval: Using query "${queryToUse}"`);
 
+      // Calculate minTimestamp to exclude recent memories (Context Pollution Prevention)
+      const minTimestamp = Date.now() - (contextConfig.excludeRecentSeconds * 1000);
+
       contextItems = await searchHybrid(queryToUse, {
         limit: contextConfig.maxContextItems,
         semanticThreshold: 0.65, // PRECISION TUNING: Increased to 0.65 (User: Precision > Recall)
@@ -746,7 +749,8 @@ async function getContextForInjection(userMessage, config) {
         enableBM25: true,
         enableSemantic: true,
         role: null, // Don't filter by role (get both user and assistant context)
-        source: null // Don't filter by source
+        source: null, // Don't filter by source
+        minTimestamp: minTimestamp // Pass temporal filter
       });
 
       console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search`);

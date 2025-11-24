@@ -218,8 +218,6 @@ export async function findSimilarMessages(messageId, limit = 5) {
         body: JSON.stringify({
           query_embedding: refMessage.embedding,
           match_threshold: 0.5,
-          query_embedding: refMessage.embedding,
-          match_threshold: 0.5,
           match_count: limit + 1, // +1 because reference will match itself
           filter: {
             user_id: config.userId // Filter by User ID
@@ -319,7 +317,8 @@ export async function searchHybrid(query, options = {}) {
     enableBM25 = true,
     enableSemantic = true,
     role = null,
-    source = null
+    source = null,
+    minTimestamp = 0
   } = options;
 
   console.log(`\n🔍 Phase 3 Hybrid Search: "${query}"`);
@@ -340,138 +339,149 @@ export async function searchHybrid(query, options = {}) {
       localMessages = localMessages.filter(m => m.role === role);
     }
     if (source) {
-      localMessages = localMessages.filter(m => m.source === source);
-    }
-
-    const rankedLists = [];
-
-
-
-    // Run BM25 keyword search (local, fast)
-    if (enableBM25 && localMessages.length > 0) {
-      console.log(`   🔤 Running BM25 keyword search...`);
-
-      // PHASE 5: Query Expansion
-      const expansion = queryExpander.expand(query);
-      console.log(`   🔄 Query Expansion: ${expansion.variants.length} variants applied (${expansion.expansionsApplied.join(', ') || 'none'})`);
-      if (expansion.variants.length > 1) {
-        console.log(`      Variants: ${expansion.variants.join(' | ')}`);
+      if (source) {
+        localMessages = localMessages.filter(m => m.source === source);
+      }
+      if (minTimestamp > 0) {
+        localMessages = localMessages.filter(m => (m.timestamp || m.capturedAt || 0) >= minTimestamp);
       }
 
-      const bm25ResultsMap = new Map(); // message_id -> result
+      const rankedLists = [];
 
-      // Run BM25 on all variants
-      for (const variant of expansion.variants) {
-        const results = searchBM25(variant, localMessages, {
-          limit: limit * 2, // Fetch more for better RRF
-          threshold: bm25Threshold
-        });
 
-        // Merge results (keep highest score)
-        for (const result of results) {
-          const id = result.message_id || result.id;
-          const existing = bm25ResultsMap.get(id);
-          if (!existing || result.score > existing.score) {
-            bm25ResultsMap.set(id, result);
+
+      // Run BM25 keyword search (local, fast)
+      if (enableBM25 && localMessages.length > 0) {
+        console.log(`   🔤 Running BM25 keyword search...`);
+
+        // PHASE 5: Query Expansion
+        const expansion = queryExpander.expand(query);
+        console.log(`   🔄 Query Expansion: ${expansion.variants.length} variants applied (${expansion.expansionsApplied.join(', ') || 'none'})`);
+        if (expansion.variants.length > 1) {
+          console.log(`      Variants: ${expansion.variants.join(' | ')}`);
+        }
+
+        const bm25ResultsMap = new Map(); // message_id -> result
+
+        // Run BM25 on all variants
+        for (const variant of expansion.variants) {
+          const results = searchBM25(variant, localMessages, {
+            limit: limit * 2, // Fetch more for better RRF
+            threshold: bm25Threshold
+          });
+
+          // Merge results (keep highest score)
+          for (const result of results) {
+            const id = result.message_id || result.id;
+            const existing = bm25ResultsMap.get(id);
+            if (!existing || result.score > existing.score) {
+              bm25ResultsMap.set(id, result);
+            }
           }
         }
+
+        const bm25Results = Array.from(bm25ResultsMap.values())
+          .sort((a, b) => b.score - a.score)
+          .slice(0, limit * 2);
+
+        console.log(`   ✅ BM25: ${bm25Results.length} results (merged from ${expansion.variants.length} variants)`);
+        rankedLists.push(bm25Results);
       }
 
-      const bm25Results = Array.from(bm25ResultsMap.values())
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit * 2);
+      // Run semantic vector search (Supabase, slower but powerful)
+      if (enableSemantic) {
+        console.log(`   🧠 Running semantic vector search...`);
+        const semanticResults = await searchMessages(query, {
+          limit: limit * 2,
+          threshold: semanticThreshold,
+          role,
+          source,
+          role,
+          source,
+          skipTransformation: true, // Phase 1 fix: no transformation for hybrid
+          minTimestamp
+        });
+        console.log(`   ✅ Semantic: ${semanticResults.length} results`);
 
-      console.log(`   ✅ BM25: ${bm25Results.length} results (merged from ${expansion.variants.length} variants)`);
-      rankedLists.push(bm25Results);
-    }
+        // Normalize semantic results to have message_id
+        const normalizedSemanticResults = semanticResults.map(r => ({
+          ...r,
+          message_id: r.message_id || r.id
+        }));
 
-    // Run semantic vector search (Supabase, slower but powerful)
-    if (enableSemantic) {
-      console.log(`   🧠 Running semantic vector search...`);
-      const semanticResults = await searchMessages(query, {
-        limit: limit * 2,
+        rankedLists.push(normalizedSemanticResults);
+      }
+
+      // Merge results using RRF
+      if (rankedLists.length === 0) {
+        console.log(`   ⚠️  No search methods enabled`);
+        return [];
+      }
+
+      console.log(`   🔀 Merging ${rankedLists.length} ranked lists with RRF...`);
+      let mergedResults = mergeResultsRRF(rankedLists);
+
+      // Apply adaptive weighting to RRF scores
+      // Boost scores based on which method contributed more
+      mergedResults = mergedResults.map(item => {
+        let weightedScore = item.rrf_score;
+
+        // Boost if found by BM25 (keyword match)
+        if (item.bm25_score !== undefined) {
+          weightedScore *= (1 + weights.bm25Weight);
+        }
+
+        // Boost if found by semantic search
+        if (item.distance !== undefined) {
+          weightedScore *= (1 + weights.semanticWeight);
+        }
+
+        return {
+          ...item,
+          weighted_score: weightedScore,
+          hybrid_strategy: weights.strategy
+        };
+      });
+
+      // Re-sort by weighted score and limit
+      mergedResults.sort((a, b) => b.weighted_score - a.weighted_score);
+
+      // CRITICAL: Enforce minimum quality threshold on final results
+      // Drop items that don't meet the semantic threshold (based on distance/similarity)
+      // This prevents low-confidence garbage from polluting results
+      mergedResults = mergedResults.filter(item => {
+        // If item has distance (semantic search result), check threshold
+        if (item.distance !== undefined) {
+          const similarity = 1 - item.distance; // Convert distance to similarity
+          if (similarity < semanticThreshold) {
+            console.log(`   ⏭️  Dropped low-confidence item (similarity: ${similarity.toFixed(3)} < threshold: ${semanticThreshold})`);
+            return false;
+          }
+        }
+        return true;
+      });
+
+      mergedResults = mergedResults.slice(0, limit);
+
+      console.log(`   ✅ Hybrid search complete: ${mergedResults.length} final results`);
+      console.log(`   📊 Top result score: ${mergedResults[0]?.weighted_score.toFixed(4) || 'N/A'}\n`);
+
+      return mergedResults;
+
+    } catch (error) {
+      console.error('❌ Hybrid search failed:', error);
+
+      // Fallback to semantic-only search
+      console.warn('⚠️  Falling back to semantic-only search');
+      return await searchMessages(query, {
+        limit,
+        threshold: semanticThreshold,
+        role,
+        limit,
         threshold: semanticThreshold,
         role,
         source,
-        skipTransformation: true // Phase 1 fix: no transformation for hybrid
+        minTimestamp
       });
-      console.log(`   ✅ Semantic: ${semanticResults.length} results`);
-
-      // Normalize semantic results to have message_id
-      const normalizedSemanticResults = semanticResults.map(r => ({
-        ...r,
-        message_id: r.message_id || r.id
-      }));
-
-      rankedLists.push(normalizedSemanticResults);
     }
-
-    // Merge results using RRF
-    if (rankedLists.length === 0) {
-      console.log(`   ⚠️  No search methods enabled`);
-      return [];
-    }
-
-    console.log(`   🔀 Merging ${rankedLists.length} ranked lists with RRF...`);
-    let mergedResults = mergeResultsRRF(rankedLists);
-
-    // Apply adaptive weighting to RRF scores
-    // Boost scores based on which method contributed more
-    mergedResults = mergedResults.map(item => {
-      let weightedScore = item.rrf_score;
-
-      // Boost if found by BM25 (keyword match)
-      if (item.bm25_score !== undefined) {
-        weightedScore *= (1 + weights.bm25Weight);
-      }
-
-      // Boost if found by semantic search
-      if (item.distance !== undefined) {
-        weightedScore *= (1 + weights.semanticWeight);
-      }
-
-      return {
-        ...item,
-        weighted_score: weightedScore,
-        hybrid_strategy: weights.strategy
-      };
-    });
-
-    // Re-sort by weighted score and limit
-    mergedResults.sort((a, b) => b.weighted_score - a.weighted_score);
-
-    // CRITICAL: Enforce minimum quality threshold on final results
-    // Drop items that don't meet the semantic threshold (based on distance/similarity)
-    // This prevents low-confidence garbage from polluting results
-    mergedResults = mergedResults.filter(item => {
-      // If item has distance (semantic search result), check threshold
-      if (item.distance !== undefined) {
-        const similarity = 1 - item.distance; // Convert distance to similarity
-        if (similarity < semanticThreshold) {
-          console.log(`   ⏭️  Dropped low-confidence item (similarity: ${similarity.toFixed(3)} < threshold: ${semanticThreshold})`);
-          return false;
-        }
-      }
-      return true;
-    });
-
-    mergedResults = mergedResults.slice(0, limit);
-
-    console.log(`   ✅ Hybrid search complete: ${mergedResults.length} final results`);
-    console.log(`   📊 Top result score: ${mergedResults[0]?.weighted_score.toFixed(4) || 'N/A'}\n`);
-
-    return mergedResults;
-
-  } catch (error) {
-    console.error('❌ Hybrid search failed:', error);
-
-    // Fallback to semantic-only search
-    console.warn('⚠️  Falling back to semantic-only search');
-    return await searchMessages(query, {
-      limit,
-      threshold: semanticThreshold,
-      role,
-      source
-    });
   }
-}
