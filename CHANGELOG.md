@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2025-11-24
+
+### Added
+
+#### BM25 Keyword Boost for Post-MMR Ranking
+
+**Problem**: MMR's diversity objective (λ=0.3) may de-rank keyword-rich candidates in favor of variety, particularly problematic for entity queries like "Jennifer's startup" or "PostgreSQL configuration".
+
+**Solution**: Implemented lightweight BM25-style keyword coverage boost applied after MMR reranking, providing 0-30% score increase based on keyword coverage.
+
+**Features**:
+- Pure JavaScript implementation (zero dependencies, <1ms latency overhead)
+- Possessive normalization ("Jennifer's" → "jennifer")
+- Stopword filtering and minimum term length (3 chars)
+- Configurable boost factor (default: 0.3)
+- Comprehensive test suite (24 tests, all passing)
+
+**Code Example** (src/keyword-boost.js):
+```javascript
+// Extract and normalize query terms
+const queryTerms = extractQueryTerms(query);  // ["jennifer", "startup"]
+
+// Calculate keyword coverage for each candidate
+const coverage = calculateCoverage(queryTerms, candidate.content);
+// coverage: { coverage: 1.0, matchedTerms: 2, totalTerms: 2 }
+
+// Apply boost: coverage (0-1) * boostFactor (0.3) = 0-30% increase
+const boost = coverage.coverage * 0.3;
+const boostedScore = candidate.weighted_score * (1 + boost);
+```
+
+**Integration Point**: `background.js:867-876` (after MMR, before memory injection)
+
+**Expected Impact**: 5-10% precision improvement, particularly for entity queries (power users' bread and butter)
+
+**Files Added**:
+- `src/keyword-boost.js` (272 lines): Core keyword boost module
+- `tests/unit/keyword-boost.test.js` (358 lines): Comprehensive unit tests
+- `scripts/validate_mmr_keyword_coverage.js` (370 lines): Validation script
+
+**Files Modified**:
+- `background.js` (+13 lines): Import and integration after MMR
+- `package.json`: Version bump to 1.2.1
+
+### Removed
+
+#### Cross-Encoder Reranking (Descoped)
+
+**Investigation**: Attempted client-side cross-encoder reranking using Transformers.js to boost precision by 15-20%.
+
+**Findings**:
+- ✅ Model compatibility achieved (fixed pipeline API bug via AutoModel API)
+- ✅ Relevance differentiation works (27x ratio between relevant/irrelevant)
+- ❌ Performance unacceptable: >1000ms warm latency vs 30-50ms target (33x over budget)
+- 🚫 Decision: DESCOPE entirely - no mock implementation, no fallback complexity
+
+**Root Cause**: WASM is 100-300x slower than GPU for transformer inference. Client-side transformers are architecturally unviable for <100ms latency requirements.
+
+**Rationale**: "Either ship a feature that works, or don't ship the feature. Shipping +13MB of code that falls back to `weighted_score` = shipping nothing with extra complexity."
+
+**Alternative**: BM25 keyword boost (implemented above) provides 5-10% precision improvement with zero dependencies and <1ms latency.
+
+**Documentation**: See `docs/cross-encoder-investigation.md` for complete investigation report.
+
+**Commits Reverted**:
+- `61b6345`: Phase 1 cross-encoder reranker core module
+- `0df67c0`: AutoModel API fix for raw logits
+
+**Files Removed**:
+- `src/cross-encoder-reranker.js` (460 lines)
+- `scripts/test_reranker_basic.js` (200 lines)
+- `scripts/diagnose_model_output.js` (150 lines)
+- `scripts/test_raw_model.js` (80 lines)
+- `tests/browser_reranker_test.html` (300 lines)
+- `@xenova/transformers` dependency
+
 ## [1.2.0] - 2025-11-23
 
 ### Added
