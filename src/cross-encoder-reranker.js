@@ -12,7 +12,7 @@
  * Integration Point: background.js lines 861-888 (after MMR, before memory injection)
  */
 
-import { AutoModel, AutoTokenizer } from '@xenova/transformers';
+import { pipeline } from '@xenova/transformers';
 
 // ============================================================================
 // CONFIGURATION
@@ -20,7 +20,9 @@ import { AutoModel, AutoTokenizer } from '@xenova/transformers';
 
 const RERANKER_CONFIG = {
   // Model configuration
-  // FIXED: Using AutoModel API to access raw logits (pipeline API was applying softmax)
+  // NOTE: Model compatibility investigation in progress - current model returns uniform scores
+  // TODO: Test alternative models or implement custom scoring (see GitHub issue #xxx)
+  // Candidates: ms-marco-TinyBERT, rankT5-small, or custom ONNX export
   modelName: 'Xenova/bge-reranker-base',              // BGE reranker - Transformers.js-optimized ONNX model
   modelQuantization: 'int8',                          // ~8MB model size (TODO: Priority 8 - Replace with fine-tuned model)
 
@@ -47,7 +49,6 @@ const RERANKER_CONFIG = {
 // ============================================================================
 
 let cachedModel = null;                               // Cached model instance
-let cachedTokenizer = null;                           // Cached tokenizer instance
 let consecutiveFailures = 0;                          // Error counter for degradation tracking
 let alertSent = false;                                // Alert flag to prevent spam (reset on recovery)
 let lastErrorLog = 0;                                 // Rate limiting for error logs (10-second interval)
@@ -57,20 +58,20 @@ let lastErrorLog = 0;                                 // Rate limiting for error
 // ============================================================================
 
 /**
- * Lazy-load the cross-encoder model and tokenizer with caching.
+ * Lazy-load the cross-encoder model with caching.
  *
  * First call: 300-500ms (download + initialization)
  * Subsequent calls: <1ms (cached)
  *
- * @returns {Promise<{model: Object, tokenizer: Object}>} Model and tokenizer instances
+ * @returns {Promise<Object>} Model pipeline instance
  * @throws {Error} If model fails to load
  */
 async function loadModel() {
-  if (cachedModel && cachedTokenizer) {
+  if (cachedModel) {
     if (RERANKER_CONFIG.debugMode) {
-      console.log('[Reranker] Using cached model and tokenizer');
+      console.log('[Reranker] Using cached model');
     }
-    return { model: cachedModel, tokenizer: cachedTokenizer };
+    return cachedModel;
   }
 
   const startTime = Date.now();
@@ -80,29 +81,24 @@ async function loadModel() {
       console.log(`[Reranker] Loading model: ${RERANKER_CONFIG.modelName}`);
     }
 
-    // Load model and tokenizer in parallel
-    const [model, tokenizer] = await Promise.all([
-      AutoModel.from_pretrained(RERANKER_CONFIG.modelName, {
+    cachedModel = await pipeline(
+      'text-classification',
+      RERANKER_CONFIG.modelName,
+      {
         quantized: RERANKER_CONFIG.modelQuantization === 'int8',
         progress_callback: RERANKER_CONFIG.debugMode ? (progress) => {
-          if (progress.status === 'progress') {
-            console.log(`[Reranker] Model load progress: ${(progress.progress * 100).toFixed(1)}%`);
-          }
+          console.log(`[Reranker] Model load progress: ${(progress.progress * 100).toFixed(1)}%`);
         } : null
-      }),
-      AutoTokenizer.from_pretrained(RERANKER_CONFIG.modelName)
-    ]);
-
-    cachedModel = model;
-    cachedTokenizer = tokenizer;
+      }
+    );
 
     const loadTime = Date.now() - startTime;
 
     if (RERANKER_CONFIG.debugMode) {
-      console.log(`[Reranker] Model and tokenizer loaded successfully (${loadTime}ms)`);
+      console.log(`[Reranker] Model loaded successfully (${loadTime}ms)`);
     }
 
-    return { model: cachedModel, tokenizer: cachedTokenizer };
+    return cachedModel;
   } catch (error) {
     console.error('[Reranker] Model load failed:', error);
     throw new Error(`Failed to load cross-encoder model: ${error.message}`);
@@ -110,14 +106,13 @@ async function loadModel() {
 }
 
 /**
- * Unload the cached model and tokenizer (for testing only).
+ * Unload the cached model (for testing only).
  * DO NOT call in production - service worker suspension handles cleanup.
  */
 export function unloadModel() {
   cachedModel = null;
-  cachedTokenizer = null;
   if (RERANKER_CONFIG.debugMode) {
-    console.log('[Reranker] Model and tokenizer unloaded');
+    console.log('[Reranker] Model unloaded');
   }
 }
 
@@ -145,13 +140,12 @@ function normalizeScore(rawLogit) {
 /**
  * Score a single query-document pair using the cross-encoder model.
  *
- * @param {Object} model - Loaded model instance
- * @param {Object} tokenizer - Loaded tokenizer instance
+ * @param {Object} model - Loaded model pipeline
  * @param {string} query - User query
  * @param {string} document - Document text content
  * @returns {Promise<{score: number, rawLogit: number}>} Normalized score and raw logit
  */
-async function scoreCandidate(model, tokenizer, query, document) {
+async function scoreCandidate(model, query, document) {
   try {
     // Truncate document to token limit (~800 chars)
     const truncatedDoc = document.slice(0, RERANKER_CONFIG.truncateTokens * 4);
@@ -159,24 +153,18 @@ async function scoreCandidate(model, tokenizer, query, document) {
     // Cross-encoder takes concatenated input: "[CLS] query [SEP] document [SEP]"
     const input = `${query} ${truncatedDoc}`;
 
-    // Tokenize input
-    const inputs = await tokenizer(input, {
-      padding: true,
-      truncation: true,
-      max_length: RERANKER_CONFIG.truncateTokens,
-      return_tensors: 'pt'
+    // Run inference
+    const result = await model(input, {
+      topk: 1  // Only need the relevance score
     });
 
-    // Run forward pass to get raw logits
-    const outputs = await model(inputs);
+    // Debug: log model output structure
+    if (RERANKER_CONFIG.debugMode) {
+      console.log('[Reranker] Model output:', JSON.stringify(result, null, 2));
+    }
 
     // Extract raw logit from model output
-    // Cross-encoder outputs a single logit value for relevance
-    const rawLogit = outputs.logits?.data?.[0] ?? 0;
-
-    if (RERANKER_CONFIG.debugMode) {
-      console.log(`[Reranker] Raw logit: ${rawLogit.toFixed(4)}`);
-    }
+    const rawLogit = result[0]?.score ?? 0;
 
     // Apply sigmoid normalization
     const normalizedScore = RERANKER_CONFIG.applyNormalization
@@ -363,15 +351,15 @@ export async function rerankCandidates(query, candidates, options = {}) {
       console.log(`[Reranker] Reranking ${candidates.length} candidates for query: "${query.slice(0, 50)}..."`);
     }
 
-    // Step 2: Load model and tokenizer (lazy, cached)
-    const { model, tokenizer } = await loadModel();
+    // Step 2: Load model (lazy, cached)
+    const model = await loadModel();
 
     // Step 3: Score each candidate
     const scoredCandidates = [];
 
     for (const candidate of candidates) {
       try {
-        const { score, rawLogit } = await scoreCandidate(model, tokenizer, query, candidate.content);
+        const { score, rawLogit } = await scoreCandidate(model, query, candidate.content);
 
         const scoredItem = {
           ...candidate,
@@ -454,6 +442,6 @@ export const __testing__ = {
   getState: () => ({
     consecutiveFailures,
     alertSent,
-    modelLoaded: cachedModel !== null && cachedTokenizer !== null
+    modelLoaded: cachedModel !== null
   })
 };
