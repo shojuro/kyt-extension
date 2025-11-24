@@ -1,26 +1,28 @@
 /**
- * Entity Extractor Module
- * Purpose: Extract named entities from conversation content for entity memory
+ * Entity Extractor Module - Relationship-Aware Version
+ * Purpose: Extract named entities with relationships from conversation content
  * Framework: Uses OpenAI GPT-4o-mini for entity recognition
  * Date: 2025-11-25
  *
+ * Key Feature: Relationship-aware canonical naming for disambiguation
+ * Example: "jennifer_trainer" vs "jennifer_sister"
+ *
  * Entity Types (matching entity_memory.sql schema):
- * - PER: Person (individuals, names)
- * - ORG: Organization (companies, institutions)
- * - LOC: Location (cities, countries, places)
- * - MISC: Miscellaneous (other named entities)
- * - PROJ: Project (software projects, initiatives)
- * - TECH: Technology (programming languages, frameworks, tools)
+ * - PERSON: Individuals, names
+ * - ORG: Companies, institutions
+ * - LOCATION: Cities, countries, places
+ * - PROJECT: Software projects, initiatives
+ * - TECH: Programming languages, frameworks, tools
+ * - MISC: Miscellaneous entities
  */
 
-// Types
+// Types (matching approved design from entity-memory-integration-design.md)
 export interface ExtractedEntity {
-  entity_text: string;         // Raw text as it appears: "John Smith"
-  entity_type: string;          // PER, ORG, LOC, MISC, PROJ, TECH
-  confidence: number;           // 0.0-1.0 confidence score
-  canonical_name?: string;      // Normalized form: "john_smith"
-  context_before?: string;      // 100 chars before mention
-  context_after?: string;       // 100 chars after mention
+  entity_text: string;         // Original text: "Jennifer"
+  normalized_name: string;     // Lowercase, no special chars: "jennifer"
+  entity_type: 'PERSON' | 'ORG' | 'LOCATION' | 'PROJECT' | 'TECH' | 'MISC';
+  relationship: string;        // "trainer", "sister", "colleague", "unknown"
+  context_category: string;    // "fitness", "family", "work", "general"
 }
 
 export interface EntityExtractionData {
@@ -37,59 +39,62 @@ interface OpenAIResponse {
 }
 
 /**
- * System prompt for entity extraction
- * Instructs GPT-4o-mini to identify and classify entities
+ * System prompt for relationship-aware entity extraction
+ * Instructs GPT-4o-mini to identify entities AND their relationship to the user
  */
-const ENTITY_EXTRACTION_SYSTEM_PROMPT = `You are an expert entity extraction system. Your task is to identify and classify named entities from conversation text.
+const ENTITY_EXTRACTION_SYSTEM_PROMPT = `Extract named entities from the conversation with their relationship to the user.
 
-Extract entities in these categories:
-- PER (Person): Individual people, names (e.g., "John Smith", "Sarah")
-- ORG (Organization): Companies, institutions, organizations (e.g., "Google", "MIT")
-- LOC (Location): Cities, countries, places (e.g., "San Francisco", "Paris")
-- PROJ (Project): Software projects, initiatives (e.g., "Linux", "React")
-- TECH (Technology): Programming languages, frameworks, tools (e.g., "Python", "Docker")
-- MISC (Miscellaneous): Other significant entities not fitting above categories
+For each entity, provide:
+1. Original text (how it appeared)
+2. Normalized name (lowercase, no special chars, underscores for spaces)
+3. Entity type (PERSON, ORG, LOCATION, PROJECT, TECH, MISC)
+4. Relationship to user (if detectable from context)
+5. Context category (work, family, health, etc.)
 
-Return a JSON array of entities with this structure:
+Relationship vocabulary:
+- Family: parent, sibling, spouse, child, relative
+- Work: colleague, boss, employee, client, partner
+- Service: trainer, doctor, therapist, teacher, nanny
+- Social: friend, neighbor, acquaintance
+- Unknown: unknown (when insufficient context)
+
+Use "unknown" for organizations, projects, locations unless specific relationship indicated.
+
+Return ONLY valid JSON (no markdown):
 {
   "entities": [
     {
-      "entity_text": "exact text as it appears",
-      "entity_type": "PER|ORG|LOC|PROJ|TECH|MISC",
-      "confidence": 0.95,
-      "canonical_name": "normalized_lowercase_form"
+      "entity_text": "Jennifer",
+      "normalized_name": "jennifer",
+      "entity_type": "PERSON",
+      "relationship": "trainer",
+      "context_category": "fitness"
     }
   ]
-}
-
-Rules:
-1. Only extract entities explicitly mentioned in the text
-2. Confidence should reflect certainty (0.0-1.0)
-3. canonical_name should be lowercase with underscores replacing spaces
-4. Be conservative - only extract clear, unambiguous entities
-5. Avoid extracting common words or pronouns
-6. Return empty array if no entities found`;
+}`;
 
 /**
  * Build extraction prompt from conversation data
  */
 function buildExtractionPrompt(data: EntityExtractionData): string {
   const { content, speakers } = data;
-  
-  return `Extract named entities from this conversation:
 
-Speakers: ${speakers.join(', ')}
+  const speakersInfo = speakers.length > 0
+    ? `SPEAKERS: ${speakers.join(', ')}\n\n`
+    : '';
 
-Content:
+  return `Extract entities from this conversation:
+
+${speakersInfo}CONTENT:
 ${content}
 
-Return JSON with extracted entities.`;
+Return entities with their relationship to the user.`;
 }
 
 /**
  * Main entity extraction function
- * Calls OpenAI GPT-4o-mini to extract entities from conversation content
- * Returns array of extracted entities with types and confidence scores
+ * Calls OpenAI GPT-4o-mini to extract entities with relationships
+ * Returns array of extracted entities with relationship-aware metadata
  */
 export async function extractEntities(
   data: EntityExtractionData,
@@ -124,8 +129,8 @@ export async function extractEntities(
         { role: 'system', content: ENTITY_EXTRACTION_SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
-      temperature: 0.1,      // Low temperature for consistent extraction
-      max_tokens: 1000,      // Sufficient for entity lists
+      temperature: 0.2,          // Low temperature for consistent extraction
+      max_tokens: 500,           // Sufficient for entity lists
       response_format: { type: 'json_object' }  // Force JSON output
     })
   });
@@ -146,28 +151,27 @@ export async function extractEntities(
     }
 
     const parsed = JSON.parse(content);
-    const entities = parsed.entities || [];
+    const entities = Array.isArray(parsed.entities) ? parsed.entities : [];
 
     // Validate and normalize entities
     return entities.map((entity: any) => ({
       entity_text: entity.entity_text || '',
-      entity_type: entity.entity_type || 'MISC',
-      confidence: Math.max(0.0, Math.min(1.0, entity.confidence || 0.0)),
-      canonical_name: entity.canonical_name || normalizeEntityName(entity.entity_text),
-      context_before: entity.context_before || '',
-      context_after: entity.context_after || ''
+      normalized_name: entity.normalized_name || normalizeEntityName(entity.entity_text),
+      entity_type: validateEntityType(entity.entity_type),
+      relationship: entity.relationship || 'unknown',
+      context_category: entity.context_category || 'general'
     }));
 
   } catch (error) {
     // JSON parse error - return empty array instead of failing
-    console.error('Failed to parse entity extraction response:', error);
+    console.warn('Entity extraction JSON parse failed:', error);
     return [];
   }
 }
 
 /**
- * Normalize entity name to canonical form
- * Converts "John Smith" -> "john_smith"
+ * Normalize entity name to standard form
+ * Converts "Jennifer Smith" -> "jennifer_smith"
  */
 function normalizeEntityName(text: string): string {
   return text
@@ -175,4 +179,21 @@ function normalizeEntityName(text: string): string {
     .trim()
     .replace(/[^\w\s]/g, '')  // Remove punctuation
     .replace(/\s+/g, '_');     // Replace spaces with underscores
+}
+
+/**
+ * Validate and normalize entity type
+ * Ensures type matches schema enum values
+ */
+function validateEntityType(type: string): 'PERSON' | 'ORG' | 'LOCATION' | 'PROJECT' | 'TECH' | 'MISC' {
+  const upperType = (type || '').toUpperCase();
+
+  // Map common variations
+  if (upperType === 'PER' || upperType === 'PERSON') return 'PERSON';
+  if (upperType === 'LOC' || upperType === 'LOCATION') return 'LOCATION';
+  if (upperType === 'ORG' || upperType === 'ORGANIZATION') return 'ORG';
+  if (upperType === 'PROJ' || upperType === 'PROJECT') return 'PROJECT';
+  if (upperType === 'TECH' || upperType === 'TECHNOLOGY') return 'TECH';
+
+  return 'MISC';
 }
