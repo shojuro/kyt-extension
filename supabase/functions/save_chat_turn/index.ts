@@ -1,12 +1,21 @@
 /**
  * Supabase Edge Function: save_chat_turn
+ *
+ * **STATUS: DEPLOYED AND ACTIVE** ✅
+ * This is the production version deployed to Supabase.
+ *
  * Purpose: Save conversation turns with automatic memory classification
  * Features: Vector embeddings + gravity score classification (impact + intimacy)
  * Author: AI Engineer (Temporal Decay Feature - Worktree 2)
  * Date: 2025-11-24
+ * Last Modified: 2025-11-24
  *
  * SECURITY: All API keys (OpenAI, Supabase) are server-side environment variables.
  * Never expose credentials to client code.
+ *
+ * Other Versions:
+ * - index_v2_calibrated.ts: Experimental calibrated version (NOT DEPLOYED)
+ * - index_v3_tiers.ts: Experimental tier-based version (NOT DEPLOYED)
  */
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
