@@ -197,3 +197,82 @@ function validateEntityType(type: string): 'PERSON' | 'ORG' | 'LOCATION' | 'PROJ
 
   return 'MISC';
 }
+
+/**
+ * Save extracted entities to database with deduplication
+ * Creates entity_mentions records linking entities to chat turns
+ * Uses relationship-aware canonical naming (e.g., "jennifer_trainer")
+ *
+ * @param entities - Array of extracted entities from extractEntities()
+ * @param chatTurnId - UUID of the chat turn where entities were mentioned
+ * @param conversationId - TEXT conversation ID for grouping
+ * @param userId - UUID of the user who owns these entities
+ * @param supabase - Supabase client with auth context
+ */
+export async function saveEntitiesWithMentions(
+  entities: ExtractedEntity[],
+  chatTurnId: string,
+  conversationId: string,
+  userId: string,
+  supabase: any
+): Promise<void> {
+  for (const entity of entities) {
+    // Server-side canonical name generation
+    // Format: normalized_name + "_" + relationship
+    // Example: "jennifer_trainer", "jennifer_sister"
+    const canonicalName = `${entity.normalized_name}_${entity.relationship}`;
+
+    // Exact match check using canonical_name for deduplication
+    const { data: existing } = await supabase
+      .from('entities')
+      .select('id, mention_count')
+      .eq('user_id', userId)
+      .eq('canonical_name', canonicalName)
+      .eq('entity_type', entity.entity_type)
+      .maybeSingle();
+
+    let entityId: string;
+
+    if (existing) {
+      // Update existing entity: increment mention_count, update last_seen
+      entityId = existing.id;
+      await supabase.from('entities')
+        .update({
+          mention_count: existing.mention_count + 1,
+          last_seen: new Date().toISOString()
+        })
+        .eq('id', entityId);
+    } else {
+      // Create new entity with all required fields
+      const { data: newEntity, error } = await supabase
+        .from('entities')
+        .insert({
+          user_id: userId,
+          entity_text: entity.entity_text,
+          normalized_name: entity.normalized_name,
+          canonical_name: canonicalName,
+          display_name: entity.entity_text,
+          entity_type: entity.entity_type,
+          relationship: entity.relationship,
+          context_category: entity.context_category,
+          mention_count: 1,
+          first_seen: new Date().toISOString(),
+          last_seen: new Date().toISOString()
+        })
+        .select('id')
+        .single();
+
+      if (error) throw error;
+      entityId = newEntity.id;
+    }
+
+    // Create mention record linking entity to this chat turn
+    await supabase.from('entity_mentions').insert({
+      entity_id: entityId,
+      conversation_id: conversationId,
+      chat_turn_id: chatTurnId,
+      mention_text: entity.entity_text,
+      timestamp: new Date().toISOString()
+    });
+  }
+}

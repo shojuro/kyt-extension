@@ -5,10 +5,10 @@
  * This is the production version deployed to Supabase.
  *
  * Purpose: Save conversation turns with automatic memory classification
- * Features: Vector embeddings + gravity score classification (impact + intimacy)
+ * Features: Vector embeddings + gravity score classification (impact + intimacy) + entity extraction
  * Author: AI Engineer (Temporal Decay Feature - Worktree 2)
  * Date: 2025-11-24
- * Last Modified: 2025-11-24
+ * Last Modified: 2025-11-25
  *
  * SECURITY: All API keys (OpenAI, Supabase) are server-side environment variables.
  * Never expose credentials to client code.
@@ -21,6 +21,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { classifyMemory, type ClassificationResult } from '../_shared/memory-classifier.ts';
+import { extractEntities, saveEntitiesWithMentions } from '../_shared/entity-extractor.ts';
 
 // CORS headers for browser requests
 const corsHeaders = {
@@ -51,6 +52,7 @@ interface SaveChatTurnResponse {
     intimacy_level: number;
     reasoning: string;
   };
+  entities_extracted?: number;
   error?: string;
 }
 
@@ -96,18 +98,41 @@ serve(async (req) => {
     // 4. Initialize Supabase client (with service role key for bypassing RLS during insert)
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // 5. Classify the memory (Holmes-Rahe + Aron's 36 Questions)
-    console.log('Classifying memory...');
-    const classification: ClassificationResult = await classifyMemory(
-      {
+    // 5. Run gravity classification and entity extraction in parallel
+    console.log('Running parallel classification and entity extraction...');
+    const [gravityResult, entityResult] = await Promise.allSettled([
+      classifyMemory({
         content: requestData.content,
         speakers: requestData.speakers,
         topics: requestData.topics
-      },
-      openaiApiKey
-    );
+      }, openaiApiKey),
+
+      extractEntities({
+        content: requestData.content,
+        speakers: requestData.speakers
+      }, openaiApiKey)
+    ]);
+
+    // Handle results independently (fault isolation)
+    const classification = gravityResult.status === 'fulfilled'
+      ? gravityResult.value
+      : { impact_score: 0, intimacy_level: 0, reasoning: 'Classification failed' };
+
+    const entities = entityResult.status === 'fulfilled'
+      ? entityResult.value
+      : [];
+
+    // Log failures
+    if (gravityResult.status === 'rejected') {
+      console.warn('Gravity classification failed:', gravityResult.reason);
+    }
+
+    if (entityResult.status === 'rejected') {
+      console.warn('Entity extraction failed:', entityResult.reason);
+    }
 
     console.log(`Classification result: impact=${classification.impact_score}, intimacy=${classification.intimacy_level}`);
+    console.log(`Entity extraction result: ${entities.length} entities found`);
 
     // 6. Insert into database with classification scores
     const { data, error } = await supabase
@@ -139,7 +164,19 @@ serve(async (req) => {
       throw new Error(`Database insert failed: ${error.message}`);
     }
 
-    // 7. Return success response
+    // 7. Save entities if extraction succeeded
+    if (entities.length > 0) {
+      await saveEntitiesWithMentions(
+        entities,
+        data.id,
+        requestData.conversation_id || data.id,
+        requestData.user_id,
+        supabase
+      );
+      console.log(`Saved ${entities.length} entities for chat turn ${data.id}`);
+    }
+
+    // 8. Return success response
     const response: SaveChatTurnResponse = {
       success: true,
       id: data.id,
@@ -147,7 +184,8 @@ serve(async (req) => {
         impact_score: classification.impact_score,
         intimacy_level: classification.intimacy_level,
         reasoning: classification.reasoning
-      }
+      },
+      entities_extracted: entities.length
     };
 
     return new Response(
@@ -186,9 +224,9 @@ serve(async (req) => {
  *     'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
  *   },
  *   body: JSON.stringify({
- *     content: "My grandmother passed away last week. I'm struggling to process it.",
+ *     content: "I had a great training session with my personal trainer Jennifer today. She helped me work on my deadlift form.",
  *     speakers: ['User', 'Assistant'],
- *     topics: ['grief', 'family', 'loss'],
+ *     topics: ['fitness', 'training'],
  *     embedding: [...], // 1536-dim vector from OpenAI
  *     user_id: '...'
  *   })
@@ -199,9 +237,10 @@ serve(async (req) => {
  *   "success": true,
  *   "id": "uuid",
  *   "classification": {
- *     "impact_score": 95,
- *     "intimacy_level": 3,
- *     "reasoning": "Major life loss (death of close family) with deep emotional disclosure"
- *   }
+ *     "impact_score": 15,
+ *     "intimacy_level": 1,
+ *     "reasoning": "Routine fitness activity with service provider"
+ *   },
+ *   "entities_extracted": 2
  * }
  */

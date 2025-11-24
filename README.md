@@ -430,19 +430,85 @@ Appends to chrome.storage.local['captured_messages']
 
 ---
 
+## 🗄️ Database Schema
+
+### Current Schema (Implemented)
+
+**chat_turns** - Conversation chunks with embeddings
+- Vector embeddings (1536-dim OpenAI text-embedding-3-small)
+- Turn-based chunking for conversational context
+- RLS (Row Level Security) for multi-tenant isolation
+- HNSW index for fast semantic search
+
+**messages** - Legacy message-level storage
+- Original schema for backward compatibility
+- Being phased out in favor of chat_turns
+
+**Migrations Applied:**
+- `supabase_schema.sql` - Original messages table
+- `supabase_chat_turns_schema.sql` - Chat turns with embeddings
+- `temporal_filtering.sql` - Temporal decay scoring
+- `add_mmr_support.sql` - MMR diversity ranking
+
+### Entity Memory (New Feature)
+
+**Status**: ✅ Schema complete, ready for migration
+
+The Entity Memory feature adds entity extraction and relationship tracking to enable entity-aware search:
+
+**entities** - Canonical deduplicated entities
+- Extracts people, organizations, locations, projects, technologies
+- Vector embeddings for semantic similarity matching
+- Deduplication via canonical names and embeddings
+- Metadata storage (roles, companies, context)
+
+**entity_mentions** - Individual entity occurrences
+- Links entities to specific chat turns
+- Tracks mention context and position
+- Confidence scoring from NER models
+- Enables entity resolution and disambiguation
+
+**entity_relationships** - Co-occurrence tracking
+- Tracks which entities appear together
+- Relationship strength based on co-occurrence count
+- Query expansion for related entities
+- Social network analysis capabilities
+
+**Migration Files:**
+- `migrations/entity_memory.sql` - Core schema with RLS
+- `migrations/test_entity_memory_rls.sql` - Security validation
+- `migrations/README.md` - Application guide
+
+**Key Features:**
+- 1536-dim embeddings (matches project standard)
+- Full RLS policies for data isolation
+- Helper functions for entity linking and relationships
+- Comprehensive security tests
+- Foreign keys to existing chat_turns table
+
+**Migration Guide**: See `migrations/README.md` for detailed application instructions.
+
+---
+
 ## 📅 Next Steps
 
 After Day 1 validation passes:
 
-**Day 2: Semantic Search with Supabase pgvector**
-- Create Supabase schema with pgvector extension
-- Implement embedding via text-embedding-3-small
-- Test HNSW index retrieval (<500ms latency)
+**Day 2: Semantic Search with Supabase pgvector** ✅ (Complete)
+- ✅ Create Supabase schema with pgvector extension
+- ✅ Implement embedding via text-embedding-3-small
+- ✅ Test HNSW index retrieval (<500ms latency)
 
 **Day 3: Invisible Context Injection**
 - Modify fetch() payload before sending to ChatGPT
 - Inject retrieved context into user message
 - Verify ChatGPT receives enhanced prompt invisibly
+
+**Entity Memory Integration** 🆕 (Schema Ready)
+- Apply entity_memory.sql migration
+- Integrate NER pipeline in save_chat_turn Edge Function
+- Implement entity-aware search boosting
+- Build entity relationship visualization
 
 ---
 
