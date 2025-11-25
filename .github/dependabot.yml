@@ -1,0 +1,67 @@
+# Dependabot configuration
+# Automatically creates PRs for security updates
+# Critical for PII apps: vulnerabilities in dependencies = your data at risk
+
+version: 2
+updates:
+  # NPM dependencies
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"  # Check daily for security updates
+      time: "09:00"
+      timezone: "America/New_York"
+
+    # Auto-merge patch updates (low risk)
+    # Security updates get priority
+    open-pull-requests-limit: 10
+
+    # Group minor updates to reduce PR noise
+    groups:
+      # Security updates are NOT grouped - each gets individual PR
+      production-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "@types/*"
+          - "eslint*"
+          - "prettier*"
+          - "vitest*"
+          - "@playwright/*"
+        update-types:
+          - "minor"
+          - "patch"
+
+      dev-dependencies:
+        patterns:
+          - "@types/*"
+          - "eslint*"
+          - "prettier*"
+          - "vitest*"
+          - "@playwright/*"
+        update-types:
+          - "minor"
+          - "patch"
+
+    # Reviewers for security updates
+    reviewers:
+      - "shojuro"  # Your GitHub username
+
+    # Labels for easy filtering
+    labels:
+      - "dependencies"
+      - "automated"
+
+    # Commit message format
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  # GitHub Actions updates (yes, actions can have vulnerabilities too)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "ci"

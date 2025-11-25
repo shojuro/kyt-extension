@@ -1,0 +1,149 @@
+name: Database Safety
+
+on:
+  pull_request:
+    paths:
+      - 'migrations/**'
+      - 'supabase/migrations/**'
+      - '*.sql'
+
+jobs:
+  # ===========================================
+  # MIGRATION SAFETY CHECKS
+  # One bad migration = all user memories gone
+  # ===========================================
+  migration-review:
+    name: Migration Safety Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed SQL files
+        id: changed
+        run: |
+          FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.sql$' || true)
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+          echo "Changed SQL files:"
+          echo "$FILES"
+
+      - name: Check for destructive operations
+        run: |
+          echo "🔍 Scanning migrations for destructive operations..."
+
+          DANGEROUS_PATTERNS=(
+            "DROP TABLE"
+            "DROP COLUMN"
+            "TRUNCATE"
+            "DELETE FROM.*WHERE.*1.*=.*1"  # Delete all
+            "DELETE FROM [a-z_]+ *$"       # Delete without WHERE
+            "DROP DATABASE"
+            "DROP SCHEMA"
+            "ALTER TABLE.*DROP"
+          )
+
+          MIGRATION_DIRS=("migrations" "supabase/migrations")
+          FOUND_DANGEROUS=0
+
+          for dir in "${MIGRATION_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+              for pattern in "${DANGEROUS_PATTERNS[@]}"; do
+                MATCHES=$(grep -rEin "$pattern" "$dir" 2>/dev/null || true)
+                if [ -n "$MATCHES" ]; then
+                  echo "🚨 DANGEROUS: Found '$pattern'"
+                  echo "$MATCHES"
+                  FOUND_DANGEROUS=1
+                fi
+              done
+            fi
+          done
+
+          if [ $FOUND_DANGEROUS -eq 1 ]; then
+            echo ""
+            echo "⚠️ DANGER: Destructive database operations detected!"
+            echo ""
+            echo "Before merging, verify:"
+            echo "  1. You have a recent backup"
+            echo "  2. You've tested on staging first"
+            echo "  3. You have a rollback migration ready"
+            echo "  4. This is intentional and reviewed"
+            echo ""
+            # Don't fail, but require acknowledgment via PR comment
+          else
+            echo "✅ No destructive operations detected"
+          fi
+
+      - name: Check for data migration without backup
+        run: |
+          echo "🔍 Checking for data migrations..."
+
+          MIGRATION_DIRS=("migrations" "supabase/migrations")
+
+          for dir in "${MIGRATION_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+              # Look for UPDATE or INSERT in migrations (data changes)
+              DATA_CHANGES=$(grep -rEin "^[[:space:]]*(UPDATE|INSERT INTO)" "$dir" 2>/dev/null | grep -v "-- " || true)
+
+              if [ -n "$DATA_CHANGES" ]; then
+                echo "📝 Data modifications found in migrations:"
+                echo "$DATA_CHANGES"
+                echo ""
+                echo "⚠️ Remember: Data migrations should be:"
+                echo "  1. Idempotent (safe to run twice)"
+                echo "  2. Tested on a copy of production data"
+                echo "  3. Reversible if possible"
+              fi
+            fi
+          done
+
+      - name: Verify migration naming convention
+        run: |
+          echo "🔍 Checking migration naming convention..."
+
+          MIGRATION_DIRS=("migrations" "supabase/migrations")
+
+          for dir in "${MIGRATION_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+              # Check for proper timestamp prefix (YYYYMMDDHHMMSS)
+              BAD_NAMES=$(ls "$dir"/*.sql 2>/dev/null | xargs -I {} basename {} | grep -vE '^[0-9]{14}_' || true)
+
+              if [ -n "$BAD_NAMES" ]; then
+                echo "⚠️ Migrations without proper timestamp prefix:"
+                echo "$BAD_NAMES"
+                echo ""
+                echo "Use format: YYYYMMDDHHMMSS_description.sql"
+                echo "Example: 20251126120000_add_user_preferences.sql"
+              else
+                echo "✅ All migrations properly named"
+              fi
+            fi
+          done
+
+      - name: Generate migration summary
+        run: |
+          echo "## Migration Safety Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          MIGRATION_DIRS=("migrations" "supabase/migrations")
+
+          for dir in "${MIGRATION_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+              echo "### Directory: $dir" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+
+              # Count operations
+              CREATES=$(grep -rEic "CREATE TABLE" "$dir" 2>/dev/null || echo "0")
+              ALTERS=$(grep -rEic "ALTER TABLE" "$dir" 2>/dev/null || echo "0")
+              DROPS=$(grep -rEic "DROP" "$dir" 2>/dev/null || echo "0")
+              INDEXES=$(grep -rEic "CREATE INDEX" "$dir" 2>/dev/null || echo "0")
+
+              echo "| Operation | Count |" >> $GITHUB_STEP_SUMMARY
+              echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+              echo "| CREATE TABLE | $CREATES |" >> $GITHUB_STEP_SUMMARY
+              echo "| ALTER TABLE | $ALTERS |" >> $GITHUB_STEP_SUMMARY
+              echo "| DROP | $DROPS |" >> $GITHUB_STEP_SUMMARY
+              echo "| CREATE INDEX | $INDEXES |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done

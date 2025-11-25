@@ -1,0 +1,36 @@
+# Gitleaks configuration
+# Customize secret detection to reduce false positives
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist for false positives"
+
+# Paths to ignore (test files with mock data)
+paths = [
+    '''test/.*\.js$''',
+    '''tests/.*\.js$''',
+    '''.*\.test\.js$''',
+    '''.*\.spec\.js$''',
+    '''.*\.md$''',
+    '''package-lock\.json$''',
+]
+
+# Specific patterns that are false positives
+regexes = [
+    # Example API key placeholders
+    '''your[_-]api[_-]key[_-]here''',
+    '''sk-xxxxxxxx''',
+    '''REPLACE_WITH_YOUR''',
+]
+
+# Specific commits to ignore (if you have historical false positives)
+# commits = [
+#     "commit-sha-here",
+# ]
+
+[[rules]]
+description = "Ignore example/placeholder secrets"
+regex = '''(?i)(example|placeholder|your[_-]?|dummy|fake|test)[_-]?(api[_-]?key|secret|token|password)'''
+allowlist = { description = "Ignore placeholder values" }

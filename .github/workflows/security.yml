@@ -1,0 +1,249 @@
+name: Security
+
+on:
+  push:
+    branches: [main, feature/*, feat/*]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly even without code changes (new CVEs discovered daily)
+    - cron: '0 9 * * 1'  # Every Monday at 9am UTC
+  workflow_dispatch:
+
+jobs:
+  # ===========================================
+  # SECRET SCANNING
+  # Most overlooked: Secrets in code, env files, logs
+  # ===========================================
+  secret-scan:
+    name: Secret Detection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for thorough scan
+
+      - name: Run Gitleaks (Industry Standard)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Custom PII Pattern Scan
+        run: |
+          echo "🔍 Scanning for PII patterns that shouldn't be in code..."
+
+          # Patterns that indicate hardcoded PII or test data with real info
+          PATTERNS=(
+            # API Keys & Tokens
+            'sk-[a-zA-Z0-9]{20,}'           # OpenAI keys
+            'sbp_[a-zA-Z0-9]{20,}'          # Supabase tokens
+            'eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*'  # JWTs
+
+            # PII Patterns (shouldn't be hardcoded)
+            '[0-9]{3}-[0-9]{2}-[0-9]{4}'    # SSN format
+            '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'  # Emails in code (not config)
+          )
+
+          FOUND=0
+          for pattern in "${PATTERNS[@]}"; do
+            # Exclude node_modules, .git, and common false positives
+            MATCHES=$(grep -rEn "$pattern" . \
+              --exclude-dir=node_modules \
+              --exclude-dir=.git \
+              --exclude="*.md" \
+              --exclude="package-lock.json" \
+              --exclude="*.yml" \
+              --include="*.js" \
+              --include="*.ts" \
+              --include="*.json" \
+              2>/dev/null | grep -v "example" | grep -v "test" | head -5 || true)
+
+            if [ -n "$MATCHES" ]; then
+              echo "⚠️ Potential secret/PII pattern found: $pattern"
+              echo "$MATCHES"
+              FOUND=1
+            fi
+          done
+
+          if [ $FOUND -eq 1 ]; then
+            echo ""
+            echo "❌ Review the above matches. If they're false positives, add to .gitleaksignore"
+            exit 1
+          fi
+
+          echo "✅ No hardcoded secrets or PII detected"
+
+  # ===========================================
+  # DEPENDENCY VULNERABILITIES
+  # Critical: Your dependencies are attack vectors
+  # ===========================================
+  dependency-audit:
+    name: Dependency Vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit (BLOCKING on high/critical)
+        run: |
+          echo "🔍 Checking for vulnerable dependencies..."
+
+          # Get audit results
+          AUDIT_RESULT=$(npm audit --json 2>/dev/null || true)
+
+          # Count by severity
+          CRITICAL=$(echo "$AUDIT_RESULT" | jq '.metadata.vulnerabilities.critical // 0')
+          HIGH=$(echo "$AUDIT_RESULT" | jq '.metadata.vulnerabilities.high // 0')
+          MODERATE=$(echo "$AUDIT_RESULT" | jq '.metadata.vulnerabilities.moderate // 0')
+
+          echo "Vulnerabilities found:"
+          echo "  Critical: $CRITICAL"
+          echo "  High: $HIGH"
+          echo "  Moderate: $MODERATE"
+
+          # BLOCK on critical or high
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo ""
+            echo "❌ BLOCKING: Critical or High vulnerabilities found!"
+            echo "Run 'npm audit' locally and fix before merging."
+            npm audit --audit-level=high
+            exit 1
+          fi
+
+          echo "✅ No critical/high vulnerabilities"
+
+      - name: Check for known malicious packages
+        run: |
+          # Check against known malicious package patterns
+          MALICIOUS_PATTERNS=(
+            "event-stream"  # Famous supply chain attack
+            "flatmap-stream"
+            "eslint-scope"  # Compromised version
+          )
+
+          for pkg in "${MALICIOUS_PATTERNS[@]}"; do
+            if grep -q "\"$pkg\"" package-lock.json 2>/dev/null; then
+              echo "❌ Known malicious package detected: $pkg"
+              exit 1
+            fi
+          done
+
+          echo "✅ No known malicious packages"
+
+  # ===========================================
+  # LOG SANITIZATION CHECK
+  # Overlooked: console.log(user) leaks PII to CI logs
+  # ===========================================
+  log-sanitization:
+    name: Log Sanitization
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for PII logging patterns
+        run: |
+          echo "🔍 Checking for potential PII in logs..."
+
+          # Patterns that might log PII
+          RISKY_PATTERNS=(
+            'console\.log.*user'
+            'console\.log.*email'
+            'console\.log.*password'
+            'console\.log.*token'
+            'console\.log.*message.*content'
+            'console\.log.*memory'
+            'console\.log.*thought'
+            'console\.error.*user'
+            'JSON\.stringify.*user'
+          )
+
+          FOUND=0
+          for pattern in "${RISKY_PATTERNS[@]}"; do
+            MATCHES=$(grep -rEn "$pattern" . \
+              --exclude-dir=node_modules \
+              --exclude-dir=.git \
+              --include="*.js" \
+              --include="*.ts" \
+              2>/dev/null | head -10 || true)
+
+            if [ -n "$MATCHES" ]; then
+              echo "⚠️ Potential PII logging: $pattern"
+              echo "$MATCHES"
+              FOUND=1
+            fi
+          done
+
+          if [ $FOUND -eq 1 ]; then
+            echo ""
+            echo "⚠️ Review the above. Ensure no PII is logged in production."
+            echo "Consider using a sanitizing logger that redacts sensitive fields."
+            # Warning only, not blocking (too many false positives)
+          else
+            echo "✅ No obvious PII logging patterns detected"
+          fi
+
+  # ===========================================
+  # SUPABASE RLS VERIFICATION
+  # Critical for PII: Ensure Row Level Security is enabled
+  # ===========================================
+  rls-check:
+    name: RLS Policy Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify RLS in migrations
+        run: |
+          echo "🔍 Checking that RLS is enabled on tables with user data..."
+
+          # Tables that MUST have RLS
+          SENSITIVE_TABLES=(
+            "chat_turns"
+            "messages"
+            "users"
+            "entity_memory"
+            "memories"
+          )
+
+          MIGRATION_DIR="supabase/migrations"
+          if [ ! -d "$MIGRATION_DIR" ]; then
+            MIGRATION_DIR="migrations"
+          fi
+
+          if [ ! -d "$MIGRATION_DIR" ]; then
+            echo "⚠️ No migrations directory found"
+            exit 0
+          fi
+
+          MISSING_RLS=0
+          for table in "${SENSITIVE_TABLES[@]}"; do
+            # Check if table is created
+            if grep -rq "CREATE TABLE.*$table" "$MIGRATION_DIR" 2>/dev/null; then
+              # Check if RLS is enabled
+              if ! grep -rq "ALTER TABLE.*$table.*ENABLE ROW LEVEL SECURITY\|ENABLE ROW LEVEL SECURITY.*$table" "$MIGRATION_DIR" 2>/dev/null; then
+                echo "❌ Table '$table' exists but RLS not found in migrations!"
+                MISSING_RLS=1
+              else
+                echo "✅ Table '$table' has RLS enabled"
+              fi
+            fi
+          done
+
+          if [ $MISSING_RLS -eq 1 ]; then
+            echo ""
+            echo "❌ CRITICAL: Some tables with user data are missing RLS!"
+            echo "Add: ALTER TABLE table_name ENABLE ROW LEVEL SECURITY;"
+            exit 1
+          fi

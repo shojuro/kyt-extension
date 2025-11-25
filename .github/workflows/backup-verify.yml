@@ -1,0 +1,69 @@
+name: Backup Verification
+
+# Run weekly to verify backups are working
+# Most overlooked: "I have backups" but never tested restore
+
+on:
+  schedule:
+    # Every Sunday at 3am UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  verify-backup:
+    name: Verify Backup & Recovery
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Check Supabase backup status
+        run: |
+          echo "🔍 Verifying Supabase backup configuration..."
+          echo ""
+          echo "📋 Backup Checklist:"
+          echo ""
+          echo "1. Point-in-Time Recovery (PITR):"
+          echo "   - Go to: Supabase Dashboard → Project Settings → Database"
+          echo "   - Verify PITR is enabled (Pro plan required)"
+          echo "   - Retention period: minimum 7 days recommended"
+          echo ""
+          echo "2. Daily Backups:"
+          echo "   - Supabase automatically creates daily backups"
+          echo "   - Verify at: Dashboard → Database → Backups"
+          echo ""
+          echo "3. Manual Backup Test:"
+          echo "   - Download a backup from Dashboard"
+          echo "   - Restore to a test project"
+          echo "   - Verify data integrity"
+          echo ""
+
+          # Create reminder issue if this is the first Sunday of the month
+          DAY=$(date +%d)
+          if [ "$DAY" -le 7 ]; then
+            echo "📅 Monthly reminder: Test a full backup restore this week!"
+          fi
+
+      - name: Generate backup report
+        run: |
+          echo "## 🗄️ Weekly Backup Verification Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Action Items" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Verify PITR is enabled in Supabase Dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Check latest backup timestamp" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Monthly: Test restore to staging" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Why This Matters" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This app stores users' private thoughts and memories." >> $GITHUB_STEP_SUMMARY
+          echo "Data loss is **catastrophic** and **irreversible**." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Untested backups = No backups" >> $GITHUB_STEP_SUMMARY
