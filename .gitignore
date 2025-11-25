@@ -117,6 +117,26 @@ baselines/
 *.baseline.json
 
 # ============================================
+# SYNTHETIC DATA GENERATION
+# ============================================
+# Generated training datasets (never commit generated data)
+data/
+data/*.json
+!data/.gitkeep
+
+# Samples and checkpoints
+data/samples/
+data/checkpoints/
+
+# Cost tracking (contains API usage data)
+cost_tracking.json
+scripts/cost_tracking.json
+
+# Generation progress files
+*_progress.json
+*_checkpoint_*.json
+
+# ============================================
 # DIAGNOSTIC SCRIPTS WITH HARDCODED SECRETS
 # ============================================
 check_sources.js
