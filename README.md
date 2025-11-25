@@ -1,5 +1,13 @@
 # KYT Memory Extension - Multi-Platform Memory System
 
+<!-- Status Badges -->
+[![CI](https://github.com/shojuro/kyt-extension/actions/workflows/ci.yml/badge.svg)](https://github.com/shojuro/kyt-extension/actions/workflows/ci.yml)
+[![Security Scan](https://github.com/shojuro/kyt-extension/actions/workflows/security.yml/badge.svg)](https://github.com/shojuro/kyt-extension/actions/workflows/security.yml)
+[![Deploy Staging](https://github.com/shojuro/kyt-extension/actions/workflows/deploy-staging.yml/badge.svg)](https://github.com/shojuro/kyt-extension/actions/workflows/deploy-staging.yml)
+[![Coverage](https://img.shields.io/badge/coverage-check%20CI-blue)](https://github.com/shojuro/kyt-extension/actions/workflows/coverage.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org/)
+
 **Goal**: Capture and search conversations across ChatGPT, Claude, and CLI with long-term semantic memory powered by temporal decay and gravity scoring.
 
 ---

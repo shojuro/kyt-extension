@@ -15,14 +15,26 @@ export default defineConfig({
     ],
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'json', 'html'],
+      reporter: ['text', 'json', 'html', 'json-summary'],
       exclude: [
         'node_modules/',
         'tests/',
         'validation/',
         'cli/',
-        '*.config.js'
-      ]
+        '*.config.js',
+        'scripts/',
+        '*.sql',
+        'build/',
+        'platforms/'
+      ],
+      // Coverage thresholds - fail if coverage drops below these
+      // Start conservative, increase as you add tests
+      thresholds: {
+        lines: 20,
+        functions: 20,
+        branches: 20,
+        statements: 20
+      }
     }
   }
 });
