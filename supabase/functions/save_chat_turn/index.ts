@@ -29,6 +29,12 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// Initialize Supabase client at module level for connection pooling
+// Service role key bypasses RLS - filtering is done in queries
+const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
 interface SaveChatTurnRequest {
   content: string;
   turn_range?: string;
@@ -89,14 +95,7 @@ serve(async (req) => {
       throw new Error('OPENAI_API_KEY environment variable not configured');
     }
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    if (!supabaseUrl || !supabaseServiceKey) {
-      throw new Error('Supabase environment variables not configured');
-    }
-
-    // 4. Initialize Supabase client (with service role key for bypassing RLS during insert)
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    // Note: Supabase client initialized at module level for connection pooling
 
     // 5. Run gravity classification and entity extraction in parallel
     console.log('Running parallel classification and entity extraction...');
