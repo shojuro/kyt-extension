@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+#### Messages Table Row Level Security (CRITICAL)
+
+**Problem**: The `messages` table had no Row Level Security enabled, allowing any authenticated user to potentially access other users' messages.
+
+**Solution**: Applied migration to enable RLS with 4 user isolation policies following the existing pattern from `entity_memory.sql`.
+
+**Policies Applied**:
+- `messages_select_policy`: Users can only SELECT their own messages
+- `messages_insert_policy`: Users can only INSERT messages for themselves
+- `messages_update_policy`: Users can only UPDATE their own messages
+- `messages_delete_policy`: Users can only DELETE their own messages
+
+**Migration**: `20251125231104_messages_table_rls_security`
+
+#### Fixed SECURITY DEFINER View Vulnerability
+
+**Problem**: The `chat_turns_free` view was using SECURITY DEFINER, which executes with the view owner's permissions rather than the invoking user's, potentially bypassing RLS.
+
+**Solution**: Recreated the view with `security_invoker = true` to ensure queries execute with the calling user's permissions.
+
+**Migration**: `20251125232116_fix_chat_turns_free_security_invoker`
+
+#### Fixed Function Search Path Vulnerabilities
+
+**Problem**: 13 database functions had mutable `search_path`, which could allow privilege escalation via search path manipulation attacks.
+
+**Solution**: Applied `SET search_path = ''` to all affected functions, forcing explicit schema qualification.
+
+**Functions Fixed**:
+- `binary_quantize`, `halfvec_avg`, `vector_accum`, `vector_add`
+- `vector_avg`, `vector_combine`, `vector_concat`
+- `vector_mul`, `vector_sub`, `halfvec_accum`, `halfvec_add`
+- `halfvec_combine`, `sparsevec_out`
+
+**Migration**: `20251126120638_fix_function_search_paths`
+
+#### Relocated Vector Extension to Extensions Schema
+
+**Problem**: The `vector` extension was installed in the `public` schema, which is a security anti-pattern per Supabase recommendations.
+
+**Solution**: Moved the extension to the `extensions` schema using `ALTER EXTENSION vector SET SCHEMA extensions`.
+
+**Migration**: `20251126122503_move_vector_extension_to_extensions_schema`
+
+### Fixed
+
+#### Edge Function Connection Pooling
+
+**Problem**: `save_chat_turn/index.ts` was creating a new Supabase client inside the handler on every request, causing unnecessary connection overhead.
+
+**Solution**: Moved Supabase client creation to module level for connection reuse across requests.
+
+**Before** (inside handler):
+```typescript
+serve(async (req) => {
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  // ...
+});
+```
+
+**After** (module level):
+```typescript
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+serve(async (req) => {
+  // Use existing supabase client
+});
+```
+
+**File Modified**: `supabase/functions/save_chat_turn/index.ts`
+
 ## [1.2.1] - 2025-11-24
 
 ### Added

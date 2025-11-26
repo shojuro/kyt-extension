@@ -13,7 +13,15 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import chalk from 'chalk';
+// import chalk from 'chalk'; // Chalk not installed
+const chalk = {
+    cyan: s => s,
+    red: s => s,
+    green: s => s,
+    yellow: s => s,
+    gray: s => s,
+    bold: { cyan: s => s, green: s => s, yellow: s => s, red: s => s }
+};
 
 // Load env vars
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

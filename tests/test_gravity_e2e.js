@@ -28,7 +28,15 @@ import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import chalk from 'chalk';
+// import chalk from 'chalk'; // Chalk not installed
+const chalk = {
+  cyan: s => s,
+  red: s => s,
+  green: s => s,
+  yellow: s => s,
+  gray: s => s,
+  bold: { cyan: s => s, green: s => s, yellow: s => s, red: s => s }
+};
 
 // Load environment variables
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -212,12 +220,12 @@ async function testSaveWithClassification() {
 
         if (result.success && result.classification) {
           const impactValid = result.classification.impact_score >= conv.expectedImpact.min &&
-                            result.classification.impact_score <= conv.expectedImpact.max;
+            result.classification.impact_score <= conv.expectedImpact.max;
           const intimacyValid = result.classification.intimacy_level >= conv.expectedIntimacy.min &&
-                               result.classification.intimacy_level <= conv.expectedIntimacy.max;
+            result.classification.intimacy_level <= conv.expectedIntimacy.max;
 
           test(`Save conversation: "${conv.content.substring(0, 40)}..."`, impactValid && intimacyValid,
-               `Impact: ${result.classification.impact_score}, Intimacy: ${result.classification.intimacy_level}`);
+            `Impact: ${result.classification.impact_score}, Intimacy: ${result.classification.intimacy_level}`);
 
           // Get the inserted ID
           const { data: insertedData } = await supabase
@@ -268,7 +276,7 @@ async function testGravityScoreCalculation(savedIds) {
       if (calcError) throw calcError;
 
       test(`Gravity score for: "${data.content.substring(0, 40)}..."`, calculatedScore > 0,
-           `Score: ${calculatedScore.toFixed(3)} (impact=${data.impact_score}, intimacy=${data.intimacy_level})`);
+        `Score: ${calculatedScore.toFixed(3)} (impact=${data.impact_score}, intimacy=${data.intimacy_level})`);
 
     } catch (err) {
       test(`Gravity score calculation`, false, err.message);
@@ -345,7 +353,7 @@ async function testRehearsalEffect(savedIds) {
     if (afterError) throw afterError;
 
     test('Rehearsal effect (access tracking)', after.access_count === before.access_count + 1,
-         `Access count updated: ${before.access_count} → ${after.access_count}`);
+      `Access count updated: ${before.access_count} → ${after.access_count}`);
 
     // Calculate gravity score with rehearsal bonus
     const { data: score, error: scoreError } = await supabase.rpc('calculate_gravity_score', {
@@ -360,7 +368,7 @@ async function testRehearsalEffect(savedIds) {
     if (scoreError) throw scoreError;
 
     test('Gravity score with rehearsal bonus', score > 0,
-         `Score with ${after.access_count} accesses: ${score.toFixed(3)}`);
+      `Score with ${after.access_count} accesses: ${score.toFixed(3)}`);
 
   } catch (err) {
     test('Rehearsal effect', false, err.message);
