@@ -30,12 +30,5 @@ regexes = [
 #     "commit-sha-here",
 # ]
 
-[[rules]]
-id = "placeholder-secrets"
-description = "Ignore example/placeholder secrets"
-regex = '''(?i)(example|placeholder|your[_-]?|dummy|fake|test)[_-]?(api[_-]?key|secret|token|password)'''
-
-[[rules.allowlist]]
-description = "Allow placeholder values in all files"
-regexTarget = "match"
-regexes = ['''.*''']
+# Custom rules can be added here if needed
+# The global allowlist above handles most false positives
