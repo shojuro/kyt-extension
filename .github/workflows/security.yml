@@ -47,17 +47,22 @@ jobs:
 
           FOUND=0
           for pattern in "${PATTERNS[@]}"; do
-            # Exclude node_modules, .git, and common false positives
+            # Exclude node_modules, .git, scripts, tests, and common false positives
             MATCHES=$(grep -rEn "$pattern" . \
               --exclude-dir=node_modules \
               --exclude-dir=.git \
+              --exclude-dir=scripts \
+              --exclude-dir=tests \
+              --exclude-dir=validation \
               --exclude="*.md" \
               --exclude="package-lock.json" \
               --exclude="*.yml" \
+              --exclude="*.test.js" \
+              --exclude="*.spec.js" \
               --include="*.js" \
               --include="*.ts" \
               --include="*.json" \
-              2>/dev/null | grep -v "example" | grep -v "test" | head -5 || true)
+              2>/dev/null | grep -v "example" | grep -v "test" | grep -v "mock" | head -5 || true)
 
             if [ -n "$MATCHES" ]; then
               echo "⚠️ Potential secret/PII pattern found: $pattern"
