@@ -28,7 +28,8 @@ describe('Entity Extractor Module', () => {
     expect(content).toContain('export interface ExtractedEntity');
     expect(content).toContain('entity_text');
     expect(content).toContain('entity_type');
-    expect(content).toContain('confidence');
+    expect(content).toContain('relationship');
+    expect(content).toContain('context_category');
   });
 
   it('should export extractEntities function', () => {
@@ -46,12 +47,12 @@ describe('Entity Extractor Module', () => {
     expect(content).toContain('function buildExtractionPrompt');
   });
 
-  it('should include entity types: PER, ORG, LOC, MISC, PROJ, TECH', () => {
+  it('should include entity types: PERSON, ORG, LOCATION, PROJECT, TECH, MISC', () => {
     const content = readFileSync(modulePath, 'utf-8');
     // Should mention all entity types
-    expect(content).toContain('PER');
+    expect(content).toContain('PERSON');
     expect(content).toContain('ORG');
-    expect(content).toContain('LOC');
+    expect(content).toContain('LOCATION');
     expect(content).toContain('MISC');
   });
 

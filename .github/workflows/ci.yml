@@ -185,7 +185,7 @@ jobs:
         run: |
           echo "Scanning for potential secrets..."
           # Basic secret detection (consider using gitleaks for production)
-          if grep -rE "(sk-[a-zA-Z0-9]{20,}|password\s*=\s*['\"][^'\"]+['\"])" --include="*.js" --include="*.ts" .; then
+          if grep -rE "(sk-[a-zA-Z0-9]{20,}|password\s*=\s*['\"][^'\"]+['\"])" --include="*.js" --include="*.ts" --exclude-dir=node_modules .; then
             echo "⚠️ Potential secrets found in code!"
             exit 1
           else
