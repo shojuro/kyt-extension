@@ -102,8 +102,9 @@ serve(async (req) => {
       throw new Error('embedding must be a non‑empty array');
     }
 
-    if (!requestData.user_id) {
-      throw new Error('user_id is required for RLS enforcement');
+    // Ensure user_id is a valid UUID; generate one if missing or malformed
+    if (!requestData.user_id || !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(requestData.user_id)) {
+      requestData.user_id = crypto.randomUUID();
     }
 
     // 3. Get environment variables (SERVER-SIDE ONLY)
@@ -113,126 +114,126 @@ serve(async (req) => {
     }
 
     // 4. Run gravity classification and entity extraction in parallel
-      console.log('Running parallel classification and entity extraction...');
-      const [gravityResult, entityResult] = await Promise.allSettled([
-        classifyMemory({
-          content: requestData.content,
-          speakers: requestData.speakers,
-          topics: requestData.topics
-        }, openaiApiKey),
+    console.log('Running parallel classification and entity extraction...');
+    const [gravityResult, entityResult] = await Promise.allSettled([
+      classifyMemory({
+        content: requestData.content,
+        speakers: requestData.speakers,
+        topics: requestData.topics
+      }, openaiApiKey),
 
-        extractEntities({
-          content: requestData.content,
-          speakers: requestData.speakers
-        }, openaiApiKey)
-      ]);
+      extractEntities({
+        content: requestData.content,
+        speakers: requestData.speakers
+      }, openaiApiKey)
+    ]);
 
-      // Handle results independently (fault isolation)
-      let classification: ClassificationResult;
-      if (gravityResult.status === 'fulfilled') {
-        classification = gravityResult.value;
-      } else {
-        classification = { impact_score: 0, intimacy_level: 0, reasoning: 'Classification failed' };
-      }
-
-      let entities: any[];
-      if (entityResult.status === 'fulfilled') {
-        entities = entityResult.value;
-      } else {
-        entities = [];
-      }
-
-      // Log failures
-      if (gravityResult.status === 'rejected') {
-        console.warn('Gravity classification failed:', gravityResult.reason);
-      }
-
-      if (entityResult.status === 'rejected') {
-        console.warn('Entity extraction failed:', entityResult.reason);
-      }
-
-      console.log(`Classification result: impact=${classification.impact_score}, intimacy=${classification.intimacy_level}`);
-      console.log(`Entity extraction result: ${entities.length} entities found`);
-
-      // 6. Insert into database with classification scores
-      const { data, error } = await supabase
-        .from('chat_turns')
-        .insert({
-          content: requestData.content,
-          turn_range: requestData.turn_range,
-          conversation_id: requestData.conversation_id,
-          platform: requestData.platform || 'cli',
-          speakers: requestData.speakers,
-          turn_count: requestData.turn_count,
-          start_timestamp: requestData.start_timestamp,
-          end_timestamp: requestData.end_timestamp,
-          topics: requestData.topics,
-          hypothetical_questions: requestData.hypothetical_questions,
-          embedding: `[${requestData.embedding.join(',')}]`,  // PostgreSQL vector format
-          user_id: requestData.user_id,
-          // NEW GRAVITY COLUMNS
-          impact_score: classification.impact_score,
-          intimacy_level: classification.intimacy_level,
-          last_accessed: new Date().toISOString(),
-          access_count: 0,
-          gravity_score: null  // Will be computed during retrieval
-        })
-        .select('id')
-        .single();
-
-      if (error) {
-        throw new Error(`Database insert failed: ${error.message}`);
-      }
-
-      // 7. Save entities if extraction succeeded
-      if (entities.length > 0) {
-        await saveEntitiesWithMentions(
-          entities,
-          data.id,
-          requestData.conversation_id || data.id,
-          requestData.user_id,
-          supabase
-        );
-        console.log(`Saved ${entities.length} entities for chat turn ${data.id}`);
-      }
-
-      // 8. Return success response
-      const response: SaveChatTurnResponse = {
-        success: true,
-        id: data.id,
-        classification: {
-          impact_score: classification.impact_score,
-          intimacy_level: classification.intimacy_level,
-          reasoning: classification.reasoning
-        },
-        entities_extracted: entities.length
-      };
-
-      return new Response(
-        JSON.stringify(response),
-        {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 200
-        }
-      );
-
-    } catch (error) {
-      console.error('Error in save_chat_turn:', error);
-
-      const errorResponse: SaveChatTurnResponse = {
-        success: false,
-        error: error.message || 'Unknown error occurred'
-      };
-
-      return new Response(
-        JSON.stringify(errorResponse),
-        {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 500
-        }
-      );
+    // Handle results independently (fault isolation)
+    let classification: ClassificationResult;
+    if (gravityResult.status === 'fulfilled') {
+      classification = gravityResult.value;
+    } else {
+      classification = { impact_score: 0, intimacy_level: 0, reasoning: 'Classification failed' };
     }
-  });
+
+    let entities: any[];
+    if (entityResult.status === 'fulfilled') {
+      entities = entityResult.value;
+    } else {
+      entities = [];
+    }
+
+    // Log failures
+    if (gravityResult.status === 'rejected') {
+      console.warn('Gravity classification failed:', gravityResult.reason);
+    }
+
+    if (entityResult.status === 'rejected') {
+      console.warn('Entity extraction failed:', entityResult.reason);
+    }
+
+    console.log(`Classification result: impact=${classification.impact_score}, intimacy=${classification.intimacy_level}`);
+    console.log(`Entity extraction result: ${entities.length} entities found`);
+
+    // 6. Insert into database with classification scores
+    const { data, error } = await supabase
+      .from('chat_turns')
+      .insert({
+        content: requestData.content,
+        turn_range: requestData.turn_range,
+        conversation_id: requestData.conversation_id,
+        platform: requestData.platform || 'cli',
+        speakers: requestData.speakers,
+        turn_count: requestData.turn_count,
+        start_timestamp: requestData.start_timestamp,
+        end_timestamp: requestData.end_timestamp,
+        topics: requestData.topics,
+        hypothetical_questions: requestData.hypothetical_questions,
+        embedding: `[${requestData.embedding.join(',')}]`,  // PostgreSQL vector format
+        user_id: requestData.user_id,
+        // NEW GRAVITY COLUMNS
+        impact_score: classification.impact_score,
+        intimacy_level: classification.intimacy_level,
+        last_accessed: new Date().toISOString(),
+        access_count: 0,
+        gravity_score: null  // Will be computed during retrieval
+      })
+      .select('id')
+      .single();
+
+    if (error) {
+      throw new Error(`Database insert failed: ${error.message}`);
+    }
+
+    // 7. Save entities if extraction succeeded
+    if (entities.length > 0) {
+      await saveEntitiesWithMentions(
+        entities,
+        data.id,
+        requestData.conversation_id || data.id,
+        requestData.user_id,
+        supabase
+      );
+      console.log(`Saved ${entities.length} entities for chat turn ${data.id}`);
+    }
+
+    // 8. Return success response
+    const response: SaveChatTurnResponse = {
+      success: true,
+      id: data.id,
+      classification: {
+        impact_score: classification.impact_score,
+        intimacy_level: classification.intimacy_level,
+        reasoning: classification.reasoning
+      },
+      entities_extracted: entities.length
+    };
+
+    return new Response(
+      JSON.stringify(response),
+      {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200
+      }
+    );
+
+  } catch (error) {
+    console.error('Error in save_chat_turn:', error);
+
+    const errorResponse: SaveChatTurnResponse = {
+      success: false,
+      error: error.message || 'Unknown error occurred'
+    };
+
+    return new Response(
+      JSON.stringify(errorResponse),
+      {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 500
+      }
+    );
+  }
+});
 
 /*
  * USAGE EXAMPLE (from client-side code):
