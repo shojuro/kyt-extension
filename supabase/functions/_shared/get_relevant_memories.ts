@@ -3,7 +3,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { HuggingFaceClient, HFRerankResponse } from "./huggingface-client.ts";
 
-// Module‑level HF client (key from Supabase env)
+// Module-level HF client (key from Supabase env)
 const hfClient = new HuggingFaceClient(Deno.env.get("HUGGINGFACE_API_KEY")!);
 
 // Initialize Supabase client
@@ -14,7 +14,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 type Candidate = { id: string; content: string; gravity_score?: number };
 export type CandidateWithScore = Candidate & { rerank_score: number };
 
-/** Simple BM25‑style keyword boost (max 30 % of score) */
+/** Simple BM25-style keyword boost (max 30% of score) */
 function applyBm25Boost(query: string, items: CandidateWithScore[]): CandidateWithScore[] {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     if (terms.length === 0) return items;
@@ -38,13 +38,13 @@ function applyBm25Boost(query: string, items: CandidateWithScore[]): CandidateWi
 
 /**
  * Retrieve relevant memories for a query.
- * Steps: vector search → rerank (fallback) → BM25 boost → confidence filter → top‑5 slice.
+ * Steps: vector search -> rerank (fallback) -> BM25 boost -> confidence filter -> top-5 slice.
  */
 export async function getRelevantMemories(
     query: string,
     topK = 20,
 ): Promise<CandidateWithScore[]> {
-    // 1️⃣ Vector search (gravity + embedding)
+    // 1. Vector search (gravity + embedding)
     const queryEmbedding = await hfClient.generateEmbeddings(query);
     const { data: raw } = await supabase
         .rpc("search_with_gravity", { query_vector: queryEmbedding[0] })
@@ -57,7 +57,7 @@ export async function getRelevantMemories(
     }
     const docs = candidates.map((c) => c.content);
 
-    // 2️⃣ Rerank with graceful fallback
+    // 2. Rerank with graceful fallback
     let ordered: CandidateWithScore[];
     try {
         const rerankResult: HFRerankResponse[] = await hfClient.rerank(query, docs);
@@ -65,19 +65,19 @@ export async function getRelevantMemories(
             .sort((a, b) => b.score - a.score)
             .map((r) => ({ ...candidates[r.index], rerank_score: r.score }));
     } catch (e) {
-        console.warn(`Rerank failed, falling back to vector order – ${e.message}`);
+        console.warn(`Rerank failed, falling back to vector order: ${e.message}`);
         ordered = candidates.map((c) => ({
             ...c,
             rerank_score: c.gravity_score ?? 0.5,
         }));
     }
 
-    // 3️⃣ BM25 boost (Option B – after rerank)
+    // 3. BM25 boost (after rerank)
     const boosted = applyBm25Boost(query, ordered);
 
-    // 4️⃣ Confidence filter (>= 0.70)
+    // 4. Confidence filter (>= 0.70)
     const filtered = boosted.filter((c) => c.rerank_score >= 0.7);
 
-    // 5️⃣ Return top 5 (or fewer)
+    // 5. Return top 5 (or fewer)
     return filtered.slice(0, 5);
 }
