@@ -160,8 +160,8 @@ serve(async (req) => {
       .from('chat_turns')
       .insert({
         content: requestData.content,
-        turn_range: requestData.turn_range,
-        conversation_id: requestData.conversation_id,
+        turn_range: requestData.turn_range || '1-1',  // Default to single turn
+        conversation_id: requestData.conversation_id || crypto.randomUUID(),
         platform: requestData.platform || 'cli',
         speakers: requestData.speakers,
         turn_count: requestData.turn_count,
