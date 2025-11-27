@@ -48,7 +48,7 @@ BEGIN
     ct.conversation_id,
     ct.speakers,
     ct.topics,
-    ct.created_at,
+    ct.created_at::TIMESTAMPTZ,  -- Cast: table has TIMESTAMP, function returns TIMESTAMPTZ
     -- Vector similarity (cosine distance: 1 - distance)
     (1 - (ct.embedding <=> query_embedding)) AS vector_similarity,
     -- Gravity score (salience-based ranking)
@@ -56,12 +56,12 @@ BEGIN
       1 - (ct.embedding <=> query_embedding),
       COALESCE(ct.impact_score, 0),
       COALESCE(ct.intimacy_level, 0),
-      ct.created_at,
-      COALESCE(ct.last_accessed, ct.created_at),
+      ct.created_at::TIMESTAMPTZ,  -- Cast for function parameter
+      COALESCE(ct.last_accessed, ct.created_at::TIMESTAMPTZ),
       COALESCE(ct.access_count, 0)
     ) AS gravity_score,
-    ct.impact_score,
-    ct.intimacy_level,
+    ct.impact_score::INT,  -- Cast: table has SMALLINT, function returns INT
+    ct.intimacy_level::INT,
     ct.access_count,
     ct.last_accessed
   FROM chat_turns ct

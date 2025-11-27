@@ -45,30 +45,26 @@ export async function getRelevantMemories(
     userId: string,
     topK = 20,
 ): Promise<CandidateWithScore[]> {
-    console.log(`[DEBUG] getRelevantMemories called for user ${userId} query="${query}"`);
-
     // 1. Vector search (gravity + embedding)
     const queryEmbedding = await hfClient.generateEmbeddings(query);
 
-    // Call RPC with lowered threshold and NO temporal exclusion
-    // Using correct function name: match_messages_with_gravity
+    // Call RPC with production threshold (0.7) and NO temporal exclusion (for explicit search)
     const { data: raw, error: rpcError } = await supabase
         .rpc("match_messages_with_gravity", {
             query_embedding: queryEmbedding[0],
-            match_threshold: 0.01, // DEBUG: Very low threshold
+            match_threshold: 0.7,
             match_count: topK,
-            exclude_recent_seconds: 0, // DEBUG: No exclusion
+            exclude_recent_seconds: 0,
             p_user_id: userId
         })
-    // .select("id, content, gravity_score"); // Removed to avoid structure mismatch error
+        .select("id, content, gravity_score");
 
     if (rpcError) {
-        console.error("[DEBUG] RPC Error:", rpcError);
+        console.error("RPC Error:", rpcError);
         throw new Error(`RPC Error: ${rpcError.message}`);
     }
 
     const candidates: Candidate[] = (raw as Candidate[]) || [];
-    console.log(`[DEBUG] Vector search returned ${candidates.length} candidates`);
 
     if (candidates.length === 0) {
         return [];  // No memories found
@@ -79,8 +75,6 @@ export async function getRelevantMemories(
     let ordered: CandidateWithScore[];
     try {
         const rerankResult: HFRerankResponse[] = await hfClient.rerank(query, docs);
-        console.log(`[DEBUG] Rerank scores:`, JSON.stringify(rerankResult));
-
         ordered = rerankResult
             .sort((a, b) => b.score - a.score)
             .map((r) => ({ ...candidates[r.index], rerank_score: r.score }));
@@ -95,9 +89,8 @@ export async function getRelevantMemories(
     // 3. BM25 boost (after rerank)
     const boosted = applyBm25Boost(query, ordered);
 
-    // 4. Confidence filter (DEBUG: Lowered to 0.01)
-    const filtered = boosted.filter((c) => c.rerank_score >= 0.01);
-    console.log(`[DEBUG] After filtering (>=0.01): ${filtered.length} results`);
+    // 4. Confidence filter (>= 0.70)
+    const filtered = boosted.filter((c) => c.rerank_score >= 0.7);
 
     // 5. Return top 5 (or fewer)
     return filtered.slice(0, 5);

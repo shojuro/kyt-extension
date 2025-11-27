@@ -47,6 +47,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **File Modified**: `supabase/functions/save_chat_turn/index.ts`
 
+#### RPC Function Name and Parameter Mismatch
+
+**Problem**: `get_relevant_memories.ts` called non-existent `search_with_gravity` RPC function, used invalid `.select()` on RPC, and was missing required `p_user_id` parameter.
+
+**Solution**:
+- Changed RPC call from `search_with_gravity` to `match_messages_with_gravity`
+- Removed `.select()` clause (incompatible with RPC functions)
+- Added `userId` parameter throughout the call chain
+- Added proper error handling for RPC failures
+
+**Files Modified**:
+- `supabase/functions/_shared/get_relevant_memories.ts`
+- `supabase/functions/search_memories/index.ts`
+
+#### SQL Function Type Mismatch
+
+**Problem**: `match_messages_with_gravity` SQL function returned "structure of query does not match function result type" error because `chat_turns.created_at` is `TIMESTAMP` but function declared `TIMESTAMPTZ` return type.
+
+**Solution**: Added explicit `::TIMESTAMPTZ` casts for `created_at` column and `::INT` casts for `impact_score`/`intimacy_level` (SMALLINT → INT).
+
+**File Modified**: `supabase/functions/_sql/search_with_gravity.sql`
+
 ### Security
 
 #### Messages Table Row Level Security (CRITICAL)
