@@ -79,7 +79,7 @@ export class HuggingFaceClient {
      * @returns Array of { index, score } sorted by score descending
      */
     async rerank(query: string, documents: string[]): Promise<HFRerankResponse[]> {
-        const url = `${HF_INFERENCE_URL}/${RERANKING_MODEL}`;
+        const url = `${HF_ROUTER_URL}/rerank`;
 
         try {
             const response = await fetch(url, {
