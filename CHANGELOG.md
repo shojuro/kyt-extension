@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Entity Boost for Memory Retrieval
+
+**Feature**: Memories mentioning entities found in the query receive a +0.1 relevance boost.
+
+**New RPC Functions**:
+- `search_entities_by_embedding`: Finds entities in user's knowledge graph matching query embedding (threshold 0.8)
+- Updated `match_messages_with_gravity`: Added `boost_entity_ids` parameter and `entity_boost` return column
+
+**Pipeline Flow**:
+1. Generate query embedding
+2. Search entities table for matching entities
+3. Pass matched entity IDs to vector search RPC
+4. RPC checks `entity_mentions` table for links between memories and entities
+5. BM25 boost applies +0.1 for memories with `entity_boost=true`
+
+**Files Added/Modified**:
+- `supabase/functions/_shared/get_relevant_memories.ts` - Entity search integration
+- `supabase/migrations/20251127000001_entity_search_rpcs.sql` - New SQL functions
+- `supabase/functions/create_test_entity.ts` - Test utility for entity creation
+
 ### Changed
 
 #### HuggingFace Integration Updates
