@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+#### HuggingFace Integration Updates
+
+**Embedding Dimensions Migration**:
+- Updated vector dimensions from 1536 to 4096 for Qwen3-Embedding-8B model
+- Applies to: `search_with_gravity.sql`, `match_messages_with_gravity()` function
+- Migration: `20251127_update_embedding_dimensions`
+
+**Reranking Endpoint**:
+- Switched rerank URL from HF Inference API to HF Router for consistency
+- Before: `${HF_INFERENCE_URL}/${RERANKING_MODEL}`
+- After: `${HF_ROUTER_URL}/rerank`
+- Both embeddings and reranking now use the same router infrastructure
+
+**Files Modified**:
+- `supabase/functions/_shared/huggingface-client.ts`
+- `supabase/functions/_sql/search_with_gravity.sql`
+
 ### Security
 
 #### Messages Table Row Level Security (CRITICAL)
@@ -54,6 +73,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Migration**: `20251126122503_move_vector_extension_to_extensions_schema`
 
 ### Fixed
+
+#### Edge Function Null Safety and Defaults
+
+**Problem**: `search_memories` function crashed with "Cannot read properties of null (reading 'map')" when `search_with_gravity` RPC returned null.
+
+**Solution**: Added null safety checks and default value handling across Edge Functions.
+
+**Fixes Applied**:
+
+1. **Null Results Handling** (`get_relevant_memories.ts`):
+   ```typescript
+   const candidates: Candidate[] = (raw as Candidate[]) || [];
+   if (candidates.length === 0) {
+       return [];  // Early return for empty results
+   }
+   ```
+
+2. **NOT NULL Column Defaults** (`save_chat_turn/index.ts`):
+   - `turn_range`: Default `'1-1'`
+   - `conversation_id`: Default `crypto.randomUUID()`
+   - `platform`: Default `'cli'`
+   - `turn_count`: Default `1`
+   - `start_timestamp`/`end_timestamp`: Default `Date.now()`
+
+3. **UUID Validation** (`save_chat_turn/index.ts`):
+   - Auto-generate valid UUID when `user_id` is missing or malformed
+   - Regex validation: `/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/`
+
+4. **File Restoration** (`search_memories/index.ts`, `get_relevant_memories.ts`):
+   - Restored corrupted files that were missing try blocks and function definitions
+
+**Files Modified**:
+- `supabase/functions/_shared/get_relevant_memories.ts`
+- `supabase/functions/search_memories/index.ts`
+- `supabase/functions/save_chat_turn/index.ts`
+
+**Commits**:
+- `838ba03` fix: Restore corrupted search_memories files
+- `3b0dc54` fix: Handle null results from search_with_gravity RPC
+- `35e6bf2` fix: Add defaults for all NOT NULL columns
+- `397cbb2` fix: Add default values for turn_range and conversation_id
+- `b7547e0` fix: Auto-generate valid UUID when user_id is missing or malformed
+- `b90b997` fix: Resolve deployment syntax errors in save_chat_turn
 
 #### Edge Function Connection Pooling
 
