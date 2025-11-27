@@ -164,9 +164,9 @@ serve(async (req) => {
         conversation_id: requestData.conversation_id || crypto.randomUUID(),
         platform: requestData.platform || 'cli',
         speakers: requestData.speakers,
-        turn_count: requestData.turn_count,
-        start_timestamp: requestData.start_timestamp,
-        end_timestamp: requestData.end_timestamp,
+        turn_count: requestData.turn_count || 1,  // Default to 1 turn
+        start_timestamp: requestData.start_timestamp || Date.now(),
+        end_timestamp: requestData.end_timestamp || Date.now(),
         topics: requestData.topics,
         hypothetical_questions: requestData.hypothetical_questions,
         embedding: `[${requestData.embedding.join(',')}]`,  // PostgreSQL vector format
