@@ -15,7 +15,7 @@ serve(async (req) => {
     }
 
     try {
-        const { query } = await req.json();
+        const { query, userId } = await req.json();
 
         if (!query) {
             return new Response(
@@ -24,12 +24,32 @@ serve(async (req) => {
             );
         }
 
-        // Get top 5 relevant memories using the full pipeline:
-        // Vector Search -> Rerank -> BM25 Boost -> Confidence Filter
-        const results = await getRelevantMemories(query, 20);
+        if (!userId) {
+            return new Response(
+                JSON.stringify({ error: "userId is required for search" }),
+                { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+        }
+
+        // Search memories using gravity-weighted vector search + reranking
+        console.log(`Searching memories for user ${userId} with query: "${query.substring(0, 50)}..."`);
+        const memories = await getRelevantMemories(query);
+
+        console.log(`Found ${memories.length} relevant memories`);
 
         return new Response(
-            JSON.stringify({ success: true, results }),
+            JSON.stringify({
+                success: true,
+                query,
+                userId,
+                memories: memories.map(m => ({
+                    id: m.id,
+                    content: m.content,
+                    score: m.rerank_score,
+                    gravity_score: m.gravity_score
+                })),
+                count: memories.length
+            }),
             { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
 
