@@ -5,7 +5,7 @@
 -- Date: 2025-11-24
 
 CREATE OR REPLACE FUNCTION match_messages_with_gravity(
-  query_embedding vector(1536),
+  query_embedding vector(4096),  -- Qwen3-Embedding-8B dimensions
   match_threshold float DEFAULT 0.7,
   match_count int DEFAULT 10,
   exclude_recent_seconds int DEFAULT 120,
@@ -88,7 +88,7 @@ COMMENT ON FUNCTION match_messages_with_gravity IS
 -- Create alternative function: match_messages_with_gravity_and_update
 -- Purpose: Retrieve memories AND update access tracking for rehearsal effect
 CREATE OR REPLACE FUNCTION match_messages_with_gravity_and_update(
-  query_embedding vector(1536),
+  query_embedding vector(4096),  -- Qwen3-Embedding-8B dimensions
   match_threshold float DEFAULT 0.7,
   match_count int DEFAULT 10,
   exclude_recent_seconds int DEFAULT 120,

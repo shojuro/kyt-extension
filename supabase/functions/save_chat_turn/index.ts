@@ -54,7 +54,7 @@ interface SaveChatTurnRequest {
   end_timestamp?: number;
   topics?: string[];
   hypothetical_questions?: string[];
-  embedding: number[];  // Qwen3 embedding (1024 dimensions)
+  embedding: number[];  // Qwen3-Embedding-8B (4096 dimensions)
   user_id: string;
 }
 
@@ -247,7 +247,7 @@ serve(async (req) => {
  *     content: "I had a great training session with my personal trainer Jennifer today. She helped me work on my deadlift form.",
  *     speakers: ['User', 'Assistant'],
  *     topics: ['fitness', 'training'],
- *     embedding: [...], // 1536-dim vector from OpenAI
+ *     embedding: [...], // 4096-dim vector from Qwen3-Embedding-8B (or omit to auto-generate)
  *     user_id: '...'
  *   })
  * });
