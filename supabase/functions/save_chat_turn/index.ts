@@ -22,6 +22,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { classifyMemory, type ClassificationResult } from '../_shared/memory-classifier.ts';
 import { extractEntities, saveEntitiesWithMentions } from '../_shared/entity-extractor.ts';
+import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
 
 // CORS headers for browser requests
 const corsHeaders = {
@@ -35,6 +36,13 @@ const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
 const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+// Initialize HuggingFace client at module level
+const hfApiKey = Deno.env.get('HUGGINGFACE_API_KEY');
+if (!hfApiKey) {
+  throw new Error('HUGGINGFACE_API_KEY environment variable not configured');
+}
+const hfClient = new HuggingFaceClient(hfApiKey);
+
 interface SaveChatTurnRequest {
   content: string;
   turn_range?: string;
@@ -46,7 +54,7 @@ interface SaveChatTurnRequest {
   end_timestamp?: number;
   topics?: string[];
   hypothetical_questions?: string[];
-  embedding: number[];  // text-embedding-3-small (1536 dimensions)
+  embedding: number[];  // Qwen3 embedding (1024 dimensions)
   user_id: string;
 }
 
@@ -81,8 +89,17 @@ serve(async (req) => {
       throw new Error('speakers array is required and cannot be empty');
     }
 
-    if (!requestData.embedding || requestData.embedding.length !== 1536) {
-      throw new Error('embedding is required and must be 1536 dimensions');
+    // If an embedding is not supplied, generate one using HuggingFace.
+    if (!requestData.embedding) {
+      if (!hfApiKey) {
+        throw new Error('HF_API_KEY environment variable not configured. Cannot generate embedding.');
+      }
+      // Generate embedding from the content text
+      const generated = await hfClient.generateEmbeddings(requestData.content);
+      // generateEmbeddings returns an array of embeddings; we expect a single input
+      requestData.embedding = generated[0];
+    } else if (!Array.isArray(requestData.embedding) || requestData.embedding.length === 0) {
+      throw new Error('embedding must be a non‑empty array');
     }
 
     if (!requestData.user_id) {
@@ -95,123 +112,127 @@ serve(async (req) => {
       throw new Error('OPENAI_API_KEY environment variable not configured');
     }
 
-    // Note: Supabase client initialized at module level for connection pooling
+    // 4. Run gravity classification and entity extraction in parallel
+      console.log('Running parallel classification and entity extraction...');
+      const [gravityResult, entityResult] = await Promise.allSettled([
+        classifyMemory({
+          content: requestData.content,
+          speakers: requestData.speakers,
+          topics: requestData.topics
+        }, openaiApiKey),
 
-    // 5. Run gravity classification and entity extraction in parallel
-    console.log('Running parallel classification and entity extraction...');
-    const [gravityResult, entityResult] = await Promise.allSettled([
-      classifyMemory({
-        content: requestData.content,
-        speakers: requestData.speakers,
-        topics: requestData.topics
-      }, openaiApiKey),
+        extractEntities({
+          content: requestData.content,
+          speakers: requestData.speakers
+        }, openaiApiKey)
+      ]);
 
-      extractEntities({
-        content: requestData.content,
-        speakers: requestData.speakers
-      }, openaiApiKey)
-    ]);
+      // Handle results independently (fault isolation)
+      let classification: ClassificationResult;
+      if (gravityResult.status === 'fulfilled') {
+        classification = gravityResult.value;
+      } else {
+        classification = { impact_score: 0, intimacy_level: 0, reasoning: 'Classification failed' };
+      }
 
-    // Handle results independently (fault isolation)
-    const classification = gravityResult.status === 'fulfilled'
-      ? gravityResult.value
-      : { impact_score: 0, intimacy_level: 0, reasoning: 'Classification failed' };
+      let entities: any[];
+      if (entityResult.status === 'fulfilled') {
+        entities = entityResult.value;
+      } else {
+        entities = [];
+      }
 
-    const entities = entityResult.status === 'fulfilled'
-      ? entityResult.value
-      : [];
+      // Log failures
+      if (gravityResult.status === 'rejected') {
+        console.warn('Gravity classification failed:', gravityResult.reason);
+      }
 
-    // Log failures
-    if (gravityResult.status === 'rejected') {
-      console.warn('Gravity classification failed:', gravityResult.reason);
-    }
+      if (entityResult.status === 'rejected') {
+        console.warn('Entity extraction failed:', entityResult.reason);
+      }
 
-    if (entityResult.status === 'rejected') {
-      console.warn('Entity extraction failed:', entityResult.reason);
-    }
+      console.log(`Classification result: impact=${classification.impact_score}, intimacy=${classification.intimacy_level}`);
+      console.log(`Entity extraction result: ${entities.length} entities found`);
 
-    console.log(`Classification result: impact=${classification.impact_score}, intimacy=${classification.intimacy_level}`);
-    console.log(`Entity extraction result: ${entities.length} entities found`);
+      // 6. Insert into database with classification scores
+      const { data, error } = await supabase
+        .from('chat_turns')
+        .insert({
+          content: requestData.content,
+          turn_range: requestData.turn_range,
+          conversation_id: requestData.conversation_id,
+          platform: requestData.platform || 'cli',
+          speakers: requestData.speakers,
+          turn_count: requestData.turn_count,
+          start_timestamp: requestData.start_timestamp,
+          end_timestamp: requestData.end_timestamp,
+          topics: requestData.topics,
+          hypothetical_questions: requestData.hypothetical_questions,
+          embedding: `[${requestData.embedding.join(',')}]`,  // PostgreSQL vector format
+          user_id: requestData.user_id,
+          // NEW GRAVITY COLUMNS
+          impact_score: classification.impact_score,
+          intimacy_level: classification.intimacy_level,
+          last_accessed: new Date().toISOString(),
+          access_count: 0,
+          gravity_score: null  // Will be computed during retrieval
+        })
+        .select('id')
+        .single();
 
-    // 6. Insert into database with classification scores
-    const { data, error } = await supabase
-      .from('chat_turns')
-      .insert({
-        content: requestData.content,
-        turn_range: requestData.turn_range,
-        conversation_id: requestData.conversation_id,
-        platform: requestData.platform || 'cli',
-        speakers: requestData.speakers,
-        turn_count: requestData.turn_count,
-        start_timestamp: requestData.start_timestamp,
-        end_timestamp: requestData.end_timestamp,
-        topics: requestData.topics,
-        hypothetical_questions: requestData.hypothetical_questions,
-        embedding: `[${requestData.embedding.join(',')}]`,  // PostgreSQL vector format
-        user_id: requestData.user_id,
-        // NEW GRAVITY COLUMNS
-        impact_score: classification.impact_score,
-        intimacy_level: classification.intimacy_level,
-        last_accessed: new Date().toISOString(),
-        access_count: 0,
-        gravity_score: null  // Will be computed during retrieval
-      })
-      .select('id')
-      .single();
+      if (error) {
+        throw new Error(`Database insert failed: ${error.message}`);
+      }
 
-    if (error) {
-      throw new Error(`Database insert failed: ${error.message}`);
-    }
+      // 7. Save entities if extraction succeeded
+      if (entities.length > 0) {
+        await saveEntitiesWithMentions(
+          entities,
+          data.id,
+          requestData.conversation_id || data.id,
+          requestData.user_id,
+          supabase
+        );
+        console.log(`Saved ${entities.length} entities for chat turn ${data.id}`);
+      }
 
-    // 7. Save entities if extraction succeeded
-    if (entities.length > 0) {
-      await saveEntitiesWithMentions(
-        entities,
-        data.id,
-        requestData.conversation_id || data.id,
-        requestData.user_id,
-        supabase
+      // 8. Return success response
+      const response: SaveChatTurnResponse = {
+        success: true,
+        id: data.id,
+        classification: {
+          impact_score: classification.impact_score,
+          intimacy_level: classification.intimacy_level,
+          reasoning: classification.reasoning
+        },
+        entities_extracted: entities.length
+      };
+
+      return new Response(
+        JSON.stringify(response),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 200
+        }
       );
-      console.log(`Saved ${entities.length} entities for chat turn ${data.id}`);
+
+    } catch (error) {
+      console.error('Error in save_chat_turn:', error);
+
+      const errorResponse: SaveChatTurnResponse = {
+        success: false,
+        error: error.message || 'Unknown error occurred'
+      };
+
+      return new Response(
+        JSON.stringify(errorResponse),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 500
+        }
+      );
     }
-
-    // 8. Return success response
-    const response: SaveChatTurnResponse = {
-      success: true,
-      id: data.id,
-      classification: {
-        impact_score: classification.impact_score,
-        intimacy_level: classification.intimacy_level,
-        reasoning: classification.reasoning
-      },
-      entities_extracted: entities.length
-    };
-
-    return new Response(
-      JSON.stringify(response),
-      {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 200
-      }
-    );
-
-  } catch (error) {
-    console.error('Error in save_chat_turn:', error);
-
-    const errorResponse: SaveChatTurnResponse = {
-      success: false,
-      error: error.message || 'Unknown error occurred'
-    };
-
-    return new Response(
-      JSON.stringify(errorResponse),
-      {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 500
-      }
-    );
-  }
-});
+  });
 
 /*
  * USAGE EXAMPLE (from client-side code):
