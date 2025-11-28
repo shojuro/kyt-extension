@@ -1,15 +1,7 @@
-// supabase/functions/_shared/get_relevant_memories.ts
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { HuggingFaceClient, HFRerankResponse } from "./huggingface-client.ts";
-
-// Module-level HF client (key from Supabase env)
-const hfClient = new HuggingFaceClient(Deno.env.get("HUGGINGFACE_API_KEY")!);
-
-// Initialize Supabase client
-const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
+import { Logger } from "./utils.ts";
 
 type Candidate = {
     id: string;
@@ -63,9 +55,22 @@ export async function getRelevantMemories(
     query: string,
     userId: string,
     topK = 20,
+    requestId?: string
 ): Promise<CandidateWithScore[]> {
+    // Initialize clients lazily to prevent worker crash on module load if env vars missing
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY")!;
+
+    if (!supabaseUrl || !supabaseServiceKey || !hfApiKey) {
+        throw new Error("Missing environment variables: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or HUGGINGFACE_API_KEY");
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const hfClient = new HuggingFaceClient(hfApiKey);
+
     // 1. Generate Query Embedding
-    const queryEmbedding = await hfClient.generateEmbeddings(query);
+    const queryEmbedding = await hfClient.generateEmbeddings(query, requestId);
 
     // 2. Search for Entities in the Query
     // We use the query embedding to find relevant entities in the 'entities' table
@@ -80,7 +85,7 @@ export async function getRelevantMemories(
 
     const boostEntityIds = entities?.map((e: any) => e.id) || [];
     if (boostEntityIds.length > 0) {
-        console.log(`[DEBUG] Found relevant entities: ${boostEntityIds.length}`);
+        Logger.info(`Found relevant entities: ${boostEntityIds.length}`, { requestId, entityIds: boostEntityIds });
     }
 
     // 3. Vector Search (RPC)
@@ -97,7 +102,7 @@ export async function getRelevantMemories(
     // Note: .select() removed to avoid "structure mismatch" error
 
     if (rpcError) {
-        console.error("RPC Error:", rpcError);
+        Logger.error("RPC Error", { requestId, error: rpcError });
         throw new Error(`RPC Error: ${rpcError.message}`);
     }
 
@@ -111,12 +116,12 @@ export async function getRelevantMemories(
     // 4. Rerank with graceful fallback
     let ordered: CandidateWithScore[];
     try {
-        const rerankResult: HFRerankResponse[] = await hfClient.rerank(query, docs);
+        const rerankResult: HFRerankResponse[] = await hfClient.rerank(query, docs, requestId);
         ordered = rerankResult
             .sort((a, b) => b.score - a.score)
             .map((r) => ({ ...candidates[r.index], rerank_score: r.score }));
     } catch (e) {
-        console.warn(`Rerank failed, falling back to vector order: ${e.message}`);
+        Logger.warn(`Rerank failed, falling back to vector order: ${e.message}`, { requestId });
         ordered = candidates.map((c) => ({
             ...c,
             rerank_score: c.gravity_score ?? 0.5,

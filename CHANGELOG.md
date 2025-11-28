@@ -29,6 +29,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `supabase/migrations/20251127000001_entity_search_rpcs.sql` - New SQL functions
 - `supabase/functions/create_test_entity.ts` - Test utility for entity creation
 
+#### Production Hardening Infrastructure
+
+**Observability**:
+- Structured JSON logging with `Logger` class (info/warn/error levels)
+- Request ID tracing throughout entire pipeline
+- Cost monitoring with daily threshold alerts ($10, $25, $50, $100)
+
+**Reliability**:
+- Retry wrapper with exponential backoff (1s → 2s → 4s, max 3 retries)
+- Request timeout (10s default) prevents hanging requests
+- Lazy client initialization prevents worker crash on missing env vars
+- Graceful degradation: rerank failure falls back to vector order
+
+**Backfill Infrastructure**:
+- `backfill_embeddings` Edge Function for resumable embedding generation
+- Progress tracking table with status and error persistence
+- Batch processing (10 rows) with rate limiting (1s delay)
+- Processes up to 500 rows per invocation
+
+**Database Schema**:
+- `cost_tracking` table with RLS for API cost monitoring
+- `backfill_progress` table for resumable batch operations
+- `entities_extracted` column on `chat_turns` for backfill tracking
+
+**Files Added**:
+- `supabase/functions/_shared/utils.ts` - Logger, CostMonitor, retryWrapper
+- `supabase/functions/backfill_embeddings/index.ts` - Batch embedding generation
+- `supabase/migrations/20251128000000_backfill_schema.sql` - Backfill tables
+- `supabase/migrations/20251128000001_cost_tracking.sql` - Cost monitoring
+
 ### Changed
 
 #### HuggingFace Integration Updates

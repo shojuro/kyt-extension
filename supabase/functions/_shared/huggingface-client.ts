@@ -1,114 +1,92 @@
-// OpenAI-compatible endpoint for Nebius via HF Router
-export const HF_ROUTER_URL = "https://router.huggingface.co/nebius/v1";
-export const HF_INFERENCE_URL = "https://api-inference.huggingface.co/models";
 
-// Models
-export const EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B";
-export const RERANKING_MODEL = "BAAI/bge-reranker-v2-m3";
-
-export interface HFEmbeddingResponse {
-    object: string;
-    data: {
-        object: string;
-        embedding: number[];
-        index: number;
-    }[];
-    model: string;
-    usage: {
-        prompt_tokens: number;
-        total_tokens: number;
-    };
-}
-
-export interface HFRerankResponse {
-    index: number;
-    score: number;
-}
+import { retryWrapper, CostMonitor } from "./utils.ts";
 
 export class HuggingFaceClient {
     private apiKey: string;
+    private static readonly EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B";
+    private static readonly RERANK_MODEL = "BAAI/bge-reranker-v2-m3";
+    private static readonly HF_ROUTER_URL = "https://router.huggingface.co/nebius";
 
     constructor(apiKey: string) {
         this.apiKey = apiKey;
     }
 
-    /**
-     * Generate embeddings using OpenAI-compatible endpoint (Nebius/HF Router)
-     * @param inputs Single string or array of strings
-     * @returns Array of embedding vectors
-     */
-    async generateEmbeddings(inputs: string | string[]): Promise<number[][]> {
-        const url = `${HF_ROUTER_URL}/embeddings`;
+    async generateEmbeddings(text: string, requestId?: string): Promise<number[][]> {
+        const url = `${HuggingFaceClient.HF_ROUTER_URL}/v1/embeddings`;
 
-        // Ensure inputs is an array
-        const inputList = Array.isArray(inputs) ? inputs : [inputs];
-
-        try {
+        return retryWrapper(async () => {
             const response = await fetch(url, {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${this.apiKey}`,
-                    "Content-Type": "application/json",
+                    "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    model: EMBEDDING_MODEL,
-                    input: inputList,
-                }),
+                    input: text,
+                    model: HuggingFaceClient.EMBEDDING_MODEL
+                })
             });
 
             if (!response.ok) {
                 const errorText = await response.text();
-                throw new Error(`HF Router Error (${response.status}): ${errorText}`);
+                throw new Error(`HF Embedding API Error: ${response.status} - ${errorText}`);
             }
 
-            const result = await response.json() as HFEmbeddingResponse;
+            const data = await response.json();
 
-            // Extract embeddings in order
-            return result.data.sort((a, b) => a.index - b.index).map(item => item.embedding);
+            // Log cost (approx $0.0001 per request)
+            await CostMonitor.logUsage(
+                "huggingface",
+                HuggingFaceClient.EMBEDDING_MODEL,
+                "embedding",
+                0.0001,
+                requestId
+            );
 
-        } catch (error) {
-            console.error("HF Embedding Error:", error);
-            throw error;
-        }
+            return data.data.map((item: any) => item.embedding);
+        });
     }
 
-    /**
-     * Rerank a list of documents against a query (Standard Inference API)
-     * @param query The search query
-     * @param documents List of document texts to rerank
-     * @returns Array of { index, score } sorted by score descending
-     */
-    async rerank(query: string, documents: string[]): Promise<HFRerankResponse[]> {
-        const url = `${HF_ROUTER_URL}/rerank`;
+    async rerank(query: string, documents: string[], requestId?: string): Promise<HFRerankResponse[]> {
+        const url = `${HuggingFaceClient.HF_ROUTER_URL}/v1/rerank`;
 
-        try {
+        return retryWrapper(async () => {
             const response = await fetch(url, {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${this.apiKey}`,
-                    "Content-Type": "application/json",
+                    "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    inputs: {
-                        source_sentence: query,
-                        sentences: documents
-                    },
-                    options: { wait_for_model: true }
-                }),
+                    query,
+                    documents,
+                    model: HuggingFaceClient.RERANK_MODEL,
+                    return_documents: false
+                })
             });
 
             if (!response.ok) {
                 const errorText = await response.text();
-                throw new Error(`HF Rerank Error (${response.status}): ${errorText}`);
+                throw new Error(`HF Rerank API Error: ${response.status} - ${errorText}`);
             }
 
-            const result = await response.json() as HFRerankResponse[];
+            const data = await response.json();
 
-            return result.sort((a, b) => b.score - a.score);
+            // Log cost (approx $0.00005 per request)
+            await CostMonitor.logUsage(
+                "huggingface",
+                HuggingFaceClient.RERANK_MODEL,
+                "rerank",
+                0.00005,
+                requestId
+            );
 
-        } catch (error) {
-            console.error("HF Reranking Error:", error);
-            throw error;
-        }
+            return data.results || data;
+        });
     }
+}
+
+export interface HFRerankResponse {
+    index: number;
+    score: number;
 }

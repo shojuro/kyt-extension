@@ -1,0 +1,128 @@
+
+import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+// Lazy initialization helper
+let supabaseInstance: SupabaseClient | null = null;
+
+function getSupabaseClient(): SupabaseClient | null {
+    if (supabaseInstance) return supabaseInstance;
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+        console.warn("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY. Cost tracking disabled.");
+        return null;
+    }
+
+    supabaseInstance = createClient(supabaseUrl, supabaseServiceKey);
+    return supabaseInstance;
+}
+
+/**
+ * Retry wrapper with exponential backoff and timeout.
+ */
+export async function retryWrapper<T>(
+    fn: () => Promise<T>,
+    options: {
+        maxRetries?: number;
+        baseDelayMs?: number;
+        timeoutMs?: number;
+    } = {}
+): Promise<T> {
+    const { maxRetries = 3, baseDelayMs = 1000, timeoutMs = 10000 } = options;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            // Wrap with timeout
+            const result = await Promise.race([
+                fn(),
+                new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('Request timeout')), timeoutMs)
+                )
+            ]);
+            return result;
+        } catch (e) {
+            if (attempt === maxRetries) throw e;
+            const delay = baseDelayMs * Math.pow(2, attempt);
+            console.warn(`Attempt ${attempt + 1} failed: ${e.message}. Retrying in ${delay}ms...`);
+            await new Promise(r => setTimeout(r, delay));
+        }
+    }
+    throw new Error('Unreachable');
+}
+
+/**
+ * Cost Monitor for tracking API usage.
+ */
+export class CostMonitor {
+    private static THRESHOLDS = [10, 25, 50, 100];
+
+    static async logUsage(
+        service: string,
+        model: string,
+        operation: string,
+        cost: number,
+        requestId?: string,
+        userId?: string
+    ) {
+        try {
+            const supabase = getSupabaseClient();
+            if (!supabase) return;
+
+            // 1. Log to DB
+            await supabase.from('cost_tracking').insert({
+                service,
+                model,
+                operation,
+                estimated_cost_usd: cost,
+                request_id: requestId,
+                user_id: userId
+            });
+
+            // 2. Check Daily Total (simple check)
+            // We check the last 24 hours
+            const yesterday = new Date(Date.now() - 86400000).toISOString();
+            const { data } = await supabase
+                .from('cost_tracking')
+                .select('estimated_cost_usd')
+                .gte('created_at', yesterday);
+
+            const dailyTotal = data?.reduce((sum, r) => sum + (r.estimated_cost_usd || 0), 0) ?? 0;
+
+            // Check thresholds
+            for (const threshold of this.THRESHOLDS) {
+                // If we just crossed the threshold
+                if (dailyTotal >= threshold && dailyTotal - cost < threshold) {
+                    console.error(JSON.stringify({
+                        level: 'alert',
+                        message: `Daily cost threshold reached: $${threshold}`,
+                        daily_total: dailyTotal,
+                        timestamp: new Date().toISOString()
+                    }));
+                }
+            }
+
+        } catch (e) {
+            // Don't fail the request if logging fails
+            console.error("Failed to log cost:", e);
+        }
+    }
+}
+
+/**
+ * Structured Logger.
+ */
+export class Logger {
+    static info(message: string, context: Record<string, any> = {}) {
+        console.log(JSON.stringify({ level: 'info', message, ...context, timestamp: new Date().toISOString() }));
+    }
+
+    static warn(message: string, context: Record<string, any> = {}) {
+        console.warn(JSON.stringify({ level: 'warn', message, ...context, timestamp: new Date().toISOString() }));
+    }
+
+    static error(message: string, context: Record<string, any> = {}) {
+        console.error(JSON.stringify({ level: 'error', message, ...context, timestamp: new Date().toISOString() }));
+    }
+}
