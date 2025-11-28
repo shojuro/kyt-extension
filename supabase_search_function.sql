@@ -50,7 +50,7 @@ BEGIN
     messages.synced_from_extension,
     messages.embedding,
     (messages.embedding <=> query_embedding) as distance
-  FROM messages
+  FROM public.messages
   WHERE (messages.embedding <=> query_embedding) < match_threshold
   -- Server-side filtering for Precision
   AND (min_timestamp = 0 OR messages."timestamp" >= min_timestamp)
@@ -64,7 +64,7 @@ $$;
 
 -- Test the function (should return empty results if no messages synced yet)
 SELECT * FROM match_messages_v2(
-  query_embedding => (SELECT embedding FROM messages LIMIT 1),
+  query_embedding => (SELECT embedding FROM public.messages LIMIT 1),
   match_threshold => 0.5::float,
   match_count => 5
 );

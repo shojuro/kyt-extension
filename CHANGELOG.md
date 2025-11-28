@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **ChatGPT inject.js**: Added null checks for `response` and `json.mapping` to prevent errors when response is undefined
+- **supabase_search_function.sql**: Added explicit `public.` schema prefix to messages table references
+
 ### Added
 
 #### Hybrid HyDE (Hypothetical Document Embeddings) for Memory Retrieval

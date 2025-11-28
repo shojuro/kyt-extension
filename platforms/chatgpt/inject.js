@@ -467,7 +467,7 @@
           // Handle full JSON response (common for initial load or non-streaming)
           const clone = response.clone();
           clone.json().then(json => {
-            if (json.mapping) {
+            if (json && json.mapping) {
               console.log('🎯 KYT ChatGPT: Captured full conversation tree (JSON)');
               processConversationTree(json);
             }
@@ -1267,7 +1267,7 @@
    * This is the robust method for Voice Capture (and text)
    */
   function processConversationTree(response) {
-    if (!response.mapping) return;
+    if (!response || !response.mapping) return;
 
     try {
       const nodes = Object.values(response.mapping);
