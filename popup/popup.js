@@ -14,6 +14,7 @@ const transformStatus = document.getElementById('transformStatus');
 const debugModeToggle = document.getElementById('debugModeToggle');
 const testCaptureBtn = document.getElementById('testCaptureBtn');
 const setupBtn = document.getElementById('setupBtn');
+const importBtn = document.getElementById('importBtn');
 const testResult = document.getElementById('testResult');
 
 /**
@@ -213,10 +214,23 @@ function openSetup() {
   chrome.runtime.openOptionsPage();
 }
 
+/**
+ * Open import modal
+ */
+function openImport() {
+  chrome.windows.create({
+    url: 'popup/import-modal.html',
+    type: 'popup',
+    width: 350,
+    height: 600
+  });
+}
+
 // Event listeners
 debugModeToggle.addEventListener('change', saveDebugMode);
 testCaptureBtn.addEventListener('click', testCapture);
 setupBtn.addEventListener('click', openSetup);
+importBtn.addEventListener('click', openImport);
 
 // Initial load
 loadStats();

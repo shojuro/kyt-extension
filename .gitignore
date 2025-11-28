@@ -23,6 +23,7 @@ logs/
 debug.log
 error.log
 validation/*.log
+debug_*.txt
 
 # ============================================
 # CHROME EXTENSION ARTIFACTS

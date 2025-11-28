@@ -622,7 +622,19 @@
           } else if (data.text) {
             transcriptText = data.text;
           } else if (data.message?.content) {
-            transcriptText = data.message.content;
+            // Handle both string and object content (standard ChatGPT format)
+            if (typeof data.message.content === 'string') {
+              transcriptText = data.message.content;
+            } else if (data.message.content.parts && Array.isArray(data.message.content.parts)) {
+              transcriptText = data.message.content.parts[0];
+            }
+          } else if (data.item?.content) {
+            // Handle "conversation_item_created" format
+            if (typeof data.item.content === 'string') {
+              transcriptText = data.item.content;
+            } else if (data.item.content.parts && Array.isArray(data.item.content.parts)) {
+              transcriptText = data.item.content.parts[0];
+            }
           } else if (data.transcript) {
             transcriptText = data.transcript;
           } else if (data.payload?.text) {

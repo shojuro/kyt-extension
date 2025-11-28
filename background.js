@@ -1,5 +1,6 @@
 /**
  * KYT Memory Extension - Background Service Worker (Day 1-2)
+ * Initialized: true
  *
  * Purpose: Receive captured messages from content script and store in chrome.storage
  * Day 2: Added sync and search capabilities for unified memory
@@ -20,6 +21,9 @@ import { buildMemoryInjection, buildEmptyInjection, buildErrorInjection } from '
 import { classifyContent } from './src/taxonomy-classifier.js';
 import { applyKeywordBoost } from './src/keyword-boost.js';
 import { filterByConfidence } from './src/confidence-filter.js';
+import { HistoryImporter } from './src/history-import/index.js';
+
+let activeImporter = null;
 
 // ... existing imports ...
 
@@ -1316,6 +1320,89 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       })();
       return true; // Keep channel open
+
+      return true; // Keep channel open
+
+    case 'CHECK_IMPORT_STATUS':
+      (async () => {
+        try {
+          const config = await getApiConfig();
+          const importer = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId);
+          const status = await importer.checkImportStatus(message.platform);
+          sendResponse({ success: true, status });
+        } catch (error) {
+          console.error('Check import status failed:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'START_HISTORY_IMPORT':
+      (async () => {
+        try {
+          const config = await getApiConfig();
+
+          if (activeImporter) {
+            // Cancel existing if any (though UI should prevent this)
+            await activeImporter.cancelImport();
+          }
+
+          activeImporter = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId);
+
+          // Start import (async)
+          activeImporter.startImport(
+            message.platform,
+            (progress) => {
+              // Send progress updates to popup
+              chrome.runtime.sendMessage({
+                type: 'IMPORT_PROGRESS',
+                progress
+              }).catch(() => {
+                // Popup might be closed, ignore
+              });
+            },
+            async () => {
+              // Fallback required - ask popup to prompt user for file
+              // This is tricky because background cannot open file dialogs.
+              // We need to signal the popup to ask for file, then popup sends file back?
+              // Or we just fail here and tell popup to start ZIP import flow?
+
+              // Better approach: If API fails, we throw/return specific error
+              // and let the UI handle the "Switch to ZIP" flow.
+              // The HistoryImporter.startImport logic I wrote expects a callback that returns a File.
+              // This won't work directly in background script.
+
+              // Refactoring plan:
+              // The `startImport` method in `HistoryImporter` currently handles the fallback logic internally.
+              // But `onFallbackRequired` callback cannot easily get a File from user in background context.
+              // So we should probably split API and ZIP import in the Orchestrator or handle the fallback in UI.
+
+              // For now, let's assume we just fail if API fails, and UI initiates ZIP import explicitly.
+              // So we pass a callback that just returns null or throws.
+              return null;
+            }
+          ).then(result => {
+            sendResponse({ success: true, result });
+            activeImporter = null;
+          }).catch(error => {
+            sendResponse({ success: false, error: error.message });
+            activeImporter = null;
+          });
+
+        } catch (error) {
+          console.error('Start import failed:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
+    case 'CANCEL_HISTORY_IMPORT':
+      if (activeImporter) {
+        activeImporter.cancelImport();
+        activeImporter = null;
+      }
+      sendResponse({ success: true });
+      return true;
 
     default:
       console.warn('⚠️ Unknown message type:', message.type);

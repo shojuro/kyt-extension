@@ -16,7 +16,7 @@
  * @module dom-observer
  */
 
-(function() {
+(function () {
   'use strict';
 
   // Configuration
@@ -50,7 +50,7 @@
     RESTART_BACKOFF_MS: 1000,  // Exponential backoff base
 
     // Placeholder patterns to skip
-    PLACEHOLDERS: ['...', '•••', 'Thinking...', 'Loading', '　']
+    PLACEHOLDERS: ['...', '•••', 'Thinking...', 'Loading', '　', 'Transcript Unavailable...'],
   };
 
   // State
@@ -92,7 +92,7 @@
       throw new Error('Conversation container not found');
     }
 
-    log('Found conversation container:', container.tagName);
+    log('Found conversation container:', container.tagName, container.className);
 
     // Create observer
     observer = new MutationObserver(handleMutations);
@@ -175,6 +175,9 @@
 
         for (const node of mutation.addedNodes) {
           if (!(node instanceof HTMLElement)) continue;
+
+          // DEBUG: Log every added node to find the right selector
+          log('DOM Mutation: Added node:', node.tagName, 'Class:', node.className, 'Text:', node.innerText?.substring(0, 20));
 
           // Check if this is a message node
           if (isMessageNode(node)) {
