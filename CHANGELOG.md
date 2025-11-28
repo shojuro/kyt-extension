@@ -9,6 +9,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Hybrid HyDE (Hypothetical Document Embeddings) for Memory Retrieval
+
+**Feature**: Query-side HyDE with hybrid search - generates hypothetical conversation documents to improve semantic similarity matching, combined with raw query search via Reciprocal Rank Fusion (RRF).
+
+**How It Works**:
+1. **Parallel Generation**: Generate raw query embedding + HyDE document (GPT-4o-mini) simultaneously
+2. **Adaptive Short-Circuit**: Skip HyDE for high-confidence entity matches (≥0.85, or ≥0.80 for PERSON entities)
+3. **Dual Vector Search**: Search with both HyDE embedding and raw query embedding in parallel
+4. **RRF Merge**: Combine results using Reciprocal Rank Fusion (60% HyDE / 40% raw weight)
+5. **Rerank + Filter**: Apply reranking, BM25 boost, entity boost, confidence filter (≥0.70), return top 5
+
+**New Parameters** (search_memories endpoint):
+- `useHyde` (boolean, default: true): Enable/disable HyDE generation
+- `hydeWeight` (number, default: 0.6): Weight for HyDE results in RRF merge
+
+**Performance**:
+- HyDE enabled: ~10s latency (includes OpenAI generation)
+- HyDE disabled: ~2s latency (raw query only)
+- Cost: ~$0.0002 per search with HyDE
+
+**Architecture**:
+```
+Query → Raw Embedding → Entity Search ──┐
+                     ↓                  │
+              [High Confidence?] ──Yes──┤→ Single Vector Search → Rerank → Top 5
+                     │ No               │
+                     ↓                  │
+              HyDE Generation ──────────┤
+                     ↓                  │
+              HyDE Embedding ───────────┘
+                     ↓
+              Parallel Vector Search (HyDE + Raw)
+                     ↓
+              RRF Merge (0.6/0.4) → Rerank → BM25 → Entity Boost → Filter → Top 5
+```
+
+**Files Created**:
+- `supabase/functions/_shared/openai-client.ts` - GPT-4o-mini client with retry + cost tracking
+- `supabase/functions/_shared/hyde-generator.ts` - HyDE generation with conversation format
+- `supabase/functions/_shared/rrf.ts` - Reciprocal Rank Fusion utility
+
+**Files Modified**:
+- `supabase/functions/_shared/get_relevant_memories.ts` - Full hybrid HyDE pipeline integration
+- `supabase/functions/search_memories/index.ts` - Added useHyde and hydeWeight parameters
+
+**API Example**:
+```bash
+curl -X POST "https://your-project.supabase.co/functions/v1/search_memories" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What did we discuss about memory systems?", "userId": "...", "useHyde": true, "hydeWeight": 0.6}'
+```
+
+**Response includes HyDE metadata**:
+```json
+{
+  "success": true,
+  "results": [...],
+  "meta": {
+    "requestId": "...",
+    "hydeEnabled": true,
+    "hydeWeight": 0.6
+  }
+}
+```
+
 #### Entity Boost for Memory Retrieval
 
 **Feature**: Memories mentioning entities found in the query receive a +0.1 relevance boost.
