@@ -258,34 +258,42 @@ export class HistoryImporter {
      */
     async processBatch(messages) {
         // Invoke Edge Function via REST
-        const response = await fetch(`${this.supabaseUrl}/functions/v1/save_chat_turn_batch`, {
-            method: 'POST',
-            headers: {
-                'apikey': this.supabaseKey,
-                'Authorization': `Bearer ${this.supabaseKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                turns: messages.map(m => ({
-                    user_id: this.userId,
-                    conversation_id: m.conversationId,
-                    platform: m.platform,
-                    content: sanitizeContent(m.content),
-                    role: m.role,
-                    timestamp: new Date(m.timestamp).toISOString(),
-                    source: 'import',
-                    metadata: {
-                        originalId: m.id,
-                        conversationTitle: m.conversationTitle,
-                        model: m.model
-                    }
-                }))
-            })
-        });
+        const url = `${this.supabaseUrl}/functions/v1/save_chat_turn_batch`;
+        console.log(`[HistoryImporter] Saving batch of ${messages.length} messages to ${url}`);
 
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`Batch save failed: ${error}`);
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'apikey': this.supabaseKey,
+                    'Authorization': `Bearer ${this.supabaseKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    turns: messages.map(m => ({
+                        user_id: this.userId,
+                        conversation_id: m.conversationId,
+                        platform: m.platform,
+                        content: sanitizeContent(m.content),
+                        role: m.role,
+                        timestamp: new Date(m.timestamp).toISOString(),
+                        source: 'import',
+                        metadata: {
+                            originalId: m.id,
+                            conversationTitle: m.conversationTitle,
+                            model: m.model
+                        }
+                    }))
+                })
+            });
+
+            if (!response.ok) {
+                const error = await response.text();
+                throw new Error(`Batch save failed: ${error}`);
+            }
+        } catch (error) {
+            console.error('[HistoryImporter] Batch save error:', error);
+            throw error;
         }
     }
 }
