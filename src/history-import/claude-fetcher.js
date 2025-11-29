@@ -67,9 +67,10 @@ export class ClaudeFetcher {
      * @param {string} [resumeFromId] 
      * @param {function(string, number): void} [onProgress] 
      * @param {function(Message[]): Promise<void>} [onBatch]
+     * @param {function(number): void} [onTotal]
      * @returns {Promise<Message[]>}
      */
-    async fetchAllConversations(maxAgeDays, resumeFromId, onProgress, onBatch) {
+    async fetchAllConversations(maxAgeDays, resumeFromId, onProgress, onBatch, onTotal) {
         const orgId = await this.getOrganizationId();
         if (!orgId) throw new Error('Could not find Claude organization');
 
@@ -90,6 +91,10 @@ export class ClaudeFetcher {
 
             const conversations = await response.json();
             console.log(`[ClaudeFetcher] Found ${conversations.length} conversations`);
+
+            if (onTotal) {
+                onTotal(conversations.length);
+            }
 
             // Find resume point
             let startIndex = 0;

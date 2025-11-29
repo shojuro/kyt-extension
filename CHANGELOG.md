@@ -13,7 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **History Import**: Fixed "0 messages imported" issue caused by timeouts during large imports.
 - **History Import**: Restored missing `fetchAllConversations` method in `ClaudeFetcher` and `ChatGPTFetcher`.
 - **History Import**: Improved error reporting to show specific API errors instead of generic "Import cancelled".
+- **History Import**: Added `onTotal` callback for immediate total count reporting during import progress.
+- **History Import**: Fixed ChatGPTFetcher class definition structure (class was being closed prematurely).
 - **ChatGPT inject.js**: Added null checks for `response` and `json.mapping` to prevent errors when response is undefined
+- **ChatGPT inject.js**: Enhanced voice transcript parsing to handle object-type `message.content` (with `parts` array) and `conversation_item_created` event format
+- **ChatGPT dom-observer.js**: Added "Transcript Unavailable..." to placeholder patterns to skip incomplete voice transcripts
+- **ChatGPT dom-observer.js**: Added debug logging for DOM mutations to aid troubleshooting message capture issues
 - **supabase_search_function.sql**: Added explicit `public.` schema prefix to messages table references
 
 ### Added

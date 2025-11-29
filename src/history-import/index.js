@@ -191,7 +191,13 @@ export class HistoryImporter {
                         conversationsProcessed: count
                     });
                     onProgress(this.progressTracker.getProgress());
-                }, handleBatch);
+                }, handleBatch, (total) => {
+                    // Update total count immediately when known
+                    this.progressTracker.update({
+                        conversationsTotal: total
+                    });
+                    onProgress(this.progressTracker.getProgress());
+                });
 
             } catch (apiError) {
                 // API failed, try ZIP fallback
