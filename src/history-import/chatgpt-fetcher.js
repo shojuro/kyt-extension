@@ -16,11 +16,45 @@ import { handleError } from './error-handlers.js';
 
 export class ChatGPTFetcher {
     /**
-     * @param {RateLimiter} rateLimiter 
+     * @param {RateLimiter} rateLimiter
      */
     constructor(rateLimiter) {
         this.rateLimiter = rateLimiter;
         this.baseUrl = 'https://chatgpt.com/backend-api';
+        this.accessToken = null;
+    }
+
+    /**
+     * Get access token from ChatGPT session
+     * @returns {Promise<string|null>}
+     */
+    async getAccessToken() {
+        if (this.accessToken) return this.accessToken;
+
+        console.log('[ChatGPTFetcher] Getting access token from session...');
+        try {
+            const response = await fetch('https://chatgpt.com/api/auth/session', {
+                credentials: 'include'
+            });
+
+            if (!response.ok) {
+                console.error(`[ChatGPTFetcher] Session request failed: ${response.status}`);
+                return null;
+            }
+
+            const data = await response.json();
+            if (data.accessToken) {
+                this.accessToken = data.accessToken;
+                console.log('[ChatGPTFetcher] Got access token');
+                return this.accessToken;
+            }
+
+            console.error('[ChatGPTFetcher] No access token in session response');
+            return null;
+        } catch (error) {
+            console.error('[ChatGPTFetcher] Failed to get access token:', error);
+            return null;
+        }
     }
 
     /**
@@ -33,6 +67,12 @@ export class ChatGPTFetcher {
      * @returns {Promise<Message[]>}
      */
     async fetchAllConversations(maxAgeDays, resumeFromId, onProgress, onBatch, onTotal) {
+        // Get access token first (similar to Claude's getOrganizationId)
+        const token = await this.getAccessToken();
+        if (!token) {
+            throw new Error('Could not get ChatGPT access token. Please log in to chatgpt.com and try again.');
+        }
+
         const allMessages = [];
         const cutoffDate = Date.now() - (maxAgeDays * 24 * 60 * 60 * 1000);
 
@@ -47,19 +87,31 @@ export class ChatGPTFetcher {
             await this.rateLimiter.acquire();
 
             try {
+                console.log(`[ChatGPTFetcher] Fetching conversations (offset=${offset}, limit=${limit})...`);
                 const response = await fetch(
                     `${this.baseUrl}/conversations?offset=${offset}&limit=${limit}&order=updated`,
-                    { credentials: 'include' }
+                    {
+                        credentials: 'include',
+                        headers: {
+                            'Authorization': `Bearer ${token}`
+                        }
+                    }
                 );
+                console.log(`[ChatGPTFetcher] Response status: ${response.status}`);
 
                 if (!response.ok) {
                     const resolution = await handleError(response);
                     if (resolution.shouldRetry) continue;
+                    // Throw error on auth failure to trigger fallback mechanism
+                    if (resolution.requiresReauth || response.status === 401 || response.status === 403) {
+                        throw new Error(resolution.message || `Authentication failed (${response.status}). Please log in to ChatGPT and try again.`);
+                    }
                     break;
                 }
 
                 const data = await response.json();
                 const conversations = data.items || [];
+                console.log(`[ChatGPTFetcher] Got ${conversations.length} conversations (total: ${data.total || 'unknown'})`);
 
                 if (!totalReported && data.total && onTotal) {
                     onTotal(data.total);
@@ -91,10 +143,9 @@ export class ChatGPTFetcher {
                     const updatedAt = new Date(updateTime).getTime();
 
                     if (updatedAt < cutoffDate) {
-                        // If sorted by updated, we might be able to stop early?
                         // ChatGPT returns sorted by updated desc.
-                        // So if we hit an old one, we can stop?
-                        // Yes, if order=updated.
+                        // So if we hit an old one, we can stop.
+                        console.log(`[ChatGPTFetcher] Reached conversation older than ${maxAgeDays} days, stopping.`);
                         hasMore = false;
                         break;
                     }
@@ -126,6 +177,7 @@ export class ChatGPTFetcher {
             }
         }
 
+        console.log(`[ChatGPTFetcher] Finished. Processed ${processedCount} conversations, returning ${allMessages.length} messages.`);
         return allMessages;
     }
 
@@ -141,7 +193,12 @@ export class ChatGPTFetcher {
         try {
             const response = await fetch(
                 `${this.baseUrl}/conversation/${conversationId}`,
-                { credentials: 'include' }
+                {
+                    credentials: 'include',
+                    headers: {
+                        'Authorization': `Bearer ${this.accessToken}`
+                    }
+                }
             );
 
             if (!response.ok) {
