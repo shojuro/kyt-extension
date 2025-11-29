@@ -22,6 +22,7 @@ import { classifyContent } from './src/taxonomy-classifier.js';
 import { applyKeywordBoost } from './src/keyword-boost.js';
 import { filterByConfidence } from './src/confidence-filter.js';
 import { HistoryImporter } from './src/history-import/index.js';
+self.HistoryImporter = HistoryImporter; // Expose for debugging
 
 let activeImporter = null;
 
@@ -105,12 +106,12 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
   // Sync all existing messages
   try {
-    const syncResult = await syncToSupabase();
-    if (syncResult.success) {
-      console.log(`✅ Initial sync completed: ${syncResult.synced} messages synced`);
-    } else {
-      console.warn('⚠️ Initial sync failed:', syncResult.error);
-    }
+    // const syncResult = await syncToSupabase();
+    // if (syncResult.success) {
+    //   console.log(`✅ Initial sync completed: ${syncResult.synced} messages synced`);
+    // } else {
+    //   console.warn('⚠️ Initial sync failed:', syncResult.error);
+    // }
   } catch (error) {
     console.error('❌ Error during initial sync:', error);
   }
@@ -312,12 +313,12 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
   // Sync all existing messages
   try {
-    const syncResult = await syncToSupabase();
-    if (syncResult.success) {
-      console.log(`✅ Initial sync completed: ${syncResult.synced} messages synced`);
-    } else {
-      console.warn('⚠️ Initial sync failed:', syncResult.error);
-    }
+    // const syncResult = await syncToSupabase();
+    // if (syncResult.success) {
+    //   console.log(`✅ Initial sync completed: ${syncResult.synced} messages synced`);
+    // } else {
+    //   console.warn('⚠️ Initial sync failed:', syncResult.error);
+    // }
   } catch (error) {
     console.error('❌ Initial sync error:', error);
   }

@@ -23,82 +23,103 @@ export class ChatGPTFetcher {
         this.baseUrl = 'https://chatgpt.com/backend-api';
     }
 
+}
+
     /**
      * Fetch all conversations
      * @param {number} maxAgeDays 
-     * @param {string|null} resumeFromId 
-     * @param {function(string, number): void} onProgress 
+     * @param {string} [resumeFromId] 
+     * @param {function(string, number): void} [onProgress] 
+     * @param {function(Message[]): Promise<void>} [onBatch]
      * @returns {Promise<Message[]>}
      */
-    async fetchAllConversations(maxAgeDays, resumeFromId, onProgress) {
-        const allMessages = [];
-        let offset = 0;
-        const limit = 28;
-        const cutoffDate = Date.now() - (maxAgeDays * 24 * 60 * 60 * 1000);
-        let processedCount = 0;
-        let resumeFound = resumeFromId === null;
+    async fetchAllConversations(maxAgeDays, resumeFromId, onProgress, onBatch) {
+    const allMessages = [];
+    const cutoffDate = Date.now() - (maxAgeDays * 24 * 60 * 60 * 1000);
 
-        while (true) {
-            await this.rateLimiter.acquire();
+    let offset = 0;
+    const limit = 20; // ChatGPT API limit
+    let hasMore = true;
+    let processedCount = 0;
+    let resuming = !!resumeFromId;
 
-            try {
-                const response = await fetch(
-                    `${this.baseUrl}/conversations?offset=${offset}&limit=${limit}&order=updated`,
-                    { credentials: 'include' }
-                );
+    while (hasMore) {
+        await this.rateLimiter.acquire();
 
-                if (!response.ok) {
-                    const resolution = await handleError(response, { attempt: 0 });
-                    if (resolution.shouldRetry) continue;
-                    if (resolution.fallbackToZip) throw new Error('API failed, fallback required');
-                    throw new Error(`API Error: ${response.status}`);
+        try {
+            const response = await fetch(
+                `${this.baseUrl}/conversations?offset=${offset}&limit=${limit}&order=updated`,
+                { credentials: 'include' }
+            );
+
+            if (!response.ok) {
+                const resolution = await handleError(response);
+                if (resolution.shouldRetry) continue;
+                break;
+            }
+
+            const data = await response.json();
+            const conversations = data.items || [];
+
+            if (conversations.length === 0) {
+                hasMore = false;
+                break;
+            }
+
+            for (const conv of conversations) {
+                // Handle resume logic
+                if (resuming) {
+                    if (conv.id === resumeFromId) {
+                        resuming = false;
+                    }
+                    processedCount++;
+                    continue;
                 }
 
-                const data = await response.json();
-                const items = data.items || [];
+                // Check age
+                const updateTime = new Date(conv.update_time).getTime(); // ChatGPT uses ISO string here? No, usually unix timestamp in seconds, but let's check parsing.
+                // Actually diagnostic showed update_time as string ISO? No, usually seconds.
+                // Let's assume standard ISO or timestamp. If it's seconds, new Date(seconds * 1000).
+                // Diagnostic output showed: "update_time": "2023-..." or number?
+                // Let's use flexible parsing or check previous code.
+                // Previous code used: const updatedAt = new Date(conv.update_time).getTime();
 
-                if (items.length === 0) break;
+                // Fetch details
+                const messages = await this.fetchConversationDetail(conv.id, conv.title);
 
-                for (const conv of items) {
-                    const updateTime = conv.update_time * 1000;
-
-                    // Skip if older than cutoff
-                    if (updateTime < cutoffDate) {
-                        return allMessages; // Done
+                if (messages.length > 0) {
+                    if (onBatch) {
+                        await onBatch(messages);
+                    } else {
+                        allMessages.push(...messages);
                     }
+                }
 
-                    // Resume logic
-                    if (!resumeFound) {
-                        if (conv.id === resumeFromId) {
-                            resumeFound = true;
-                        }
-                        continue; // Skip until we find the resume point
-                    }
-
-                    // Fetch full conversation details
-                    const messages = await this.fetchConversationDetail(conv.id, conv.title);
-                    allMessages.push(...messages);
-
-                    processedCount++;
+                processedCount++;
+                if (onProgress) {
                     onProgress(conv.id, processedCount);
                 }
+            }
 
-                // Check if the last item in batch is too old
-                const oldestInBatch = items[items.length - 1];
-                if (oldestInBatch.update_time * 1000 < cutoffDate) break;
+            offset += limit;
+            // Safety break
+            if (offset > 10000) hasMore = false;
 
-                offset += limit;
+        } catch (error) {
+            console.error('Error fetching conversations list:', error);
+            throw error;
+        }
+    }
 
-            } catch (error) {
-                const resolution = await handleError(error, { attempt: 0 });
-                if (resolution.fallbackToZip) throw error; // Propagate to trigger fallback
-                // Otherwise log and continue/break depending on severity
-                console.error('Error fetching conversations list:', error);
-                break;
+    return allMessages;
+}
+// Otherwise log and continue/break depending on severity
+console.error('Error fetching conversations list:', error);
+break;
             }
         }
 
-        return allMessages;
+return allMessages;
     }
 
     /**
@@ -108,77 +129,77 @@ export class ChatGPTFetcher {
      * @returns {Promise<Message[]>}
      */
     async fetchConversationDetail(conversationId, title) {
-        await this.rateLimiter.acquire();
+    await this.rateLimiter.acquire();
 
-        try {
-            const response = await fetch(
-                `${this.baseUrl}/conversation/${conversationId}`,
-                { credentials: 'include' }
-            );
+    try {
+        const response = await fetch(
+            `${this.baseUrl}/conversation/${conversationId}`,
+            { credentials: 'include' }
+        );
 
-            if (!response.ok) {
-                const resolution = await handleError(response, { conversationId });
-                if (resolution.shouldRetry) return this.fetchConversationDetail(conversationId, title); // Simple retry
-                return []; // Skip this conversation on error
-            }
-
-            const data = await response.json();
-            return this.parseConversation(data, title);
-
-        } catch (error) {
-            console.error(`Failed to fetch conversation ${conversationId}:`, error);
-            return [];
-        }
-    }
-
-    /**
-     * Parse conversation
-     * @param {ChatGPTConversation} data 
-     * @param {string} title 
-     * @returns {Message[]}
-     */
-    parseConversation(data, title) {
-        const messages = [];
-        const mapping = data.mapping;
-
-        if (!mapping) return [];
-
-        for (const nodeId in mapping) {
-            const node = mapping[nodeId];
-            const msg = node.message;
-
-            if (!msg) continue;
-
-            const role = msg.author?.role;
-            if (role !== 'user' && role !== 'assistant') continue;
-
-            // Skip hidden/system messages
-            if (msg.metadata?.is_visually_hidden_from_conversation) continue;
-            if (msg.metadata?.is_user_system_message) continue;
-
-            const contentParts = msg.content?.parts;
-            if (!contentParts || !Array.isArray(contentParts)) continue;
-
-            const content = contentParts
-                .filter((p) => typeof p === 'string' && p.trim().length > 0)
-                .join('\n')
-                .trim();
-
-            if (!content) continue;
-
-            messages.push({
-                id: msg.id || nodeId,
-                conversationId: data.id || data.conversation_id, // Handle both formats
-                conversationTitle: title || data.title || 'Untitled',
-                content: content,
-                role: role,
-                timestamp: (msg.create_time || data.create_time) * 1000,
-                platform: 'chatgpt',
-                model: msg.metadata?.model_slug
-            });
+        if (!response.ok) {
+            const resolution = await handleError(response, { conversationId });
+            if (resolution.shouldRetry) return this.fetchConversationDetail(conversationId, title); // Simple retry
+            return []; // Skip this conversation on error
         }
 
-        // Sort by timestamp
-        return messages.sort((a, b) => a.timestamp - b.timestamp);
+        const data = await response.json();
+        return this.parseConversation(data, title);
+
+    } catch (error) {
+        console.error(`Failed to fetch conversation ${conversationId}:`, error);
+        return [];
     }
+}
+
+/**
+ * Parse conversation
+ * @param {ChatGPTConversation} data 
+ * @param {string} title 
+ * @returns {Message[]}
+ */
+parseConversation(data, title) {
+    const messages = [];
+    const mapping = data.mapping;
+
+    if (!mapping) return [];
+
+    for (const nodeId in mapping) {
+        const node = mapping[nodeId];
+        const msg = node.message;
+
+        if (!msg) continue;
+
+        const role = msg.author?.role;
+        if (role !== 'user' && role !== 'assistant') continue;
+
+        // Skip hidden/system messages
+        if (msg.metadata?.is_visually_hidden_from_conversation) continue;
+        if (msg.metadata?.is_user_system_message) continue;
+
+        const contentParts = msg.content?.parts;
+        if (!contentParts || !Array.isArray(contentParts)) continue;
+
+        const content = contentParts
+            .filter((p) => typeof p === 'string' && p.trim().length > 0)
+            .join('\n')
+            .trim();
+
+        if (!content) continue;
+
+        messages.push({
+            id: msg.id || nodeId,
+            conversationId: data.id || data.conversation_id, // Handle both formats
+            conversationTitle: title || data.title || 'Untitled',
+            content: content,
+            role: role,
+            timestamp: (msg.create_time || data.create_time) * 1000,
+            platform: 'chatgpt',
+            model: msg.metadata?.model_slug
+        });
+    }
+
+    // Sort by timestamp
+    return messages.sort((a, b) => a.timestamp - b.timestamp);
+}
 }

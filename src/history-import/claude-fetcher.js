@@ -36,72 +36,6 @@ export class ClaudeFetcher {
     }
 
     /**
-     * Fetch all conversations
-     * @param {number} maxAgeDays 
-     * @param {string|null} resumeFromId 
-     * @param {function(string, number): void} onProgress 
-     * @returns {Promise<Message[]>}
-     */
-    async fetchAllConversations(maxAgeDays, resumeFromId, onProgress) {
-        const allMessages = [];
-        const cutoffDate = Date.now() - (maxAgeDays * 24 * 60 * 60 * 1000);
-        let processedCount = 0;
-        let resumeFound = resumeFromId === null;
-
-        try {
-            // Step 1: Get Organization ID
-            const orgId = await this.getOrganizationId();
-            if (!orgId) {
-                throw new Error('No Claude organization found');
-            }
-
-            // Step 2: Fetch Conversations List
-            await this.rateLimiter.acquire();
-            const response = await fetch(
-                `${this.baseUrl}/organizations/${orgId}/chat_conversations`,
-                { credentials: 'include' }
-            );
-
-            if (!response.ok) {
-                const resolution = await handleError(response, { attempt: 0 });
-                if (resolution.fallbackToZip) throw new Error('API failed, fallback required');
-                throw new Error(`API Error: ${response.status}`);
-            }
-
-            const conversations = await response.json();
-
-            // Step 3: Process each conversation
-            for (const conv of conversations) {
-                const updateTime = new Date(conv.updated_at).getTime();
-
-                // Skip if older than cutoff
-                if (updateTime < cutoffDate) continue;
-
-                // Resume logic
-                if (!resumeFound) {
-                    if (conv.uuid === resumeFromId) {
-                        resumeFound = true;
-                    }
-                    continue;
-                }
-
-                // Fetch full conversation details
-                const messages = await this.fetchConversationDetail(orgId, conv.uuid, conv.name);
-                allMessages.push(...messages);
-
-                processedCount++;
-                onProgress(conv.uuid, processedCount);
-            }
-
-        } catch (error) {
-            const resolution = await handleError(error, { attempt: 0 });
-            if (resolution.fallbackToZip) throw error;
-            console.error('Error fetching Claude conversations:', error);
-        }
-
-        return allMessages;
-    }
-
     /**
      * Get organization ID
      * @returns {Promise<string|null>}
@@ -125,6 +59,81 @@ export class ClaudeFetcher {
             console.error('Failed to fetch Claude organizations:', error);
             return null;
         }
+    }
+
+    /**
+     * Fetch all conversations
+     * @param {number} maxAgeDays 
+     * @param {string} [resumeFromId] 
+     * @param {function(string, number): void} [onProgress] 
+     * @param {function(Message[]): Promise<void>} [onBatch]
+     * @returns {Promise<Message[]>}
+     */
+    async fetchAllConversations(maxAgeDays, resumeFromId, onProgress, onBatch) {
+        const orgId = await this.getOrganizationId();
+        if (!orgId) throw new Error('Could not find Claude organization');
+
+        const allMessages = [];
+        const cutoffDate = Date.now() - (maxAgeDays * 24 * 60 * 60 * 1000);
+        let processedCount = 0;
+
+        try {
+            const response = await fetch(
+                `${this.baseUrl}/organizations/${orgId}/chat_conversations`,
+                { credentials: 'include' }
+            );
+
+            if (!response.ok) {
+                await handleError(response); // Will throw if critical
+                return [];
+            }
+
+            const conversations = await response.json();
+            console.log(`[ClaudeFetcher] Found ${conversations.length} conversations`);
+
+            // Find resume point
+            let startIndex = 0;
+            if (resumeFromId) {
+                const index = conversations.findIndex(c => c.uuid === resumeFromId);
+                if (index !== -1) {
+                    startIndex = index + 1;
+                    processedCount = startIndex;
+                }
+            }
+
+            for (let i = startIndex; i < conversations.length; i++) {
+                const conv = conversations[i];
+
+                // Check age
+                const updatedAt = new Date(conv.updated_at).getTime();
+                if (updatedAt < cutoffDate) {
+                    console.log(`[ClaudeFetcher] Skipping old conversation: ${conv.updated_at}`);
+                    continue;
+                }
+
+                // Fetch details
+                const messages = await this.fetchConversationDetail(orgId, conv.uuid, conv.name);
+
+                if (messages.length > 0) {
+                    if (onBatch) {
+                        await onBatch(messages);
+                    } else {
+                        allMessages.push(...messages);
+                    }
+                }
+
+                processedCount++;
+                if (onProgress) {
+                    onProgress(conv.uuid, processedCount);
+                }
+            }
+
+        } catch (error) {
+            console.error('Error fetching conversations:', error);
+            throw error;
+        }
+
+        return allMessages;
     }
 
     /**

@@ -9,10 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **History Import**: Refactored import process to use streaming (incremental) processing instead of blocking "fetch all then process all".
+- **History Import**: Fixed "0 messages imported" issue caused by timeouts during large imports.
+- **History Import**: Restored missing `fetchAllConversations` method in `ClaudeFetcher` and `ChatGPTFetcher`.
+- **History Import**: Improved error reporting to show specific API errors instead of generic "Import cancelled".
 - **ChatGPT inject.js**: Added null checks for `response` and `json.mapping` to prevent errors when response is undefined
 - **supabase_search_function.sql**: Added explicit `public.` schema prefix to messages table references
 
 ### Added
+
+- **Streaming Import**: Added `onBatch` callback support to `ClaudeFetcher` and `ChatGPTFetcher` for real-time message processing.
+- **Diagnostic Scripts**: Added `debug_import_live_v2.js` for background service worker debugging.
 
 #### Hybrid HyDE (Hypothetical Document Embeddings) for Memory Retrieval
 

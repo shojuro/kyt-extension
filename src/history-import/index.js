@@ -133,26 +133,75 @@ export class HistoryImporter {
             onProgress(this.progressTracker.getProgress());
 
             // Try API first
-            let messages;
             const fetcher = platform === 'chatgpt'
                 ? new ChatGPTFetcher(RateLimiter.forChatGPT())
                 : new ClaudeFetcher(RateLimiter.forClaude());
 
+            const cutoffDate = Date.now() - (90 * 24 * 60 * 60 * 1000);
+            let totalImported = 0;
+            let totalSkipped = 0;
+            let totalCost = 0;
+            let totalDuplicates = 0;
+
+            // Streaming handler
+            const handleBatch = async (batchMessages) => {
+                if (this.abortController.signal.aborted) {
+                    throw new Error('Import cancelled');
+                }
+
+                // Filter by date
+                const recentMessages = batchMessages.filter(m => m.timestamp >= cutoffDate);
+
+                if (recentMessages.length === 0) {
+                    return;
+                }
+
+                // Deduplicate
+                const { newMessages, duplicateCount } = await deduplicateMessages(
+                    recentMessages,
+                    this.userId
+                );
+
+                totalDuplicates += duplicateCount;
+                totalSkipped += (batchMessages.length - recentMessages.length + duplicateCount);
+
+                if (newMessages.length > 0) {
+                    // Save to DB
+                    await this.processBatch(newMessages);
+
+                    const cost = newMessages.length * 0.0002;
+                    totalCost += cost;
+                    totalImported += newMessages.length;
+
+                    // Update progress immediately
+                    await this.progressTracker.update({
+                        messagesImported: this.progressTracker.getProgress().messagesImported + newMessages.length,
+                        messagesSkipped: this.progressTracker.getProgress().messagesSkipped + duplicateCount,
+                        estimatedCostUsd: this.progressTracker.getProgress().estimatedCostUsd + cost
+                    });
+                    onProgress(this.progressTracker.getProgress());
+                }
+            };
+
             try {
-                messages = await fetcher.fetchAllConversations(90, resumePoint, (conversationId, count) => {
+                // Pass handleBatch to fetcher
+                await fetcher.fetchAllConversations(90, resumePoint, (conversationId, count) => {
                     this.progressTracker.update({
                         lastConversationId: conversationId,
                         conversationsProcessed: count
                     });
                     onProgress(this.progressTracker.getProgress());
-                });
+                }, handleBatch);
+
             } catch (apiError) {
                 // API failed, try ZIP fallback
-                console.log('API failed, requesting ZIP fallback:', apiError);
+                console.error('API failed, requesting ZIP fallback:', apiError);
 
                 const file = await onFallbackRequired();
                 if (!file) {
-                    throw new Error('Import cancelled by user');
+                    // If fallback is not handled or cancelled, throw the ORIGINAL error
+                    // so the user knows why the API failed.
+                    throw new Error(`Import failed: ${apiError.message}`);
                 }
 
                 const validation = await validateExportFile(file, platform);
@@ -160,38 +209,9 @@ export class HistoryImporter {
                     throw new Error(validation.error);
                 }
 
-                messages = await parseZipExport(file, platform);
-            }
-
-            // Filter by date and deduplicate
-            const cutoffDate = Date.now() - (90 * 24 * 60 * 60 * 1000);
-            const recentMessages = messages.filter(m => m.timestamp >= cutoffDate);
-
-            const { newMessages, duplicateCount } = await deduplicateMessages(
-                recentMessages,
-                this.userId
-            );
-
-            await this.progressTracker.update({
-                messagesSkipped: messages.length - recentMessages.length + duplicateCount
-            });
-
-            // Stream to Supabase in batches
-            const BATCH_SIZE = 25;
-            for (let i = 0; i < newMessages.length; i += BATCH_SIZE) {
-                if (this.abortController.signal.aborted) {
-                    throw new Error('Import cancelled');
-                }
-
-                const batch = newMessages.slice(i, i + BATCH_SIZE);
-                await this.processBatch(batch);
-
-                const cost = batch.length * 0.0002;  // $0.0002 per message
-                await this.progressTracker.update({
-                    messagesImported: this.progressTracker.getProgress().messagesImported + batch.length,
-                    estimatedCostUsd: this.progressTracker.getProgress().estimatedCostUsd + cost
-                });
-                onProgress(this.progressTracker.getProgress());
+                // For ZIP, we still process all at once for now (simpler)
+                const zipMessages = await parseZipExport(file, platform);
+                await handleBatch(zipMessages);
             }
 
             await this.progressTracker.complete();
@@ -201,11 +221,8 @@ export class HistoryImporter {
                 success: true,
                 messagesImported: this.progressTracker.getProgress().messagesImported,
                 messagesSkipped: this.progressTracker.getProgress().messagesSkipped,
-                duplicatesFound: duplicateCount,
-                dateRange: newMessages.length > 0 ? {
-                    oldest: new Date(Math.min(...newMessages.map(m => m.timestamp))),
-                    newest: new Date(Math.max(...newMessages.map(m => m.timestamp)))
-                } : null,
+                duplicatesFound: totalDuplicates,
+                dateRange: null,
                 estimatedCost: this.progressTracker.getProgress().estimatedCostUsd
             };
 
