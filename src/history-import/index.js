@@ -295,7 +295,10 @@ export class HistoryImporter {
                             conversationTitle: m.conversationTitle,
                             model: m.model
                         }
-                    }))
+                    })),
+                    // Skip AI processing during import for speed - embeddings/classification
+                    // will be backfilled later via deferred processing queue
+                    skip_ai_processing: true
                 }),
                 signal: controller.signal
             });
