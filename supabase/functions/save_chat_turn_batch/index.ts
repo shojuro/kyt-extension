@@ -40,6 +40,60 @@ serve(async (req) => {
             Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
         );
 
+        // FAST PATH: When skipping AI processing, do a single batch upsert
+        // This is ~10x faster than sequential writes
+        if (skip_ai_processing) {
+            const records = turns.map((turn: any) => {
+                const timestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : Date.now();
+                return {
+                    user_id: turn.user_id,
+                    conversation_id: turn.conversation_id,
+                    platform: turn.platform,
+                    content: turn.content,
+                    embedding: null, // Will be backfilled later
+                    impact_score: 0,
+                    intimacy_level: 0,
+                    turn_range: '1-1',
+                    speakers: [turn.role || 'user'],
+                    turn_count: 1,
+                    start_timestamp: timestamp,
+                    end_timestamp: timestamp,
+                    last_accessed: new Date().toISOString(),
+                    access_count: 0
+                };
+            });
+
+            const { data, error } = await supabase
+                .from('chat_turns')
+                .upsert(records, {
+                    onConflict: 'user_id,conversation_id,platform,start_timestamp',
+                    ignoreDuplicates: true
+                })
+                .select('id');
+
+            if (error) {
+                console.error('Batch upsert error:', error);
+                throw error;
+            }
+
+            // Data contains only inserted rows (duplicates are not returned)
+            const insertedCount = data?.length || 0;
+            const duplicateCount = turns.length - insertedCount;
+
+            return new Response(JSON.stringify({
+                success: true,
+                processed: turns.length,
+                inserted: insertedCount,
+                duplicates_skipped: duplicateCount,
+                errors: 0,
+                results: data?.map((d: any) => ({ id: d.id, success: true, duplicate: false })) || []
+            }), {
+                status: 200,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            });
+        }
+
+        // SLOW PATH: With AI processing (sequential for embedding/classification)
         const hfClient = new HuggingFaceClient(Deno.env.get('HUGGINGFACE_API_KEY')!);
         const openaiKey = Deno.env.get('OPENAI_API_KEY')!;
 
@@ -47,31 +101,20 @@ serve(async (req) => {
 
         for (const turn of turns) {
             try {
-                let embedding = null;
-                let gravity = { impact_score: 0, intimacy_level: 0 };
-                let extractedEntities = [];
+                // 1. Generate embedding
+                const [embedding] = await hfClient.generateEmbeddings(turn.content);
 
-                if (!skip_ai_processing) {
-                    // 1. Generate embedding
-                    [embedding] = await hfClient.generateEmbeddings(turn.content);
+                // 2. Parallel: Classify + Extract entities
+                const [classification, entities] = await Promise.allSettled([
+                    classifyMemory({ content: turn.content }, openaiKey),
+                    extractEntities({ content: turn.content, speakers: [] }, openaiKey)
+                ]);
 
-                    // 2. Parallel: Classify + Extract entities
-                    const [classification, entities] = await Promise.allSettled([
-                        classifyMemory({ content: turn.content }, openaiKey),
-                        extractEntities({ content: turn.content, speakers: [] }, openaiKey)
-                    ]);
-
-                    gravity = classification.status === 'fulfilled'
-                        ? classification.value
-                        : { impact_score: 0, intimacy_level: 0 };
-
-                    extractedEntities = entities.status === 'fulfilled'
-                        ? entities.value
-                        : [];
-                }
+                const gravity = classification.status === 'fulfilled'
+                    ? classification.value
+                    : { impact_score: 0, intimacy_level: 0 };
 
                 // 3. Save to database with ON CONFLICT handling for deduplication
-                // Uses chat_turns_dedup_idx on (user_id, conversation_id, platform, start_timestamp)
                 const timestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : Date.now();
 
                 const { data, error } = await supabase
@@ -81,33 +124,27 @@ serve(async (req) => {
                         conversation_id: turn.conversation_id,
                         platform: turn.platform,
                         content: turn.content,
-                        embedding, // Can be null if skipped
+                        embedding,
                         impact_score: gravity.impact_score,
                         intimacy_level: gravity.intimacy_level,
-                        // Required NOT NULL fields with sensible defaults for imports
                         turn_range: '1-1',
                         speakers: [turn.role || 'user'],
                         turn_count: 1,
                         start_timestamp: timestamp,
                         end_timestamp: timestamp,
-                        // Optional fields
                         last_accessed: new Date().toISOString(),
                         access_count: 0
                     }, {
-                        // ON CONFLICT: skip duplicates (based on chat_turns_dedup_idx)
                         onConflict: 'user_id,conversation_id,platform,start_timestamp',
                         ignoreDuplicates: true
                     })
                     .select('id');
 
-                // Handle the result - may be empty if duplicate was skipped
                 if (error) throw error;
 
                 if (data && data.length > 0) {
-                    // New row inserted
                     results.push({ id: data[0].id, success: true, duplicate: false });
                 } else {
-                    // Duplicate skipped (ON CONFLICT DO NOTHING)
                     results.push({ success: true, duplicate: true });
                 }
 
@@ -117,7 +154,6 @@ serve(async (req) => {
             }
         }
 
-        // Count duplicates
         const duplicateCount = results.filter(r => r.duplicate === true).length;
         const insertedCount = results.filter(r => r.success && !r.duplicate).length;
         const errorCount = results.filter(r => !r.success).length;
