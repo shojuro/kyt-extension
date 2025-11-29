@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### 90-Day Chat History Import System
+
+**Feature**: Complete chat history import from ChatGPT and Claude platforms with streaming processing, deduplication, and resume capability.
+
+**Architecture**:
+```
+User → HistoryImporter → [API Fetch] → RateLimiter → [Batch Handler] → Deduplication → Edge Function → Database
+                            ↓                              ↓
+                     [ZIP Fallback] ← onFallbackRequired ← API Error
+```
+
+**Components**:
+
+| File | Purpose |
+|------|---------|
+| `index.js` | Main HistoryImporter class - orchestrates import flow |
+| `chatgpt-fetcher.js` | ChatGPT API integration (conversations endpoint) |
+| `claude-fetcher.js` | Claude API integration (organizations endpoint) |
+| `deduplication.js` | Client-side batch deduplication with content hashing |
+| `validation.js` | Export file validation + XSS content sanitization |
+| `error-handlers.js` | Error handling with retry/backoff logic |
+| `rate-limiter.js` | Token bucket rate limiter (configurable) |
+| `progress-tracker.js` | Resumable progress tracking with database sync |
+| `zip-parser.js` | ZIP export file parsing for both platforms |
+| `types.js` | JSDoc type definitions |
+
+**Features**:
+- **90-day cutoff**: Only imports conversations updated within last 90 days
+- **Streaming processing**: Processes batches incrementally to prevent timeout
+- **Multi-layer deduplication**:
+  - Layer 1: Client-side batch dedup (content hash in 5s window)
+  - Layer 2: Database unique index (`chat_turns_dedup_idx`) with ON CONFLICT DO NOTHING
+- **Rate limiting**: ChatGPT (30 req/min, burst 5) / Claude (20 req/min, burst 3)
+- **Resume capability**: Tracks `lastConversationId` for interrupted imports
+- **ZIP fallback**: Falls back to user-uploaded ZIP export on API failure
+- **Error recovery**: Exponential backoff retry (1s → 2s → 4s, max 3 retries)
+- **Progress persistence**: Syncs to database every 5s + Chrome storage for crash recovery
+
+**API**:
+```javascript
+const importer = new HistoryImporter(supabaseUrl, supabaseKey, userId);
+
+// Check existing import status
+const status = await importer.checkImportStatus('chatgpt');
+// { hasCompletedImport: false, hasInProgressImport: true, progress: {...} }
+
+// Start import with progress callback
+const result = await importer.startImport(
+  'chatgpt',
+  (progress) => console.log(`${progress.messagesImported} imported`),
+  async () => { /* return File for ZIP fallback, or null to cancel */ }
+);
+// { success: true, messagesImported: 150, messagesSkipped: 10, duplicatesFound: 5 }
+```
+
+**Error Handling Matrix**:
+
+| Status Code | Action | Fallback |
+|-------------|--------|----------|
+| 401/403 | Prompt reauth | ZIP fallback |
+| 429 | Wait 60s, retry | No |
+| 500/502 | Retry 3x with backoff | ZIP fallback |
+| 503 | Retry 3x with backoff | ZIP fallback |
+| Network | Save progress | ZIP fallback |
+
+**Database Tables**:
+- `user_history_imports`: Tracks import status, progress, and completion
+- `chat_turns`: Stores imported messages with dedup index
+
+**Security**:
+- Content sanitization removes `<script>` tags and null bytes
+- No hardcoded secrets - all credentials passed as parameters
+- XSS prevention via `sanitizeContent()` function
+
 ### Fixed
 
 - **History Import Deduplication**: Fixed critical schema mismatch in `save_chat_turn_batch` Edge Function that caused all imports to fail (missing NOT NULL columns, non-existent columns).
