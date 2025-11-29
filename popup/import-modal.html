@@ -122,11 +122,115 @@
     }
 
     .hidden {
-      display: none;
+      display: none !important;
+    }
+
+    .btn-inactive {
+      opacity: 0.5;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .btn-complete {
+      background: #10b981 !important;
+      border-color: #10b981 !important;
+      color: white !important;
+    }
+
+    .upload-zone {
+      border: 2px dashed #d1d5db;
+      border-radius: 8px;
+      padding: 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin: 12px 0;
+    }
+
+    .upload-zone:hover, .upload-zone.dragover {
+      border-color: #2563eb;
+      background: #f0f7ff;
+    }
+
+    .upload-icon {
+      font-size: 32px;
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .upload-hint {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: 4px;
+    }
+
+    .feature-list, .instructions {
+      text-align: left;
+      padding-left: 20px;
+      margin: 12px 0;
+    }
+
+    .feature-list li, .instructions li {
+      margin-bottom: 6px;
+    }
+
+    h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0 0 12px 0;
+      color: #111827;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
     }
   </style>
 </head>
 <body>
+  <!-- Permission View (first-install only) -->
+  <div class="container hidden" id="permission-view">
+    <h1>Welcome to K.Y.T. Memory</h1>
+    <div class="card">
+      <p><strong>Import your chat history?</strong></p>
+      <p style="margin-top: 8px;">We can import your last 90 days of ChatGPT and Claude conversations.</p>
+      <ul class="feature-list">
+        <li>✓ Private & secure (processed locally)</li>
+        <li>✓ Takes 2-5 minutes</li>
+        <li>✓ Skip anytime</li>
+      </ul>
+    </div>
+    <div class="button-row">
+      <button class="btn btn-primary" id="btn-accept-import">Yes, Import History</button>
+      <button class="btn btn-secondary" id="btn-skip-import">Skip for Now</button>
+    </div>
+  </div>
+
+  <!-- ZIP Fallback View -->
+  <div class="container hidden" id="fallback-view">
+    <h2>⚠️ Automatic import unavailable</h2>
+    <div class="card">
+      <p id="fallback-reason">You're not logged into ChatGPT.</p>
+      <p style="margin-top: 8px;"><strong>You can still import via export file:</strong></p>
+      <ol class="instructions" id="export-instructions">
+        <!-- Platform-specific instructions injected by JS -->
+      </ol>
+    </div>
+    <div class="upload-zone" id="upload-zone">
+      <input type="file" id="file-input" accept=".zip" hidden>
+      <div class="upload-content">
+        <span class="upload-icon">📁</span>
+        <p>Drop ZIP file here or click to browse</p>
+        <p class="upload-hint">Accepted: .zip files up to 500MB</p>
+      </div>
+    </div>
+    <div class="button-row">
+      <button class="btn btn-secondary" id="btn-back-to-platforms">← Back to Platforms</button>
+    </div>
+  </div>
+
+  <!-- Main View -->
   <div class="container" id="main-view">
     <h1>Import Chat History</h1>
     
@@ -171,6 +275,6 @@
     </div>
   </div>
 
-  <script src="import-modal.js"></script>
+  <script type="module" src="import-modal.js"></script>
 </body>
 </html>

@@ -232,10 +232,32 @@ testCaptureBtn.addEventListener('click', testCapture);
 setupBtn.addEventListener('click', openSetup);
 importBtn.addEventListener('click', openImport);
 
-// Initial load
-loadStats();
-loadConfig();
-loadDebugMode();
+/**
+ * Check if this is first install and redirect to import onboarding
+ */
+async function checkFirstInstallRedirect() {
+  try {
+    const result = await chrome.storage.local.get(['show_import_onboarding']);
+    if (result.show_import_onboarding === true) {
+      // Redirect to import modal with first-install mode
+      window.location.href = 'import-modal.html?mode=first-install';
+      return true; // Redirecting
+    }
+  } catch (error) {
+    console.error('Error checking first install:', error);
+  }
+  return false; // Not redirecting
+}
 
-// Refresh stats every 5 seconds
-setInterval(loadStats, 5000);
+// Initial load - check for first-install redirect first
+checkFirstInstallRedirect().then(redirecting => {
+  if (!redirecting) {
+    // Only load normal UI if not redirecting
+    loadStats();
+    loadConfig();
+    loadDebugMode();
+
+    // Refresh stats every 5 seconds
+    setInterval(loadStats, 5000);
+  }
+});

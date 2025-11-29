@@ -1405,6 +1405,61 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true });
       return true;
 
+    case 'PROCESS_IMPORTED_MESSAGES':
+      // Handle messages parsed from ZIP file in popup (Option B file transfer)
+      (async () => {
+        try {
+          const { platform, messages, source } = message;
+
+          if (!messages || !Array.isArray(messages) || messages.length === 0) {
+            sendResponse({ success: false, error: 'No messages to process' });
+            return;
+          }
+
+          console.log(`📥 Processing ${messages.length} imported messages from ${platform} (${source})`);
+
+          const config = await getApiConfig();
+
+          // Create a temporary importer for batch saving
+          const importer = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId);
+
+          // Batch save the messages
+          let savedCount = 0;
+          let skippedCount = 0;
+          const batchSize = 50;
+
+          for (let i = 0; i < messages.length; i += batchSize) {
+            const batch = messages.slice(i, i + batchSize);
+
+            try {
+              const result = await importer.saveBatch(batch);
+              savedCount += result.saved || 0;
+              skippedCount += result.skipped || 0;
+
+              // Log progress
+              console.log(`   Batch ${Math.floor(i / batchSize) + 1}: ${result.saved} saved, ${result.skipped} skipped`);
+            } catch (batchError) {
+              console.error(`   Batch ${Math.floor(i / batchSize) + 1} error:`, batchError);
+              // Continue with next batch
+            }
+          }
+
+          console.log(`✅ ZIP import complete: ${savedCount} saved, ${skippedCount} skipped`);
+
+          sendResponse({
+            success: true,
+            saved: savedCount,
+            skipped: skippedCount,
+            total: messages.length
+          });
+
+        } catch (error) {
+          console.error('❌ PROCESS_IMPORTED_MESSAGES failed:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
+      return true;
+
     default:
       console.warn('⚠️ Unknown message type:', message.type);
       sendResponse({ success: false, error: 'Unknown message type' });
@@ -1466,6 +1521,7 @@ chrome.runtime.onInstalled.addListener((details) => {
       error_log: [],
       install_date: Date.now(),
       version: chrome.runtime.getManifest().version,
+      show_import_onboarding: true, // Show import prompt on first install
       api_config: {
         // Phase 1 Fix: Enable semantic search by default
         // Disables query transformation that breaks semantic matching
@@ -1474,6 +1530,7 @@ chrome.runtime.onInstalled.addListener((details) => {
     }).then(() => {
       console.log('✅ KYT: Storage initialized');
       console.log('   Phase 1 fix enabled: disableQueryTransformation = true');
+      console.log('   First-install import onboarding: enabled');
     }).catch(error => {
       console.error('❌ KYT: Failed to initialize storage:', error);
     });

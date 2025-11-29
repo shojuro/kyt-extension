@@ -1,25 +1,68 @@
+import { parseZipExport } from '../src/history-import/zip-parser.js';
+import { validateExportFile } from '../src/history-import/validation.js';
+
+// State machine
+const STATES = {
+    PERMISSION: 'permission',
+    PLATFORM_SELECT: 'platform_select',
+    IMPORTING: 'importing',
+    FALLBACK: 'fallback',
+    COMPLETE: 'complete',
+    ERROR: 'error'
+};
+
+let currentState = STATES.PLATFORM_SELECT;
 let selectedPlatform = null;
 let isImporting = false;
+let completedPlatforms = new Set();
+let fallbackPlatform = null;
 
-const elements = {
-    btnChatGPT: document.getElementById('btn-chatgpt'),
-    btnClaude: document.getElementById('btn-claude'),
-    btnStart: document.getElementById('btn-start'),
-    btnCancel: document.getElementById('btn-cancel'),
-    progressContainer: document.getElementById('progress-container'),
-    progressFill: document.getElementById('progress-fill'),
-    progressText: document.getElementById('progress-text'),
-    progressCount: document.getElementById('progress-count'),
-    errorMsg: document.getElementById('error-msg'),
-    successMsg: document.getElementById('success-msg')
-};
+const elements = {};
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+    cacheElements();
     setupListeners();
+    checkFirstInstall();
 });
 
+function cacheElements() {
+    elements.permissionView = document.getElementById('permission-view');
+    elements.mainView = document.getElementById('main-view');
+    elements.fallbackView = document.getElementById('fallback-view');
+    elements.btnAcceptImport = document.getElementById('btn-accept-import');
+    elements.btnSkipImport = document.getElementById('btn-skip-import');
+    elements.btnChatGPT = document.getElementById('btn-chatgpt');
+    elements.btnClaude = document.getElementById('btn-claude');
+    elements.btnStart = document.getElementById('btn-start');
+    elements.btnCancel = document.getElementById('btn-cancel');
+    elements.btnBackToPlatforms = document.getElementById('btn-back-to-platforms');
+    elements.progressContainer = document.getElementById('progress-container');
+    elements.progressFill = document.getElementById('progress-fill');
+    elements.progressText = document.getElementById('progress-text');
+    elements.progressCount = document.getElementById('progress-count');
+    elements.errorMsg = document.getElementById('error-msg');
+    elements.successMsg = document.getElementById('success-msg');
+    elements.uploadZone = document.getElementById('upload-zone');
+    elements.fileInput = document.getElementById('file-input');
+    elements.fallbackReason = document.getElementById('fallback-reason');
+    elements.exportInstructions = document.getElementById('export-instructions');
+    elements.platformSelect = document.getElementById('platform-select');
+}
+
 function setupListeners() {
+    // Permission view buttons
+    elements.btnAcceptImport?.addEventListener('click', () => {
+        setState(STATES.PLATFORM_SELECT);
+        markOnboardingSeen();
+    });
+
+    elements.btnSkipImport?.addEventListener('click', () => {
+        markOnboardingSeen();
+        window.close();
+    });
+
+    // Platform selection
     elements.btnChatGPT.addEventListener('click', () => selectPlatform('chatgpt'));
     elements.btnClaude.addEventListener('click', () => selectPlatform('claude'));
 
@@ -32,25 +75,247 @@ function setupListeners() {
         }
     });
 
+    // Back button from fallback view
+    elements.btnBackToPlatforms?.addEventListener('click', () => {
+        setState(STATES.PLATFORM_SELECT);
+    });
+
+    // ZIP upload handling
+    setupUploadZone();
+
     // Listen for progress updates from background
     chrome.runtime.onMessage.addListener((message) => {
         if (message.type === 'IMPORT_PROGRESS') {
             updateProgress(message.progress);
+        } else if (message.type === 'IMPORT_FALLBACK_REQUIRED') {
+            showFallbackUI(message.platform, message.reason);
         }
     });
 }
 
+function setupUploadZone() {
+    if (!elements.uploadZone || !elements.fileInput) return;
+
+    elements.uploadZone.addEventListener('click', () => {
+        elements.fileInput.click();
+    });
+
+    elements.uploadZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        elements.uploadZone.classList.add('dragover');
+    });
+
+    elements.uploadZone.addEventListener('dragleave', () => {
+        elements.uploadZone.classList.remove('dragover');
+    });
+
+    elements.uploadZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        elements.uploadZone.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            handleFileUpload(files[0]);
+        }
+    });
+
+    elements.fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            handleFileUpload(e.target.files[0]);
+        }
+    });
+}
+
+async function handleFileUpload(file) {
+    const platform = fallbackPlatform || selectedPlatform;
+    if (!platform) {
+        showError('No platform selected');
+        return;
+    }
+
+    try {
+        // Validate the file
+        elements.progressText.textContent = 'Validating file...';
+        elements.progressContainer.style.display = 'block';
+        elements.progressFill.style.width = '10%';
+
+        const validation = await validateExportFile(file, platform);
+        if (!validation.valid) {
+            throw new Error(validation.error);
+        }
+
+        // Parse the ZIP in popup (Option B - File API works here)
+        elements.progressText.textContent = 'Parsing ZIP file...';
+        elements.progressFill.style.width = '30%';
+
+        const messages = await parseZipExport(file, platform);
+
+        if (!messages || messages.length === 0) {
+            throw new Error('No messages found in export file');
+        }
+
+        elements.progressText.textContent = `Found ${messages.length} messages. Saving...`;
+        elements.progressFill.style.width = '50%';
+
+        // Send parsed messages to background for saving
+        const response = await chrome.runtime.sendMessage({
+            type: 'PROCESS_IMPORTED_MESSAGES',
+            platform,
+            messages,
+            source: 'zip_upload'
+        });
+
+        if (!response.success) {
+            throw new Error(response.error || 'Failed to save messages');
+        }
+
+        // Success
+        elements.progressFill.style.width = '100%';
+        elements.progressText.textContent = 'Import complete!';
+        completedPlatforms.add(platform);
+        updatePlatformButtons();
+
+        elements.successMsg.textContent = `Successfully imported ${messages.length} messages from ${platform}.`;
+        elements.successMsg.style.display = 'block';
+
+        // Return to platform select after delay
+        setTimeout(() => {
+            setState(STATES.PLATFORM_SELECT);
+        }, 2000);
+
+    } catch (e) {
+        console.error('File upload error:', e);
+        showError(e.message);
+        elements.progressContainer.style.display = 'none';
+    }
+}
+
+async function checkFirstInstall() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const isFirstInstall = urlParams.get('mode') === 'first-install';
+
+    if (isFirstInstall) {
+        // Check if user has already seen onboarding
+        const { show_import_onboarding } = await chrome.storage.local.get('show_import_onboarding');
+
+        if (show_import_onboarding !== false) {
+            setState(STATES.PERMISSION);
+            return;
+        }
+    }
+
+    // Check for completed imports
+    await loadCompletedPlatforms();
+    setState(STATES.PLATFORM_SELECT);
+}
+
+async function loadCompletedPlatforms() {
+    try {
+        for (const platform of ['chatgpt', 'claude']) {
+            const response = await chrome.runtime.sendMessage({
+                type: 'CHECK_IMPORT_STATUS',
+                platform
+            });
+
+            if (response.success && response.status?.hasCompletedImport) {
+                completedPlatforms.add(platform);
+            }
+        }
+        updatePlatformButtons();
+    } catch (e) {
+        console.error('Failed to load completed platforms:', e);
+    }
+}
+
+async function markOnboardingSeen() {
+    await chrome.storage.local.set({ show_import_onboarding: false });
+}
+
+function setState(newState) {
+    currentState = newState;
+
+    // Hide all views
+    elements.permissionView?.classList.add('hidden');
+    elements.mainView?.classList.add('hidden');
+    elements.fallbackView?.classList.add('hidden');
+
+    // Reset messages
+    elements.errorMsg.style.display = 'none';
+    elements.successMsg.style.display = 'none';
+    elements.progressContainer.style.display = 'none';
+
+    switch (newState) {
+        case STATES.PERMISSION:
+            elements.permissionView?.classList.remove('hidden');
+            break;
+
+        case STATES.PLATFORM_SELECT:
+            elements.mainView?.classList.remove('hidden');
+            isImporting = false;
+            selectedPlatform = null;
+            elements.btnStart.disabled = true;
+            elements.btnStart.textContent = 'Start Import';
+            updatePlatformButtons();
+            break;
+
+        case STATES.IMPORTING:
+            elements.mainView?.classList.remove('hidden');
+            elements.progressContainer.style.display = 'block';
+            break;
+
+        case STATES.FALLBACK:
+            elements.fallbackView?.classList.remove('hidden');
+            break;
+
+        case STATES.COMPLETE:
+            elements.mainView?.classList.remove('hidden');
+            elements.successMsg.style.display = 'block';
+            break;
+
+        case STATES.ERROR:
+            elements.mainView?.classList.remove('hidden');
+            elements.errorMsg.style.display = 'block';
+            break;
+    }
+}
+
+function updatePlatformButtons() {
+    // ChatGPT button
+    if (completedPlatforms.has('chatgpt')) {
+        elements.btnChatGPT.textContent = 'ChatGPT ✓';
+        elements.btnChatGPT.classList.add('btn-complete');
+        elements.btnChatGPT.classList.remove('btn-primary', 'btn-secondary');
+    } else if (isImporting && selectedPlatform !== 'chatgpt') {
+        elements.btnChatGPT.classList.add('btn-inactive');
+    } else {
+        elements.btnChatGPT.textContent = 'ChatGPT';
+        elements.btnChatGPT.classList.remove('btn-complete', 'btn-inactive');
+        elements.btnChatGPT.classList.toggle('btn-primary', selectedPlatform === 'chatgpt');
+        elements.btnChatGPT.classList.toggle('btn-secondary', selectedPlatform !== 'chatgpt');
+    }
+
+    // Claude button
+    if (completedPlatforms.has('claude')) {
+        elements.btnClaude.textContent = 'Claude ✓';
+        elements.btnClaude.classList.add('btn-complete');
+        elements.btnClaude.classList.remove('btn-primary', 'btn-secondary');
+    } else if (isImporting && selectedPlatform !== 'claude') {
+        elements.btnClaude.classList.add('btn-inactive');
+    } else {
+        elements.btnClaude.textContent = 'Claude';
+        elements.btnClaude.classList.remove('btn-complete', 'btn-inactive');
+        elements.btnClaude.classList.toggle('btn-primary', selectedPlatform === 'claude');
+        elements.btnClaude.classList.toggle('btn-secondary', selectedPlatform !== 'claude');
+    }
+}
+
 function selectPlatform(platform) {
     if (isImporting) return;
+    if (completedPlatforms.has(platform)) {
+        // Allow re-import of completed platform
+    }
 
     selectedPlatform = platform;
-
-    // Update UI
-    elements.btnChatGPT.classList.toggle('btn-primary', platform === 'chatgpt');
-    elements.btnChatGPT.classList.toggle('btn-secondary', platform !== 'chatgpt');
-
-    elements.btnClaude.classList.toggle('btn-primary', platform === 'claude');
-    elements.btnClaude.classList.toggle('btn-secondary', platform !== 'claude');
+    updatePlatformButtons();
 
     elements.btnStart.disabled = false;
     elements.errorMsg.style.display = 'none';
@@ -74,6 +339,7 @@ async function checkStatus(platform) {
                 elements.btnStart.textContent = 'Importing...';
                 elements.progressContainer.style.display = 'block';
                 updateProgress(response.status.progress);
+                updatePlatformButtons();
             } else if (response.status.hasCompletedImport) {
                 elements.successMsg.textContent = `Import completed on ${new Date(response.status.completedAt).toLocaleDateString()}`;
                 elements.successMsg.style.display = 'block';
@@ -94,6 +360,9 @@ async function startImport() {
     elements.errorMsg.style.display = 'none';
     elements.successMsg.style.display = 'none';
     elements.progressContainer.style.display = 'block';
+    updatePlatformButtons();
+
+    setState(STATES.IMPORTING);
 
     try {
         const response = await chrome.runtime.sendMessage({
@@ -102,7 +371,11 @@ async function startImport() {
         });
 
         if (!response.success) {
-            throw new Error(response.error);
+            if (response.fallbackRequired) {
+                showFallbackUI(selectedPlatform, response.error);
+            } else {
+                throw new Error(response.error);
+            }
         }
 
         // Success handled via progress updates
@@ -111,6 +384,44 @@ async function startImport() {
         showError(e.message);
         resetUI();
     }
+}
+
+function showFallbackUI(platform, reason) {
+    fallbackPlatform = platform;
+
+    // Set reason text
+    const reasonMap = {
+        'chatgpt': 'You\'re not logged into ChatGPT.',
+        'claude': 'You\'re not logged into Claude.'
+    };
+    elements.fallbackReason.textContent = reason || reasonMap[platform] || 'Automatic import unavailable.';
+
+    // Set export instructions
+    const instructions = getExportInstructions(platform);
+    elements.exportInstructions.innerHTML = instructions;
+
+    setState(STATES.FALLBACK);
+}
+
+function getExportInstructions(platform) {
+    if (platform === 'chatgpt') {
+        return `
+            <li>Go to <a href="https://chatgpt.com/" target="_blank">chatgpt.com</a></li>
+            <li>Click your profile icon (bottom left) → Settings</li>
+            <li>Go to Data Controls → Export data</li>
+            <li>Click "Export" and wait for email</li>
+            <li>Download the ZIP file and upload it here</li>
+        `;
+    } else if (platform === 'claude') {
+        return `
+            <li>Go to <a href="https://claude.ai/settings" target="_blank">claude.ai/settings</a></li>
+            <li>Scroll to "Export Data"</li>
+            <li>Click "Create Export" and wait</li>
+            <li>Download the ZIP file when ready</li>
+            <li>Upload the ZIP file here</li>
+        `;
+    }
+    return '';
 }
 
 async function cancelImport() {
@@ -138,10 +449,15 @@ function updateProgress(progress) {
         elements.progressText.textContent = 'Completed!';
         elements.successMsg.textContent = `Successfully imported ${progress.messagesImported} messages.`;
         elements.successMsg.style.display = 'block';
+        completedPlatforms.add(progress.platform || selectedPlatform);
         resetUI(true);
     } else if (progress.status === 'failed') {
-        showError(progress.errorMessage || 'Import failed');
-        resetUI();
+        if (progress.fallbackRequired) {
+            showFallbackUI(progress.platform || selectedPlatform, progress.errorMessage);
+        } else {
+            showError(progress.errorMessage || 'Import failed');
+            resetUI();
+        }
     } else {
         elements.progressText.textContent = `Processing... (${percent}%)`;
     }
@@ -156,6 +472,7 @@ function resetUI(completed = false) {
     isImporting = false;
     elements.btnStart.disabled = false;
     elements.btnStart.textContent = completed ? 'Re-import' : 'Start Import';
+    updatePlatformButtons();
 
     if (!completed) {
         elements.progressContainer.style.display = 'none';
