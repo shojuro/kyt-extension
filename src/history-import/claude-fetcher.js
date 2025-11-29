@@ -36,21 +36,34 @@ export class ClaudeFetcher {
     }
 
     /**
-    /**
      * Get organization ID
      * @returns {Promise<string|null>}
      */
     async getOrganizationId() {
+        console.log('[ClaudeFetcher] Getting organization ID...');
         await this.rateLimiter.acquire();
         try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+            console.log('[ClaudeFetcher] Fetching organizations...');
             const response = await fetch(
                 `${this.baseUrl}/organizations`,
-                { credentials: 'include' }
+                {
+                    credentials: 'include',
+                    signal: controller.signal
+                }
             );
+            clearTimeout(timeoutId);
 
-            if (!response.ok) return null;
+            if (!response.ok) {
+                console.error(`[ClaudeFetcher] Failed to fetch organizations: ${response.status} ${response.statusText}`);
+                return null;
+            }
 
             const orgs = await response.json();
+            console.log(`[ClaudeFetcher] Found ${orgs.length} organizations`);
+
             if (orgs && orgs.length > 0) {
                 return orgs[0].uuid;
             }
@@ -71,6 +84,7 @@ export class ClaudeFetcher {
      * @returns {Promise<Message[]>}
      */
     async fetchAllConversations(maxAgeDays, resumeFromId, onProgress, onBatch, onTotal) {
+        console.log('[ClaudeFetcher] Starting fetchAllConversations...');
         const orgId = await this.getOrganizationId();
         if (!orgId) throw new Error('Could not find Claude organization');
 
@@ -79,12 +93,21 @@ export class ClaudeFetcher {
         let processedCount = 0;
 
         try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout for list
+
+            console.log(`[ClaudeFetcher] Fetching conversations for org ${orgId}...`);
             const response = await fetch(
                 `${this.baseUrl}/organizations/${orgId}/chat_conversations`,
-                { credentials: 'include' }
+                {
+                    credentials: 'include',
+                    signal: controller.signal
+                }
             );
+            clearTimeout(timeoutId);
 
             if (!response.ok) {
+                console.error(`[ClaudeFetcher] Failed to fetch conversation list: ${response.status}`);
                 await handleError(response); // Will throw if critical
                 return [];
             }
@@ -152,10 +175,17 @@ export class ClaudeFetcher {
         await this.rateLimiter.acquire();
 
         try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
             const response = await fetch(
                 `${this.baseUrl}/organizations/${orgId}/chat_conversations/${convId}`,
-                { credentials: 'include' }
+                {
+                    credentials: 'include',
+                    signal: controller.signal
+                }
             );
+            clearTimeout(timeoutId);
 
             if (!response.ok) {
                 const resolution = await handleError(response, { conversationId: convId });

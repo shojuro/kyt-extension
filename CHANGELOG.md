@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **History Import Deduplication**: Fixed critical schema mismatch in `save_chat_turn_batch` Edge Function that caused all imports to fail (missing NOT NULL columns, non-existent columns).
+- **History Import Deduplication**: Added multi-layer deduplication - client-side batch dedup + database unique index with ON CONFLICT handling.
+- **History Import Reliability**: Added batch chunking (10 messages at a time) to prevent timeout errors during large imports.
+- **History Import Reliability**: Added exponential backoff retry logic (up to 3 retries) for failed batch saves.
+- **History Import Reliability**: Added 30s timeout with AbortController for batch save requests.
+- **Claude Fetcher**: Fixed duplicate JSDoc comment block.
 - **History Import**: Refactored import process to use streaming (incremental) processing instead of blocking "fetch all then process all".
 - **History Import**: Fixed "0 messages imported" issue caused by timeouts during large imports.
 - **History Import**: Restored missing `fetchAllConversations` method in `ClaudeFetcher` and `ChatGPTFetcher`.
@@ -23,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Database Migration**: Added `chat_turns_dedup_idx` unique index for preventing duplicate message imports (`20251129000001_add_chat_turns_dedup.sql`).
 - **Streaming Import**: Added `onBatch` callback support to `ClaudeFetcher` and `ChatGPTFetcher` for real-time message processing.
 - **Diagnostic Scripts**: Added `debug_import_live_v2.js` for background service worker debugging.
 

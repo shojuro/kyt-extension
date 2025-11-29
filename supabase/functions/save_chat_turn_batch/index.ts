@@ -18,7 +18,7 @@ serve(async (req) => {
     }
 
     try {
-        const { turns } = await req.json();
+        const { turns, skip_ai_processing } = await req.json();
 
         // Validate batch size
         if (!turns || turns.length === 0) {
@@ -47,50 +47,69 @@ serve(async (req) => {
 
         for (const turn of turns) {
             try {
-                // 1. Generate embedding
-                const [embedding] = await hfClient.generateEmbeddings(turn.content);
+                let embedding = null;
+                let gravity = { impact_score: 0, intimacy_level: 0 };
+                let extractedEntities = [];
 
-                // 2. Parallel: Classify + Extract entities
-                const [classification, entities] = await Promise.allSettled([
-                    classifyMemory({ content: turn.content }, openaiKey),
-                    extractEntities({ content: turn.content, speakers: [] }, openaiKey)
-                ]);
+                if (!skip_ai_processing) {
+                    // 1. Generate embedding
+                    [embedding] = await hfClient.generateEmbeddings(turn.content);
 
-                const gravity = classification.status === 'fulfilled'
-                    ? classification.value
-                    : { impact_score: 0, intimacy_level: 0 };
+                    // 2. Parallel: Classify + Extract entities
+                    const [classification, entities] = await Promise.allSettled([
+                        classifyMemory({ content: turn.content }, openaiKey),
+                        extractEntities({ content: turn.content, speakers: [] }, openaiKey)
+                    ]);
 
-                const extractedEntities = entities.status === 'fulfilled'
-                    ? entities.value
-                    : [];
+                    gravity = classification.status === 'fulfilled'
+                        ? classification.value
+                        : { impact_score: 0, intimacy_level: 0 };
 
-                // 3. Save to database
+                    extractedEntities = entities.status === 'fulfilled'
+                        ? entities.value
+                        : [];
+                }
+
+                // 3. Save to database with ON CONFLICT handling for deduplication
+                // Uses chat_turns_dedup_idx on (user_id, conversation_id, platform, start_timestamp)
+                const timestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : Date.now();
+
                 const { data, error } = await supabase
                     .from('chat_turns')
-                    .insert({
+                    .upsert({
                         user_id: turn.user_id,
                         conversation_id: turn.conversation_id,
                         platform: turn.platform,
                         content: turn.content,
-                        embedding,
+                        embedding, // Can be null if skipped
                         impact_score: gravity.impact_score,
                         intimacy_level: gravity.intimacy_level,
-                        source: turn.source || 'import',
-                        metadata: turn.metadata,
-                        created_at: turn.timestamp
+                        // Required NOT NULL fields with sensible defaults for imports
+                        turn_range: '1-1',
+                        speakers: [turn.role || 'user'],
+                        turn_count: 1,
+                        start_timestamp: timestamp,
+                        end_timestamp: timestamp,
+                        // Optional fields
+                        last_accessed: new Date().toISOString(),
+                        access_count: 0
+                    }, {
+                        // ON CONFLICT: skip duplicates (based on chat_turns_dedup_idx)
+                        onConflict: 'user_id,conversation_id,platform,start_timestamp',
+                        ignoreDuplicates: true
                     })
-                    .select('id')
-                    .single();
+                    .select('id');
 
+                // Handle the result - may be empty if duplicate was skipped
                 if (error) throw error;
 
-                // 4. Save entities (if any)
-                // Note: We're skipping entity saving for now to keep the import fast and simple,
-                // or we can implement a batch save for entities later if needed.
-                // For now, let's just log that we would have saved them.
-                // In a real implementation, we would call a shared function to save these.
-
-                results.push({ id: data.id, success: true });
+                if (data && data.length > 0) {
+                    // New row inserted
+                    results.push({ id: data[0].id, success: true, duplicate: false });
+                } else {
+                    // Duplicate skipped (ON CONFLICT DO NOTHING)
+                    results.push({ success: true, duplicate: true });
+                }
 
             } catch (e) {
                 console.error(`Error processing turn: ${e.message}`);
@@ -98,9 +117,17 @@ serve(async (req) => {
             }
         }
 
+        // Count duplicates
+        const duplicateCount = results.filter(r => r.duplicate === true).length;
+        const insertedCount = results.filter(r => r.success && !r.duplicate).length;
+        const errorCount = results.filter(r => !r.success).length;
+
         return new Response(JSON.stringify({
             success: true,
             processed: results.length,
+            inserted: insertedCount,
+            duplicates_skipped: duplicateCount,
+            errors: errorCount,
             results
         }), {
             status: 200,

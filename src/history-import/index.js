@@ -34,6 +34,7 @@ export class HistoryImporter {
         this.userId = userId;
         this.progressTracker = null;
         this.abortController = null;
+        console.log('[HistoryImporter] Initialized with URL:', this.supabaseUrl, 'User:', this.userId);
     }
 
     /**
@@ -44,8 +45,11 @@ export class HistoryImporter {
     async checkImportStatus(platform) {
         // Check for completed imports
         try {
+            const url = `${this.supabaseUrl}/rest/v1/user_history_imports?user_id=eq.${this.userId}&platform=eq.${platform}&status=eq.completed&order=completed_at.desc&limit=1`;
+            console.log('[HistoryImporter] Checking status URL:', url);
+
             const completedResponse = await fetch(
-                `${this.supabaseUrl}/rest/v1/user_history_imports?user_id=eq.${this.userId}&platform=eq.${platform}&status=eq.completed&order=completed_at.desc&limit=1`,
+                url,
                 {
                     headers: {
                         'apikey': this.supabaseKey,
@@ -166,8 +170,12 @@ export class HistoryImporter {
                 totalSkipped += (batchMessages.length - recentMessages.length + duplicateCount);
 
                 if (newMessages.length > 0) {
-                    // Save to DB
-                    await this.processBatch(newMessages);
+                    // Save to DB in chunks of 10 to prevent timeouts
+                    const CHUNK_SIZE = 10;
+                    for (let i = 0; i < newMessages.length; i += CHUNK_SIZE) {
+                        const chunk = newMessages.slice(i, i + CHUNK_SIZE);
+                        await this.processBatch(chunk);
+                    }
 
                     const cost = newMessages.length * 0.0002;
                     totalCost += cost;
@@ -255,11 +263,15 @@ export class HistoryImporter {
 
     /**
      * @param {Message[]} messages 
+     * @param {number} [retryCount=0]
      */
-    async processBatch(messages) {
+    async processBatch(messages, retryCount = 0) {
         // Invoke Edge Function via REST
         const url = `${this.supabaseUrl}/functions/v1/save_chat_turn_batch`;
-        console.log(`[HistoryImporter] Saving batch of ${messages.length} messages to ${url}`);
+        console.log(`[HistoryImporter] Saving batch of ${messages.length} messages to ${url} (Attempt ${retryCount + 1})`);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
 
         try {
             const response = await fetch(url, {
@@ -284,15 +296,26 @@ export class HistoryImporter {
                             model: m.model
                         }
                     }))
-                })
+                }),
+                signal: controller.signal
             });
+            clearTimeout(timeoutId);
 
             if (!response.ok) {
                 const error = await response.text();
                 throw new Error(`Batch save failed: ${error}`);
             }
         } catch (error) {
+            clearTimeout(timeoutId);
             console.error('[HistoryImporter] Batch save error:', error);
+
+            if (retryCount < 3) {
+                const delay = 1000 * Math.pow(2, retryCount); // Exponential backoff: 1s, 2s, 4s
+                console.log(`[HistoryImporter] Retrying batch in ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                return this.processBatch(messages, retryCount + 1);
+            }
+
             throw error;
         }
     }

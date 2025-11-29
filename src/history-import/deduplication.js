@@ -15,9 +15,17 @@
  * @returns {Promise<DeduplicationResult>}
  */
 export async function deduplicateMessages(messages, userId) {
-    // In a real implementation, we would query the database for existing hashes.
-    // For this MVP, we'll assume we want to avoid duplicates within the current import batch
-    // and rely on the `chat_turns` table constraints or a separate check if needed.
+    // LAYER 1: Client-side batch deduplication
+    // This removes duplicates WITHIN the current batch only.
+    //
+    // LAYER 2: Database-level deduplication (in save_chat_turn_batch Edge Function)
+    // The `chat_turns` table has a unique index on (user_id, conversation_id, platform, start_timestamp)
+    // via `chat_turns_dedup_idx`. The Edge Function uses ON CONFLICT DO NOTHING to skip
+    // any duplicates that already exist in the database from previous imports.
+    //
+    // This two-layer approach means:
+    // - Batch dedup catches obvious duplicates quickly (reduces API calls)
+    // - Database constraint catches cross-batch and cross-import duplicates
 
     const uniqueMessages = [];
     const seenHashes = new Set();
