@@ -101,6 +101,7 @@ const result = await importer.startImport(
 - **History Import**: Improved error reporting to show specific API errors instead of generic "Import cancelled".
 - **History Import**: Added `onTotal` callback for immediate total count reporting during import progress.
 - **History Import**: Fixed ChatGPTFetcher class definition structure (class was being closed prematurely).
+- **ChatGPT History Import**: Fixed "0 messages imported" bug by adding proper authentication. ChatGPT's backend API requires `Authorization: Bearer <token>` header (unlike Claude which uses cookies alone). Added `getAccessToken()` method to fetch token from `chatgpt.com/api/auth/session`, added Authorization headers to all API requests, and modified error handling to throw on 401/403 to trigger ZIP fallback. Verified: 1,815 messages across 200 conversations successfully imported within 90-day window.
 - **ChatGPT inject.js**: Added null checks for `response` and `json.mapping` to prevent errors when response is undefined
 - **ChatGPT inject.js**: Enhanced voice transcript parsing to handle object-type `message.content` (with `parts` array) and `conversation_item_created` event format
 - **ChatGPT dom-observer.js**: Added "Transcript Unavailable..." to placeholder patterns to skip incomplete voice transcripts
