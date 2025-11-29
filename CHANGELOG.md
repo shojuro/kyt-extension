@@ -87,6 +87,8 @@ const result = await importer.startImport(
 
 - **History Import RLS**: Added Row Level Security policies to `user_history_imports` table (select, insert, update, delete) - table previously had RLS enabled but no policies, causing silent write failures.
 - **History Import Verified**: Confirmed 1,488 messages across 113 conversations successfully imported for 90-day window (Sept 1 - Nov 29, 2025). Data correctly stored in `chat_turns` table with proper user_id.
+- **Database Cleanup**: Removed 410 orphaned records with placeholder user_id (`00000000-0000-0000-0000-000000000000`) from `chat_turns` table - leftovers from failed imports before RLS fix.
+- **ProgressTracker RLS Fix**: Created `update_import_progress` Edge Function to route progress updates through service role key. Updated `progress-tracker.js` to use Edge Function instead of direct REST API calls which were blocked by RLS.
 - **History Import Deduplication**: Fixed critical schema mismatch in `save_chat_turn_batch` Edge Function that caused all imports to fail (missing NOT NULL columns, non-existent columns).
 - **History Import Deduplication**: Added multi-layer deduplication - client-side batch dedup + database unique index with ON CONFLICT handling.
 - **History Import Reliability**: Added batch chunking (10 messages at a time) to prevent timeout errors during large imports.

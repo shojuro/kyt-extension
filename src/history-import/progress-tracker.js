@@ -92,15 +92,15 @@ export class ProgressTracker {
 
     async syncToServer() {
         try {
-            await fetch(
-                `${this.supabaseUrl}/rest/v1/user_history_imports`,
+            // Route through Edge Function to bypass RLS (uses service role key)
+            const response = await fetch(
+                `${this.supabaseUrl}/functions/v1/update_import_progress`,
                 {
                     method: 'POST',
                     headers: {
                         'apikey': this.supabaseKey,
                         'Authorization': `Bearer ${this.supabaseKey}`,
-                        'Content-Type': 'application/json',
-                        'Prefer': 'resolution=merge-duplicates'
+                        'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
                         id: this.progress.importId,
@@ -114,11 +114,15 @@ export class ProgressTracker {
                         last_conversation_id: this.progress.lastConversationId,
                         estimated_cost_usd: this.progress.estimatedCostUsd,
                         started_at: this.progress.startedAt,
-                        error_message: this.progress.errorMessage,
-                        completed_at: this.progress.status === 'completed' ? new Date().toISOString() : null
+                        error_message: this.progress.errorMessage
                     })
                 }
             );
+
+            if (!response.ok) {
+                const error = await response.text();
+                console.error('Failed to sync progress:', error);
+            }
         } catch (e) {
             console.error('Failed to sync progress to server:', e);
         }
