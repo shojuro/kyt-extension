@@ -151,3 +151,13 @@ check_message_count.mjs
 CLAUDE.md
 gravity_results.csv
 test_output.txt
+
+# ============================================
+# DEVELOPMENT SCRIPTS AND DEBUG FILES
+# ============================================
+debug_import*.js
+diagnostic_*.js
+test_*.js
+test_output*.txt
+import_result.json
+generate_*.js
