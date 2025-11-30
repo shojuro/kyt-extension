@@ -445,8 +445,10 @@ async function saveMessage(messageData) {
     const contentHash = await hashContent(messageData.content);
     const timestamp = messageData.timestamp || Date.now();
 
-    // Check for duplicates within 5-second window
-    const duplicate = findDuplicate(messages, contentHash, timestamp, 5000);
+    // Check for duplicates within 5-second window (or infinite for rescan)
+    // If source is 'dom_rescan', we check entire history to prevent duplicates of already-synced messages
+    const windowMs = messageData.source === 'dom_rescan' ? Infinity : 5000;
+    const duplicate = findDuplicate(messages, contentHash, timestamp, windowMs);
 
     if (duplicate) {
       console.log(`🔄 KYT Background: Duplicate detected (blocked)`);

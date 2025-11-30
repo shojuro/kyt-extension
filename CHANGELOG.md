@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2025-11-30
+
+### Added
+
+#### Mobile Voice Sync & Recovery System
+
+**Feature**: Robust synchronization for mobile voice messages, including a "Rescan" capability for recovery.
+
+**Details**:
+- **Hybrid Mutation-Polling**: Implemented a robust strategy that combines DOM mutation observation with active polling. This ensures messages are captured even if specific mutation events (like streaming text updates) are missed or incomplete.
+- **Rescan Capability**: Added a "Rescan Page Messages" button to the extension popup. This allows users to manually trigger a scan of the current page to recover any missing messages, including assistant responses.
+- **Enhanced DOM Observation**: Updated `dom-observer.js` to watch for `attributes` and `characterData` changes, crucial for detecting streaming text and status updates in mobile voice interfaces.
+- **Assistant Message Capture**: Expanded the DOM observer to capture assistant messages during rescan and autosync, ensuring the full conversation context is preserved.
+
+#### Extension Configuration
+
+- **Options Page**: Added `"options_page": "setup.html"` to `manifest.json`, making the configuration page accessible via the standard Chrome extension options menu. This allows users to easily view and update their User ID and API keys.
+
+### Fixed
+
+#### RLS Policy Violation for Custom User IDs
+
+**Problem**: Users with custom User IDs (configured in local environment) were unable to sync messages due to strict Row-Level Security (RLS) policies that only allowed authenticated users or the default temporary ID.
+
+**Solution**: Added a specific RLS policy (`messages_custom_user_access`) to explicitly allow `INSERT` operations for the detected custom User ID.
+
+**Files Modified**:
+- `supabase/migrations/fix_rls_custom_user.sql`: New migration for custom user policy.
+
+#### Mobile Voice Autosync
+
+**Problem**: Mobile voice messages were not syncing automatically because the `MutationObserver` was missing updates that happened deep within the DOM tree or involved text streaming.
+
+**Solution**:
+- Implemented `findClosestMessageNode` to correctly traverse up the DOM tree from any mutation target (e.g., a text node or span) to the parent message container.
+- Enabled observation of `characterData` and `attributes` to catch real-time updates.
+- Fixed a syntax error (duplicate `catch` block) in `dom-observer.js` that caused the observer to crash.
+
+**Files Modified**:
+- `platforms/chatgpt/dom-observer.js`: Major logic updates for traversal, polling, and syntax fix.
+- `popup/popup.html` & `popup/popup.js`: Added Rescan button and logic.
+- `platforms/chatgpt/content.js`: Added `SCAN_DOM` message handler.
+
 ### Added
 
 #### Stripe Payment Integration for Subscription Tiers

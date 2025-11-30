@@ -20,6 +20,7 @@
     },
     "default_title": "K.Y.T. Memory Extension Status"
   },
+  "options_page": "setup.html",
   "icons": {
     "16": "icon.svg",
     "48": "icon.svg",

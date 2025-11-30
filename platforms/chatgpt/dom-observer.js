@@ -101,8 +101,8 @@
     observer.observe(container, {
       childList: true,   // Watch for added/removed nodes
       subtree: true,     // Watch entire subtree
-      attributes: false, // Don't watch attribute changes (performance)
-      characterData: false // Don't watch text changes (performance)
+      attributes: true,  // Watch attribute changes (for role updates)
+      characterData: true // Watch text changes (for streaming content)
     });
 
     restartAttempts = 0; // Reset on success
@@ -170,22 +170,46 @@
       log(`Processing ${mutationsToProcess.length} mutations...`);
 
       for (const mutation of mutationsToProcess) {
-        // Only process added nodes
-        if (mutation.type !== 'childList') continue;
+        let targetNode = null;
 
-        for (const node of mutation.addedNodes) {
-          if (!(node instanceof HTMLElement)) continue;
+        if (mutation.type === 'childList') {
+          // For added nodes, we check the node itself, its children, AND its ancestors
+          for (const node of mutation.addedNodes) {
+            if (!(node instanceof HTMLElement)) continue;
 
-          // DEBUG: Log every added node to find the right selector
-          log('DOM Mutation: Added node:', node.tagName, 'Class:', node.className, 'Text:', node.innerText?.substring(0, 20));
+            // 1. Check if the node itself is a message
+            if (isMessageNode(node)) {
+              processMessageNode(node);
+              continue;
+            }
 
-          // Check if this is a message node
-          if (isMessageNode(node)) {
-            processMessageNode(node);
-          } else {
-            // Check children (for nested structures)
+            // 2. Check if it contains message nodes
             const messageNodes = node.querySelectorAll(CONFIG.MESSAGE_SELECTORS.userMessage);
             messageNodes.forEach(processMessageNode);
+
+            // 3. Check if it's INSIDE a message node (e.g. a new paragraph added to existing message)
+            const parentMessage = findClosestMessageNode(node);
+            if (parentMessage) {
+              processMessageNode(parentMessage);
+            }
+          }
+        }
+        else if (mutation.type === 'characterData') {
+          // Text changed - check ancestors
+          targetNode = mutation.target.parentElement;
+          const messageNode = findClosestMessageNode(targetNode);
+          if (messageNode) {
+            log('DOM Mutation: Text update in message node');
+            processMessageNode(messageNode);
+          }
+        }
+        else if (mutation.type === 'attributes') {
+          // Attribute changed - check ancestors
+          targetNode = mutation.target;
+          const messageNode = findClosestMessageNode(targetNode);
+          if (messageNode) {
+            log('DOM Mutation: Attribute update in message node');
+            processMessageNode(messageNode);
           }
         }
       }
@@ -196,19 +220,101 @@
       scheduleRestart();
     } finally {
       isProcessing = false;
+
+      // HYBRID FALLBACK: Always scan recent messages after any mutation batch
+      // This catches messages that were missed by specific node logic (e.g. deep nesting)
+      // or that weren't ready during the initial mutation event.
+      setTimeout(checkRecentMessages, 500);
     }
+  }
+
+  // Cache to prevent spamming the same message during polling
+  const sentMessages = new Set();
+
+  /**
+   * Scan the last few messages to ensure we didn't miss anything
+   * (Active Polling on Mutation)
+   */
+  function checkRecentMessages() {
+    const container = findConversationContainer();
+    if (!container) return;
+
+    // Get all message nodes
+    let allNodes = [];
+    const userNodes = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.userMessage);
+    const assistantNodes = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.assistantMessage);
+    allNodes = [...Array.from(userNodes), ...Array.from(assistantNodes)];
+
+    if (allNodes.length === 0) return;
+
+    // Sort by position
+    allNodes.sort((a, b) => {
+      return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
+    });
+
+    // Check only the last 5 messages (most recent)
+    const recentNodes = allNodes.slice(-5);
+
+    recentNodes.forEach(node => {
+      try {
+        const message = extractMessage(node);
+        if (message) {
+          // Generate a simple signature for the cache
+          const signature = `${message.role}:${message.content.trim()}`;
+
+          if (!sentMessages.has(signature)) {
+            log('Active Poll: Found new/updated message:', message.content.substring(0, 30) + '...');
+
+            // Mark as 'dom' source (standard capture)
+            message.source = 'dom';
+            sendToBackground(message);
+
+            sentMessages.add(signature);
+
+            // Limit cache size
+            if (sentMessages.size > 100) {
+              const first = sentMessages.values().next().value;
+              sentMessages.delete(first);
+            }
+          }
+        }
+      } catch (error) {
+        // Ignore errors in polling
+      }
+    });
+  }
+
+  /**
+   * Find the closest message node ancestor
+   */
+  function findClosestMessageNode(element) {
+    let current = element;
+    let depth = 0;
+    const MAX_DEPTH = 10; // Prevent infinite loops
+
+    while (current && depth < MAX_DEPTH && current !== document.body) {
+      if (isMessageNode(current)) {
+        return current;
+      }
+      current = current.parentElement;
+      depth++;
+    }
+    return null;
   }
 
   /**
    * Check if node is a message node
    */
   function isMessageNode(node) {
-    // Check for user message role (CRITICAL: only capture user messages)
-    const hasUserRole = node.matches(CONFIG.MESSAGE_SELECTORS.userMessage);
+    if (!(node instanceof HTMLElement)) return false;
 
-    if (hasUserRole) {
-      return true;
-    }
+    // Check for user message role
+    const hasUserRole = node.matches(CONFIG.MESSAGE_SELECTORS.userMessage);
+    if (hasUserRole) return true;
+
+    // Check for assistant message role (now supported)
+    const hasAssistantRole = node.matches(CONFIG.MESSAGE_SELECTORS.assistantMessage);
+    if (hasAssistantRole) return true;
 
     // Fallback: Check for message-like structure
     const hasFallbackClass = node.matches(CONFIG.MESSAGE_SELECTORS.messageFallback);
@@ -245,12 +351,9 @@
     // Determine role
     const role = determineRole(node);
 
-    // CRITICAL: Only capture user messages from DOM
-    // Assistant messages are already captured via API interception
-    if (role !== 'user') {
-      log('Skipping non-user message (role:', role, ')');
-      return null;
-    }
+    // NOTE: We now allow assistant messages for DOM capture (needed for mobile voice sync)
+    // Deduplication layer in background will prevent duplicates if API capture also succeeds
+
 
     // Extract text content (safe, no innerHTML)
     const content = node.innerText?.trim();
@@ -466,6 +569,9 @@
         stopObserver();
         scheduleRestart();
         break;
+      case 'scan':
+        scanExistingMessages();
+        break;
       case 'enableDebug':
         enableDebug();
         break;
@@ -476,6 +582,59 @@
         break;
     }
   });
+
+  /**
+   * Scan existing messages in the DOM (Recovery Mode)
+   */
+  function scanExistingMessages() {
+    log('Scanning existing messages (Recovery Mode)...');
+    const container = findConversationContainer();
+    if (!container) {
+      logError('Cannot scan: Conversation container not found');
+      return;
+    }
+
+    // Find all message nodes (user AND assistant)
+    let messageNodes = [];
+
+    // Try explicit selectors first
+    const userNodes = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.userMessage);
+    const assistantNodes = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.assistantMessage);
+
+    messageNodes = [...Array.from(userNodes), ...Array.from(assistantNodes)];
+
+    if (messageNodes.length === 0) {
+      // Fallback: try finding all groups and filtering
+      const groups = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.messageFallback);
+      messageNodes = Array.from(groups).filter(node => isMessageNode(node));
+    }
+
+    // Sort by position in DOM to maintain order
+    messageNodes.sort((a, b) => {
+      return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
+    });
+
+    log(`Found ${messageNodes.length} existing message nodes`);
+
+    let capturedCount = 0;
+    messageNodes.forEach(node => {
+      try {
+        const message = extractMessage(node);
+        if (message) {
+          // Mark as rescan to trigger aggressive deduplication in background
+          message.source = 'dom_rescan';
+
+          log('Rescanning message:', message.content.substring(0, 30) + '...');
+          sendToBackground(message);
+          capturedCount++;
+        }
+      } catch (error) {
+        logError('Error rescanning node:', error);
+      }
+    });
+
+    log(`Rescan complete: Sent ${capturedCount} messages`);
+  }
 
   // Auto-initialize when DOM is ready
   if (document.readyState === 'loading') {

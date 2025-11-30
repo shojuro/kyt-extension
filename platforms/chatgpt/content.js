@@ -337,6 +337,13 @@
       }
 
       return true; // Keep message channel open for async response
+    } else if (message.type === 'SCAN_DOM') {
+      console.log('🔍 KYT ChatGPT Content: Received SCAN_DOM command');
+      window.dispatchEvent(new CustomEvent('KYT_DOM_COMMAND', {
+        detail: { command: 'scan' }
+      }));
+      sendResponse({ success: true });
+      return false;
     }
   });
 
