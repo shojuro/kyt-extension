@@ -295,6 +295,101 @@ body {
   border: 1px solid #bee5eb;
 }
 
+/* Subscription Section */
+.subscription-status {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tier-badge-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.tier-badge {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tier-badge.tier-free {
+  background: #e9ecef;
+  color: #495057;
+}
+
+.tier-badge.tier-pro {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.tier-badge.tier-dev {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  color: white;
+}
+
+.tier-description {
+  font-size: 13px;
+  color: #666;
+}
+
+.subscription-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn-upgrade {
+  width: 100%;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  color: white;
+  transition: all 0.2s ease;
+}
+
+.btn-upgrade:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(240, 147, 251, 0.4);
+}
+
+.btn-upgrade.hidden {
+  display: none;
+}
+
+.btn-manage {
+  width: 100%;
+  padding: 10px 16px;
+  border: 2px solid #667eea;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: transparent;
+  color: #667eea;
+  transition: all 0.2s ease;
+}
+
+.btn-manage:hover {
+  background: #667eea;
+  color: white;
+}
+
+.btn-manage.hidden {
+  display: none;
+}
+
 /* Footer */
 .footer {
   background: #f8f9fa;

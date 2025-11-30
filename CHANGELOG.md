@@ -9,6 +9,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Stripe Payment Integration for Subscription Tiers
+
+**Feature**: Complete Stripe integration for KYT Pro/Dev subscription tiers with external checkout, billing portal, and webhook handling.
+
+**Architecture**:
+```
+User → Extension Popup → Edge Function → Stripe Checkout → Webhook → Database → Tier Update
+           ↓                                    ↑
+    "Upgrade to Pro"                    Stripe Dashboard
+           ↓                                    ↓
+    create-checkout → Stripe Checkout Session → checkout.session.completed
+           ↓                                    ↓
+    billing-portal → Stripe Billing Portal   → subscription.* events
+```
+
+**Components**:
+
+| File | Purpose |
+|------|---------|
+| `supabase/migrations/20251130000000_stripe_integration.sql` | Database tables with RLS |
+| `supabase/functions/stripe-webhook/index.ts` | Webhook handler with signature verification |
+| `supabase/functions/create-checkout/index.ts` | Creates Stripe Checkout sessions |
+| `supabase/functions/billing-portal/index.ts` | Creates Stripe Billing Portal sessions |
+| `supabase/config.toml` | Function config (verify_jwt settings) |
+| `popup/popup.html` | Subscription section with tier badge |
+| `popup/popup.css` | Tier badge styling (free/pro/dev) |
+| `popup/popup.js` | Subscription loading + upgrade/billing handlers |
+
+**Database Tables**:
+- `stripe_customers`: Maps Supabase users to Stripe customer IDs
+- `stripe_subscriptions`: Tracks subscription status, tier, and billing periods
+- `stripe_events`: Webhook event log for idempotency (prevents duplicate processing)
+
+**Webhook Events Handled**:
+- `checkout.session.completed`: Initial subscription creation from checkout
+- `customer.subscription.created`: Subscriptions created via API/dashboard
+- `customer.subscription.updated`: Plan changes, renewals
+- `customer.subscription.deleted`: Cancellations → downgrade to free
+- `invoice.paid`: Successful renewal (logged)
+- `invoice.payment_failed`: Mark subscription as past_due
+
+**Security**:
+- Webhook signature verification using Web Crypto API (`Stripe.createSubtleCryptoProvider()`)
+- `verify_jwt = false` for webhook endpoint (Stripe signature is auth)
+- Service role key for database writes (bypasses RLS)
+- User-facing endpoints (`create-checkout`, `billing-portal`) require JWT auth
+- RLS policies: users can only read their own customer/subscription data
+
+**Key Implementation Details**:
+```typescript
+// Webhook signature verification (MUST use .text() not .json())
+const body = await req.text();
+const event = await stripe.webhooks.constructEventAsync(
+  body, signature,
+  Deno.env.get('STRIPE_WEBHOOK_SECRET')!,
+  undefined, cryptoProvider  // Web Crypto provider for Deno
+);
+
+// Idempotency check before processing
+const { data: existingEvent } = await supabase
+  .from('stripe_events')
+  .select('id, status')
+  .eq('stripe_event_id', event.id)
+  .single();
+if (existingEvent?.status === 'processed') return; // Skip duplicate
+
+// Price ID to tier mapping
+const PRICE_TO_TIER: Record<string, string> = {
+  'price_xxx_pro': 'pro',   // TODO: Replace after Stripe setup
+  'price_xxx_dev': 'dev',
+};
+```
+
+**Extension UI**:
+- Tier badge in popup (FREE/PRO/DEV with gradient styling)
+- "Upgrade to Pro" button for free users → redirects to Stripe Checkout
+- "Manage Subscription" button for paid users → redirects to Stripe Billing Portal
+- Tier loaded from `chrome.storage.local.user_tier`
+
+**Environment Variables Required**:
+- `STRIPE_SECRET_KEY`: Stripe API secret key
+- `STRIPE_WEBHOOK_SECRET`: Webhook signing secret
+- `CHECKOUT_SUCCESS_URL`: Redirect after successful checkout (default: `https://kyt.memory/checkout/success`)
+- `CHECKOUT_CANCEL_URL`: Redirect on cancel (default: `https://kyt.memory/checkout/cancel`)
+- `BILLING_PORTAL_RETURN_URL`: Return from billing portal (default: `https://kyt.memory/settings`)
+
+**TODOs Before Production**:
+1. Complete Stripe Dashboard setup (Products, Prices, Coupon)
+2. Replace placeholder price IDs in `PRICE_TO_TIER` mapping
+3. Set environment variables in Supabase Dashboard
+4. Deploy migration and Edge Functions
+5. Test with Stripe CLI: `stripe listen --forward-to <webhook-url>`
+
+**Files Created**:
+- `supabase/migrations/20251130000000_stripe_integration.sql` (117 lines)
+- `supabase/functions/stripe-webhook/index.ts` (356 lines)
+- `supabase/functions/create-checkout/index.ts` (152 lines)
+- `supabase/functions/billing-portal/index.ts` (95 lines)
+- `supabase/config.toml` (30 lines)
+
+**Files Modified**:
+- `popup/popup.html` (+15 lines): Subscription section
+- `popup/popup.css` (+94 lines): Tier badge and button styles
+- `popup/popup.js` (+130 lines): Subscription loading, upgrade/billing handlers
+
 #### 90-Day Chat History Import System
 
 **Feature**: Complete chat history import from ChatGPT and Claude platforms with streaming processing, deduplication, and resume capability.

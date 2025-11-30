@@ -16,6 +16,17 @@ const testCaptureBtn = document.getElementById('testCaptureBtn');
 const setupBtn = document.getElementById('setupBtn');
 const importBtn = document.getElementById('importBtn');
 const testResult = document.getElementById('testResult');
+const tierBadge = document.getElementById('tierBadge');
+const tierDescription = document.getElementById('tierDescription');
+const upgradeBtn = document.getElementById('upgradeBtn');
+const manageBillingBtn = document.getElementById('manageBillingBtn');
+
+// Tier descriptions for display
+const TIER_INFO = {
+  free: { label: 'FREE', description: 'Basic features' },
+  pro: { label: 'PRO', description: 'Unlimited memories, priority support' },
+  dev: { label: 'DEV', description: 'API access, advanced features' }
+};
 
 /**
  * Update status indicator with color coding
@@ -226,9 +237,173 @@ function openImport() {
   });
 }
 
+/**
+ * Rescan page messages (Recovery Mode)
+ */
+async function rescanMessages() {
+  rescanBtn.disabled = true;
+  rescanBtn.textContent = '🔄 Scanning...';
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) throw new Error('No active tab');
+
+    // Send message to content script
+    await chrome.tabs.sendMessage(tab.id, { type: 'SCAN_DOM' });
+
+    testResult.className = 'test-result success';
+    testResult.textContent = '✅ Rescan command sent. Check console for details.';
+    testResult.classList.remove('hidden');
+
+  } catch (error) {
+    console.error('Rescan failed:', error);
+    testResult.className = 'test-result error';
+    testResult.textContent = `❌ Rescan failed: ${error.message}`;
+    testResult.classList.remove('hidden');
+  } finally {
+    setTimeout(() => {
+      rescanBtn.disabled = false;
+      rescanBtn.textContent = '🔄 Rescan Page Messages';
+    }, 2000);
+  }
+}
+
+/**
+ * Load and display subscription tier
+ */
+async function loadSubscription() {
+  try {
+    // Get user tier from storage (synced from database via background script)
+    const result = await chrome.storage.local.get(['user_tier', 'user_id', 'api_config']);
+    const tier = result.user_tier || 'free';
+    const userId = result.user_id;
+    const config = result.api_config;
+
+    // Update tier badge
+    const info = TIER_INFO[tier] || TIER_INFO.free;
+    tierBadge.textContent = info.label;
+    tierBadge.className = `tier-badge tier-${tier}`;
+    tierDescription.textContent = info.description;
+
+    // Show/hide buttons based on tier
+    if (tier === 'free') {
+      upgradeBtn.classList.remove('hidden');
+      manageBillingBtn.classList.add('hidden');
+    } else {
+      upgradeBtn.classList.add('hidden');
+      manageBillingBtn.classList.remove('hidden');
+    }
+
+  } catch (error) {
+    console.error('Error loading subscription:', error);
+    // Default to free tier on error
+    tierBadge.textContent = 'FREE';
+    tierBadge.className = 'tier-badge tier-free';
+    tierDescription.textContent = 'Basic features';
+  }
+}
+
+/**
+ * Handle upgrade button click - redirect to Stripe Checkout
+ */
+async function handleUpgrade() {
+  upgradeBtn.disabled = true;
+  upgradeBtn.textContent = '⏳ Loading...';
+
+  try {
+    const result = await chrome.storage.local.get(['user_id', 'api_config']);
+    const userId = result.user_id;
+    const config = result.api_config;
+
+    if (!userId || !config?.supabaseUrl || !config?.supabaseKey) {
+      throw new Error('Please configure API keys first');
+    }
+
+    // Call create-checkout Edge Function
+    const response = await fetch(`${config.supabaseUrl}/functions/v1/create-checkout`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.supabaseKey}`,
+      },
+      body: JSON.stringify({
+        userId: userId,
+        priceId: 'price_xxx_pro', // TODO: Replace with real price ID after Stripe setup
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to create checkout session');
+    }
+
+    const { url } = await response.json();
+
+    // Open checkout in new tab
+    chrome.tabs.create({ url });
+
+  } catch (error) {
+    console.error('Upgrade error:', error);
+    alert(`Upgrade failed: ${error.message}`);
+  } finally {
+    upgradeBtn.disabled = false;
+    upgradeBtn.textContent = '⚡ Upgrade to Pro';
+  }
+}
+
+/**
+ * Handle manage billing button click - redirect to Stripe Billing Portal
+ */
+async function handleManageBilling() {
+  manageBillingBtn.disabled = true;
+  manageBillingBtn.textContent = '⏳ Loading...';
+
+  try {
+    const result = await chrome.storage.local.get(['user_id', 'api_config']);
+    const userId = result.user_id;
+    const config = result.api_config;
+
+    if (!userId || !config?.supabaseUrl || !config?.supabaseKey) {
+      throw new Error('Please configure API keys first');
+    }
+
+    // Call billing-portal Edge Function
+    const response = await fetch(`${config.supabaseUrl}/functions/v1/billing-portal`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.supabaseKey}`,
+      },
+      body: JSON.stringify({
+        userId: userId,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to create billing portal session');
+    }
+
+    const { url } = await response.json();
+
+    // Open billing portal in new tab
+    chrome.tabs.create({ url });
+
+  } catch (error) {
+    console.error('Billing portal error:', error);
+    alert(`Billing portal failed: ${error.message}`);
+  } finally {
+    manageBillingBtn.disabled = false;
+    manageBillingBtn.textContent = '⚙️ Manage Subscription';
+  }
+}
+
 // Event listeners
+upgradeBtn.addEventListener('click', handleUpgrade);
+manageBillingBtn.addEventListener('click', handleManageBilling);
 debugModeToggle.addEventListener('change', saveDebugMode);
 testCaptureBtn.addEventListener('click', testCapture);
+rescanBtn.addEventListener('click', rescanMessages);
 setupBtn.addEventListener('click', openSetup);
 importBtn.addEventListener('click', openImport);
 
@@ -256,6 +431,7 @@ checkFirstInstallRedirect().then(redirecting => {
     loadStats();
     loadConfig();
     loadDebugMode();
+    loadSubscription();
 
     // Refresh stats every 5 seconds
     setInterval(loadStats, 5000);
