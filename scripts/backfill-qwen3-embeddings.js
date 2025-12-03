@@ -88,7 +88,7 @@ async function fetchTurnsWithNullEmbeddings(offset = 0, limit = 100) {
  */
 async function generateQwen3Embeddings(texts) {
   const response = await fetch(
-    'https://api-inference.huggingface.co/models/Qwen/Qwen3-Embedding-8B',
+    'https://router.huggingface.co/hf-inference/models/Qwen/Qwen3-Embedding-8B',
     {
       method: 'POST',
       headers: {

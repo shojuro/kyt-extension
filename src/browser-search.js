@@ -87,7 +87,7 @@ async function generateQueryEmbedding(query, _apiKey) {
       }
 
       const response = await fetchWithTimeout(
-        'https://api-inference.huggingface.co/models/Qwen/Qwen3-Embedding-8B',
+        'https://router.huggingface.co/hf-inference/models/Qwen/Qwen3-Embedding-8B',
         {
           method: 'POST',
           headers: {
@@ -597,7 +597,7 @@ async function rerankResults(query, results) {
     }));
 
     const response = await fetchWithTimeout(
-      'https://api-inference.huggingface.co/models/BAAI/bge-reranker-v2-m3',
+      'https://router.huggingface.co/hf-inference/models/BAAI/bge-reranker-v2-m3',
       {
         method: 'POST',
         headers: {

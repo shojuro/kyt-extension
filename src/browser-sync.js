@@ -147,7 +147,7 @@ async function generateEmbeddings(texts, _apiKey) {
     console.log(`📊 Batch ${i + 1}/${batches.length}: ${batch.length} messages (~${batchTokens} tokens)`);
 
     const response = await fetchWithTimeout(
-      'https://api-inference.huggingface.co/models/Qwen/Qwen3-Embedding-8B',
+      'https://router.huggingface.co/hf-inference/models/Qwen/Qwen3-Embedding-8B',
       {
         method: 'POST',
         headers: {
@@ -168,7 +168,7 @@ async function generateEmbeddings(texts, _apiKey) {
       await new Promise(resolve => setTimeout(resolve, 5000));
       // Retry with wait_for_model this time
       const retryResponse = await fetchWithTimeout(
-        'https://api-inference.huggingface.co/models/Qwen/Qwen3-Embedding-8B',
+        'https://router.huggingface.co/hf-inference/models/Qwen/Qwen3-Embedding-8B',
         {
           method: 'POST',
           headers: {
