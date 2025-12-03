@@ -1,15 +1,29 @@
 /**
  * KYT Message Queue Manager
- * 
+ *
  * Runs in the Content Script.
  * Manages the lifecycle of captured messages:
  * 1. In-memory queue
  * 2. Immediate sync attempt via Service Worker
  * 3. Fallback to encrypted local storage on failure
+ * 4. Recovery mechanism when service worker wakes up
+ *
+ * Handles Chrome MV3 service worker termination gracefully:
+ * - Detects context invalidation (chrome.runtime.id undefined)
+ * - Falls back to local storage when service worker unreachable
+ * - Retries pending queue when context is restored
  */
 
 import { LocalQueueStorage } from '../storage/local-queue.js';
 import { deriveKey } from '../utils/crypto.js';
+
+// Storage key for unencrypted fallback queue (edge case: no API key)
+const UNENCRYPTED_QUEUE_KEY = 'kyt_pending_unencrypted_queue';
+
+// localStorage key for EMERGENCY fallback when chrome.storage is completely unavailable
+// This is the ONLY reliable storage when extension context is fully invalidated
+const LOCALSTORAGE_EMERGENCY_KEY = 'kyt_emergency_localStorage_queue';
+const LOCALSTORAGE_MAX_SIZE = 50; // Keep localStorage usage reasonable
 
 export class MessageQueueManager {
     constructor() {
@@ -18,11 +32,24 @@ export class MessageQueueManager {
         this.isSyncing = false;
         this.cryptoKey = null;
         this.apiKey = null;
+        this.contextValid = true;
+        this.recoveryIntervalId = null;
+    }
+
+    /**
+     * Check if extension context is still valid
+     * @returns {boolean} True if chrome.runtime.id is defined
+     */
+    isContextValid() {
+        return typeof chrome !== 'undefined' &&
+               typeof chrome.runtime !== 'undefined' &&
+               typeof chrome.runtime.id !== 'undefined';
     }
 
     /**
      * Initialize the queue manager
      * Loads API key to derive encryption key
+     * Starts recovery interval for context restoration
      */
     async initialize() {
         try {
@@ -34,8 +61,56 @@ export class MessageQueueManager {
             } else {
                 console.info('ℹ️ [KYT Queue] No API key found - Local capture only (Sync disabled)');
             }
+
+            // Start recovery interval to retry pending messages when context is restored
+            this.startRecoveryInterval();
         } catch (error) {
             console.error('❌ [KYT Queue] Initialization failed:', error);
+        }
+    }
+
+    /**
+     * Start periodic check for context restoration and retry pending messages
+     * Runs every 30 seconds to check if service worker is back
+     */
+    startRecoveryInterval() {
+        if (this.recoveryIntervalId) {
+            clearInterval(this.recoveryIntervalId);
+        }
+
+        this.recoveryIntervalId = setInterval(async () => {
+            // Check if context was invalid but is now restored
+            const wasInvalid = !this.contextValid;
+            this.contextValid = this.isContextValid();
+
+            if (wasInvalid && this.contextValid) {
+                console.log('🔄 [KYT Queue] Context restored! Retrying pending messages...');
+                await this.retryPendingQueue();
+            } else if (this.contextValid) {
+                // Context is valid, check if there are pending messages to sync
+                const queueSize = await this.localQueue.getQueueSize();
+                const unencryptedSize = await this.getUnencryptedQueueSize();
+
+                if (queueSize > 0 || unencryptedSize > 0) {
+                    console.log(`🔄 [KYT Queue] Found ${queueSize + unencryptedSize} pending messages, attempting sync...`);
+                    await this.retryPendingQueue();
+                }
+            }
+        }, 30000); // Every 30 seconds
+
+        console.log('✅ [KYT Queue] Recovery interval started (30s)');
+    }
+
+    /**
+     * Get size of unencrypted fallback queue
+     * @returns {Promise<number>}
+     */
+    async getUnencryptedQueueSize() {
+        try {
+            const result = await chrome.storage.local.get([UNENCRYPTED_QUEUE_KEY]);
+            return (result[UNENCRYPTED_QUEUE_KEY] || []).length;
+        } catch {
+            return 0;
         }
     }
 
@@ -61,11 +136,160 @@ export class MessageQueueManager {
 
         console.log(`📥 [KYT Queue] Capturing message ${queuedMessage.id}...`);
 
+        // Check if context is valid before attempting sync
+        this.contextValid = this.isContextValid();
+
+        if (!this.contextValid) {
+            // Context invalidated - persist directly without trying service worker
+            console.warn('⚠️ [KYT Queue] Context invalid, persisting directly to local storage');
+            await this.persistDirectly(queuedMessage);
+            return;
+        }
+
         // Add to memory queue
         this.memoryQueue.set(queuedMessage.id, queuedMessage);
 
         // Attempt immediate sync
         await this.processQueue();
+    }
+
+    /**
+     * Persist message directly to local storage without attempting service worker sync
+     * Used when context is known to be invalid
+     * Falls back to window.localStorage when chrome.storage is unavailable
+     * @param {Object} message - The message to persist
+     */
+    async persistDirectly(message) {
+        try {
+            if (this.cryptoKey) {
+                // Encrypted storage
+                await this.localQueue.enqueue(message, this.cryptoKey);
+                console.log(`📥 [KYT Queue] Persisted ${message.id} to encrypted local storage`);
+            } else {
+                // Unencrypted fallback - better than losing the message
+                await this.persistUnencrypted(message);
+                console.log(`📥 [KYT Queue] Persisted ${message.id} to unencrypted fallback storage`);
+            }
+        } catch (error) {
+            // chrome.storage failed - likely context is fully invalidated
+            console.warn(`⚠️ [KYT Queue] chrome.storage failed for ${message.id}, falling back to localStorage`);
+            try {
+                this.persistToWebStorage(message);
+                console.log(`💾 [KYT Queue] Persisted ${message.id} to emergency localStorage`);
+            } catch (e) {
+                console.error('❌ [KYT Queue] All persistence methods failed:', e);
+            }
+        }
+    }
+
+    /**
+     * EMERGENCY fallback: Persist to window.localStorage
+     * This works even when Chrome extension context is completely invalidated
+     * Messages stored here will be recovered when context is restored
+     * @param {Object} message - The message to store
+     */
+    persistToWebStorage(message) {
+        try {
+            // Read existing queue from localStorage
+            const stored = window.localStorage.getItem(LOCALSTORAGE_EMERGENCY_KEY);
+            const queue = stored ? JSON.parse(stored) : [];
+
+            // Prevent duplicates
+            if (queue.some(m => m.id === message.id)) {
+                console.log(`ℹ️ [KYT Queue] Message ${message.id} already in localStorage queue`);
+                return;
+            }
+
+            // Limit queue size to prevent localStorage bloat
+            while (queue.length >= LOCALSTORAGE_MAX_SIZE) {
+                const removed = queue.shift();
+                console.warn(`⚠️ [KYT Queue] localStorage overflow, removed oldest: ${removed.id}`);
+            }
+
+            // Add message (unencrypted - localStorage can't use crypto APIs reliably here)
+            queue.push({
+                ...message,
+                emergencyStorage: true,
+                storedAt: Date.now()
+            });
+
+            window.localStorage.setItem(LOCALSTORAGE_EMERGENCY_KEY, JSON.stringify(queue));
+        } catch (e) {
+            // localStorage might also fail (private mode, quota exceeded)
+            console.error('❌ [KYT Queue] localStorage fallback failed:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * Recover messages from emergency localStorage and migrate to chrome.storage
+     * Called when context is restored
+     * @returns {Promise<number>} Number of messages recovered
+     */
+    async recoverFromWebStorage() {
+        try {
+            const stored = window.localStorage.getItem(LOCALSTORAGE_EMERGENCY_KEY);
+            if (!stored) return 0;
+
+            const queue = JSON.parse(stored);
+            if (queue.length === 0) return 0;
+
+            console.log(`🔄 [KYT Queue] Found ${queue.length} messages in emergency localStorage`);
+
+            let syncedCount = 0;
+            const remaining = [];
+
+            for (const message of queue) {
+                // Try to sync each message
+                const success = await this.syncMessage(message);
+                if (success) {
+                    syncedCount++;
+                } else {
+                    remaining.push(message);
+                }
+            }
+
+            // Update localStorage with remaining (failed) messages
+            if (remaining.length > 0) {
+                window.localStorage.setItem(LOCALSTORAGE_EMERGENCY_KEY, JSON.stringify(remaining));
+            } else {
+                // All synced - clear localStorage
+                window.localStorage.removeItem(LOCALSTORAGE_EMERGENCY_KEY);
+            }
+
+            if (syncedCount > 0) {
+                console.log(`✅ [KYT Queue] Recovered ${syncedCount} messages from emergency localStorage`);
+            }
+
+            return syncedCount;
+        } catch (e) {
+            console.error('❌ [KYT Queue] Failed to recover from localStorage:', e);
+            return 0;
+        }
+    }
+
+    /**
+     * Store message in unencrypted local storage (fallback for edge cases)
+     * Falls back to window.localStorage if chrome.storage fails
+     * @param {Object} message - The message to store
+     */
+    async persistUnencrypted(message) {
+        try {
+            const result = await chrome.storage.local.get([UNENCRYPTED_QUEUE_KEY]);
+            const queue = result[UNENCRYPTED_QUEUE_KEY] || [];
+
+            // Limit queue size
+            if (queue.length >= 100) {
+                queue.shift(); // Remove oldest
+            }
+
+            queue.push(message);
+            await chrome.storage.local.set({ [UNENCRYPTED_QUEUE_KEY]: queue });
+        } catch (error) {
+            // chrome.storage failed - fall back to localStorage
+            console.warn('⚠️ [KYT Queue] chrome.storage.local failed, using localStorage fallback');
+            this.persistToWebStorage(message);
+        }
     }
 
     /**
@@ -76,6 +300,19 @@ export class MessageQueueManager {
         this.isSyncing = true;
 
         try {
+            // Re-check context validity
+            this.contextValid = this.isContextValid();
+
+            if (!this.contextValid) {
+                // Context invalid - persist all memory queue items directly
+                console.warn('⚠️ [KYT Queue] Context invalid during processQueue, persisting all to local storage');
+                for (const [id, message] of this.memoryQueue.entries()) {
+                    await this.persistDirectly(message);
+                    this.memoryQueue.delete(id);
+                }
+                return;
+            }
+
             // Process all items in memory queue
             for (const [id, message] of this.memoryQueue.entries()) {
                 const success = await this.syncMessage(message);
@@ -95,14 +332,79 @@ export class MessageQueueManager {
     }
 
     /**
+     * Retry syncing all pending messages from local storage
+     * Called when context is restored or periodically
+     */
+    async retryPendingQueue() {
+        if (!this.isContextValid()) {
+            console.log('🔄 [KYT Queue] Context still invalid, skipping retry');
+            return;
+        }
+
+        try {
+            let syncedCount = 0;
+            const syncedIds = [];
+
+            // Process encrypted queue
+            if (this.cryptoKey) {
+                const pendingMessages = await this.localQueue.dequeueAll(this.cryptoKey);
+
+                for (const message of pendingMessages) {
+                    const success = await this.syncMessage(message);
+                    if (success) {
+                        syncedIds.push(message.id);
+                        syncedCount++;
+                    }
+                }
+
+                // Remove successfully synced messages
+                if (syncedIds.length > 0) {
+                    await this.localQueue.remove(syncedIds);
+                }
+            }
+
+            // Process unencrypted fallback queue
+            const unencryptedResult = await chrome.storage.local.get([UNENCRYPTED_QUEUE_KEY]);
+            const unencryptedQueue = unencryptedResult[UNENCRYPTED_QUEUE_KEY] || [];
+
+            if (unencryptedQueue.length > 0) {
+                const remainingUnencrypted = [];
+
+                for (const message of unencryptedQueue) {
+                    const success = await this.syncMessage(message);
+                    if (success) {
+                        syncedCount++;
+                    } else {
+                        remainingUnencrypted.push(message);
+                    }
+                }
+
+                // Update unencrypted queue with remaining items
+                await chrome.storage.local.set({ [UNENCRYPTED_QUEUE_KEY]: remainingUnencrypted });
+            }
+
+            if (syncedCount > 0) {
+                console.log(`✅ [KYT Queue] Recovered ${syncedCount} pending messages`);
+            }
+        } catch (error) {
+            console.error('❌ [KYT Queue] Retry pending queue failed:', error);
+        }
+    }
+
+    /**
      * Attempt to sync a single message to Supabase via Service Worker
      * @param {Object} message - The queued message
      * @returns {Promise<boolean>} True on success
      */
     async syncMessage(message) {
+        // Pre-check context validity
+        if (!this.isContextValid()) {
+            console.warn(`⚠️ [KYT Queue] Context invalid, cannot sync ${message.id}`);
+            this.contextValid = false;
+            return false;
+        }
+
         try {
-            // Check if Service Worker is alive
-            // We use a simple ping or just try the message directly
             const response = await chrome.runtime.sendMessage({
                 type: 'SAVE_MESSAGE',
                 data: message
@@ -116,7 +418,15 @@ export class MessageQueueManager {
                 return false;
             }
         } catch (error) {
-            console.warn(`⚠️ [KYT Queue] Service Worker unreachable for ${message.id}:`, error.message);
+            // Detect context invalidation error
+            const errorMsg = error.message || '';
+            if (errorMsg.includes('Extension context invalidated') ||
+                errorMsg.includes('Receiving end does not exist')) {
+                console.warn(`⚠️ [KYT Queue] Context invalidated during sync for ${message.id}`);
+                this.contextValid = false;
+            } else {
+                console.warn(`⚠️ [KYT Queue] Service Worker unreachable for ${message.id}:`, errorMsg);
+            }
             return false;
         }
     }

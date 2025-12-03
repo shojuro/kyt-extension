@@ -20,6 +20,7 @@ const tierBadge = document.getElementById('tierBadge');
 const tierDescription = document.getElementById('tierDescription');
 const upgradeBtn = document.getElementById('upgradeBtn');
 const manageBillingBtn = document.getElementById('manageBillingBtn');
+const rescanBtn = document.getElementById('rescanBtn');
 
 // Tier descriptions for display
 const TIER_INFO = {

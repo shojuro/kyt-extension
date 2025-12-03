@@ -31,6 +31,15 @@
   domObserverScript.onload = function () {
     console.log('✅ KYT ChatGPT Content: dom-observer.js loaded into page context');
     this.remove();
+
+    // Sync debug mode
+    chrome.storage.local.get(['kytDebugMode'], (result) => {
+      if (result.kytDebugMode) {
+        window.dispatchEvent(new CustomEvent('KYT_DOM_COMMAND', {
+          detail: { command: 'enableDebug' }
+        }));
+      }
+    });
   };
   domObserverScript.onerror = function () {
     console.error('❌ KYT ChatGPT Content: Failed to load dom-observer.js');
@@ -79,18 +88,35 @@
     console.log('   Content preview:', messageData.content.substring(0, 50) + '...');
     console.log('   Capture method:', messageData.captureMethod || 'fetch');
 
-    // Check if extension context is still valid
-    if (!chrome.runtime?.id) {
-      console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated - message not saved');
-      console.warn('   Please reload the page to restore functionality');
-      return;
-    }
-
-    // Use Queue Manager if available, otherwise fallback to direct send
+    // Always use Queue Manager - it handles context invalidation gracefully
+    // Even if context is invalid, queue manager will persist to local storage
     if (queueManager) {
       console.log('📥 KYT ChatGPT Content: Enqueuing message via Queue Manager');
       await queueManager.capture(messageData);
     } else {
+      // Queue Manager not ready - check context validity first
+      if (!chrome.runtime?.id) {
+        console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated and Queue Manager not ready');
+        console.warn('   Attempting emergency local storage backup...');
+        // Emergency fallback: store directly in chrome.storage.local (unencrypted)
+        try {
+          const emergencyKey = 'kyt_emergency_queue';
+          const result = await chrome.storage.local.get([emergencyKey]);
+          const queue = result[emergencyKey] || [];
+          queue.push({
+            ...messageData,
+            id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            timestamp: Date.now(),
+            emergencyBackup: true
+          });
+          await chrome.storage.local.set({ [emergencyKey]: queue });
+          console.log('💾 KYT ChatGPT Content: Message saved to emergency backup');
+        } catch (e) {
+          console.error('❌ KYT ChatGPT Content: Emergency backup failed:', e);
+        }
+        return;
+      }
+
       console.warn('⚠️ KYT ChatGPT Content: Queue Manager not ready, falling back to direct send');
       // Forward to background script for storage (Legacy/Fallback)
       chrome.runtime.sendMessage({
@@ -115,17 +141,33 @@
     console.log('   Content preview:', messageData.content.substring(0, 50) + '...');
     console.log('   Source:', messageData.source);
 
-    // Check if extension context is still valid
-    if (!chrome.runtime?.id) {
-      console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated - message not saved');
-      return;
-    }
-
-    // Use Queue Manager if available, otherwise fallback to direct send
+    // Always use Queue Manager - it handles context invalidation gracefully
     if (queueManager) {
       console.log('📥 KYT ChatGPT Content: Enqueuing DOM message via Queue Manager');
       await queueManager.capture(messageData);
     } else {
+      // Queue Manager not ready - check context validity first
+      if (!chrome.runtime?.id) {
+        console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated and Queue Manager not ready');
+        console.warn('   Attempting emergency local storage backup for DOM message...');
+        try {
+          const emergencyKey = 'kyt_emergency_queue';
+          const result = await chrome.storage.local.get([emergencyKey]);
+          const queue = result[emergencyKey] || [];
+          queue.push({
+            ...messageData,
+            id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            timestamp: Date.now(),
+            emergencyBackup: true
+          });
+          await chrome.storage.local.set({ [emergencyKey]: queue });
+          console.log('💾 KYT ChatGPT Content: DOM message saved to emergency backup');
+        } catch (e) {
+          console.error('❌ KYT ChatGPT Content: Emergency backup failed for DOM message:', e);
+        }
+        return;
+      }
+
       console.warn('⚠️ KYT ChatGPT Content: Queue Manager not ready, falling back to direct send');
       chrome.runtime.sendMessage({
         type: 'SAVE_MESSAGE',

@@ -40,7 +40,7 @@
     MESSAGE_SELECTORS: {
       userMessage: '[data-message-author-role="user"]',
       assistantMessage: '[data-message-author-role="assistant"]',
-      messageFallback: '.group.w-full'
+      messageFallback: '.group.w-full, [data-testid*="conversation-turn"], article'
     },
 
     // Performance tuning
@@ -62,19 +62,27 @@
   let isProcessing = false;
   let debugMode = false;
 
+  // Cache to prevent spamming the same message during polling
+  const sentMessages = new Set();
+
+  // Initialization state (to prevent sending history on reload)
+  let isInitializing = false;
+
+  // Buffering for split user messages (Voice Mode chunks)
+  let userMessageBuffer = {
+    content: '',
+    timestamp: 0,
+    timer: null,
+    conversationId: null
+  };
+  const BUFFER_DELAY = 1500; // Wait 1.5s for more chunks
+
   /**
    * Initialize the DOM observer
    */
   function init() {
-    log('Initializing DOM observer for mobile message capture...');
-
-    // Check if already initialized
-    if (observer) {
-      log('Observer already running, skipping init');
-      return;
-    }
-
     try {
+      log('Initializing DOM observer for mobile message capture...');
       startObserver();
     } catch (error) {
       logError('Failed to initialize observer:', error);
@@ -86,30 +94,71 @@
    * Start the MutationObserver
    */
   function startObserver() {
-    // Find conversation container
+    // Find conversation container (for logging/debugging)
     const container = findConversationContainer();
-    if (!container) {
-      throw new Error('Conversation container not found');
-    }
+    const targetNode = document.body; // NUCLEAR OPTION: Observe body to ensure we catch everything
 
-    log('Found conversation container:', container.tagName, container.className);
+    log('Starting observer on:', targetNode.tagName, '(Container found:', container ? container.className : 'NONE', ')');
 
     // Create observer
     observer = new MutationObserver(handleMutations);
 
     // Start observing
-    observer.observe(container, {
+    observer.observe(targetNode, {
       childList: true,   // Watch for added/removed nodes
       subtree: true,     // Watch entire subtree
       attributes: true,  // Watch attribute changes (for role updates)
       characterData: true // Watch text changes (for streaming content)
     });
 
+    // Set initialization flag to ignore existing history
+    isInitializing = true;
+    log('Initialization phase started (ignoring history for 3s)...');
+    setTimeout(() => {
+      isInitializing = false;
+      log('Initialization phase complete - ready to capture new messages');
+    }, 3000);
+
+    // Hydrate cache with existing messages (still useful for immediate cache population)
+    hydrateCache();
+
     restartAttempts = 0; // Reset on success
-    log('DOM observer started successfully');
+    log('DOM observer started successfully (watching document.body)');
 
     // Notify background of observer status
     notifyBackgroundObserverStatus('running');
+  }
+
+  /**
+   * Hydrate cache with existing messages (prevent re-sending history)
+   */
+  function hydrateCache() {
+    const container = findConversationContainer() || document.body;
+    const groups = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.messageFallback);
+    const allNodes = Array.from(groups).filter(node => isMessageNode(node));
+
+    // Scan last 20 messages
+    const recentNodes = allNodes.slice(-20);
+    let count = 0;
+
+    recentNodes.forEach(node => {
+      try {
+        const message = extractMessage(node);
+        if (message) {
+          const signature = `${message.role}:${message.content.trim()}`;
+          if (!sentMessages.has(signature)) {
+            sentMessages.add(signature);
+            count++;
+          }
+        }
+      } catch (e) {
+        // Ignore errors during hydration
+      }
+    });
+
+    if (count > 0) {
+      log(`Hydrated cache with ${count} existing messages`);
+    }
   }
 
   /**
@@ -173,26 +222,32 @@
         let targetNode = null;
 
         if (mutation.type === 'childList') {
-          // For added nodes, we check the node itself, its children, AND its ancestors
-          for (const node of mutation.addedNodes) {
-            if (!(node instanceof HTMLElement)) continue;
-
-            // 1. Check if the node itself is a message
-            if (isMessageNode(node)) {
-              processMessageNode(node);
-              continue;
-            }
-
-            // 2. Check if it contains message nodes
-            const messageNodes = node.querySelectorAll(CONFIG.MESSAGE_SELECTORS.userMessage);
-            messageNodes.forEach(processMessageNode);
-
-            // 3. Check if it's INSIDE a message node (e.g. a new paragraph added to existing message)
-            const parentMessage = findClosestMessageNode(node);
-            if (parentMessage) {
-              processMessageNode(parentMessage);
-            }
+          // Aggressive Debug Logging
+          if (debugMode) {
+            mutation.addedNodes.forEach(node => {
+              if (node.nodeType === 1) { // Element
+                console.log('DOM DEBUG: Added node:', node.tagName, node.className, node.outerHTML.substring(0, 100));
+              }
+            });
           }
+
+          mutation.addedNodes.forEach(node => {
+            if (node.nodeType === 1) { // Element
+              // Check if the node itself is a message
+              if (isMessageNode(node)) {
+                processMessageNode(node);
+              }
+              // Also check children (sometimes messages are wrapped)
+              else {
+                const messages = node.querySelectorAll(CONFIG.MESSAGE_SELECTORS.messageFallback);
+                messages.forEach(msg => {
+                  if (isMessageNode(msg)) {
+                    processMessageNode(msg);
+                  }
+                });
+              }
+            }
+          });
         }
         else if (mutation.type === 'characterData') {
           // Text changed - check ancestors
@@ -212,8 +267,8 @@
             processMessageNode(messageNode);
           }
         }
-      }
 
+      }
     } catch (error) {
       logError('Error processing mutations:', error);
       stopObserver();
@@ -228,22 +283,17 @@
     }
   }
 
-  // Cache to prevent spamming the same message during polling
-  const sentMessages = new Set();
-
   /**
    * Scan the last few messages to ensure we didn't miss anything
    * (Active Polling on Mutation)
    */
   function checkRecentMessages() {
-    const container = findConversationContainer();
-    if (!container) return;
+    // Use container if found, otherwise fallback to body (matching observer strategy)
+    const container = findConversationContainer() || document.body;
 
-    // Get all message nodes
-    let allNodes = [];
-    const userNodes = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.userMessage);
-    const assistantNodes = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.assistantMessage);
-    allNodes = [...Array.from(userNodes), ...Array.from(assistantNodes)];
+    // Get all message nodes using the broad fallback selector
+    const groups = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.messageFallback);
+    const allNodes = Array.from(groups).filter(node => isMessageNode(node));
 
     if (allNodes.length === 0) return;
 
@@ -335,13 +385,87 @@
       const message = extractMessage(node);
 
       if (message) {
+        // Deduplication: Check cache
+        const signature = `${message.role}:${message.content.trim()}`;
+
+        // Always update cache, even if initializing
+        if (sentMessages.has(signature)) {
+          return; // Skip duplicate
+        }
+        sentMessages.add(signature);
+        if (sentMessages.size > 100) {
+          const first = sentMessages.values().next().value;
+          sentMessages.delete(first);
+        }
+
+        // If initializing, DO NOT send (it's history)
+        if (isInitializing) {
+          log('Skipping history message during init:', message.content.substring(0, 30) + '...');
+          return;
+        }
+
         log('Extracted message:', message.content.substring(0, 50) + '...');
-        sendToBackground(message);
+
+        // User Message Buffering (Merge split paragraphs)
+        if (message.role === 'user') {
+          handleUserMessageBuffering(message);
+        } else {
+          // Assistant/System message: Flush any pending user buffer first
+          flushUserBuffer();
+          sendToBackground(message);
+        }
       }
 
     } catch (error) {
       logError('Error processing message node:', error);
     }
+  }
+
+  /**
+   * Handle buffering of user messages to merge chunks
+   */
+  function handleUserMessageBuffering(message) {
+    // If buffer is empty, start new
+    if (!userMessageBuffer.content) {
+      userMessageBuffer.content = message.content;
+      userMessageBuffer.timestamp = message.timestamp;
+      userMessageBuffer.conversationId = message.conversationId;
+    } else {
+      // Append to existing (space separated)
+      userMessageBuffer.content += ' ' + message.content;
+    }
+
+    // Reset timer
+    if (userMessageBuffer.timer) clearTimeout(userMessageBuffer.timer);
+
+    userMessageBuffer.timer = setTimeout(() => {
+      flushUserBuffer();
+    }, BUFFER_DELAY);
+  }
+
+  /**
+   * Flush the user message buffer to background
+   */
+  function flushUserBuffer() {
+    if (!userMessageBuffer.content) return;
+
+    const combinedMessage = {
+      role: 'user',
+      content: userMessageBuffer.content,
+      timestamp: userMessageBuffer.timestamp,
+      conversationId: userMessageBuffer.conversationId,
+      messageId: generateMessageId(), // Generate ID at flush time
+      source: 'dom'
+    };
+
+    log('Flushing buffered user message:', combinedMessage.content.substring(0, 50) + '...');
+    sendToBackground(combinedMessage);
+
+    // Reset buffer
+    userMessageBuffer.content = '';
+    userMessageBuffer.timestamp = 0;
+    userMessageBuffer.conversationId = null;
+    userMessageBuffer.timer = null;
   }
 
   /**
@@ -356,7 +480,17 @@
 
 
     // Extract text content (safe, no innerHTML)
-    const content = node.innerText?.trim();
+    let content = node.innerText?.trim();
+
+    // Strip "You said:" / "ChatGPT said:" prefixes if present
+    // This handles the mobile voice view specific format
+    if (content) {
+      if (content.startsWith('You said:')) {
+        content = content.substring('You said:'.length).trim();
+      } else if (content.startsWith('ChatGPT said:')) {
+        content = content.substring('ChatGPT said:'.length).trim();
+      }
+    }
 
     if (!content || content.length === 0) {
       return null;
@@ -387,25 +521,7 @@
   /**
    * Determine message role (user vs assistant)
    */
-  function determineRole(node) {
-    // Check data attribute (most reliable)
-    const roleAttr = node.getAttribute('data-message-author-role');
-    if (roleAttr) {
-      return roleAttr;
-    }
 
-    // Check for class patterns
-    if (node.matches('[class*="user"]')) {
-      return 'user';
-    }
-    if (node.matches('[class*="assistant"]')) {
-      return 'assistant';
-    }
-
-    // Default to user (safer for DOM capture)
-    // API interception already handles assistant messages
-    return 'user';
-  }
 
   /**
    * Check if content is a placeholder
@@ -554,13 +670,25 @@
     };
   }
 
-  // Listen for page-level commands
-  window.addEventListener('KYT_DOM_COMMAND', (event) => {
+  // Listen for commands from content script (CustomEvent)
+  window.addEventListener('KYT_DOM_COMMAND', function (event) {
     const { command } = event.detail;
+    handleCommand(command);
+  });
 
+  // Listen for commands from content script (postMessage - fallback)
+  window.addEventListener('message', function (event) {
+    if (event.source !== window) return;
+    if (event.data && event.data.type === 'KYT_DOM_COMMAND') {
+      handleCommand(event.data.command);
+    }
+  });
+
+  function handleCommand(command) {
+    log('Received command:', command);
     switch (command) {
       case 'start':
-        init();
+        startObserver();
         break;
       case 'stop':
         stopObserver();
@@ -581,7 +709,7 @@
         }));
         break;
     }
-  });
+  }
 
   /**
    * Scan existing messages in the DOM (Recovery Mode)
@@ -594,20 +722,10 @@
       return;
     }
 
-    // Find all message nodes (user AND assistant)
-    let messageNodes = [];
-
-    // Try explicit selectors first
-    const userNodes = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.userMessage);
-    const assistantNodes = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.assistantMessage);
-
-    messageNodes = [...Array.from(userNodes), ...Array.from(assistantNodes)];
-
-    if (messageNodes.length === 0) {
-      // Fallback: try finding all groups and filtering
-      const groups = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.messageFallback);
-      messageNodes = Array.from(groups).filter(node => isMessageNode(node));
-    }
+    // Find all message nodes using the broad fallback selector
+    // This ensures we capture nodes even if they lack specific role attributes
+    const groups = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.messageFallback);
+    const messageNodes = Array.from(groups).filter(node => isMessageNode(node));
 
     // Sort by position in DOM to maintain order
     messageNodes.sort((a, b) => {
@@ -615,6 +733,10 @@
     });
 
     log(`Found ${messageNodes.length} existing message nodes`);
+
+    if (debugMode) {
+      logStructure(container);
+    }
 
     let capturedCount = 0;
     messageNodes.forEach(node => {
@@ -634,6 +756,64 @@
     });
 
     log(`Rescan complete: Sent ${capturedCount} messages`);
+  }
+
+  /**
+   * Log DOM structure for debugging
+   */
+  function logStructure(container) {
+    try {
+      log('--- DOM STRUCTURE DUMP ---');
+      const children = container.children;
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        log(`Node ${i}: Tag=${child.tagName}, Class="${child.className}", Role=${child.getAttribute('data-message-author-role')}`);
+      }
+      log('--------------------------');
+    } catch (e) {
+      logError('Failed to log structure:', e);
+    }
+  }
+
+  // ... (rest of file)
+
+  /**
+   * Determine message role (user vs assistant)
+   */
+  function determineRole(node) {
+    // Check data attribute (most reliable)
+    const roleAttr = node.getAttribute('data-message-author-role');
+    if (roleAttr) {
+      return roleAttr;
+    }
+
+    // Check for class patterns
+    if (node.matches('[class*="user"]')) {
+      return 'user';
+    }
+    if (node.matches('[class*="assistant"]')) {
+      return 'assistant';
+    }
+
+    // Check for user-specific elements (avatar, etc)
+    if (node.querySelector('[alt="User"]')) {
+      return 'user';
+    }
+
+    // Check text content for explicit prefixes (Mobile Voice View)
+    const text = node.innerText?.trim();
+    if (text) {
+      if (text.startsWith('You said:')) {
+        return 'user';
+      }
+      if (text.startsWith('ChatGPT said:')) {
+        return 'assistant';
+      }
+    }
+
+    // Default to assistant if it's a message node but not explicitly user
+    // This is crucial for mobile voice where assistant attributes might be missing/different
+    return 'assistant';
   }
 
   // Auto-initialize when DOM is ready

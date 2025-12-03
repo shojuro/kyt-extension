@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+#### Qwen3-Embedding-8B Migration (Critical Fix)
+
+**Problem**: Dimension mismatch between code-generated embeddings (OpenAI 1536d) and database schema (4096d) caused 98% of embeddings to be NULL, completely breaking semantic search.
+
+**Root Cause**: Code was using OpenAI `text-embedding-3-small` (1536 dimensions) while database expected Qwen3-Embedding-8B (4096 dimensions). PostgreSQL rejected the mismatched vectors, storing NULL instead.
+
+**Solution**: Migrated embedding generation to Qwen3-Embedding-8B via HuggingFace API.
+
+**Files Modified**:
+- `src/browser-sync.js`: Replaced OpenAI embedding generation with Qwen3-Embedding-8B via HuggingFace
+- `src/browser-search.js`: Updated query embedding to use Qwen3, added BGE-reranker-v2-m3 for reranking
+- `setup.html`: Added HuggingFace API key input field
+- `setup.js`: Added `huggingfaceKey` to config storage
+
+**Database State** (pre-backfill):
+- Total chat_turns: 3,384
+- With embedding (4096d): 57 (1.7%) - new messages after code fix
+- NULL embeddings: 3,327 (98.3%) - legacy data requiring backfill
+
+**Backfill Script**: `scripts/backfill-qwen3-embeddings.js`
+- Processes both `messages` and `chat_turns` tables
+- Batch processing with rate limiting (1 req/sec)
+- Dry-run mode for safe testing
+- Environment variables: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `HUGGINGFACE_API_KEY`
+
+**New Dependencies**:
+- HuggingFace API key required for embedding generation
+- HuggingFace Inference API for BGE reranker
+
+**Breaking Changes**: None (graceful degradation if HuggingFace key not configured)
+
 ## [1.2.2] - 2025-11-30
 
 ### Added

@@ -33,6 +33,8 @@ chrome.runtime.onStartup.addListener(() => {
   try {
     queueProcessor.initialize();
     queueProcessor.processQueue();
+    // Also process any pending local queues (context invalidation recovery)
+    processPendingLocalQueues();
   } catch (error) {
     console.error('❌ Failed to initialize queue processor on startup:', error);
     // Store error for later diagnosis
@@ -54,6 +56,8 @@ chrome.runtime.onInstalled.addListener(() => {
   try {
     queueProcessor.initialize();
     queueProcessor.processQueue();
+    // Also process any pending local queues (context invalidation recovery)
+    processPendingLocalQueues();
   } catch (error) {
     console.error('❌ Failed to initialize queue processor on install:', error);
     // Store error for later diagnosis
@@ -70,12 +74,14 @@ chrome.runtime.onInstalled.addListener(() => {
   }
 });
 
-// Periodic queue processing (every 5 mins)
-chrome.alarms.create('processQueue', { periodInMinutes: 5 });
+// Periodic queue processing (every 1 min - more aggressive for MV3 service worker keepalive)
+chrome.alarms.create('processQueue', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'processQueue') {
     try {
       queueProcessor.processQueue();
+      // Also process any pending local queues (context invalidation recovery)
+      processPendingLocalQueues();
     } catch (error) {
       console.error('❌ Failed to process queue on alarm:', error);
       // Store error for later diagnosis
@@ -92,6 +98,74 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     }
   }
 });
+
+/**
+ * Process pending local queues (context invalidation recovery)
+ * Handles messages that were stored when service worker was unavailable
+ */
+async function processPendingLocalQueues() {
+  try {
+    // Process emergency queue (from content script fallback)
+    const emergencyKey = 'kyt_emergency_queue';
+    const emergencyResult = await chrome.storage.local.get([emergencyKey]);
+    const emergencyQueue = emergencyResult[emergencyKey] || [];
+
+    if (emergencyQueue.length > 0) {
+      console.log(`🔄 Processing ${emergencyQueue.length} messages from emergency queue`);
+      const failed = [];
+
+      for (const message of emergencyQueue) {
+        try {
+          await saveMessage(message);
+          console.log(`✅ Recovered emergency message: ${message.id}`);
+        } catch (error) {
+          console.error(`❌ Failed to recover emergency message ${message.id}:`, error);
+          failed.push(message);
+        }
+      }
+
+      // Update queue with any failed items
+      await chrome.storage.local.set({ [emergencyKey]: failed });
+
+      if (failed.length === 0) {
+        console.log('✅ Emergency queue fully processed');
+      } else {
+        console.warn(`⚠️ ${failed.length} emergency messages failed, will retry later`);
+      }
+    }
+
+    // Process unencrypted fallback queue (from queue-manager.js)
+    const unencryptedKey = 'kyt_pending_unencrypted_queue';
+    const unencryptedResult = await chrome.storage.local.get([unencryptedKey]);
+    const unencryptedQueue = unencryptedResult[unencryptedKey] || [];
+
+    if (unencryptedQueue.length > 0) {
+      console.log(`🔄 Processing ${unencryptedQueue.length} messages from unencrypted queue`);
+      const failed = [];
+
+      for (const message of unencryptedQueue) {
+        try {
+          await saveMessage(message);
+          console.log(`✅ Recovered unencrypted message: ${message.id}`);
+        } catch (error) {
+          console.error(`❌ Failed to recover unencrypted message ${message.id}:`, error);
+          failed.push(message);
+        }
+      }
+
+      // Update queue with any failed items
+      await chrome.storage.local.set({ [unencryptedKey]: failed });
+
+      if (failed.length === 0) {
+        console.log('✅ Unencrypted queue fully processed');
+      } else {
+        console.warn(`⚠️ ${failed.length} unencrypted messages failed, will retry later`);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Failed to process pending local queues:', error);
+  }
+}
 
 // ... existing code ...
 
@@ -1053,8 +1127,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle different message types
   switch (message.type) {
     case 'FLUSH_QUEUE':
-      queueProcessor.processQueue()
-        .then(result => sendResponse(result))
+      // Process both queue processor and pending local queues (context invalidation recovery)
+      Promise.all([
+        queueProcessor.processQueue(),
+        processPendingLocalQueues()
+      ])
+        .then(([queueResult]) => sendResponse(queueResult || { success: true }))
         .catch(err => sendResponse({ error: err.message }));
       return true;
 
