@@ -118,14 +118,16 @@ function batchByTokens(texts, maxTokensPerBatch = 8000) {
 }
 
 /**
- * Generate embeddings using Qwen3-Embedding-8B via HuggingFace API
+ * Generate embeddings using Qwen3-Embedding-8B via Nebius API
  * Produces 4096-dimensional embeddings (matches database schema)
+ * Uses the Nebius API directly (OpenAI-compatible format)
+ *
  * @param {string[]} texts - Array of message content strings
  * @param {string} _apiKey - Unused (kept for backward compatibility)
  * @returns {Promise<number[][]>} Array of 4096-dimensional embeddings
  */
 async function generateEmbeddings(texts, _apiKey) {
-  // Get HuggingFace key from config
+  // Get HuggingFace key from config (used for Nebius via HF)
   const config = await getConfig();
   const HF_API_KEY = config.huggingfaceKey;
 
@@ -138,7 +140,7 @@ async function generateEmbeddings(texts, _apiKey) {
   // Batch by tokens (Qwen3 has similar limits)
   const batches = batchByTokens(texts, 4000);
 
-  console.log(`📊 Generating Qwen3 embeddings: ${batches.length} batches for ${texts.length} messages`);
+  console.log(`📊 Generating Qwen3 embeddings via Nebius: ${batches.length} batches for ${texts.length} messages`);
 
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
@@ -146,8 +148,9 @@ async function generateEmbeddings(texts, _apiKey) {
 
     console.log(`📊 Batch ${i + 1}/${batches.length}: ${batch.length} messages (~${batchTokens} tokens)`);
 
+    // Nebius API uses OpenAI-compatible format
     const response = await fetchWithTimeout(
-      'https://router.huggingface.co/hf-inference/models/Qwen/Qwen3-Embedding-8B',
+      'https://api.studio.nebius.ai/v1/embeddings',
       {
         method: 'POST',
         headers: {
@@ -155,20 +158,20 @@ async function generateEmbeddings(texts, _apiKey) {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          inputs: batch,
-          options: { wait_for_model: false } // Don't wait - faster, handle 503 separately
+          model: 'Qwen/Qwen3-Embedding-8B',
+          input: batch  // Nebius uses 'input' not 'inputs'
         })
       },
       SYNC_API_TIMEOUT_MS
     );
 
-    // Handle model loading (503) - wait and retry
-    if (response.status === 503) {
-      console.warn(`   ⏳ Model loading (503), waiting 5s and retrying...`);
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      // Retry with wait_for_model this time
+    // Handle rate limiting (429)
+    if (response.status === 429) {
+      console.warn(`   ⏳ Rate limited (429), waiting 10s and retrying...`);
+      await new Promise(resolve => setTimeout(resolve, 10000));
+
       const retryResponse = await fetchWithTimeout(
-        'https://router.huggingface.co/hf-inference/models/Qwen/Qwen3-Embedding-8B',
+        'https://api.studio.nebius.ai/v1/embeddings',
         {
           method: 'POST',
           headers: {
@@ -176,44 +179,41 @@ async function generateEmbeddings(texts, _apiKey) {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            inputs: batch,
-            options: { wait_for_model: true }
+            model: 'Qwen/Qwen3-Embedding-8B',
+            input: batch
           })
         },
-        SYNC_API_TIMEOUT_MS * 2 // Double timeout for retry
+        SYNC_API_TIMEOUT_MS * 2
       );
 
       if (!retryResponse.ok) {
         const errorText = await retryResponse.text();
-        throw new Error(`HuggingFace API error on retry: ${retryResponse.status} - ${errorText}`);
+        throw new Error(`Nebius API error on retry: ${retryResponse.status} - ${errorText}`);
       }
 
-      const retryEmbeddings = await retryResponse.json();
-      if (Array.isArray(retryEmbeddings) && Array.isArray(retryEmbeddings[0])) {
-        allEmbeddings.push(...retryEmbeddings);
-      } else if (Array.isArray(retryEmbeddings)) {
-        allEmbeddings.push(retryEmbeddings);
-      }
-      continue; // Skip the rest of the loop iteration
+      const retryData = await retryResponse.json();
+      // OpenAI-compatible format: { data: [{ embedding: [...] }, ...] }
+      const retryEmbeddings = retryData.data.map(item => item.embedding);
+      allEmbeddings.push(...retryEmbeddings);
+      continue;
     }
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`HuggingFace API error: ${response.status} - ${errorText}`);
+      throw new Error(`Nebius API error: ${response.status} - ${errorText}`);
     }
 
-    const embeddings = await response.json();
+    const responseData = await response.json();
 
-    // Handle response format - HuggingFace returns array of embeddings
-    if (Array.isArray(embeddings) && Array.isArray(embeddings[0])) {
+    // OpenAI-compatible format: { data: [{ embedding: [...] }, ...] }
+    if (responseData.data && Array.isArray(responseData.data)) {
+      const embeddings = responseData.data.map(item => item.embedding);
       allEmbeddings.push(...embeddings);
-    } else if (Array.isArray(embeddings)) {
-      allEmbeddings.push(embeddings);
     } else {
-      throw new Error('Unexpected embedding response format from HuggingFace');
+      throw new Error('Unexpected embedding response format from Nebius');
     }
 
-    // Rate limit protection (slightly longer for HuggingFace)
+    // Rate limit protection
     if (i < batches.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 200));
     }

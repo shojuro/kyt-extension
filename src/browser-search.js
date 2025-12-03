@@ -62,7 +62,7 @@ async function getConfig() {
 }
 
 /**
- * Generate embedding for search query using Qwen3-Embedding-8B
+ * Generate embedding for search query using Qwen3-Embedding-8B via Nebius API
  * Uses timeout and retry logic to prevent Chrome message channel timeout
  * @param {string} query - Search query text
  * @param {string} _apiKey - Unused (kept for backward compatibility)
@@ -86,8 +86,9 @@ async function generateQueryEmbedding(query, _apiKey) {
         await new Promise(resolve => setTimeout(resolve, API_RETRY_DELAY_MS));
       }
 
+      // Use Nebius API directly (OpenAI-compatible format)
       const response = await fetchWithTimeout(
-        'https://router.huggingface.co/hf-inference/models/Qwen/Qwen3-Embedding-8B',
+        'https://api.studio.nebius.ai/v1/embeddings',
         {
           method: 'POST',
           headers: {
@@ -95,12 +96,20 @@ async function generateQueryEmbedding(query, _apiKey) {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            inputs: query,
-            options: { wait_for_model: false } // Don't wait - faster, may 503
+            model: 'Qwen/Qwen3-Embedding-8B',
+            input: query  // Nebius uses 'input' not 'inputs'
           })
         },
         API_TIMEOUT_MS
       );
+
+      // Handle rate limiting (429)
+      if (response.status === 429) {
+        console.warn(`   ⏳ Rate limited (429), waiting before retry...`);
+        lastError = new Error('Rate limited, retry needed');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue; // Retry
+      }
 
       // Handle model loading (503) - retry
       if (response.status === 503) {
@@ -112,16 +121,25 @@ async function generateQueryEmbedding(query, _apiKey) {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`HuggingFace API error: ${response.status} - ${errorText}`);
+        throw new Error(`Nebius API error: ${response.status} - ${errorText}`);
       }
 
-      const embedding = await response.json();
+      const responseData = await response.json();
 
-      // Handle response format - single query returns single embedding
-      if (Array.isArray(embedding) && Array.isArray(embedding[0])) {
-        return embedding[0]; // First embedding if nested
+      // OpenAI-compatible format: { data: [{ embedding: [...4096 floats...] }] }
+      if (responseData.data && Array.isArray(responseData.data) && responseData.data[0]?.embedding) {
+        return responseData.data[0].embedding;
       }
-      return embedding;
+
+      // Fallback: handle legacy format if present
+      if (Array.isArray(responseData) && Array.isArray(responseData[0])) {
+        return responseData[0];
+      }
+      if (Array.isArray(responseData)) {
+        return responseData;
+      }
+
+      throw new Error('Unexpected embedding response format from Nebius');
 
     } catch (error) {
       lastError = error;
@@ -571,7 +589,7 @@ export async function searchHybrid(query, options = {}) {
   }
 
 /**
- * Rerank results using BGE-reranker-v2-m3 via HuggingFace API
+ * Rerank results using BGE-reranker-v2-m3 via HuggingFace Inference API
  * Improves final ranking by cross-encoding query+passage pairs
  * Uses timeout to prevent Chrome message channel timeout
  * @param {string} query - User's search query
@@ -596,8 +614,9 @@ async function rerankResults(query, results) {
       text_pair: r.content || ''
     }));
 
+    // Use direct HuggingFace Inference API endpoint
     const response = await fetchWithTimeout(
-      'https://router.huggingface.co/hf-inference/models/BAAI/bge-reranker-v2-m3',
+      'https://api-inference.huggingface.co/models/BAAI/bge-reranker-v2-m3',
       {
         method: 'POST',
         headers: {
@@ -611,6 +630,12 @@ async function rerankResults(query, results) {
       },
       API_TIMEOUT_MS
     );
+
+    // Handle rate limiting (429)
+    if (response.status === 429) {
+      console.warn('   ⏳ Reranker rate limited, skipping reranking');
+      return results;
+    }
 
     // Handle model loading (503) - skip reranking, not critical
     if (response.status === 503) {
