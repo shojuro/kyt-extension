@@ -3,7 +3,7 @@
  * Backfill Qwen3 Embeddings Script
  *
  * Re-embeds all messages with NULL embeddings using Qwen3-Embedding-8B (4096d)
- * to fix the dimension mismatch bug.
+ * via HuggingFace Inference Providers (Nebius backend).
  *
  * Usage:
  *   SUPABASE_URL=https://xxx.supabase.co \
@@ -15,7 +15,11 @@
  *   --dry-run       Preview without making changes
  *   --batch-size N  Process N messages per batch (default: 10)
  *   --limit N       Process only N total messages (default: all)
+ *
+ * Requires: npm install @huggingface/inference
  */
+
+import { InferenceClient } from '@huggingface/inference';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -29,18 +33,22 @@ const LIMIT = args.includes('--limit') ? parseInt(args[args.indexOf('--limit') +
 
 // Validate environment
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !HUGGINGFACE_API_KEY) {
-  console.error('❌ Missing required environment variables:');
-  console.error('   SUPABASE_URL:', SUPABASE_URL ? '✅' : '❌ Missing');
-  console.error('   SUPABASE_SERVICE_ROLE_KEY:', SUPABASE_SERVICE_ROLE_KEY ? '✅' : '❌ Missing');
-  console.error('   HUGGINGFACE_API_KEY:', HUGGINGFACE_API_KEY ? '✅' : '❌ Missing');
+  console.error('Missing required environment variables:');
+  console.error('   SUPABASE_URL:', SUPABASE_URL ? 'Set' : 'Missing');
+  console.error('   SUPABASE_SERVICE_ROLE_KEY:', SUPABASE_SERVICE_ROLE_KEY ? 'Set' : 'Missing');
+  console.error('   HUGGINGFACE_API_KEY:', HUGGINGFACE_API_KEY ? 'Set' : 'Missing');
   process.exit(1);
 }
 
-console.log('🔧 Qwen3 Embedding Backfill Script');
+// Initialize HuggingFace Inference Client with Nebius provider
+const hfClient = new InferenceClient(HUGGINGFACE_API_KEY);
+
+console.log('Qwen3 Embedding Backfill Script');
 console.log(`   Supabase URL: ${SUPABASE_URL}`);
 console.log(`   Batch size: ${BATCH_SIZE}`);
 console.log(`   Limit: ${LIMIT || 'all'}`);
 console.log(`   Dry run: ${DRY_RUN}`);
+console.log(`   Provider: nebius (Qwen3-Embedding-8B 4096d)`);
 console.log('');
 
 /**
@@ -84,36 +92,37 @@ async function fetchTurnsWithNullEmbeddings(offset = 0, limit = 100) {
 }
 
 /**
- * Generate embeddings using Qwen3-Embedding-8B via HuggingFace
+ * Generate embeddings using Qwen3-Embedding-8B via HuggingFace Inference Providers
+ * Uses Nebius as the backend provider for Qwen3 models
  */
 async function generateQwen3Embeddings(texts) {
-  const response = await fetch(
-    'https://router.huggingface.co/hf-inference/models/Qwen/Qwen3-Embedding-8B',
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${HUGGINGFACE_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        inputs: texts,
-        options: { wait_for_model: true }
-      })
-    }
-  );
+  const embeddings = [];
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`HuggingFace API error: ${response.status} - ${errorText}`);
+  // Process texts one at a time (featureExtraction doesn't support batch in same way)
+  for (const text of texts) {
+    const result = await hfClient.featureExtraction({
+      provider: 'nebius',
+      model: 'Qwen/Qwen3-Embedding-8B',
+      inputs: text || ' '  // Use space for empty strings to avoid API errors
+    });
+
+    // Result is [[...4096 floats...]] - nested array (batch wrapper)
+    // We need to extract result[0] to get the actual embedding vector
+    if (Array.isArray(result) && Array.isArray(result[0])) {
+      embeddings.push(result[0]);  // Unwrap the batch wrapper
+    } else if (Array.isArray(result)) {
+      embeddings.push(result);  // Already flat array
+    } else {
+      console.warn(`   Warning: Unexpected embedding format for text`);
+      embeddings.push(result);
+    }
   }
 
-  const embeddings = await response.json();
-
   // Validate dimensions
-  if (Array.isArray(embeddings) && embeddings.length > 0) {
-    const dim = Array.isArray(embeddings[0]) ? embeddings[0].length : 0;
+  if (embeddings.length > 0 && Array.isArray(embeddings[0])) {
+    const dim = embeddings[0].length;
     if (dim !== 4096) {
-      console.warn(`⚠️  Warning: Expected 4096d, got ${dim}d`);
+      console.warn(`   Warning: Expected 4096d, got ${dim}d`);
     }
   }
 
@@ -125,7 +134,8 @@ async function generateQwen3Embeddings(texts) {
  */
 async function updateMessageEmbedding(messageId, embedding) {
   if (DRY_RUN) {
-    console.log(`   [DRY RUN] Would update message ${messageId} with ${embedding.length}d embedding`);
+    const dim = Array.isArray(embedding) ? embedding.length : 'unknown';
+    console.log(`   [DRY RUN] Would update message ${messageId} with ${dim}d embedding`);
     return true;
   }
 
@@ -144,7 +154,7 @@ async function updateMessageEmbedding(messageId, embedding) {
 
   if (!response.ok) {
     const error = await response.text();
-    console.error(`   ❌ Failed to update message ${messageId}: ${error}`);
+    console.error(`   Failed to update message ${messageId}: ${error}`);
     return false;
   }
 
@@ -156,7 +166,8 @@ async function updateMessageEmbedding(messageId, embedding) {
  */
 async function updateTurnEmbedding(turnId, embedding) {
   if (DRY_RUN) {
-    console.log(`   [DRY RUN] Would update turn ${turnId} with ${embedding.length}d embedding`);
+    const dim = Array.isArray(embedding) ? embedding.length : 'unknown';
+    console.log(`   [DRY RUN] Would update turn ${turnId} with ${dim}d embedding`);
     return true;
   }
 
@@ -175,7 +186,7 @@ async function updateTurnEmbedding(turnId, embedding) {
 
   if (!response.ok) {
     const error = await response.text();
-    console.error(`   ❌ Failed to update turn ${turnId}: ${error}`);
+    console.error(`   Failed to update turn ${turnId}: ${error}`);
     return false;
   }
 
@@ -199,14 +210,14 @@ async function main() {
   const startTime = Date.now();
 
   // Process messages table
-  console.log('📦 Processing messages table...');
+  console.log('Processing messages table...');
   let offset = 0;
 
   while (true) {
     const messages = await fetchMessagesWithNullEmbeddings(offset, BATCH_SIZE);
 
     if (messages.length === 0) {
-      console.log('   ✅ No more messages with NULL embeddings');
+      console.log('   No more messages with NULL embeddings');
       break;
     }
 
@@ -221,13 +232,13 @@ async function main() {
       // Update each message
       for (let i = 0; i < messages.length; i++) {
         const msg = messages[i];
-        const embedding = Array.isArray(embeddings[0]) ? embeddings[i] : embeddings;
+        const embedding = embeddings[i];
 
         const success = await updateMessageEmbedding(msg.message_id, embedding);
 
         if (success) {
           totalSuccess++;
-          console.log(`   ✅ [${totalProcessed + 1}] Updated: ${msg.message_id.substring(0, 20)}...`);
+          console.log(`   [${totalProcessed + 1}] Updated: ${msg.message_id.substring(0, 20)}...`);
         } else {
           totalFailed++;
         }
@@ -242,7 +253,7 @@ async function main() {
       }
 
     } catch (error) {
-      console.error(`   ❌ Batch failed: ${error.message}`);
+      console.error(`   Batch failed: ${error.message}`);
       totalFailed += messages.length;
     }
 
@@ -255,7 +266,7 @@ async function main() {
   }
 
   // Process chat_turns table
-  console.log('\n📦 Processing chat_turns table...');
+  console.log('\nProcessing chat_turns table...');
   offset = 0;
   let turnsProcessed = 0;
 
@@ -263,7 +274,7 @@ async function main() {
     const turns = await fetchTurnsWithNullEmbeddings(offset, BATCH_SIZE);
 
     if (turns.length === 0) {
-      console.log('   ✅ No more turns with NULL embeddings');
+      console.log('   No more turns with NULL embeddings');
       break;
     }
 
@@ -276,21 +287,21 @@ async function main() {
 
       for (let i = 0; i < turns.length; i++) {
         const turn = turns[i];
-        const embedding = Array.isArray(embeddings[0]) ? embeddings[i] : embeddings;
+        const embedding = embeddings[i];
 
         const success = await updateTurnEmbedding(turn.id, embedding);
 
         if (success) {
           totalSuccess++;
           turnsProcessed++;
-          console.log(`   ✅ [${turnsProcessed}] Updated turn: ${turn.id.substring(0, 20)}...`);
+          console.log(`   [${turnsProcessed}] Updated turn: ${turn.id.substring(0, 20)}...`);
         } else {
           totalFailed++;
         }
       }
 
     } catch (error) {
-      console.error(`   ❌ Batch failed: ${error.message}`);
+      console.error(`   Batch failed: ${error.message}`);
       totalFailed += turns.length;
     }
 
@@ -301,8 +312,8 @@ async function main() {
   // Summary
   const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
 
-  console.log('\n📊 Backfill Summary');
-  console.log('═'.repeat(40));
+  console.log('\nBackfill Summary');
+  console.log('='.repeat(40));
   console.log(`   Total processed: ${totalProcessed + turnsProcessed}`);
   console.log(`   Successful: ${totalSuccess}`);
   console.log(`   Failed: ${totalFailed}`);
@@ -311,9 +322,9 @@ async function main() {
   console.log('');
 
   if (DRY_RUN) {
-    console.log('💡 Run without --dry-run to apply changes');
+    console.log('Run without --dry-run to apply changes');
   } else {
-    console.log('✅ Backfill complete!');
+    console.log('Backfill complete!');
     console.log('');
     console.log('Verify with:');
     console.log('  SELECT COUNT(*) FROM messages WHERE embedding IS NULL;');
@@ -322,6 +333,6 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error('💥 Fatal error:', error);
+  console.error('Fatal error:', error);
   process.exit(1);
 });

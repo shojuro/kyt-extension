@@ -32,6 +32,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@huggingface/inference": "^4.13.4",
     "@supabase/supabase-js": "^2.80.0",
     "dotenv": "^17.2.3",
     "openai": "^6.8.1"
