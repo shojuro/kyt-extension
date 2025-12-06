@@ -739,6 +739,9 @@
     try {
       if (!response || !response.body) return;
 
+      // STREAMING STATE: Signal that streaming is active (prevents DOM observer from capturing partials)
+      window.dispatchEvent(new CustomEvent('KYT_STREAM_STATE', { detail: { streaming: true } }));
+
       const clonedResponse = response.clone();
       const reader = clonedResponse.body.getReader();
       const decoder = new TextDecoder();
@@ -844,8 +847,13 @@
         }));
       }
 
+      // STREAMING STATE: Signal that streaming is complete
+      window.dispatchEvent(new CustomEvent('KYT_STREAM_STATE', { detail: { streaming: false } }));
+
     } catch (error) {
       console.error('❌ KYT ChatGPT: Error capturing stream:', error);
+      // Ensure streaming state is cleared even on error
+      window.dispatchEvent(new CustomEvent('KYT_STREAM_STATE', { detail: { streaming: false } }));
     }
   }
 

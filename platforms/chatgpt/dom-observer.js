@@ -62,6 +62,10 @@
   let isProcessing = false;
   let debugMode = false;
 
+  // STREAMING STATE: Track when SSE stream is active to prevent capturing partial messages
+  let isStreaming = false;
+  let streamingTimeout = null;
+
   // Cache to prevent spamming the same message during polling
   const sentMessages = new Set();
 
@@ -83,6 +87,22 @@
   function init() {
     try {
       log('Initializing DOM observer for mobile message capture...');
+
+      // Listen for streaming state from inject.js (prevents capturing partial messages)
+      window.addEventListener('KYT_STREAM_STATE', (event) => {
+        isStreaming = event.detail?.streaming || false;
+        log(`Streaming state: ${isStreaming ? 'ACTIVE' : 'IDLE'}`);
+
+        // Safety: Auto-clear streaming flag after 60s in case event is missed
+        if (isStreaming) {
+          if (streamingTimeout) clearTimeout(streamingTimeout);
+          streamingTimeout = setTimeout(() => {
+            isStreaming = false;
+            log('Streaming state auto-cleared (timeout)');
+          }, 60000);
+        }
+      });
+
       startObserver();
     } catch (error) {
       logError('Failed to initialize observer:', error);
@@ -300,6 +320,13 @@
    * (Active Polling on Mutation)
    */
   function checkRecentMessages() {
+    // SKIP DURING STREAMING: Prevents capturing partial messages as they render
+    // SSE capture in inject.js will get the complete message when stream finishes
+    if (isStreaming) {
+      log('Skipping poll - SSE stream active');
+      return;
+    }
+
     // Use container if found, otherwise fallback to main (not body - too noisy)
     const container = findConversationContainer() || document.querySelector('main');
     if (!container) return; // No container = can't scan
@@ -398,6 +425,13 @@
       const message = extractMessage(node);
 
       if (message) {
+        // SKIP ASSISTANT MESSAGES DURING STREAMING: Prevents capturing partial messages
+        // SSE capture in inject.js will get the complete assistant message
+        if (message.role === 'assistant' && isStreaming) {
+          log('Skipping assistant message during stream');
+          return;
+        }
+
         // Deduplication: Check cache
         const signature = `${message.role}:${message.content.trim()}`;
 
