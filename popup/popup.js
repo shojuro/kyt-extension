@@ -10,6 +10,7 @@ const lastCaptureTime = document.getElementById('lastCaptureTime');
 const chatgptPlatform = document.getElementById('chatgptPlatform');
 const claudePlatform = document.getElementById('claudePlatform');
 const apiStatus = document.getElementById('apiStatus');
+const hfKeyStatus = document.getElementById('hfKeyStatus');
 const transformStatus = document.getElementById('transformStatus');
 const debugModeToggle = document.getElementById('debugModeToggle');
 const testCaptureBtn = document.getElementById('testCaptureBtn');
@@ -140,15 +141,28 @@ async function loadConfig() {
     if (!config) {
       apiStatus.textContent = '❌ Not Configured';
       apiStatus.style.color = '#721c24';
+      hfKeyStatus.textContent = '❌ Not Configured';
+      hfKeyStatus.style.color = '#721c24';
       transformStatus.textContent = '⚠️ Unknown';
       transformStatus.style.color = '#856404';
       return;
     }
 
-    // Check API keys
+    // Check API keys (Supabase + OpenAI)
     const hasKeys = config.supabaseUrl && config.supabaseKey && config.openaiKey;
     apiStatus.textContent = hasKeys ? '✅ Configured' : '⚠️ Incomplete';
     apiStatus.style.color = hasKeys ? '#155724' : '#856404';
+
+    // Check HuggingFace key (REQUIRED for sync - Qwen3 embeddings)
+    const hasHfKey = !!config.huggingfaceKey;
+    if (hasHfKey) {
+      hfKeyStatus.textContent = '✅ Configured';
+      hfKeyStatus.style.color = '#155724';
+    } else {
+      hfKeyStatus.textContent = '❌ Missing (Required for sync!)';
+      hfKeyStatus.style.color = '#721c24';
+      hfKeyStatus.style.fontWeight = '700';
+    }
 
     // Check query transformation
     const transformDisabled = config.disableQueryTransformation;
@@ -158,6 +172,7 @@ async function loadConfig() {
   } catch (error) {
     console.error('Error loading config:', error);
     apiStatus.textContent = '❌ Error';
+    hfKeyStatus.textContent = '❌ Error';
     transformStatus.textContent = '❌ Error';
   }
 }
@@ -442,9 +457,24 @@ async function loadSyncStatus() {
  */
 async function forceResync() {
   forceSyncBtn.disabled = true;
-  forceSyncBtn.textContent = '⏳ Clearing sync state...';
+  forceSyncBtn.textContent = '⏳ Checking config...';
 
   try {
+    // Pre-check: Verify HuggingFace key is configured (required for embeddings)
+    const configResult = await chrome.storage.local.get(['api_config']);
+    const config = configResult.api_config;
+
+    if (!config?.huggingfaceKey) {
+      syncResult.className = 'test-result error';
+      syncResult.textContent = '❌ HuggingFace API key is required for sync. Click "Configure API Keys" to add it.';
+      syncResult.classList.remove('hidden');
+      forceSyncBtn.disabled = false;
+      forceSyncBtn.textContent = '⚡ Force Resync All Messages';
+      return;
+    }
+
+    forceSyncBtn.textContent = '⏳ Clearing sync state...';
+
     // Step 1: Clear the syncedMessageIds to force full resync
     const result = await chrome.storage.local.get(['last_sync_status']);
     const syncStatus = result.last_sync_status || {};
