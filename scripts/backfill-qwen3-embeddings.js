@@ -260,7 +260,8 @@ async function main() {
     // Rate limit
     await sleep(1000);
 
-    offset += BATCH_SIZE;
+    // NOTE: Don't increment offset - records disappear from "IS NULL" result set after update
+    // offset += BATCH_SIZE;  // BUG: This skips records!
 
     if (LIMIT && totalProcessed >= LIMIT) break;
   }
@@ -306,7 +307,8 @@ async function main() {
     }
 
     await sleep(1000);
-    offset += BATCH_SIZE;
+    // NOTE: Don't increment offset - records disappear from "IS NULL" result set after update
+    // offset += BATCH_SIZE;  // BUG: This skips records!
   }
 
   // Summary
