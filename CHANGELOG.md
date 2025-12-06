@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dry-run mode for safe testing
 - Environment variables: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `HUGGINGFACE_API_KEY`
 
+**Backfill Status** (2025-12-03):
+- messages: 1,341 rows @ 4096d (complete)
+- chat_turns: 3,384 rows @ 4096d (complete)
+- Search latency: ~48ms (sequential scan, no index needed at current scale)
+- Note: 4096d exceeds pgvector HNSW/IVFFlat limits (max 2000d)
+
 **New Dependencies**:
 - HuggingFace API key required for embedding generation
 - HuggingFace Inference API for BGE reranker
