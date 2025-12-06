@@ -21,6 +21,12 @@ const tierDescription = document.getElementById('tierDescription');
 const upgradeBtn = document.getElementById('upgradeBtn');
 const manageBillingBtn = document.getElementById('manageBillingBtn');
 const rescanBtn = document.getElementById('rescanBtn');
+const capturedCount = document.getElementById('capturedCount');
+const syncedCount = document.getElementById('syncedCount');
+const pendingCount = document.getElementById('pendingCount');
+const lastSyncTime = document.getElementById('lastSyncTime');
+const forceSyncBtn = document.getElementById('forceSyncBtn');
+const syncResult = document.getElementById('syncResult');
 
 // Tier descriptions for display
 const TIER_INFO = {
@@ -399,7 +405,95 @@ async function handleManageBilling() {
   }
 }
 
+/**
+ * Load and display sync status (captured vs synced messages)
+ */
+async function loadSyncStatus() {
+  try {
+    const result = await chrome.storage.local.get(['captured_messages', 'last_sync_status']);
+    const messages = result.captured_messages || [];
+    const syncStatus = result.last_sync_status || { syncedMessageIds: [], lastSyncTime: 0 };
+
+    const captured = messages.length;
+    const synced = (syncStatus.syncedMessageIds || []).length;
+    const pending = Math.max(0, captured - synced);
+
+    capturedCount.textContent = captured;
+    syncedCount.textContent = synced;
+    pendingCount.textContent = pending;
+    lastSyncTime.textContent = formatTimestamp(syncStatus.lastSyncTime);
+
+    // Highlight pending count if there are unsynced messages
+    if (pending > 0) {
+      pendingCount.style.color = '#f5576c';
+      pendingCount.style.fontWeight = '700';
+    } else {
+      pendingCount.style.color = '#155724';
+      pendingCount.style.fontWeight = '600';
+    }
+
+  } catch (error) {
+    console.error('Error loading sync status:', error);
+  }
+}
+
+/**
+ * Force resync all messages by clearing syncedMessageIds
+ */
+async function forceResync() {
+  forceSyncBtn.disabled = true;
+  forceSyncBtn.textContent = '⏳ Clearing sync state...';
+
+  try {
+    // Step 1: Clear the syncedMessageIds to force full resync
+    const result = await chrome.storage.local.get(['last_sync_status']);
+    const syncStatus = result.last_sync_status || {};
+
+    const previousCount = (syncStatus.syncedMessageIds || []).length;
+
+    // Reset sync state
+    await chrome.storage.local.set({
+      last_sync_status: {
+        ...syncStatus,
+        syncedMessageIds: [],
+        lastSyncTime: 0
+      }
+    });
+
+    console.log(`🔄 Cleared ${previousCount} synced message IDs`);
+
+    // Step 2: Trigger sync via background script
+    forceSyncBtn.textContent = '🔄 Syncing to database...';
+
+    const syncResponse = await chrome.runtime.sendMessage({
+      type: 'FORCE_SYNC'
+    });
+
+    if (syncResponse && syncResponse.success) {
+      syncResult.className = 'test-result success';
+      syncResult.textContent = `✅ Success! Synced ${syncResponse.synced} messages to database.`;
+    } else {
+      throw new Error(syncResponse?.error || 'Sync failed');
+    }
+
+    syncResult.classList.remove('hidden');
+
+    // Refresh sync status display
+    await loadSyncStatus();
+
+  } catch (error) {
+    console.error('Force resync failed:', error);
+    syncResult.className = 'test-result error';
+    syncResult.textContent = `❌ Resync failed: ${error.message}`;
+    syncResult.classList.remove('hidden');
+  } finally {
+    forceSyncBtn.disabled = false;
+    forceSyncBtn.textContent = '⚡ Force Resync All Messages';
+  }
+}
+
 // Event listeners
+forceSyncBtn.addEventListener('click', forceResync);
 upgradeBtn.addEventListener('click', handleUpgrade);
 manageBillingBtn.addEventListener('click', handleManageBilling);
 debugModeToggle.addEventListener('change', saveDebugMode);
@@ -433,8 +527,12 @@ checkFirstInstallRedirect().then(redirecting => {
     loadConfig();
     loadDebugMode();
     loadSubscription();
+    loadSyncStatus();
 
     // Refresh stats every 5 seconds
-    setInterval(loadStats, 5000);
+    setInterval(() => {
+      loadStats();
+      loadSyncStatus();
+    }, 5000);
   }
 });

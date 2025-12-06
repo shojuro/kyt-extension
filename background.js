@@ -1402,6 +1402,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })();
       return true; // Keep channel open
 
+    case 'FORCE_SYNC':
+      // Force resync all messages (clear syncedMessageIds first in popup, then trigger sync)
+      (async () => {
+        try {
+          console.log('🔄 Force sync triggered from popup');
+          const result = await syncToSupabase();
+          console.log('✅ Force sync result:', result);
+          sendResponse(result);
+        } catch (error) {
+          console.error('❌ Force sync failed:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
       return true; // Keep channel open
 
     case 'CHECK_IMPORT_STATUS':

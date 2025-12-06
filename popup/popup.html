@@ -76,6 +76,32 @@
     </div>
 
     <div class="section">
+      <h2>🔄 Sync Status</h2>
+      <div class="sync-status-grid">
+        <div class="sync-item">
+          <span class="sync-label">Captured:</span>
+          <span id="capturedCount" class="sync-value">0</span>
+        </div>
+        <div class="sync-item">
+          <span class="sync-label">Synced:</span>
+          <span id="syncedCount" class="sync-value">0</span>
+        </div>
+        <div class="sync-item">
+          <span class="sync-label">Pending:</span>
+          <span id="pendingCount" class="sync-value">0</span>
+        </div>
+        <div class="sync-item">
+          <span class="sync-label">Last Sync:</span>
+          <span id="lastSyncTime" class="sync-value">Never</span>
+        </div>
+      </div>
+      <button id="forceSyncBtn" class="btn-warning" style="margin-top: 8px;">
+        ⚡ Force Resync All Messages
+      </button>
+      <div id="syncResult" class="test-result hidden"></div>
+    </div>
+
+    <div class="section">
       <h2>💳 Subscription</h2>
       <div class="subscription-status">
         <div class="tier-badge-container">
