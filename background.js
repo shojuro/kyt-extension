@@ -178,14 +178,14 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   console.log('🔄 KYT Background: Extension installed/updated');
   console.log(`   Reason: ${details.reason}`);
 
-  // Sync all existing messages
+  // Sync all existing messages on extension install/update
   try {
-    // const syncResult = await syncToSupabase();
-    // if (syncResult.success) {
-    //   console.log(`✅ Initial sync completed: ${syncResult.synced} messages synced`);
-    // } else {
-    //   console.warn('⚠️ Initial sync failed:', syncResult.error);
-    // }
+    const syncResult = await syncToSupabase();
+    if (syncResult.success) {
+      console.log(`✅ Initial sync completed: ${syncResult.synced} messages synced`);
+    } else {
+      console.warn('⚠️ Initial sync failed:', syncResult.error);
+    }
   } catch (error) {
     console.error('❌ Error during initial sync:', error);
   }
@@ -1144,25 +1144,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'SAVE_MESSAGE':
-      // Async save - respond immediately to avoid timeout
+      // Async save with IMMEDIATE sync to Supabase
       saveMessage(message.data)
         .then(async (success) => {
           if (success) {
-            // CONTEXT POLLUTION FIX: Always sync immediately
-            // Removed 4-minute batching window to prevent rapid-fire questions
-            // from clustering in database before next query
+            // IMMEDIATE SYNC: Await sync completion before responding
+            // Critical for voice/mobile transcription where users expect instant sync
             console.log('🚀 Immediate sync triggered');
-            syncToSupabase()
-              .then(syncResult => {
-                if (syncResult.success) {
-                  console.log(`✅ Immediate sync: ${syncResult.synced} messages synced`);
-                }
-              })
-              .catch(err => {
-                console.warn('⚠️ Immediate sync failed:', err);
-              });
-
-            sendResponse({ success: true });
+            try {
+              const syncResult = await syncToSupabase();
+              if (syncResult.success) {
+                console.log(`✅ Immediate sync: ${syncResult.synced} messages synced`);
+                sendResponse({ success: true, synced: true });
+              } else {
+                console.warn('⚠️ Immediate sync failed:', syncResult.error);
+                // Message is saved locally, will retry on periodic sync
+                sendResponse({ success: true, synced: false, error: syncResult.error });
+              }
+            } catch (err) {
+              console.warn('⚠️ Immediate sync error:', err.message);
+              // Message is saved locally, will retry on periodic sync
+              sendResponse({ success: true, synced: false, error: err.message });
+            }
           } else {
             sendResponse({ success: false });
           }
