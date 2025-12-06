@@ -383,13 +383,27 @@
     let options = config;
 
     // Handle Request object as first argument
+    // CRITICAL FIX: Request.body is a ReadableStream, not a string!
+    // We must clone the request and read its body as text before processing
     if (resource instanceof Request) {
       url = resource.url;
+
+      // Clone the request to read its body (body can only be read once)
+      let bodyText = null;
+      try {
+        if (resource.body) {
+          const clonedRequest = resource.clone();
+          bodyText = await clonedRequest.text();
+        }
+      } catch (e) {
+        console.warn('⚠️ KYT ChatGPT: Failed to read Request body:', e);
+      }
+
       // Merge options from Request object and config
       options = {
         method: resource.method,
         headers: resource.headers,
-        body: resource.body,
+        body: bodyText,  // FIX: Use extracted text, not ReadableStream
         mode: resource.mode,
         credentials: resource.credentials,
         cache: resource.cache,
@@ -401,6 +415,10 @@
         signal: resource.signal,
         ...config
       };
+
+      // CRITICAL: Update args to use (url, options) instead of original Request
+      // Otherwise originalFetch.apply(this, args) ignores our modifications
+      args = [url, options];
     }
 
     // Ensure url is a string for checks
@@ -451,6 +469,8 @@
       if (options.body && typeof options.body === 'string') {
         try {
           options.body = await getAndInjectContext(options.body);
+          // Ensure args uses the modified options
+          args = [url, options];
         } catch (error) {
           console.error('❌ KYT ChatGPT: Pre-send context injection failed:', error);
         }
