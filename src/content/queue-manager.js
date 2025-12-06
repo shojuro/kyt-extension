@@ -25,6 +25,10 @@ const UNENCRYPTED_QUEUE_KEY = 'kyt_pending_unencrypted_queue';
 const LOCALSTORAGE_EMERGENCY_KEY = 'kyt_emergency_localStorage_queue';
 const LOCALSTORAGE_MAX_SIZE = 50; // Keep localStorage usage reasonable
 
+// Circuit breaker configuration
+const CIRCUIT_BREAKER_THRESHOLD = 5;  // Open circuit after 5 consecutive failures
+const CIRCUIT_BREAKER_RESET_MS = 10000; // Auto-reset after 10 seconds
+
 export class MessageQueueManager {
     constructor() {
         this.memoryQueue = new Map();
@@ -34,6 +38,97 @@ export class MessageQueueManager {
         this.apiKey = null;
         this.contextValid = true;
         this.recoveryIntervalId = null;
+        this.userNotified = false; // Track if we've already notified the user
+
+        // Circuit breaker state
+        this.consecutiveFailures = 0;
+        this.circuitOpen = false;
+        this.circuitOpenTime = null;
+    }
+
+    /**
+     * Show a non-intrusive notification to the user when context is invalidated
+     * This helps them understand why capture may be failing
+     */
+    showContextInvalidatedNotification() {
+        // Only show once per session to avoid spam
+        if (this.userNotified) return;
+        this.userNotified = true;
+
+        // Create toast notification element
+        const toast = document.createElement('div');
+        toast.id = 'kyt-context-notification';
+        toast.style.cssText = `
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            padding: 16px 24px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            z-index: 999999;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 14px;
+            max-width: 320px;
+            border: 1px solid rgba(255,255,255,0.1);
+            animation: kyt-slide-in 0.3s ease-out;
+        `;
+        toast.innerHTML = `
+            <style>
+                @keyframes kyt-slide-in {
+                    from { transform: translateX(100%); opacity: 0; }
+                    to { transform: translateX(0); opacity: 1; }
+                }
+                #kyt-context-notification button {
+                    background: #4a90d9;
+                    border: none;
+                    color: white;
+                    padding: 8px 16px;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    margin-top: 12px;
+                    font-size: 13px;
+                    transition: background 0.2s;
+                }
+                #kyt-context-notification button:hover {
+                    background: #357abd;
+                }
+                #kyt-context-notification .kyt-dismiss {
+                    position: absolute;
+                    top: 8px;
+                    right: 12px;
+                    background: none;
+                    border: none;
+                    color: #888;
+                    cursor: pointer;
+                    font-size: 18px;
+                    padding: 0;
+                    margin: 0;
+                }
+            </style>
+            <button class="kyt-dismiss" onclick="this.parentElement.remove()">×</button>
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                <span style="font-size: 24px;">🔄</span>
+                <strong style="font-size: 15px;">KYT Extension Updated</strong>
+            </div>
+            <p style="margin: 0; color: #ccc; line-height: 1.5;">
+                Message capture is paused. Refresh this page to resume.
+            </p>
+            <button onclick="location.reload()">Refresh Page</button>
+        `;
+
+        // Remove any existing notification
+        const existing = document.getElementById('kyt-context-notification');
+        if (existing) existing.remove();
+
+        document.body.appendChild(toast);
+
+        // Auto-dismiss after 30 seconds
+        setTimeout(() => {
+            const el = document.getElementById('kyt-context-notification');
+            if (el) el.remove();
+        }, 30000);
     }
 
     /**
@@ -44,6 +139,54 @@ export class MessageQueueManager {
         return typeof chrome !== 'undefined' &&
                typeof chrome.runtime !== 'undefined' &&
                typeof chrome.runtime.id !== 'undefined';
+    }
+
+    /**
+     * Record a storage failure and potentially open the circuit
+     */
+    recordStorageFailure() {
+        this.consecutiveFailures++;
+        if (this.consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD && !this.circuitOpen) {
+            this.circuitOpen = true;
+            this.circuitOpenTime = Date.now();
+            console.warn(`🔴 [KYT Queue] Circuit breaker OPEN after ${this.consecutiveFailures} failures. Pausing captures for ${CIRCUIT_BREAKER_RESET_MS / 1000}s`);
+        }
+    }
+
+    /**
+     * Record a storage success and reset the circuit
+     */
+    recordStorageSuccess() {
+        if (this.consecutiveFailures > 0) {
+            console.log(`✅ [KYT Queue] Storage success, resetting failure counter (was ${this.consecutiveFailures})`);
+        }
+        this.consecutiveFailures = 0;
+        if (this.circuitOpen) {
+            console.log(`🟢 [KYT Queue] Circuit breaker CLOSED - resuming normal operation`);
+            this.circuitOpen = false;
+            this.circuitOpenTime = null;
+        }
+    }
+
+    /**
+     * Check if circuit breaker allows operations
+     * Auto-resets after timeout period
+     * @returns {boolean} True if operations are allowed
+     */
+    isCircuitClosed() {
+        if (!this.circuitOpen) return true;
+
+        // Check if enough time has passed to auto-reset
+        const elapsed = Date.now() - this.circuitOpenTime;
+        if (elapsed >= CIRCUIT_BREAKER_RESET_MS) {
+            console.log(`🟡 [KYT Queue] Circuit breaker auto-reset after ${elapsed}ms`);
+            this.circuitOpen = false;
+            this.circuitOpenTime = null;
+            this.consecutiveFailures = 0;
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -96,9 +239,9 @@ export class MessageQueueManager {
                     await this.retryPendingQueue();
                 }
             }
-        }, 30000); // Every 30 seconds
+        }, 5000); // Every 5 seconds (reduced from 30s for faster recovery)
 
-        console.log('✅ [KYT Queue] Recovery interval started (30s)');
+        console.log('✅ [KYT Queue] Recovery interval started (5s)');
     }
 
     /**
@@ -119,6 +262,12 @@ export class MessageQueueManager {
      * @param {Object} messageData - The captured message content
      */
     async capture(messageData) {
+        // Circuit breaker check - drop messages when circuit is open
+        if (!this.isCircuitClosed()) {
+            console.warn(`🔴 [KYT Queue] Circuit OPEN - dropping message (will reset in ${Math.ceil((CIRCUIT_BREAKER_RESET_MS - (Date.now() - this.circuitOpenTime)) / 1000)}s)`);
+            return;
+        }
+
         // Create queued message object
         // Flattened structure to match browser-sync.js expectations
         const msgId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -170,8 +319,11 @@ export class MessageQueueManager {
                 await this.persistUnencrypted(message);
                 console.log(`📥 [KYT Queue] Persisted ${message.id} to unencrypted fallback storage`);
             }
+            // Storage succeeded - reset circuit breaker
+            this.recordStorageSuccess();
         } catch (error) {
             // chrome.storage failed - likely context is fully invalidated
+            this.recordStorageFailure();
             console.warn(`⚠️ [KYT Queue] chrome.storage failed for ${message.id}, falling back to localStorage`);
             try {
                 this.persistToWebStorage(message);
@@ -401,6 +553,7 @@ export class MessageQueueManager {
         if (!this.isContextValid()) {
             console.warn(`⚠️ [KYT Queue] Context invalid, cannot sync ${message.id}`);
             this.contextValid = false;
+            this.showContextInvalidatedNotification();
             return false;
         }
 
@@ -424,6 +577,7 @@ export class MessageQueueManager {
                 errorMsg.includes('Receiving end does not exist')) {
                 console.warn(`⚠️ [KYT Queue] Context invalidated during sync for ${message.id}`);
                 this.contextValid = false;
+                this.showContextInvalidatedNotification();
             } else {
                 console.warn(`⚠️ [KYT Queue] Service Worker unreachable for ${message.id}:`, errorMsg);
             }

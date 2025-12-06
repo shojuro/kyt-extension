@@ -94,21 +94,33 @@
    * Start the MutationObserver
    */
   function startObserver() {
-    // Find conversation container (for logging/debugging)
+    // Find conversation container - prefer specific container over body
     const container = findConversationContainer();
-    const targetNode = document.body; // NUCLEAR OPTION: Observe body to ensure we catch everything
 
-    log('Starting observer on:', targetNode.tagName, '(Container found:', container ? container.className : 'NONE', ')');
+    // Use container if found, otherwise fall back to main element (NOT body)
+    // This dramatically reduces mutation noise from unrelated UI updates
+    let targetNode = container;
+    if (!targetNode) {
+      targetNode = document.querySelector('main') || document.querySelector('[role="main"]');
+    }
+    if (!targetNode) {
+      // Last resort: body, but log a warning
+      targetNode = document.body;
+      log('WARNING: Using document.body as observer target (high noise)');
+    }
+
+    log('Starting observer on:', targetNode.tagName, '(Container:', container ? 'found' : 'NOT FOUND', ')');
 
     // Create observer
     observer = new MutationObserver(handleMutations);
 
-    // Start observing
+    // Start observing - reduced scope for attributes/characterData
+    // Only watch childList broadly, attributes only on message nodes
     observer.observe(targetNode, {
       childList: true,   // Watch for added/removed nodes
       subtree: true,     // Watch entire subtree
-      attributes: true,  // Watch attribute changes (for role updates)
-      characterData: true // Watch text changes (for streaming content)
+      attributes: false, // DISABLED: Too noisy, causes cascade failures
+      characterData: false // DISABLED: Too noisy for streaming content
     });
 
     // Set initialization flag to ignore existing history
@@ -123,7 +135,7 @@
     hydrateCache();
 
     restartAttempts = 0; // Reset on success
-    log('DOM observer started successfully (watching document.body)');
+    log('DOM observer started successfully (watching:', targetNode.tagName, ')');
 
     // Notify background of observer status
     notifyBackgroundObserverStatus('running');
@@ -133,7 +145,7 @@
    * Hydrate cache with existing messages (prevent re-sending history)
    */
   function hydrateCache() {
-    const container = findConversationContainer() || document.body;
+    const container = findConversationContainer() || document.querySelector('main');
     const groups = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.messageFallback);
     const allNodes = Array.from(groups).filter(node => isMessageNode(node));
 
@@ -288,8 +300,9 @@
    * (Active Polling on Mutation)
    */
   function checkRecentMessages() {
-    // Use container if found, otherwise fallback to body (matching observer strategy)
-    const container = findConversationContainer() || document.body;
+    // Use container if found, otherwise fallback to main (not body - too noisy)
+    const container = findConversationContainer() || document.querySelector('main');
+    if (!container) return; // No container = can't scan
 
     // Get all message nodes using the broad fallback selector
     const groups = container.querySelectorAll(CONFIG.MESSAGE_SELECTORS.messageFallback);
