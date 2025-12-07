@@ -34,11 +34,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Test 5 | Guard | GREEN | Server-side only (no FTS in client) |
 | Test 6 | Guard | GREEN | Gravity formula unchanged |
 
-**Phase 2 Tasks (IN PROGRESS):**
-1. Create SQL migration: `20251209000000_add_bm25_tsvector.sql`
-2. Create RPC function: `20251209000001_bm25_search_function.sql`
-3. Modify Edge Function: `get_relevant_memories.ts`
-4. Iterate until ALL 6 tests pass
+**Phase 2 Tasks:**
+1. ✅ Create SQL migration: `20251209000000_add_bm25_tsvector.sql` (DONE)
+   - Added `content_tsvector` column to `chat_turns`
+   - Created GIN index for fast full-text queries
+   - Added trigger for auto-update on insert/update
+   - Backfill script for existing rows
+2. ✅ Create RPC function: `20251209000001_bm25_search_function.sql` (DONE)
+   - `match_messages_with_bm25()` function created
+   - Uses `ts_rank_cd` with flag 32 (BM25 approximation)
+   - Returns both `gravity_score` and `bm25_score`
+   - Input validation and graceful degradation built-in
+3. 🔄 Modify Edge Function: `get_relevant_memories.ts` (IN PROGRESS)
+4. ⏳ Iterate until ALL 6 tests pass
 
 **Key Constraints:**
 - Gravity formula unchanged (intimacy must dominate)

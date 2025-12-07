@@ -34,13 +34,21 @@
 
 ---
 
-## Phase 2: Implementation (AUTHORIZED)
+## Phase 2: Implementation (IN PROGRESS)
 
-**Status:** CLEARED TO PROCEED
+**Status:** SQL migrations COMPLETE, Edge Function NEXT
 
 **Phase 2 Tasks:**
-1. [ ] Create SQL migration: `20251209000000_add_bm25_tsvector.sql`
-2. [ ] Create RPC function: `20251209000001_bm25_search_function.sql`
+1. [x] Create SQL migration: `20251209000000_add_bm25_tsvector.sql`
+   - content_tsvector column added to chat_turns
+   - GIN index created for fast FTS queries
+   - Auto-update trigger installed
+   - Backfill script for existing rows
+2. [x] Create RPC function: `20251209000001_bm25_search_function.sql`
+   - match_messages_with_bm25() implemented
+   - Uses ts_rank_cd with flag 32 (BM25 approximation)
+   - Returns gravity_score + bm25_score for merge
+   - Input validation and error handling included
 3. [ ] Modify Edge Function: `get_relevant_memories.ts`
 4. [ ] Run tests until ALL 6 pass
 
