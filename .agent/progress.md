@@ -19,14 +19,39 @@
 - [x] Created `.agent/progress.md` - this file
 
 #### Task 1.2: Write Test Files
-- [ ] `tests/specs/bm25-search.spec.js` (Tests 1-4)
-- [ ] `tests/integration/architectural-validation.test.js` (Tests 5-6)
+- [x] `tests/specs/bm25-search.spec.js` (Tests 1-4)
+- [x] `tests/integration/architectural-validation.test.js` (Tests 5-6)
 
 #### Task 1.3: Verify Tests Fail
-- [ ] Run `npm test` - all 6 tests should FAIL (no implementation)
+- [x] Run `npm test` - Results:
+  - **Tests 1-4 FAIL** (expected - `match_messages_with_bm25` doesn't exist)
+  - **Tests 5-6 PASS** (expected - architectural guards, no violations yet)
 
 #### Task 1.4: Leadership Review
 - [ ] Tests reviewed and approved before Phase 2
+
+---
+
+## Test Results Summary (2025-12-08)
+
+```
+Test Files  1 failed | 1 passed (2)
+Tests       4 failed | 11 passed | 1 skipped (16)
+```
+
+### Feature Tests (Expected FAIL - no implementation)
+| Test | Status | Failure Reason |
+|------|--------|----------------|
+| BM25 finds "Kobe Bryant" | FAIL | Function `match_messages_with_bm25` not found |
+| High-intimacy outranks trivial | FAIL | Function `match_messages_with_bm25` not found |
+| Search works if BM25 fails | FAIL | Function `match_messages_with_bm25` not found |
+| Search latency <500ms | FAIL | Function `match_messages_with_bm25` not found |
+
+### Architectural Guards (Expected PASS - regression protection)
+| Test | Status | Purpose |
+|------|--------|---------|
+| No PostgreSQL FTS in client | PASS | Prevents tsvector/ts_rank leaking to browser |
+| Gravity formula unchanged | PASS | Protects gravity from BM25 corruption |
 
 ---
 
