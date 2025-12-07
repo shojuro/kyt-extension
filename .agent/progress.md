@@ -28,7 +28,27 @@
   - **Tests 5-6 PASS** (expected - architectural guards, no violations yet)
 
 #### Task 1.4: Leadership Review
-- [ ] Tests reviewed and approved before Phase 2
+- [x] Tests reviewed and approved before Phase 2
+- [x] Test 2 independently verified: intimacy dominance assertion correct
+- [x] Leadership approval: CLEARED FOR PHASE 2 (2025-12-08)
+
+---
+
+## Phase 2: Implementation (AUTHORIZED)
+
+**Status:** CLEARED TO PROCEED
+
+**Phase 2 Tasks:**
+1. [ ] Create SQL migration: `20251209000000_add_bm25_tsvector.sql`
+2. [ ] Create RPC function: `20251209000001_bm25_search_function.sql`
+3. [ ] Modify Edge Function: `get_relevant_memories.ts`
+4. [ ] Run tests until ALL 6 pass
+
+**Rules:**
+- NO test modifications allowed
+- Tests 5-6 MUST remain GREEN (architectural guards)
+- Gravity formula MUST remain unchanged
+- All BM25 code server-side only
 
 ---
 

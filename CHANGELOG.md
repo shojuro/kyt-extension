@@ -9,27 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### In Progress
 
-#### Server-Side BM25 Search (Phase 1 - Test Specifications)
+#### Server-Side BM25 Search (Phase 2 - Implementation)
 - **Branch:** `feature/bm25-server`
-- **Status:** Worktree initialized, test specifications in progress
+- **Status:** Phase 1 COMPLETE, Phase 2 AUTHORIZED
 - **Purpose:** Add PostgreSQL full-text search as parallel retrieval path for keyword recall
 - **ICP Impact:** Developers (exact keyword matches), Lonelies (gravity preserved)
 - **Timeline:** 4 weeks (TDD-first approach)
 - **Approved:** 2025-12-08
 
-**Current State:**
-- Worktree created from main
-- `.agent/claude.md` established with feature context
-- Phase 1: Writing test specifications (6 tests)
-- Phase 2-4: Pending (implementation, validation, deployment)
+**Phase 1 Results (COMPLETE):**
+- 6 test specifications written and verified
+- Tests 1-4: FAIL (expected - `match_messages_with_bm25` not implemented)
+- Tests 5-6: PASS (architectural guards - no violations)
+- Test 2 independently verified: Gravity dominates BM25 for Lonelies ICP
+- Leadership review: APPROVED 2025-12-08
+
+**Test Specifications:**
+| Test | Type | Status | Purpose |
+|------|------|--------|---------|
+| Test 1 | Feature | RED | BM25 finds "Kobe Bryant" in historical messages |
+| Test 2 | Feature | RED | High-intimacy outranks trivial keyword match |
+| Test 3 | Feature | RED | Graceful degradation if BM25 fails |
+| Test 4 | Feature | RED | Search latency <500ms |
+| Test 5 | Guard | GREEN | Server-side only (no FTS in client) |
+| Test 6 | Guard | GREEN | Gravity formula unchanged |
+
+**Phase 2 Tasks (IN PROGRESS):**
+1. Create SQL migration: `20251209000000_add_bm25_tsvector.sql`
+2. Create RPC function: `20251209000001_bm25_search_function.sql`
+3. Modify Edge Function: `get_relevant_memories.ts`
+4. Iterate until ALL 6 tests pass
 
 **Key Constraints:**
 - Gravity formula unchanged (intimacy must dominate)
 - Server-side only (no client-side BM25)
 - Graceful degradation required
 - Performance target: <500ms search latency
+- NO test modifications allowed in Phase 2
 
-**Next Milestone:** Complete 6 test specifications, verify all fail (expected)
+**Next Milestone:** All 6 tests GREEN (Phase 2 complete)
 
 ### Changed
 
