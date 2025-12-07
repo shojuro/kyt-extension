@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### In Progress
+
+#### Server-Side BM25 Search (Phase 1 - Test Specifications)
+- **Branch:** `feature/bm25-server`
+- **Status:** Worktree initialized, test specifications in progress
+- **Purpose:** Add PostgreSQL full-text search as parallel retrieval path for keyword recall
+- **ICP Impact:** Developers (exact keyword matches), Lonelies (gravity preserved)
+- **Timeline:** 4 weeks (TDD-first approach)
+- **Approved:** 2025-12-08
+
+**Current State:**
+- Worktree created from main
+- `.agent/claude.md` established with feature context
+- Phase 1: Writing test specifications (6 tests)
+- Phase 2-4: Pending (implementation, validation, deployment)
+
+**Key Constraints:**
+- Gravity formula unchanged (intimacy must dominate)
+- Server-side only (no client-side BM25)
+- Graceful degradation required
+- Performance target: <500ms search latency
+
+**Next Milestone:** Complete 6 test specifications, verify all fail (expected)
+
 ### Changed
 
 #### Qwen3-Embedding-8B Migration (Critical Fix)
