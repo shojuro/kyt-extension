@@ -9,9 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-#### Server-Side BM25 Search - PHASE 3 COMPLETE ✅
-- **Branch:** `feature/bm25-server`
-- **Status:** Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 PENDING
+#### Server-Side BM25 Search - SHIPPED ✅ (v1.3.0)
+- **Branch:** `feature/bm25-server` (merged → main)
+- **Status:** Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ | Phase 4 ✅ SHIPPED
 - **Purpose:** PostgreSQL full-text search as parallel retrieval path for keyword recall
 - **ICP Impact:** Developers (exact keyword matches), Lonelies (gravity preserved)
 - **Completed:** 2025-12-08
@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Phase 1 | TDD Test Specifications | ✅ Complete |
 | Phase 2 | Implementation + Fixes | ✅ Complete |
 | Phase 3 | Validation + SQL Deployment | ✅ Complete |
-| Phase 4 | Merge to main | ⏳ Pending |
+| Phase 4 | Merge to main + Deploy | ✅ Complete |
 
 **SQL Migrations Deployed:**
 1. `20251209000000_add_bm25_tsvector.sql` - tsvector column + GIN index
@@ -59,7 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graceful degradation on FTS failure
 - Performance: <750ms search latency
 
-**Next:** Merge `feature/bm25-server` → `main` (Phase 4)
+**Deployment (2025-12-08):**
+- Merged to `main` (commit 73e31bc)
+- Edge Functions deployed via Supabase CLI
+- E2E tests passed (4/4 GREEN)
+- Feature branch closed
+- **Status: SHIPPED ✅**
 
 ### Changed
 
