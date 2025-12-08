@@ -113,8 +113,10 @@ BEGIN
     -- This allows messages with timestamps up to 7 days in the "future" relative to server time
     AND ct.created_at <= NOW() - (exclude_recent_seconds || ' seconds')::INTERVAL + INTERVAL '7 days'
   ORDER BY
-    -- Primary sort: BM25 score (keyword relevance)
-    -- Gravity is used for final ranking in merge step
+    -- Primary sort: Gravity score (intimacy/impact dominates for Lonelies ICP)
+    -- High-intimacy memories rank above trivial keyword matches
+    gravity_score DESC,
+    -- Secondary sort: BM25 score as tiebreaker for equal gravity
     ts_rank_cd(ct.content_tsvector, v_tsquery, 32) DESC
   LIMIT match_count;
 END;
