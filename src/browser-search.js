@@ -17,6 +17,38 @@ import { QueryExpander } from './query-expansion.js';
 // Initialize expander
 const queryExpander = new QueryExpander();
 
+// API timeout settings (prevent Chrome message channel timeout)
+const API_TIMEOUT_MS = 8000; // 8 seconds max for HuggingFace calls
+const API_RETRY_DELAY_MS = 500; // 500ms between retries
+const API_MAX_RETRIES = 2; // Max retries for transient failures
+
+/**
+ * Fetch with timeout to prevent Chrome message channel timeout
+ * @param {string} url - URL to fetch
+ * @param {Object} options - Fetch options
+ * @param {number} timeoutMs - Timeout in milliseconds
+ * @returns {Promise<Response>} - Fetch response or throws on timeout
+ */
+async function fetchWithTimeout(url, options, timeoutMs = API_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error(`API request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
 /**
  * Get API configuration from chrome.storage
  * @returns {Promise<Object>} Configuration object
@@ -30,32 +62,98 @@ async function getConfig() {
 }
 
 /**
- * Generate embedding for search query
+ * Generate embedding for search query using Qwen3-Embedding-8B via Nebius API
+ * Uses timeout and retry logic to prevent Chrome message channel timeout
  * @param {string} query - Search query text
- * @param {string} apiKey - OpenAI API key
- * @returns {Promise<number[]>} 1536-dimensional embedding vector
+ * @param {string} _apiKey - Unused (kept for backward compatibility)
+ * @returns {Promise<number[]|null>} 4096-dimensional embedding vector, or null on failure
  */
-async function generateQueryEmbedding(query, apiKey) {
-  const response = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: 'text-embedding-3-small',
-      input: query,
-      encoding_format: 'float'
-    })
-  });
+async function generateQueryEmbedding(query, _apiKey) {
+  const config = await getConfig();
+  const HF_API_KEY = config.huggingfaceKey;
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`OpenAI API error: ${error.error?.message || response.statusText}`);
+  if (!HF_API_KEY) {
+    console.warn('⚠️ HuggingFace API key not configured, skipping semantic search');
+    return null; // Graceful degradation instead of throwing
   }
 
-  const data = await response.json();
-  return data.data[0].embedding;
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= API_MAX_RETRIES; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.log(`   🔄 Retry ${attempt}/${API_MAX_RETRIES} for embedding generation...`);
+        await new Promise(resolve => setTimeout(resolve, API_RETRY_DELAY_MS));
+      }
+
+      // Use Nebius API directly (OpenAI-compatible format)
+      const response = await fetchWithTimeout(
+        'https://api.studio.nebius.ai/v1/embeddings',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${HF_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: 'Qwen/Qwen3-Embedding-8B',
+            input: query  // Nebius uses 'input' not 'inputs'
+          })
+        },
+        API_TIMEOUT_MS
+      );
+
+      // Handle rate limiting (429)
+      if (response.status === 429) {
+        console.warn(`   ⏳ Rate limited (429), waiting before retry...`);
+        lastError = new Error('Rate limited, retry needed');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue; // Retry
+      }
+
+      // Handle model loading (503) - retry
+      if (response.status === 503) {
+        const errorData = await response.json().catch(() => ({}));
+        console.warn(`   ⏳ Model loading (503): ${errorData.error || 'Model is loading'}`);
+        lastError = new Error('Model is loading, retry needed');
+        continue; // Retry
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Nebius API error: ${response.status} - ${errorText}`);
+      }
+
+      const responseData = await response.json();
+
+      // OpenAI-compatible format: { data: [{ embedding: [...4096 floats...] }] }
+      if (responseData.data && Array.isArray(responseData.data) && responseData.data[0]?.embedding) {
+        return responseData.data[0].embedding;
+      }
+
+      // Fallback: handle legacy format if present
+      if (Array.isArray(responseData) && Array.isArray(responseData[0])) {
+        return responseData[0];
+      }
+      if (Array.isArray(responseData)) {
+        return responseData;
+      }
+
+      throw new Error('Unexpected embedding response format from Nebius');
+
+    } catch (error) {
+      lastError = error;
+      console.warn(`   ⚠️ Embedding attempt ${attempt + 1} failed: ${error.message}`);
+
+      // Don't retry on timeout or non-transient errors
+      if (error.message.includes('timed out') || error.message.includes('API error: 4')) {
+        break;
+      }
+    }
+  }
+
+  console.error(`❌ Embedding generation failed after ${API_MAX_RETRIES + 1} attempts: ${lastError?.message}`);
+  return null; // Graceful degradation - semantic search will be skipped
 }
 
 /**
@@ -114,6 +212,12 @@ export async function searchMessages(query, options = {}) {
 
     // Generate query embedding (using transformed or original query)
     const queryEmbedding = await generateQueryEmbedding(searchQuery, config.openaiKey);
+
+    // Handle graceful degradation - if embedding fails, return empty results
+    if (!queryEmbedding) {
+      console.warn('⚠️ Semantic search skipped - embedding generation failed');
+      return [];
+    }
 
     // Call Supabase RPC function
     // Prepare server-side filters
@@ -218,8 +322,6 @@ export async function findSimilarMessages(messageId, limit = 5) {
         body: JSON.stringify({
           query_embedding: refMessage.embedding,
           match_threshold: 0.5,
-          query_embedding: refMessage.embedding,
-          match_threshold: 0.5,
           match_count: limit + 1, // +1 because reference will match itself
           filter: {
             user_id: config.userId // Filter by User ID
@@ -319,7 +421,8 @@ export async function searchHybrid(query, options = {}) {
     enableBM25 = true,
     enableSemantic = true,
     role = null,
-    source = null
+    source = null,
+    minTimestamp = 0
   } = options;
 
   console.log(`\n🔍 Phase 3 Hybrid Search: "${query}"`);
@@ -342,136 +445,234 @@ export async function searchHybrid(query, options = {}) {
     if (source) {
       localMessages = localMessages.filter(m => m.source === source);
     }
-
-    const rankedLists = [];
-
-
-
-    // Run BM25 keyword search (local, fast)
-    if (enableBM25 && localMessages.length > 0) {
-      console.log(`   🔤 Running BM25 keyword search...`);
-
-      // PHASE 5: Query Expansion
-      const expansion = queryExpander.expand(query);
-      console.log(`   🔄 Query Expansion: ${expansion.variants.length} variants applied (${expansion.expansionsApplied.join(', ') || 'none'})`);
-      if (expansion.variants.length > 1) {
-        console.log(`      Variants: ${expansion.variants.join(' | ')}`);
-      }
-
-      const bm25ResultsMap = new Map(); // message_id -> result
-
-      // Run BM25 on all variants
-      for (const variant of expansion.variants) {
-        const results = searchBM25(variant, localMessages, {
-          limit: limit * 2, // Fetch more for better RRF
-          threshold: bm25Threshold
-        });
-
-        // Merge results (keep highest score)
-        for (const result of results) {
-          const id = result.message_id || result.id;
-          const existing = bm25ResultsMap.get(id);
-          if (!existing || result.score > existing.score) {
-            bm25ResultsMap.set(id, result);
-          }
-        }
-      }
-
-      const bm25Results = Array.from(bm25ResultsMap.values())
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit * 2);
-
-      console.log(`   ✅ BM25: ${bm25Results.length} results (merged from ${expansion.variants.length} variants)`);
-      rankedLists.push(bm25Results);
+    if (minTimestamp > 0) {
+      localMessages = localMessages.filter(m => (m.timestamp || m.capturedAt || 0) >= minTimestamp);
     }
 
-    // Run semantic vector search (Supabase, slower but powerful)
-    if (enableSemantic) {
-      console.log(`   🧠 Running semantic vector search...`);
-      const semanticResults = await searchMessages(query, {
-        limit: limit * 2,
+      const rankedLists = [];
+
+
+
+      // Run BM25 keyword search (local, fast)
+      if (enableBM25 && localMessages.length > 0) {
+        console.log(`   🔤 Running BM25 keyword search...`);
+
+        // PHASE 5: Query Expansion
+        const expansion = queryExpander.expand(query);
+        console.log(`   🔄 Query Expansion: ${expansion.variants.length} variants applied (${expansion.expansionsApplied.join(', ') || 'none'})`);
+        if (expansion.variants.length > 1) {
+          console.log(`      Variants: ${expansion.variants.join(' | ')}`);
+        }
+
+        const bm25ResultsMap = new Map(); // message_id -> result
+
+        // Run BM25 on all variants
+        for (const variant of expansion.variants) {
+          const results = searchBM25(variant, localMessages, {
+            limit: limit * 2, // Fetch more for better RRF
+            threshold: bm25Threshold
+          });
+
+          // Merge results (keep highest score)
+          for (const result of results) {
+            const id = result.message_id || result.id;
+            const existing = bm25ResultsMap.get(id);
+            if (!existing || result.score > existing.score) {
+              bm25ResultsMap.set(id, result);
+            }
+          }
+        }
+
+        const bm25Results = Array.from(bm25ResultsMap.values())
+          .sort((a, b) => b.score - a.score)
+          .slice(0, limit * 2);
+
+        console.log(`   ✅ BM25: ${bm25Results.length} results (merged from ${expansion.variants.length} variants)`);
+        rankedLists.push(bm25Results);
+      }
+
+      // Run semantic vector search (Supabase, slower but powerful)
+      if (enableSemantic) {
+        console.log(`   🧠 Running semantic vector search...`);
+        const semanticResults = await searchMessages(query, {
+          limit: limit * 2,
+          threshold: semanticThreshold,
+          role,
+          source,
+          skipTransformation: true, // Phase 1 fix: no transformation for hybrid
+          minTimestamp
+        });
+        console.log(`   ✅ Semantic: ${semanticResults.length} results`);
+
+        // Normalize semantic results to have message_id
+        const normalizedSemanticResults = semanticResults.map(r => ({
+          ...r,
+          message_id: r.message_id || r.id
+        }));
+
+        rankedLists.push(normalizedSemanticResults);
+      }
+
+      // Merge results using RRF
+      if (rankedLists.length === 0) {
+        console.log(`   ⚠️  No search methods enabled`);
+        return [];
+      }
+
+      console.log(`   🔀 Merging ${rankedLists.length} ranked lists with RRF...`);
+      let mergedResults = mergeResultsRRF(rankedLists);
+
+      // Apply adaptive weighting to RRF scores
+      // Boost scores based on which method contributed more
+      mergedResults = mergedResults.map(item => {
+        let weightedScore = item.rrf_score;
+
+        // Boost if found by BM25 (keyword match)
+        if (item.bm25_score !== undefined) {
+          weightedScore *= (1 + weights.bm25Weight);
+        }
+
+        // Boost if found by semantic search
+        if (item.distance !== undefined) {
+          weightedScore *= (1 + weights.semanticWeight);
+        }
+
+        return {
+          ...item,
+          weighted_score: weightedScore,
+          hybrid_strategy: weights.strategy
+        };
+      });
+
+      // Re-sort by weighted score and limit
+      mergedResults.sort((a, b) => b.weighted_score - a.weighted_score);
+
+      // CRITICAL: Enforce minimum quality threshold on final results
+      // Drop items that don't meet the semantic threshold (based on distance/similarity)
+      // This prevents low-confidence garbage from polluting results
+      mergedResults = mergedResults.filter(item => {
+        // If item has distance (semantic search result), check threshold
+        if (item.distance !== undefined) {
+          const similarity = 1 - item.distance; // Convert distance to similarity
+          if (similarity < semanticThreshold) {
+            console.log(`   ⏭️  Dropped low-confidence item (similarity: ${similarity.toFixed(3)} < threshold: ${semanticThreshold})`);
+            return false;
+          }
+        }
+        return true;
+      });
+
+      mergedResults = mergedResults.slice(0, limit);
+
+      // PHASE 8: Apply BGE reranker for final ranking
+      console.log(`   🎯 Applying BGE reranker...`);
+      const rerankedResults = await rerankResults(query, mergedResults);
+
+      console.log(`   ✅ Hybrid search complete: ${rerankedResults.length} final results`);
+      console.log(`   📊 Top result score: ${rerankedResults[0]?.rerank_score?.toFixed(4) || rerankedResults[0]?.weighted_score?.toFixed(4) || 'N/A'}\n`);
+
+      return rerankedResults;
+
+    } catch (error) {
+      console.error('❌ Hybrid search failed:', error);
+
+      // Fallback to semantic-only search
+      console.warn('⚠️  Falling back to semantic-only search');
+      return await searchMessages(query, {
+        limit,
         threshold: semanticThreshold,
         role,
         source,
-        skipTransformation: true // Phase 1 fix: no transformation for hybrid
+        minTimestamp
       });
-      console.log(`   ✅ Semantic: ${semanticResults.length} results`);
+    }
+  }
 
-      // Normalize semantic results to have message_id
-      const normalizedSemanticResults = semanticResults.map(r => ({
-        ...r,
-        message_id: r.message_id || r.id
-      }));
+/**
+ * Rerank results using BGE-reranker-v2-m3 via HuggingFace Inference API
+ * Improves final ranking by cross-encoding query+passage pairs
+ * Uses timeout to prevent Chrome message channel timeout
+ * @param {string} query - User's search query
+ * @param {Array} results - Results from RRF fusion
+ * @returns {Promise<Array>} - Reranked results sorted by relevance
+ */
+async function rerankResults(query, results) {
+  if (results.length === 0) return results;
 
-      rankedLists.push(normalizedSemanticResults);
+  const config = await getConfig();
+  const HF_API_KEY = config.huggingfaceKey;
+
+  if (!HF_API_KEY) {
+    console.warn('   ⚠️  HuggingFace API key not configured, skipping reranking');
+    return results; // Graceful degradation
+  }
+
+  try {
+    // Prepare query-passage pairs for cross-encoding
+    const inputs = results.map(r => ({
+      text: query,
+      text_pair: r.content || ''
+    }));
+
+    // Use direct HuggingFace Inference API endpoint
+    const response = await fetchWithTimeout(
+      'https://api-inference.huggingface.co/models/BAAI/bge-reranker-v2-m3',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${HF_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          inputs: inputs,
+          options: { wait_for_model: false } // Don't wait - faster, may 503
+        })
+      },
+      API_TIMEOUT_MS
+    );
+
+    // Handle rate limiting (429)
+    if (response.status === 429) {
+      console.warn('   ⏳ Reranker rate limited, skipping reranking');
+      return results;
     }
 
-    // Merge results using RRF
-    if (rankedLists.length === 0) {
-      console.log(`   ⚠️  No search methods enabled`);
-      return [];
+    // Handle model loading (503) - skip reranking, not critical
+    if (response.status === 503) {
+      console.warn('   ⏳ Reranker model loading, skipping reranking');
+      return results;
     }
 
-    console.log(`   🔀 Merging ${rankedLists.length} ranked lists with RRF...`);
-    let mergedResults = mergeResultsRRF(rankedLists);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`   ⚠️  Reranker API error: ${response.status} - ${errorText}`);
+      return results; // Return original results on error
+    }
 
-    // Apply adaptive weighting to RRF scores
-    // Boost scores based on which method contributed more
-    mergedResults = mergedResults.map(item => {
-      let weightedScore = item.rrf_score;
+    const scores = await response.json();
 
-      // Boost if found by BM25 (keyword match)
-      if (item.bm25_score !== undefined) {
-        weightedScore *= (1 + weights.bm25Weight);
-      }
-
-      // Boost if found by semantic search
-      if (item.distance !== undefined) {
-        weightedScore *= (1 + weights.semanticWeight);
+    // Map scores back to results
+    const reranked = results.map((result, idx) => {
+      // Handle different score formats from HuggingFace
+      let score = 0;
+      if (Array.isArray(scores) && scores[idx] !== undefined) {
+        score = typeof scores[idx] === 'number' ? scores[idx] : (scores[idx]?.score || scores[idx]?.[0] || 0);
       }
 
       return {
-        ...item,
-        weighted_score: weightedScore,
-        hybrid_strategy: weights.strategy
+        ...result,
+        rerank_score: score
       };
     });
 
-    // Re-sort by weighted score and limit
-    mergedResults.sort((a, b) => b.weighted_score - a.weighted_score);
+    // Sort by rerank score (higher is better)
+    reranked.sort((a, b) => b.rerank_score - a.rerank_score);
 
-    // CRITICAL: Enforce minimum quality threshold on final results
-    // Drop items that don't meet the semantic threshold (based on distance/similarity)
-    // This prevents low-confidence garbage from polluting results
-    mergedResults = mergedResults.filter(item => {
-      // If item has distance (semantic search result), check threshold
-      if (item.distance !== undefined) {
-        const similarity = 1 - item.distance; // Convert distance to similarity
-        if (similarity < semanticThreshold) {
-          console.log(`   ⏭️  Dropped low-confidence item (similarity: ${similarity.toFixed(3)} < threshold: ${semanticThreshold})`);
-          return false;
-        }
-      }
-      return true;
-    });
-
-    mergedResults = mergedResults.slice(0, limit);
-
-    console.log(`   ✅ Hybrid search complete: ${mergedResults.length} final results`);
-    console.log(`   📊 Top result score: ${mergedResults[0]?.weighted_score.toFixed(4) || 'N/A'}\n`);
-
-    return mergedResults;
+    console.log(`   ✅ Reranked ${reranked.length} results`);
+    return reranked;
 
   } catch (error) {
-    console.error('❌ Hybrid search failed:', error);
-
-    // Fallback to semantic-only search
-    console.warn('⚠️  Falling back to semantic-only search');
-    return await searchMessages(query, {
-      limit,
-      threshold: semanticThreshold,
-      role,
-      source
-    });
+    console.error('   ⚠️  Reranking failed:', error.message);
+    return results; // Graceful degradation
   }
 }

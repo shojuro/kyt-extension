@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "KYT Memory - Multi-Platform",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Capture and search conversations across ChatGPT, Claude, and more with long-term semantic memory",
   "permissions": [
     "storage",
@@ -20,6 +20,7 @@
     },
     "default_title": "K.Y.T. Memory Extension Status"
   },
+  "options_page": "setup.html",
   "icons": {
     "16": "icon.svg",
     "48": "icon.svg",
@@ -68,7 +69,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "platforms/chatgpt/inject.js"
+        "platforms/chatgpt/inject.js",
+        "platforms/chatgpt/dom-observer.js"
       ],
       "matches": [
         "https://chatgpt.com/*",

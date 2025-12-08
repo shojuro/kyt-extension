@@ -1,6 +1,6 @@
 {
   "name": "kyt-validation-sprint",
-  "version": "1.0.0",
+  "version": "1.2.2",
   "type": "module",
   "description": "**Goal**: Prove automatic ChatGPT conversation capture via API interception works reliably.",
   "main": "background.js",
@@ -12,10 +12,12 @@
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "vitest run tests/e2e --no-coverage",
-    "test:all": "vitest run && vitest run tests/e2e --no-coverage",
+    "test:e2e": "playwright test tests/e2e",
+    "test:playwright": "playwright test",
+    "test:all": "vitest run && playwright test",
     "test:phase1": "playwright test validation/test_phase1_extension.spec.js",
     "test:phase2.5": "playwright test validation/test_phase2_5_diagnostic.spec.js",
+    "test:mobile-voice": "node tests/run_mobile_voice_tests.cjs",
     "validate": "node validation/verify_context_injection.js",
     "validate:all": "npm test && node validation/verify_context_injection.js",
     "sync": "node src/test_sync.js",
@@ -30,15 +32,18 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@huggingface/inference": "^4.13.4",
     "@supabase/supabase-js": "^2.80.0",
     "dotenv": "^17.2.3",
     "openai": "^6.8.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
-    "@vitest/ui": "^1.0.4",
+    "@vitest/ui": "^4.0.13",
+    "glob": "^13.0.0",
+    "jszip": "^3.10.1",
     "playwright": "^1.56.1",
-    "puppeteer": "^21.0.0",
-    "vitest": "^1.0.4"
+    "puppeteer": "^24.31.0",
+    "vitest": "^4.0.13"
   }
 }

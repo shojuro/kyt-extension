@@ -1,5 +1,6 @@
 /**
  * KYT Memory Extension - Background Service Worker (Day 1-2)
+ * Initialized: true
  *
  * Purpose: Receive captured messages from content script and store in chrome.storage
  * Day 2: Added sync and search capabilities for unified memory
@@ -18,28 +19,153 @@ import { transformQuery, extractRecentTopics, fetchRecentTopicsFromSupabase } fr
 import { queueProcessor } from './src/background/queue-processor.js';
 import { buildMemoryInjection, buildEmptyInjection, buildErrorInjection } from './kyt-memory-injection-builder.js';
 import { classifyContent } from './src/taxonomy-classifier.js';
+import { applyKeywordBoost } from './src/keyword-boost.js';
+import { filterByConfidence } from './src/confidence-filter.js';
+import { HistoryImporter } from './src/history-import/index.js';
+self.HistoryImporter = HistoryImporter; // Expose for debugging
+
+let activeImporter = null;
 
 // ... existing imports ...
 
 // Initialize queue processor on startup
 chrome.runtime.onStartup.addListener(() => {
-  queueProcessor.initialize();
-  queueProcessor.processQueue();
+  try {
+    queueProcessor.initialize();
+    queueProcessor.processQueue();
+    // Also process any pending local queues (context invalidation recovery)
+    processPendingLocalQueues();
+  } catch (error) {
+    console.error('❌ Failed to initialize queue processor on startup:', error);
+    // Store error for later diagnosis
+    chrome.storage.local.get(['error_log'], (result) => {
+      const errors = result.error_log || [];
+      errors.push({
+        timestamp: Date.now(),
+        context: 'queue_processor_startup',
+        error: error.message,
+        stack: error.stack
+      });
+      chrome.storage.local.set({ error_log: errors });
+    });
+  }
 });
 
 // Also initialize on install
 chrome.runtime.onInstalled.addListener(() => {
-  queueProcessor.initialize();
-  queueProcessor.processQueue();
-});
-
-// Periodic queue processing (every 5 mins)
-chrome.alarms.create('processQueue', { periodInMinutes: 5 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'processQueue') {
+  try {
+    queueProcessor.initialize();
     queueProcessor.processQueue();
+    // Also process any pending local queues (context invalidation recovery)
+    processPendingLocalQueues();
+  } catch (error) {
+    console.error('❌ Failed to initialize queue processor on install:', error);
+    // Store error for later diagnosis
+    chrome.storage.local.get(['error_log'], (result) => {
+      const errors = result.error_log || [];
+      errors.push({
+        timestamp: Date.now(),
+        context: 'queue_processor_install',
+        error: error.message,
+        stack: error.stack
+      });
+      chrome.storage.local.set({ error_log: errors });
+    });
   }
 });
+
+// Periodic queue processing (every 1 min - more aggressive for MV3 service worker keepalive)
+chrome.alarms.create('processQueue', { periodInMinutes: 1 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'processQueue') {
+    try {
+      queueProcessor.processQueue();
+      // Also process any pending local queues (context invalidation recovery)
+      processPendingLocalQueues();
+    } catch (error) {
+      console.error('❌ Failed to process queue on alarm:', error);
+      // Store error for later diagnosis
+      chrome.storage.local.get(['error_log'], (result) => {
+        const errors = result.error_log || [];
+        errors.push({
+          timestamp: Date.now(),
+          context: 'queue_processor_alarm',
+          error: error.message,
+          stack: error.stack
+        });
+        chrome.storage.local.set({ error_log: errors });
+      });
+    }
+  }
+});
+
+/**
+ * Process pending local queues (context invalidation recovery)
+ * Handles messages that were stored when service worker was unavailable
+ */
+async function processPendingLocalQueues() {
+  try {
+    // Process emergency queue (from content script fallback)
+    const emergencyKey = 'kyt_emergency_queue';
+    const emergencyResult = await chrome.storage.local.get([emergencyKey]);
+    const emergencyQueue = emergencyResult[emergencyKey] || [];
+
+    if (emergencyQueue.length > 0) {
+      console.log(`🔄 Processing ${emergencyQueue.length} messages from emergency queue`);
+      const failed = [];
+
+      for (const message of emergencyQueue) {
+        try {
+          await saveMessage(message);
+          console.log(`✅ Recovered emergency message: ${message.id}`);
+        } catch (error) {
+          console.error(`❌ Failed to recover emergency message ${message.id}:`, error);
+          failed.push(message);
+        }
+      }
+
+      // Update queue with any failed items
+      await chrome.storage.local.set({ [emergencyKey]: failed });
+
+      if (failed.length === 0) {
+        console.log('✅ Emergency queue fully processed');
+      } else {
+        console.warn(`⚠️ ${failed.length} emergency messages failed, will retry later`);
+      }
+    }
+
+    // Process unencrypted fallback queue (from queue-manager.js)
+    const unencryptedKey = 'kyt_pending_unencrypted_queue';
+    const unencryptedResult = await chrome.storage.local.get([unencryptedKey]);
+    const unencryptedQueue = unencryptedResult[unencryptedKey] || [];
+
+    if (unencryptedQueue.length > 0) {
+      console.log(`🔄 Processing ${unencryptedQueue.length} messages from unencrypted queue`);
+      const failed = [];
+
+      for (const message of unencryptedQueue) {
+        try {
+          await saveMessage(message);
+          console.log(`✅ Recovered unencrypted message: ${message.id}`);
+        } catch (error) {
+          console.error(`❌ Failed to recover unencrypted message ${message.id}:`, error);
+          failed.push(message);
+        }
+      }
+
+      // Update queue with any failed items
+      await chrome.storage.local.set({ [unencryptedKey]: failed });
+
+      if (failed.length === 0) {
+        console.log('✅ Unencrypted queue fully processed');
+      } else {
+        console.warn(`⚠️ ${failed.length} unencrypted messages failed, will retry later`);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Failed to process pending local queues:', error);
+  }
+}
 
 // ... existing code ...
 
@@ -52,7 +178,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   console.log('🔄 KYT Background: Extension installed/updated');
   console.log(`   Reason: ${details.reason}`);
 
-  // Sync all existing messages
+  // Sync all existing messages on extension install/update
   try {
     const syncResult = await syncToSupabase();
     if (syncResult.success) {
@@ -261,12 +387,12 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
   // Sync all existing messages
   try {
-    const syncResult = await syncToSupabase();
-    if (syncResult.success) {
-      console.log(`✅ Initial sync completed: ${syncResult.synced} messages synced`);
-    } else {
-      console.warn('⚠️ Initial sync failed:', syncResult.error);
-    }
+    // const syncResult = await syncToSupabase();
+    // if (syncResult.success) {
+    //   console.log(`✅ Initial sync completed: ${syncResult.synced} messages synced`);
+    // } else {
+    //   console.warn('⚠️ Initial sync failed:', syncResult.error);
+    // }
   } catch (error) {
     console.error('❌ Initial sync error:', error);
   }
@@ -312,6 +438,58 @@ chrome.runtime.onStartup.addListener(async () => {
  * @param {Object} messageData - Extracted message data from content script
  * @returns {Promise<boolean>} Success status
  */
+/**
+ * Generate content-only hash for deduplication
+ * CRITICAL: Uses content only (no timestamp) to detect duplicates across sources
+ * @param {string} content - Message content
+ * @returns {Promise<string>} SHA-256 hash (hex)
+ */
+async function hashContent(content) {
+  // Normalize content first
+  const normalized = content.trim().normalize('NFC');
+
+  // Convert to UTF-8 bytes
+  const encoder = new TextEncoder();
+  const data = encoder.encode(normalized);
+
+  // SHA-256 hash
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+
+  // Convert to hex string
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+  return hashHex;
+}
+
+/**
+ * Check for duplicate message within time window
+ * @param {Array} messages - Existing messages
+ * @param {string} contentHash - Hash of new message content
+ * @param {number} timestamp - New message timestamp
+ * @param {number} windowMs - Dedup window in milliseconds (default 5000)
+ * @returns {Object|null} Duplicate message if found, null otherwise
+ */
+function findDuplicate(messages, contentHash, timestamp, windowMs = 5000) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+
+    // Check if within time window
+    const timeDiff = Math.abs(timestamp - (msg.timestamp || msg.capturedAt));
+    if (timeDiff > windowMs) {
+      // Messages are sorted by time, so we can stop here
+      break;
+    }
+
+    // Check hash match
+    if (msg.contentHash === contentHash) {
+      return msg;
+    }
+  }
+
+  return null;
+}
+
 async function saveMessage(messageData) {
   try {
     // Validate input
@@ -324,18 +502,62 @@ async function saveMessage(messageData) {
     }
 
     // Get existing messages
-    const result = await chrome.storage.local.get(['captured_messages']);
+    const result = await chrome.storage.local.get(['captured_messages', 'kyt_stats']);
     const messages = result.captured_messages || [];
+    const stats = {
+      messagesCaptured: { api: 0, dom: 0 },
+      lastCapture: { api: null, dom: null },
+      duplicatesBlocked: 0,
+      ...(result.kyt_stats || {})
+    };
 
-    // Add new message
-    messages.push({
+    // Ensure nested objects exist (in case of partial corruption)
+    if (!stats.messagesCaptured) stats.messagesCaptured = { api: 0, dom: 0 };
+    if (!stats.lastCapture) stats.lastCapture = { api: null, dom: null };
+
+    // Generate content-only hash for deduplication
+    const contentHash = await hashContent(messageData.content);
+    const timestamp = messageData.timestamp || Date.now();
+
+    // Check for duplicates within 5-second window (or infinite for rescan)
+    // If source is 'dom_rescan', we check entire history to prevent duplicates of already-synced messages
+    const windowMs = messageData.source === 'dom_rescan' ? Infinity : 5000;
+    const duplicate = findDuplicate(messages, contentHash, timestamp, windowMs);
+
+    if (duplicate) {
+      console.log(`🔄 KYT Background: Duplicate detected (blocked)`);
+      console.log(`   Content: "${messageData.content.substring(0, 50)}..."`);
+      console.log(`   Hash: ${contentHash.substring(0, 16)}...`);
+      console.log(`   Original source: ${duplicate.source || 'unknown'}`);
+      console.log(`   New source: ${messageData.source || 'unknown'}`);
+
+      stats.duplicatesBlocked = (stats.duplicatesBlocked || 0) + 1;
+      await chrome.storage.local.set({ kyt_stats: stats });
+
+      return { saved: false, reason: 'duplicate', duplicateOf: duplicate.messageId };
+    }
+
+    // Add new message with content hash
+    const newMessage = {
       ...messageData,
+      contentHash,
       capturedAt: Date.now(),
-      messageId: generateMessageId()
-    });
+      messageId: messageData.messageId || generateMessageId(),
+      timestamp: timestamp
+    };
 
-    // Store updated array
-    await chrome.storage.local.set({ captured_messages: messages });
+    messages.push(newMessage);
+
+    // Update stats by source
+    const source = messageData.source || 'api';
+    stats.messagesCaptured[source] = (stats.messagesCaptured[source] || 0) + 1;
+    stats.lastCapture[source] = Date.now();
+
+    // Store updated array and stats
+    await chrome.storage.local.set({
+      captured_messages: messages,
+      kyt_stats: stats
+    });
 
     // Update metrics
     totalMessagesSaved++;
@@ -343,8 +565,26 @@ async function saveMessage(messageData) {
 
     console.log(`✅ KYT Background: Message saved (total: ${messages.length})`);
     console.log(`   Content: "${messageData.content.substring(0, 50)}..."`);
+    console.log(`   Source: ${source}`);
+    console.log(`   Hash: ${contentHash.substring(0, 16)}...`);
 
-    return true;
+    // Check storage quota and evict if needed
+    const quotaStatus = await checkStorageQuota();
+    console.log(`📊 Storage: ${quotaStatus.usagePercent.toFixed(1)}% (${quotaStatus.messageCount} messages)`);
+
+    if (quotaStatus.isExceeded) {
+      console.warn(`⚠️  Storage quota exceeded (${quotaStatus.usagePercent.toFixed(1)}% > ${STORAGE_CONFIG.MAX_USAGE_PERCENT}%)`);
+      const evictionResult = await evictOldMessages();
+
+      if (evictionResult.evicted > 0) {
+        console.log(`✅ Evicted ${evictionResult.evicted} old messages`);
+        console.log(`   Storage reduced: ${evictionResult.oldUsagePercent.toFixed(1)}% → ${evictionResult.newUsagePercent.toFixed(1)}%`);
+      } else if (evictionResult.reason === 'at_minimum') {
+        console.warn(`⚠️  Cannot evict - at minimum message threshold (${STORAGE_CONFIG.MIN_MESSAGES_TO_KEEP})`);
+      }
+    }
+
+    return { saved: true, messageId: newMessage.messageId };
 
   } catch (error) {
     totalErrors++;
@@ -371,7 +611,7 @@ async function saveMessage(messageData) {
       console.error('❌ Failed to log error:', logError);
     }
 
-    return false;
+    return { saved: false, reason: 'error', error: error.message };
   }
 }
 
@@ -381,6 +621,121 @@ async function saveMessage(messageData) {
  */
 function generateMessageId() {
   return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+/**
+ * Storage Quota Management
+ * Implements LRU eviction to prevent hitting chrome.storage.local 10MB limit
+ */
+const STORAGE_CONFIG = {
+  MAX_USAGE_PERCENT: 80,  // Start eviction at 80% capacity
+  TARGET_USAGE_PERCENT: 70, // Evict down to 70% capacity
+  MIN_MESSAGES_TO_KEEP: 100 // Always keep at least 100 recent messages
+};
+
+/**
+ * Check if storage quota is exceeded
+ * @returns {Promise<Object>} Status object with usage info
+ */
+async function checkStorageQuota() {
+  try {
+    const result = await chrome.storage.local.get(['captured_messages']);
+    const messages = result.captured_messages || [];
+
+    // Calculate storage size (approximate)
+    const storageSize = JSON.stringify(messages).length;
+    const storageLimitBytes = chrome.storage.local.QUOTA_BYTES;
+    const usagePercent = (storageSize / storageLimitBytes) * 100;
+
+    return {
+      isExceeded: usagePercent > STORAGE_CONFIG.MAX_USAGE_PERCENT,
+      usagePercent: usagePercent,
+      storageSize: storageSize,
+      storageLimitBytes: storageLimitBytes,
+      messageCount: messages.length
+    };
+  } catch (error) {
+    console.error('❌ Failed to check storage quota:', error);
+    return { isExceeded: false, error: error.message };
+  }
+}
+
+/**
+ * Evict old messages using LRU (Least Recently Used) strategy
+ * @returns {Promise<Object>} Eviction result
+ */
+async function evictOldMessages() {
+  try {
+    console.log('🗑️  Storage quota exceeded - starting LRU eviction...');
+
+    const result = await chrome.storage.local.get(['captured_messages']);
+    const messages = result.captured_messages || [];
+
+    if (messages.length <= STORAGE_CONFIG.MIN_MESSAGES_TO_KEEP) {
+      console.warn('⚠️  Cannot evict - already at minimum message count');
+      return { evicted: 0, reason: 'at_minimum' };
+    }
+
+    // Sort by timestamp (oldest first)
+    const sorted = [...messages].sort((a, b) => {
+      const timeA = a.capturedAt || a.timestamp || 0;
+      const timeB = b.capturedAt || b.timestamp || 0;
+      return timeA - timeB;
+    });
+
+    // Calculate target size
+    const currentSize = JSON.stringify(messages).length;
+    const targetSize = chrome.storage.local.QUOTA_BYTES * (STORAGE_CONFIG.TARGET_USAGE_PERCENT / 100);
+
+    // Evict oldest messages until we reach target
+    let evictedCount = 0;
+    let currentMessages = [...messages];
+
+    while (currentMessages.length > STORAGE_CONFIG.MIN_MESSAGES_TO_KEEP) {
+      const newSize = JSON.stringify(currentMessages).length;
+
+      if (newSize <= targetSize) {
+        break;
+      }
+
+      // Remove oldest message
+      const oldestIndex = currentMessages.findIndex(msg => {
+        const time = msg.capturedAt || msg.timestamp || 0;
+        const oldestTime = sorted[evictedCount].capturedAt || sorted[evictedCount].timestamp || 0;
+        return time === oldestTime;
+      });
+
+      if (oldestIndex !== -1) {
+        currentMessages.splice(oldestIndex, 1);
+        evictedCount++;
+      } else {
+        break;
+      }
+    }
+
+    // Save reduced message set
+    await chrome.storage.local.set({ captured_messages: currentMessages });
+
+    const newSize = JSON.stringify(currentMessages).length;
+    const newUsagePercent = (newSize / chrome.storage.local.QUOTA_BYTES) * 100;
+
+    console.log(`✅ Eviction complete:`);
+    console.log(`   Evicted: ${evictedCount} messages`);
+    console.log(`   Remaining: ${currentMessages.length} messages`);
+    console.log(`   Old usage: ${(currentSize / chrome.storage.local.QUOTA_BYTES * 100).toFixed(1)}%`);
+    console.log(`   New usage: ${newUsagePercent.toFixed(1)}%`);
+
+    return {
+      evicted: evictedCount,
+      remaining: currentMessages.length,
+      oldUsagePercent: (currentSize / chrome.storage.local.QUOTA_BYTES * 100),
+      newUsagePercent: newUsagePercent
+    };
+
+  } catch (error) {
+    console.error('❌ Eviction failed:', error);
+    return { evicted: 0, error: error.message };
+  }
 }
 
 /**
@@ -510,6 +865,9 @@ async function getContextForInjection(userMessage, config) {
 
       console.log(`🔍 Context Retrieval: Using query "${queryToUse}"`);
 
+      // Calculate minTimestamp to exclude recent memories (Context Pollution Prevention)
+      const minTimestamp = Date.now() - (contextConfig.excludeRecentSeconds * 1000);
+
       contextItems = await searchHybrid(queryToUse, {
         limit: contextConfig.maxContextItems,
         semanticThreshold: 0.65, // PRECISION TUNING: Increased to 0.65 (User: Precision > Recall)
@@ -517,7 +875,8 @@ async function getContextForInjection(userMessage, config) {
         enableBM25: true,
         enableSemantic: true,
         role: null, // Don't filter by role (get both user and assistant context)
-        source: null // Don't filter by source
+        source: null, // Don't filter by source
+        minTimestamp: minTimestamp // Pass temporal filter
       });
 
       console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search`);
@@ -633,6 +992,56 @@ async function getContextForInjection(userMessage, config) {
       console.log(`✅ MMR reranking complete: ${filteredItems.length} items selected`);
     }
 
+    // Apply keyword coverage boost (v1.2.1)
+    // Addresses MMR diversity (λ=0.3) de-ranking keyword-rich candidates
+    // Critical for entity queries like "Jennifer's startup" or "PostgreSQL configuration"
+    if (filteredItems.length > 1) {
+      console.log(`🎯 Applying keyword boost for query: "${userMessage}"`);
+
+      filteredItems = applyKeywordBoost(userMessage, filteredItems, {
+        boostFactor: 0.3,  // 0-30% score increase based on keyword coverage
+        debugMode: contextConfig.debugMode || false
+      });
+
+      console.log(`✅ Keyword boost complete: candidates re-sorted by boosted scores`);
+    }
+
+    // === PRIORITY 2: CONFIDENCE THRESHOLD FILTERING ===
+    // Apply confidence threshold to keyword-boosted results
+    // Philosophy: No results > wrong results
+    // Note: filterByConfidence uses fallback logic: cross_encoder_score ?? weighted_score ?? 0
+    //       Without cross-encoder, it filters based on weighted_score (which includes keyword boost)
+    if (filteredItems.length > 0) {
+      try {
+        const confidenceThreshold = contextConfig.confidenceThreshold || 0.70;
+        console.log(`🎯 Applying confidence filter (threshold: ${confidenceThreshold}) to ${filteredItems.length} candidates...`);
+
+        const filterResult = filterByConfidence(filteredItems, confidenceThreshold);
+
+        // Log filtering results
+        if (filterResult.status === 'success') {
+          console.log(`✅ Confidence filter: ${filterResult.results.length}/${filteredItems.length} items passed (highest: ${filterResult.highestScore.toFixed(3)})`);
+          filteredItems = filterResult.results;
+        } else if (filterResult.status === 'low_confidence') {
+          console.warn(`⚠️ Confidence filter: All ${filteredItems.length} items below threshold (highest: ${filterResult.highestScore.toFixed(3)})`);
+          if (filterResult.suggestions && contextConfig.debugMode) {
+            console.log(`💡 Suggestions:`, filterResult.suggestions);
+          }
+          // Philosophy: No results > wrong results
+          filteredItems = [];
+        } else {
+          // no_results status
+          console.log(`ℹ️ Confidence filter: No results to filter`);
+          filteredItems = [];
+        }
+
+      } catch (error) {
+        console.error('❌ Confidence filtering failed, falling back to keyword-boosted results:', error.message);
+        // Graceful degradation: Keep keyword-boosted results if filter fails
+        // filteredItems unchanged
+      }
+    }
+
     // === MEMORY INJECTION PROTOCOL v1.0 ===
     // Format context using Anti-Defiance Protocol
     const elapsedTime = performance.now() - startTime;
@@ -718,8 +1127,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle different message types
   switch (message.type) {
     case 'FLUSH_QUEUE':
-      queueProcessor.processQueue()
-        .then(result => sendResponse(result))
+      // Process both queue processor and pending local queues (context invalidation recovery)
+      Promise.all([
+        queueProcessor.processQueue(),
+        processPendingLocalQueues()
+      ])
+        .then(([queueResult]) => sendResponse(queueResult || { success: true }))
         .catch(err => sendResponse({ error: err.message }));
       return true;
 
@@ -731,25 +1144,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'SAVE_MESSAGE':
-      // Async save - respond immediately to avoid timeout
+      // Async save with IMMEDIATE sync to Supabase
       saveMessage(message.data)
         .then(async (success) => {
           if (success) {
-            // CONTEXT POLLUTION FIX: Always sync immediately
-            // Removed 4-minute batching window to prevent rapid-fire questions
-            // from clustering in database before next query
+            // IMMEDIATE SYNC: Await sync completion before responding
+            // Critical for voice/mobile transcription where users expect instant sync
             console.log('🚀 Immediate sync triggered');
-            syncToSupabase()
-              .then(syncResult => {
-                if (syncResult.success) {
-                  console.log(`✅ Immediate sync: ${syncResult.synced} messages synced`);
-                }
-              })
-              .catch(err => {
-                console.warn('⚠️ Immediate sync failed:', err);
-              });
-
-            sendResponse({ success: true });
+            try {
+              const syncResult = await syncToSupabase();
+              if (syncResult.success) {
+                console.log(`✅ Immediate sync: ${syncResult.synced} messages synced`);
+                sendResponse({ success: true, synced: true });
+              } else {
+                console.warn('⚠️ Immediate sync failed:', syncResult.error);
+                // Message is saved locally, will retry on periodic sync
+                sendResponse({ success: true, synced: false, error: syncResult.error });
+              }
+            } catch (err) {
+              console.warn('⚠️ Immediate sync error:', err.message);
+              // Message is saved locally, will retry on periodic sync
+              sendResponse({ success: true, synced: false, error: err.message });
+            }
           } else {
             sendResponse({ success: false });
           }
@@ -798,8 +1214,107 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.data) {
         console.log('   Data:', message.data);
       }
-      sendResponse({ received: true });
+      sendResponse({ acknowledged: true });
       return true;
+
+    case 'DOM_OBSERVER_STATUS':
+      // DOM observer status updates from content script
+      console.log(`🔍 DOM Observer Status: ${message.status}`);
+      if (message.restartAttempts > 0) {
+        console.log(`   Restart attempts: ${message.restartAttempts}`);
+      }
+
+      // Update stats with observer health
+      chrome.storage.local.get(['kyt_stats'], (result) => {
+        const stats = result.kyt_stats || {};
+        stats.observerStatus = message.status;
+        stats.observerRestarts = message.restartAttempts;
+        stats.lastObserverUpdate = Date.now();
+        chrome.storage.local.set({ kyt_stats: stats });
+      });
+
+      sendResponse({ acknowledged: true });
+      return true;
+
+    case 'SYNC_TO_SUPABASE':
+      // Day 2: Sync messages to Supabase with embeddings
+      console.log('🔄 Manual sync requested');
+      syncToSupabase()
+        .then(result => {
+          console.log('✅ Sync result:', result);
+          sendResponse(result);
+        })
+        .catch(error => {
+          console.error('❌ Sync failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true;
+
+    case 'SEARCH_MESSAGES':
+      // Day 2: Search messages by semantic similarity
+      console.log('🔍 Search requested:', message.query);
+      searchMessages(message.query, message.limit)
+        .then(results => {
+          console.log('✅ Search results:', results.length, 'items');
+          sendResponse({ success: true, results });
+        })
+        .catch(error => {
+          console.error('❌ Search failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true;
+
+    case 'FIND_SIMILAR':
+      // Day 2: Find messages similar to a given message
+      console.log('🔍 Find similar requested for message:', message.messageId);
+      findSimilarMessages(message.messageId, message.threshold)
+        .then(results => {
+          console.log('✅ Similar messages found:', results.length, 'items');
+          sendResponse({ success: true, results });
+        })
+        .catch(error => {
+          console.error('❌ Find similar failed:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true;
+
+    case 'SET_API_CONFIG':
+      // Day 2: Set API configuration (Supabase + OpenAI keys)
+      // Inline implementation (no module dependency)
+      console.log('🔧 Saving API configuration...');
+      chrome.storage.local.set({ api_config: message.config })
+        .then(() => {
+          console.log('✅ API configuration saved');
+          sendResponse({ success: true });
+        })
+        .catch(error => {
+          console.error('❌ Config save error:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Keep channel open for async
+
+    case 'GET_CONTEXT':
+      // Day 3: Get context for RAG injection (CSP fix - runs in background, no CSP restrictions)
+      console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
+
+      // Read debug mode from storage for Memory Injection Protocol
+      chrome.storage.local.get(['kytDebugMode']).then(result => {
+        const config = {
+          ...message.config,
+          debugMode: result.kytDebugMode || false
+        };
+
+        return getContextForInjection(message.userMessage, config);
+      })
+        .then(contextData => {
+          console.log('✅ Context retrieved:', contextData.items?.length || 0, 'items');
+          sendResponse(contextData);
+        })
+        .catch(error => {
+          console.error('❌ Context retrieval error:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Keep channel open
 
     case 'GET_STATS':
       // Phase 2: Get diagnostic statistics for popup UI
@@ -890,85 +1405,156 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       })();
       return true; // Keep channel open
 
-    case 'SYNC_TO_SUPABASE':
-      // Day 2: Sync messages to Supabase with embeddings
-      console.log('🔄 Manual sync requested');
-      syncToSupabase()
-        .then(result => {
-          console.log('✅ Sync result:', result);
+    case 'FORCE_SYNC':
+      // Force resync all messages (clear syncedMessageIds first in popup, then trigger sync)
+      (async () => {
+        try {
+          console.log('🔄 Force sync triggered from popup');
+          const result = await syncToSupabase();
+          console.log('✅ Force sync result:', result);
           sendResponse(result);
-        })
-        .catch(error => {
-          console.error('❌ Sync failed:', error);
+        } catch (error) {
+          console.error('❌ Force sync failed:', error);
           sendResponse({ success: false, error: error.message });
-        });
+        }
+      })();
+      return true; // Keep channel open
+
+    case 'CHECK_IMPORT_STATUS':
+      (async () => {
+        try {
+          const config = await getApiConfig();
+          const importer = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId);
+          const status = await importer.checkImportStatus(message.platform);
+          sendResponse({ success: true, status });
+        } catch (error) {
+          console.error('Check import status failed:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+      })();
       return true;
 
-    case 'SEARCH_MESSAGES':
-      // Day 2: Search messages by semantic similarity
-      console.log('🔍 Search requested:', message.query);
-      searchMessages(message.query, message.limit)
-        .then(results => {
-          console.log('✅ Search results:', results.length, 'items');
-          sendResponse({ success: true, results });
-        })
-        .catch(error => {
-          console.error('❌ Search failed:', error);
+    case 'START_HISTORY_IMPORT':
+      (async () => {
+        try {
+          const config = await getApiConfig();
+
+          if (activeImporter) {
+            // Cancel existing if any (though UI should prevent this)
+            await activeImporter.cancelImport();
+          }
+
+          activeImporter = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId);
+
+          // Start import (async)
+          activeImporter.startImport(
+            message.platform,
+            (progress) => {
+              // Send progress updates to popup
+              chrome.runtime.sendMessage({
+                type: 'IMPORT_PROGRESS',
+                progress
+              }).catch(() => {
+                // Popup might be closed, ignore
+              });
+            },
+            async () => {
+              // Fallback required - ask popup to prompt user for file
+              // This is tricky because background cannot open file dialogs.
+              // We need to signal the popup to ask for file, then popup sends file back?
+              // Or we just fail here and tell popup to start ZIP import flow?
+
+              // Better approach: If API fails, we throw/return specific error
+              // and let the UI handle the "Switch to ZIP" flow.
+              // The HistoryImporter.startImport logic I wrote expects a callback that returns a File.
+              // This won't work directly in background script.
+
+              // Refactoring plan:
+              // The `startImport` method in `HistoryImporter` currently handles the fallback logic internally.
+              // But `onFallbackRequired` callback cannot easily get a File from user in background context.
+              // So we should probably split API and ZIP import in the Orchestrator or handle the fallback in UI.
+
+              // For now, let's assume we just fail if API fails, and UI initiates ZIP import explicitly.
+              // So we pass a callback that just returns null or throws.
+              return null;
+            }
+          ).then(result => {
+            sendResponse({ success: true, result });
+            activeImporter = null;
+          }).catch(error => {
+            sendResponse({ success: false, error: error.message });
+            activeImporter = null;
+          });
+
+        } catch (error) {
+          console.error('Start import failed:', error);
           sendResponse({ success: false, error: error.message });
-        });
+        }
+      })();
       return true;
 
-    case 'FIND_SIMILAR':
-      // Day 2: Find messages similar to a given message
-      console.log('🔍 Find similar requested for message:', message.messageId);
-      findSimilarMessages(message.messageId, message.threshold)
-        .then(results => {
-          console.log('✅ Similar messages found:', results.length, 'items');
-          sendResponse({ success: true, results });
-        })
-        .catch(error => {
-          console.error('❌ Find similar failed:', error);
-          sendResponse({ success: false, error: error.message });
-        });
+    case 'CANCEL_HISTORY_IMPORT':
+      if (activeImporter) {
+        activeImporter.cancelImport();
+        activeImporter = null;
+      }
+      sendResponse({ success: true });
       return true;
 
-    case 'SET_API_CONFIG':
-      // Day 2: Set API configuration (Supabase + OpenAI keys)
-      // Inline implementation (no module dependency)
-      console.log('🔧 Saving API configuration...');
-      chrome.storage.local.set({ api_config: message.config })
-        .then(() => {
-          console.log('✅ API configuration saved');
-          sendResponse({ success: true });
-        })
-        .catch(error => {
-          console.error('❌ Config save error:', error);
+    case 'PROCESS_IMPORTED_MESSAGES':
+      // Handle messages parsed from ZIP file in popup (Option B file transfer)
+      (async () => {
+        try {
+          const { platform, messages, source } = message;
+
+          if (!messages || !Array.isArray(messages) || messages.length === 0) {
+            sendResponse({ success: false, error: 'No messages to process' });
+            return;
+          }
+
+          console.log(`📥 Processing ${messages.length} imported messages from ${platform} (${source})`);
+
+          const config = await getApiConfig();
+
+          // Create a temporary importer for batch saving
+          const importer = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId);
+
+          // Batch save the messages
+          let savedCount = 0;
+          let skippedCount = 0;
+          const batchSize = 50;
+
+          for (let i = 0; i < messages.length; i += batchSize) {
+            const batch = messages.slice(i, i + batchSize);
+
+            try {
+              const result = await importer.saveBatch(batch);
+              savedCount += result.saved || 0;
+              skippedCount += result.skipped || 0;
+
+              // Log progress
+              console.log(`   Batch ${Math.floor(i / batchSize) + 1}: ${result.saved} saved, ${result.skipped} skipped`);
+            } catch (batchError) {
+              console.error(`   Batch ${Math.floor(i / batchSize) + 1} error:`, batchError);
+              // Continue with next batch
+            }
+          }
+
+          console.log(`✅ ZIP import complete: ${savedCount} saved, ${skippedCount} skipped`);
+
+          sendResponse({
+            success: true,
+            saved: savedCount,
+            skipped: skippedCount,
+            total: messages.length
+          });
+
+        } catch (error) {
+          console.error('❌ PROCESS_IMPORTED_MESSAGES failed:', error);
           sendResponse({ success: false, error: error.message });
-        });
-      return true; // Keep channel open for async
-
-    case 'GET_CONTEXT':
-      // Day 3: Get context for RAG injection (CSP fix - runs in background, no CSP restrictions)
-      console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
-
-      // Read debug mode from storage for Memory Injection Protocol
-      chrome.storage.local.get(['kytDebugMode']).then(result => {
-        const config = {
-          ...message.config,
-          debugMode: result.kytDebugMode || false
-        };
-
-        return getContextForInjection(message.userMessage, config);
-      })
-        .then(contextData => {
-          console.log('✅ Context retrieved:', contextData.items?.length || 0, 'items');
-          sendResponse(contextData);
-        })
-        .catch(error => {
-          console.error('❌ Context retrieval error:', error);
-          sendResponse({ success: false, error: error.message });
-        });
-      return true; // Keep channel open for async
+        }
+      })();
+      return true;
 
     default:
       console.warn('⚠️ Unknown message type:', message.type);
@@ -994,9 +1580,20 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         lastSave: `${Math.floor(stats.timeSinceLastSave / 1000)}s ago`
       });
 
-      // Warn if storage > 80%
-      if (parseFloat(stats.usagePercent) > 80) {
-        console.warn('⚠️ WARNING: Storage usage > 80%! Consider archiving old messages.');
+      // Proactive eviction if storage > 80%
+      if (parseFloat(stats.usagePercent) > STORAGE_CONFIG.MAX_USAGE_PERCENT) {
+        console.warn(`⚠️ Storage usage > ${STORAGE_CONFIG.MAX_USAGE_PERCENT}% - triggering eviction`);
+
+        evictOldMessages().then(evictionResult => {
+          if (evictionResult.evicted > 0) {
+            console.log(`✅ Health check eviction: ${evictionResult.evicted} messages removed`);
+            console.log(`   Storage reduced: ${evictionResult.oldUsagePercent.toFixed(1)}% → ${evictionResult.newUsagePercent.toFixed(1)}%`);
+          } else if (evictionResult.reason === 'at_minimum') {
+            console.warn(`⚠️ Cannot evict - at minimum message threshold (${STORAGE_CONFIG.MIN_MESSAGES_TO_KEEP})`);
+          }
+        }).catch(err => {
+          console.error('❌ Health check eviction failed:', err);
+        });
       }
 
       // Warn if no saves for 10 minutes
@@ -1020,6 +1617,7 @@ chrome.runtime.onInstalled.addListener((details) => {
       error_log: [],
       install_date: Date.now(),
       version: chrome.runtime.getManifest().version,
+      show_import_onboarding: true, // Show import prompt on first install
       api_config: {
         // Phase 1 Fix: Enable semantic search by default
         // Disables query transformation that breaks semantic matching
@@ -1028,6 +1626,7 @@ chrome.runtime.onInstalled.addListener((details) => {
     }).then(() => {
       console.log('✅ KYT: Storage initialized');
       console.log('   Phase 1 fix enabled: disableQueryTransformation = true');
+      console.log('   First-install import onboarding: enabled');
     }).catch(error => {
       console.error('❌ KYT: Failed to initialize storage:', error);
     });

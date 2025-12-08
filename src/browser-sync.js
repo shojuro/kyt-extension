@@ -16,6 +16,36 @@
 import { messagesToTurnChunks } from './conversation-chunker.js';
 import { generateHypotheticalQuestions } from './hyde-preprocessor.js';
 
+// API timeout settings (prevent Chrome message channel timeout)
+const SYNC_API_TIMEOUT_MS = 30000; // 30 seconds for sync (batch operations need more time)
+
+/**
+ * Fetch with timeout to prevent hung operations during sync
+ * @param {string} url - URL to fetch
+ * @param {Object} options - Fetch options
+ * @param {number} timeoutMs - Timeout in milliseconds
+ * @returns {Promise<Response>} - Fetch response or throws on timeout
+ */
+async function fetchWithTimeout(url, options, timeoutMs = SYNC_API_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error(`API request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
 /**
  * Get API configuration from chrome.storage
  * @returns {Promise<Object>} Configuration object
@@ -72,6 +102,7 @@ function batchByTokens(texts, maxTokensPerBatch = 8000) {
       batches.push(currentBatch);
       currentBatch = [];
       currentTokens = 0;
+      currentTokens = 0;
     }
 
     currentBatch.push(text);
@@ -87,21 +118,32 @@ function batchByTokens(texts, maxTokensPerBatch = 8000) {
 }
 
 /**
- * Generate embeddings for messages using OpenAI API
- * Now uses token-aware batching to prevent "max context length" errors
+ * Generate embeddings using Qwen3-Embedding-8B via HuggingFace Inference Providers
+ * Produces 4096-dimensional embeddings (matches database schema)
+ * Routes through HuggingFace's router to Nebius backend (OpenAI-compatible format)
+ *
  * @param {string[]} texts - Array of message content strings
- * @param {string} apiKey - OpenAI API key
- * @returns {Promise<number[][]>} Array of 1536-dimensional embeddings
+ * @param {string} _apiKey - Unused (kept for backward compatibility)
+ * @returns {Promise<number[][]>} Array of 4096-dimensional embeddings
  */
-async function generateEmbeddings(texts, apiKey) {
+async function generateEmbeddings(texts, _apiKey) {
+  // Get HuggingFace key from config
+  const config = await getConfig();
+  const HF_API_KEY = config.huggingfaceKey;
+
+  if (!HF_API_KEY) {
+    throw new Error('HuggingFace API key not configured. Please add it in extension setup.');
+  }
+
   const allEmbeddings = [];
 
-  // Batch by tokens, not count (fixes 26,916 token error)
-  // REDUCED from 8000→6000→4000: OpenAI's actual tokenizer counts ~1.85x higher than our estimate
-  // 4000 estimated tokens × 1.85 = ~7400 actual tokens (800 token safety margin below 8192 limit)
-  const batches = batchByTokens(texts, 4000); // 4k tokens per batch (safe for actual tokenizer variance)
+  // Batch by tokens (Qwen3 has similar limits)
+  const batches = batchByTokens(texts, 4000);
 
-  console.log(`📊 Generating embeddings: ${batches.length} batches for ${texts.length} messages`);
+  // HuggingFace Inference Providers router endpoint (routes to Nebius backend)
+  const HF_ROUTER_URL = 'https://router.huggingface.co/nebius/v1/embeddings';
+
+  console.log(`📊 Generating Qwen3 embeddings via HuggingFace: ${batches.length} batches for ${texts.length} messages`);
 
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
@@ -109,31 +151,74 @@ async function generateEmbeddings(texts, apiKey) {
 
     console.log(`📊 Batch ${i + 1}/${batches.length}: ${batch.length} messages (~${batchTokens} tokens)`);
 
-    const response = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+    // HuggingFace router uses OpenAI-compatible format
+    const response = await fetchWithTimeout(
+      HF_ROUTER_URL,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${HF_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'Qwen/Qwen3-Embedding-8B',
+          input: batch
+        })
       },
-      body: JSON.stringify({
-        model: 'text-embedding-3-small',
-        input: batch,
-        encoding_format: 'float'
-      })
-    });
+      SYNC_API_TIMEOUT_MS
+    );
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(`OpenAI API error: ${error.error?.message || response.statusText}`);
+    // Handle rate limiting (429)
+    if (response.status === 429) {
+      console.warn(`   ⏳ Rate limited (429), waiting 10s and retrying...`);
+      await new Promise(resolve => setTimeout(resolve, 10000));
+
+      const retryResponse = await fetchWithTimeout(
+        HF_ROUTER_URL,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${HF_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: 'Qwen/Qwen3-Embedding-8B',
+            input: batch
+          })
+        },
+        SYNC_API_TIMEOUT_MS * 2
+      );
+
+      if (!retryResponse.ok) {
+        const errorText = await retryResponse.text();
+        throw new Error(`HuggingFace API error on retry: ${retryResponse.status} - ${errorText}`);
+      }
+
+      const retryData = await retryResponse.json();
+      // OpenAI-compatible format: { data: [{ embedding: [...] }, ...] }
+      const retryEmbeddings = retryData.data.map(item => item.embedding);
+      allEmbeddings.push(...retryEmbeddings);
+      continue;
     }
 
-    const data = await response.json();
-    const embeddings = data.data.map(item => item.embedding);
-    allEmbeddings.push(...embeddings);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`HuggingFace API error: ${response.status} - ${errorText}`);
+    }
+
+    const responseData = await response.json();
+
+    // OpenAI-compatible format: { data: [{ embedding: [...] }, ...] }
+    if (responseData.data && Array.isArray(responseData.data)) {
+      const embeddings = responseData.data.map(item => item.embedding);
+      allEmbeddings.push(...embeddings);
+    } else {
+      throw new Error('Unexpected embedding response format from HuggingFace');
+    }
 
     // Rate limit protection
     if (i < batches.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
   }
 
@@ -157,10 +242,6 @@ async function getMessagesToSync() {
   return newMessages;
 }
 
-/**
- * Sync messages to Supabase with embeddings
- * @returns {Promise<Object>} Sync result
- */
 /**
  * Sync specific messages to Supabase
  * @param {Object[]} messagesToSync - Array of messages to sync
@@ -194,15 +275,17 @@ export async function syncMessages(messagesToSync) {
     console.log(`📊 KYT Sync: Syncing ${messagesToSync.length} messages -`, platformCounts);
 
     // PHASE 0 DIAGNOSTIC: Log source field attribution for each message
-    messagesToSync.forEach(msg => {
-      console.log('📊 SYNC DEBUG:', {
-        messageId: msg.messageId.substring(0, 20),
-        user_id: config.userId || 'DEFAULT',
-        original_platform: msg.platform,
-        will_store_as: msg.platform || 'chatgpt',
-        timestamp: new Date(msg.timestamp).toISOString()
-      });
-    });
+    // messagesToSync.forEach(msg => {
+    //   console.log('📊 SYNC DEBUG:', {
+    //     messageId: msg.messageId.substring(0, 20),
+    //     user_id: config.userId || 'DEFAULT',
+    //     original_platform: msg.platform,
+    //     will_store_as: msg.platform || 'chatgpt',
+    //     role: msg.role, // CRITICAL DIAGNOSTIC
+    //     content_preview: msg.content?.substring(0, 20),
+    //     timestamp: new Date(msg.timestamp).toISOString()
+    //   });
+    // });
 
     // Prepare data for Supabase
     const messagesWithEmbeddings = messagesToSync.map((msg, idx) => ({
@@ -219,21 +302,44 @@ export async function syncMessages(messagesToSync) {
     }));
 
     // Insert to Supabase (UPSERT for idempotency)
-    // on_conflict=message_id tells PostgREST which column to check for duplicates
-    const response = await fetch(`${config.supabaseUrl}/rest/v1/messages?on_conflict=message_id`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': config.supabaseKey,
-        'Authorization': `Bearer ${config.supabaseKey}`,
-        'Prefer': 'resolution=merge-duplicates'
-      },
-      body: JSON.stringify(messagesWithEmbeddings)
-    });
+    // Batch inserts to prevent statement timeouts with large payloads
+    // Reduced to 5 to handle large "Rescan" payloads without choking Supabase
+    const BATCH_SIZE = 5;
+    const batches = [];
+    for (let i = 0; i < messagesWithEmbeddings.length; i += BATCH_SIZE) {
+      batches.push(messagesWithEmbeddings.slice(i, i + BATCH_SIZE));
+    }
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(`Supabase error: ${error.message || response.statusText}`);
+    let successCount = 0;
+    let failCount = 0;
+
+    console.log(`📦 Syncing ${messagesWithEmbeddings.length} messages in ${batches.length} batches...`);
+
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      console.log(`   Processing batch ${i + 1}/${batches.length} (${batch.length} messages)...`);
+
+      // Add a small delay between batches to prevent rate limiting/timeouts
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      const response = await fetch(`${config.supabaseUrl}/rest/v1/messages?on_conflict=message_id`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': config.supabaseKey,
+          'Authorization': `Bearer ${config.supabaseKey}`,
+          'Prefer': 'resolution=merge-duplicates'
+        },
+        body: JSON.stringify(batch)
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(`Supabase error (batch ${i + 1}): ${error.message || response.statusText}`);
+      }
+      successCount += batch.length;
     }
 
     console.log(`✅ Messages synced to 'messages' table: ${messagesToSync.length}`);
@@ -252,11 +358,17 @@ export async function syncMessages(messagesToSync) {
 
       const chunksWithHyDE = [];
       for (const chunk of turnChunks) {
-        const hydeResult = await generateHypotheticalQuestions(chunk, config.openaiKey, 3);
+        let questions = [];
+        try {
+          const hydeResult = await generateHypotheticalQuestions(chunk, config.openaiKey, 3);
+          questions = hydeResult.success ? hydeResult.questions : [];
+        } catch (hydeError) {
+          console.warn('⚠️ HyDE generation failed for chunk (skipping questions):', hydeError.message);
+        }
 
         chunksWithHyDE.push({
           ...chunk,
-          hypothetical_questions: hydeResult.success ? hydeResult.questions : []
+          hypothetical_questions: questions
         });
 
         // Small delay to avoid rate limits

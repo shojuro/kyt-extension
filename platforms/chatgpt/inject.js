@@ -28,6 +28,10 @@
 
   logToBackground('Inject script initialized');
 
+  // CONFIGURATION: Fetch-based capture enabled for V3 compatibility
+  // We use this to capture the conversation tree from POST /conversation response
+  const ENABLE_FETCH_CAPTURE = true;
+
   // === DEDUPLICATION LAYER ===
   /**
    * Message Deduplication Layer
@@ -155,14 +159,16 @@
       const isChatGPTAPI = (
         typeof url === 'string' &&
         (
-          url.includes('/backend-api/conversation') ||
-          url.includes('/backend-api/f/conversation') ||
+          url.includes('/backend-api/') || // General backend-api check
           url.includes('/backend-api/lat/r') || // Latency/Realtime endpoint
-          (url.includes('/conversation') && options?.method === 'POST') // Broader fallback
+          (url.includes('/conversation') && (options?.method === 'POST' || options?.method === 'GET' || !options?.method)) // Broader fallback
         )
       );
+      // Allow GET requests too (for conversation history fetch)
       const isPostRequest = options?.method === 'POST' || options?.body;
-      return isChatGPTAPI && isPostRequest;
+      const isGetRequest = options?.method === 'GET' || !options?.method;
+
+      return isChatGPTAPI && (isPostRequest || isGetRequest);
     },
     extractConversationId: function (url) {
       // Extract from URL if possible (not always available in ChatGPT API calls)
@@ -297,6 +303,10 @@
    */
   async function getAndInjectContext(bodyString) {
     try {
+      // Safety check: ensure body is a string
+      if (typeof bodyString !== 'string') {
+        return bodyString;
+      }
       const body = JSON.parse(bodyString);
 
       // Extract user message
@@ -368,97 +378,139 @@
   const originalFetch = window.fetch;
 
   window.fetch = async function (...args) {
-    const [url, options] = args;
+    const [resource, config] = args;
+    let url = resource;
+    let options = config;
 
-    // DEBUG: Log potential API calls
-    if (typeof url === 'string' && url.includes('conversation')) {
-      logToBackground('Potential API call', { url: url, method: options?.method });
+    // Handle Request object as first argument
+    // CRITICAL FIX: Request.body is a ReadableStream, not a string!
+    // We must clone the request and read its body as text before processing
+    if (resource instanceof Request) {
+      url = resource.url;
+
+      // Clone the request to read its body (body can only be read once)
+      let bodyText = null;
+      try {
+        if (resource.body) {
+          const clonedRequest = resource.clone();
+          bodyText = await clonedRequest.text();
+        }
+      } catch (e) {
+        console.warn('⚠️ KYT ChatGPT: Failed to read Request body:', e);
+      }
+
+      // Merge options from Request object and config
+      options = {
+        method: resource.method,
+        headers: resource.headers,
+        body: bodyText,  // FIX: Use extracted text, not ReadableStream
+        mode: resource.mode,
+        credentials: resource.credentials,
+        cache: resource.cache,
+        redirect: resource.redirect,
+        referrer: resource.referrer,
+        referrerPolicy: resource.referrerPolicy,
+        integrity: resource.integrity,
+        keepalive: resource.keepalive,
+        signal: resource.signal,
+        ...config
+      };
+
+      // CRITICAL: Update args to use (url, options) instead of original Request
+      // Otherwise originalFetch.apply(this, args) ignores our modifications
+      args = [url, options];
+    }
+
+    // Ensure url is a string for checks
+    const urlString = String(url);
+
+    // DEBUG: Log all fetch URLs to identify changes
+    if (urlString.includes('/backend-api/')) {
+      logToBackground('Fetch intercepted', { url: urlString.substring(0, 100), method: options?.method || 'GET' });
     }
 
     // Check if this is a platform API call
-    if (platform.detectAPICall(url, options)) {
-      console.log('🎯 KYT ChatGPT: Intercepted API call');
+    const isChatGPTAPI = platform.detectAPICall(urlString, options);
+
+    if (isChatGPTAPI && options?.body) {
+      // DEBUG: Log ALL backend-api calls to find voice endpoint
+      console.log('🔍 KYT ChatGPT: Intercepted API call:', url);
+
+      // Check if this is a voice-related endpoint
+      if (url.includes('/voice/') || url.includes('/speech/') || url.includes('/audio/')) {
+        console.log('🎤 KYT ChatGPT: Potential voice endpoint found:', url);
+      }
+
+      console.log('🎯 KYT ChatGPT: Processing conversation API call');
       totalInterceptions++;
       lastInterceptionTime = Date.now();
 
       // FIX: Extract metadata BEFORE modifying options.body
       let conversationId = 'unknown';
       let modelName = 'gpt-unknown';
-      if (options.body) {
+      if (options.body && typeof options.body === 'string') {
         try {
           const originalBody = JSON.parse(options.body);
           conversationId = originalBody.conversation_id || 'unknown';
           modelName = originalBody.model || 'gpt-unknown';
         } catch (e) {
-          console.warn('⚠️ KYT ChatGPT: Could not parse request body for metadata');
+          // Silent fail for non-JSON bodies
+        }
+      } else if (url.includes('/conversation/')) {
+        // Extract conversation ID from URL for GET requests
+        const match = url.match(/\/conversation\/([a-f0-9-]+)/);
+        if (match) {
+          conversationId = match[1];
+          console.log('🆔 KYT ChatGPT: Extracted conversation ID from URL:', conversationId);
         }
       }
 
       // PHASE 1: Get context and inject BEFORE sending
-      if (options.body) {
+      if (options.body && typeof options.body === 'string') {
         try {
           options.body = await getAndInjectContext(options.body);
+          // Ensure args uses the modified options
+          args = [url, options];
         } catch (error) {
           console.error('❌ KYT ChatGPT: Pre-send context injection failed:', error);
         }
       }
 
-      // PHASE 2: Extract message data for storage AFTER sending
-      const messageData = platform.extractMessage(options.body);
-
-      if (messageData) {
-        console.log('✅ KYT ChatGPT: Message extracted:', messageData.content.substring(0, 50) + '...');
-
-        // DEDUPLICATION CHECK: Skip duplicates from multiple capture sources (with error boundary)
-        let shouldCapture = true; // Default: always capture (fail-open)
-        try {
-          if (window.KYT_Deduplicator) {
-            shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch');
-          }
-        } catch (dedupeError) {
-          console.error('❌ KYT ChatGPT: Deduplication error, capturing anyway:', dedupeError);
-          if (window.KYT_Deduplicator?._recordError) {
-            window.KYT_Deduplicator._recordError(dedupeError);
-          }
-        }
-
-        if (!shouldCapture) {
-          console.log('⏭️ KYT ChatGPT: Duplicate message skipped by deduplicator');
-          return await originalFetch.apply(this, args); // Return response without dispatching event
-        }
-
-        // Send to content script via custom event
-        window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
-          detail: messageData
-        }));
-      } else {
-        console.warn('⚠️ KYT ChatGPT: Failed to extract message');
-        totalErrors++;
-      }
-
       // Continue with original fetch (with modified body if context was injected)
       const response = await originalFetch.apply(this, args);
 
-      // PHASE 1.5: Capture assistant response
-      if (response.ok) {
-        // Capture response asynchronously (don't block UI)
-        captureAssistantResponse(response, {
-          conversationId: conversationId,
-          platform: 'chatgpt',
-          model: modelName,
-          timestamp: Date.now()
-        }).catch(error => {
-          console.error('❌ KYT ChatGPT: Failed to capture assistant response:', error);
-        });
+      // PHASE 2: Capture response (Assistant + User Voice)
+      if (response.ok && ENABLE_FETCH_CAPTURE) {
+        const contentType = response.headers.get('content-type') || '';
+
+        if (contentType.includes('application/json')) {
+          // Handle full JSON response (common for initial load or non-streaming)
+          const clone = response.clone();
+          clone.json().then(json => {
+            if (json && json.mapping) {
+              console.log('🎯 KYT ChatGPT: Captured full conversation tree (JSON)');
+              processConversationTree(json);
+            }
+          }).catch(err => console.warn('⚠️ KYT ChatGPT: Error parsing JSON response:', err));
+        } else if (contentType.includes('text/event-stream')) {
+          // Handle SSE stream (common for generation)
+          console.log('🌊 KYT ChatGPT: Capturing SSE stream');
+          captureResponseStream(response, {
+            conversationId: conversationId,
+            platform: 'chatgpt',
+            model: modelName,
+            timestamp: Date.now()
+          }).catch(error => {
+            console.error('❌ KYT ChatGPT: Failed to capture response stream:', error);
+          });
+        }
       }
 
       return response;
     }
 
-    // Continue with original fetch (with modified body if context was injected)
-    const response = await originalFetch.apply(this, args);
-
-    return response;
+    // Non-API calls: just pass through
+    return originalFetch.apply(this, args);
   };
 
   /**
@@ -470,18 +522,62 @@
 
   window.WebSocket = function (...args) {
     const socket = new OriginalWebSocket(...args);
+
+    // WebSocket capture is still disabled to avoid duplicates/noise
+    // We rely on fetch capture of the conversation tree
+    // if (!ENABLE_FETCH_CAPTURE) return socket; 
+
     const wsUrl = args[0];
 
     // Detect ChatGPT voice WebSocket
-    // Pattern: wss://chatgpt.com/ws/user/* or similar voice endpoints
+    // DEBUG: Log ALL WebSocket connections to find the right one
+    console.log('🔌 KYT ChatGPT: WebSocket connection attempt:', wsUrl);
+
     if (typeof wsUrl === 'string' && (
       wsUrl.includes('ws.chatgpt.com') ||
       wsUrl.includes('chatgpt.com/ws') ||
-      wsUrl.includes('/ws/user/')
+      wsUrl.includes('/ws/user/') ||
+      wsUrl.includes('wss://') // Catch all WSS for debugging
     )) {
-      console.log('🎤 KYT ChatGPT: WebSocket intercepted (likely voice):', wsUrl);
+      console.log('🎤 KYT ChatGPT: WebSocket intercepted (potential voice):', wsUrl);
 
-      // Intercept incoming messages
+      // Proxy the onmessage setter to capture events even if the app uses .onmessage = ...
+      let originalOnMessage = null;
+      Object.defineProperty(socket, 'onmessage', {
+        get: () => originalOnMessage,
+        set: (handler) => {
+          originalOnMessage = handler;
+          if (handler) {
+            // Wrap the handler to intercept messages
+            socket.addEventListener('message', async (event) => {
+              // We don't need to call the handler here, the browser does that.
+              // We just use this hook to ensure our listener is attached.
+            });
+          }
+        }
+      });
+
+      // Intercept OUTGOING messages
+      const originalSend = socket.send;
+      socket.send = function (data) {
+        try {
+          // Log outgoing data for debugging voice
+          if (typeof data === 'string') {
+            if (data.length < 500) {
+              console.log('📤 KYT OUTGOING MSG:', data);
+            } else {
+              console.log('📤 KYT OUTGOING MSG (truncated):', data.substring(0, 200) + '...');
+            }
+          } else {
+            console.log('📤 KYT OUTGOING MSG (binary):', data instanceof Blob ? 'Blob' : 'ArrayBuffer', data.byteLength || data.size);
+          }
+        } catch (err) {
+          console.warn('⚠️ KYT ChatGPT: Error logging outgoing message:', err);
+        }
+        return originalSend.apply(this, arguments);
+      };
+
+      // Intercept incoming messages using addEventListener (standard)
       socket.addEventListener('message', async (event) => {
         try {
           let dataStr = null;
@@ -497,26 +593,79 @@
 
           if (!dataStr) return;
 
+          // DEBUG: Log raw message sample to identify protocol
+          // Use a unique prefix to make it easy to find
+          if (dataStr.length < 500) {
+            console.log('📨 KYT RAW MSG:', dataStr);
+          } else {
+            console.log('📨 KYT RAW MSG (truncated):', dataStr.substring(0, 200) + '...');
+          }
+
           // WebSocket messages are typically JSON
-          const data = JSON.parse(dataStr);
+          let data;
+          try {
+            data = JSON.parse(dataStr);
+          } catch (e) {
+            // Not JSON - might be binary or custom format
+            return;
+          }
+
+          // Handle array root elements (ChatGPT often sends [payload])
+          if (Array.isArray(data)) {
+            // If it's an array, we'll process each item or just the first one if it matches our criteria
+            // For now, let's assume the relevant payload is one of the items
+            const relevantItem = data.find(item =>
+              item && (item.type === 'message' || item.type === 'transcript' || item.text || item.transcript)
+            );
+            if (relevantItem) {
+              data = relevantItem;
+            } else if (data.length > 0) {
+              // Fallback: just take the first item
+              data = data[0];
+            }
+          }
 
           // Voice transcripts come in various formats, try to detect:
           // - data.type === 'transcript'
           // - data.text (transcript text)
           // - data.message.content (alternate format)
+          // - data.payload.payload.text (nested conversation turn)
           let transcriptText = null;
+
+          // DEBUG: Log full object structure for "message" types to find the transcript
+          if (data.type === 'message' || data.type === 'transcript') {
+            console.log('🔍 KYT WS DEBUG:', JSON.stringify(data).substring(0, 500));
+          }
 
           if (data.type === 'transcript' && data.text) {
             transcriptText = data.text;
           } else if (data.text) {
             transcriptText = data.text;
           } else if (data.message?.content) {
-            transcriptText = data.message.content;
+            // Handle both string and object content (standard ChatGPT format)
+            if (typeof data.message.content === 'string') {
+              transcriptText = data.message.content;
+            } else if (data.message.content.parts && Array.isArray(data.message.content.parts)) {
+              transcriptText = data.message.content.parts[0];
+            }
+          } else if (data.item?.content) {
+            // Handle "conversation_item_created" format
+            if (typeof data.item.content === 'string') {
+              transcriptText = data.item.content;
+            } else if (data.item.content.parts && Array.isArray(data.item.content.parts)) {
+              transcriptText = data.item.content.parts[0];
+            }
           } else if (data.transcript) {
             transcriptText = data.transcript;
           } else if (data.payload?.text) {
             // Common pattern in some voice protocols
             transcriptText = data.payload.text;
+          } else if (data.payload?.payload?.text) {
+            // Deeply nested payload
+            transcriptText = data.payload.payload.text;
+          } else if (data.payload?.payload?.content?.parts?.[0]) {
+            // Conversation turn structure
+            transcriptText = data.payload.payload.content.parts[0];
           }
 
           if (transcriptText && transcriptText.trim().length > 0) {
@@ -583,43 +732,23 @@
   };
 
   /**
-   * PHASE 1.5: Capture streaming assistant response
-   * Reads SSE stream and extracts assistant message
+   * PHASE 1.5: Capture streaming response (Assistant + User Voice)
+   * Reads SSE stream and extracts messages
    */
-  async function captureAssistantResponse(response, metadata) {
+  async function captureResponseStream(response, metadata) {
     try {
-      // FIX: Defensive checks for response.body
-      if (!response) {
-        console.warn('⚠️ KYT ChatGPT: Response is null/undefined');
-        return;
-      }
+      if (!response || !response.body) return;
 
-      if (!response.body) {
-        console.warn('⚠️ KYT ChatGPT: Response body is null/undefined');
-        console.log('📊 Response object:', {
-          ok: response.ok,
-          status: response.status,
-          statusText: response.statusText,
-          headers: response.headers ? 'present' : 'missing',
-          bodyUsed: response.bodyUsed
-        });
-        return;
-      }
+      // STREAMING STATE: Signal that streaming is active (prevents DOM observer from capturing partials)
+      window.dispatchEvent(new CustomEvent('KYT_STREAM_STATE', { detail: { streaming: true } }));
 
-      // Clone response to avoid consuming original stream
       const clonedResponse = response.clone();
-
-      if (!clonedResponse.body) {
-        console.warn('⚠️ KYT ChatGPT: Cloned response body is null/undefined');
-        return;
-      }
-
       const reader = clonedResponse.body.getReader();
       const decoder = new TextDecoder();
-      let fullText = '';
-      let messageId = null;
+
+      let assistantText = '';
+      let assistantMessageId = null;
       let chunkCount = 0;
-      let debugMode = true; // Enable diagnostic logging
 
       while (true) {
         const { done, value } = await reader.read();
@@ -627,187 +756,104 @@
 
         chunkCount++;
         const chunk = decoder.decode(value, { stream: true });
-
-        // DIAGNOSTIC: Log first 10 chunks to see actual format (including text chunks)
-        if (chunkCount <= 10) {
-          console.log(`🔍 KYT ChatGPT DEBUG: Chunk ${chunkCount} received`);
-          console.log('   Chunk length:', chunk.length);
-          console.log('   Chunk preview (first 500 chars):', chunk.substring(0, 500));
-        }
-
         const lines = chunk.split('\n');
 
         for (const line of lines) {
-          // Skip empty lines and event: lines
-          if (line.trim().length === 0) continue;
-          if (line.startsWith('event:')) continue;
-
-          // DIAGNOSTIC: Log line format from first 10 chunks
-          if (chunkCount <= 10 && line.trim().length > 0) {
-            console.log(`🔍 DEBUG Chunk ${chunkCount} Line:`, line.substring(0, 200));
-          }
-
-          // ChatGPT format: "data: {json}" or "data: \"string\""
           if (!line.startsWith('data: ')) continue;
-
           const data = line.substring(6).trim();
-          if (data === '[DONE]' || data === '' || data === '""') continue;
+          if (data === '[DONE]') continue;
 
           try {
             const json = JSON.parse(data);
 
-            // DIAGNOSTIC: Log parsed JSON structure from first 10 chunks
-            if (typeof json === 'object' && json !== null && chunkCount <= 10) {
-              console.log(`🔍 DEBUG Chunk ${chunkCount} Parsed JSON:`, JSON.stringify(json).substring(0, 300));
-              console.log(`🔍 DEBUG Chunk ${chunkCount} JSON keys:`, Object.keys(json));
-              console.log(`🔍 DEBUG Chunk ${chunkCount} JSON type:`, json.type || 'no type field');
+            // 1. Check for User Voice Message (in stream)
+            // Structure: v.message.author.role === 'user' && metadata.voice_mode_message
+            // Or standard message structure in data
+            let messageNode = json.message || json.v?.message;
 
-              // Check multiple possible structures
-              if (json.message) {
-                console.log(`🔍 DEBUG Chunk ${chunkCount} has message field:`, JSON.stringify(json.message).substring(0, 150));
-              }
-              if (json.content) {
-                console.log(`🔍 DEBUG Chunk ${chunkCount} has content field:`, JSON.stringify(json.content).substring(0, 150));
-              }
-              if (json.choices) {
-                console.log(`🔍 DEBUG Chunk ${chunkCount} has choices[0]:`, JSON.stringify(json.choices[0]).substring(0, 150));
-              }
-              if (json.delta) {
-                console.log(`🔍 DEBUG Chunk ${chunkCount} has delta field:`, JSON.stringify(json.delta).substring(0, 150));
-              }
-              if (json.text) {
-                console.log(`🔍 DEBUG Chunk ${chunkCount} has text field:`, json.text.substring(0, 100));
-              }
-              // Check nested structure seen in user logs: {"p": "", "o": "add", "v": {"message": ...}}
-              if (json.v !== undefined) {
-                console.log(`🔍 DEBUG Chunk ${chunkCount} has v (value) field:`, typeof json.v === 'string' ? `"${json.v.substring(0, 100)}"` : JSON.stringify(json.v).substring(0, 300));
-              }
-              if (json.p !== undefined) {
-                console.log(`🔍 DEBUG Chunk ${chunkCount} has p (path) field:`, json.p);
-              }
-              if (json.o) {
-                console.log(`🔍 DEBUG Chunk ${chunkCount} has o (operation) field:`, json.o);
+            if (messageNode && messageNode.author?.role === 'user') {
+              const isVoice = messageNode.metadata?.voice_mode_message || false;
+              const content = messageNode.content?.parts?.[0];
+
+              if (content && typeof content === 'string' && content.length > 0) {
+                // Found a user message in the stream!
+                console.log(`🎙️ KYT Stream: Found USER message (${isVoice ? 'Voice' : 'Text'})`);
+
+                window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+                  detail: {
+                    content: content,
+                    role: 'user',
+                    conversationId: metadata.conversationId,
+                    model: metadata.model,
+                    timestamp: Date.now(),
+                    isVoice: isVoice,
+                    platform: 'chatgpt',
+                    captureMethod: 'sse_stream'
+                  }
+                }));
               }
             }
 
-            // Try multiple possible ChatGPT response formats
+            // 2. Accumulate Assistant Response (Delta)
+            // ... existing accumulation logic ...
             let content = null;
 
-            // Format 1: Standard SSE with choices array (OpenAI API style)
+            // Format 1: Standard SSE with choices array
             if (json.choices?.[0]?.delta?.content) {
               content = json.choices[0].delta.content;
             }
-            // Format 2: Direct message content
-            else if (json.message?.content?.parts?.[0]) {
-              content = json.message.content.parts[0];
-            }
-            // Format 3: Direct content field
-            else if (typeof json.content === 'string') {
-              content = json.content;
-            }
-            // Format 4: Delta field directly
-            else if (typeof json.delta === 'string') {
-              content = json.delta;
-            }
-            // Format 5: Text field
-            else if (typeof json.text === 'string') {
-              content = json.text;
-            }
-            // Format 6: Delta/patch format with array (ChatGPT web API streaming)
-            // Structure: {"v": [{"p": "/message/content/parts/0", "o": "append", "v": "text"}]}
-            // This is used for streaming text updates after the initial message is created
-            else if (Array.isArray(json.v) && json.v.length > 0) {
-              // Extract text from all patches in the array
+            // Format 6: Delta/patch format with array
+            else if (Array.isArray(json.v)) {
               for (const patch of json.v) {
-                // Check if this patch updates the text content
                 if (patch.p === '/message/content/parts/0' && patch.o === 'append' && typeof patch.v === 'string') {
                   content = (content || '') + patch.v;
                 }
               }
             }
-            // Format 6b: Delta format with single patch (alternative format)
-            // Structure: {"p": "message.content.parts[0]", "o": "replace", "v": "text chunk"}
-            else if (json.o && json.v !== undefined && typeof json.v === 'string' && json.v.length > 0) {
-              // Delta format: v contains the text chunk directly as string
+            // Format 6b: Delta format with single patch
+            else if (json.o && json.v !== undefined && typeof json.v === 'string') {
               content = json.v;
-            }
-            // Format 7: Nested v.message structure (ChatGPT initial message creation)
-            // Structure: {"p": "", "o": "add", "v": {"message": {"content": {"parts": ["text"]}}}}
-            else if (json.v?.message?.content?.parts?.[0] && json.v.message.content.parts[0].length > 0) {
-              // Only capture if parts[0] has actual content (not empty string)
-              content = json.v.message.content.parts[0];
-            }
-            // Format 8: Nested v.content directly
-            else if (typeof json.v?.content === 'string' && json.v.content.length > 0) {
-              content = json.v.content;
-            }
-            // Format 9: Nested v.text
-            else if (typeof json.v?.text === 'string' && json.v.text.length > 0) {
-              content = json.v.text;
             }
 
             if (content) {
-              fullText += content;
-              if (chunkCount <= 10) {
-                console.log(`✅ DEBUG Chunk ${chunkCount}: Captured text:`, content.substring(0, 50));
-              }
+              assistantText += content;
             }
 
-            // Capture message ID from various possible locations
-            if (!messageId) {
-              messageId = json.id || json.message_id || json.conversation_id;
+            if (!assistantMessageId) {
+              assistantMessageId = json.id || json.message_id || json.conversation_id;
             }
-          } catch (parseError) {
-            // Skip non-JSON lines (like plain strings)
-            if (chunkCount <= 3 && debugMode) {
-              console.log('⚠️ DEBUG: Skipping non-JSON line:', data.substring(0, 100));
-            }
-            continue;
+
+          } catch (e) {
+            // Ignore parse errors
           }
         }
       }
 
-      // DIAGNOSTIC: Log final statistics
-      console.log('📊 KYT ChatGPT DEBUG: Stream reading complete');
-      console.log('   Total chunks:', chunkCount);
-      console.log('   Text length:', fullText.length);
-      console.log('   Message ID:', messageId || 'none');
-
-      // Only store if we captured meaningful text
-      if (fullText.trim().length > 0) {
+      // Dispatch Assistant Message
+      if (assistantText.trim().length > 0) {
         const assistantMessage = {
-          content: fullText.trim(),
+          content: assistantText.trim(),
           role: 'assistant',
           conversationId: metadata.conversationId,
           model: metadata.model,
           timestamp: Date.now(),
-          messageId: messageId || `msg_assistant_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          messageId: assistantMessageId || `msg_assistant_${Date.now()}`,
           platform: metadata.platform
         };
 
-        console.log('🤖 KYT ChatGPT: Assistant response captured:', {
-          conversationId: assistantMessage.conversationId,
-          contentLength: assistantMessage.content.length,
-          contentPreview: assistantMessage.content.substring(0, 100) + '...'
-        });
-
-        // Dispatch event to content script
+        console.log('🤖 KYT ChatGPT: Assistant response captured (Stream)');
         window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
           detail: assistantMessage
         }));
-
-        console.log('🤖 KYT ChatGPT: Assistant message event dispatched');
-      } else {
-        console.warn('⚠️ KYT ChatGPT: No text captured from assistant response');
       }
+
+      // STREAMING STATE: Signal that streaming is complete
+      window.dispatchEvent(new CustomEvent('KYT_STREAM_STATE', { detail: { streaming: false } }));
+
     } catch (error) {
-      console.error('❌ KYT ChatGPT: Error capturing assistant response:', error);
-      console.error('   Error details:', {
-        name: error.name,
-        message: error.message,
-        stack: error.stack?.split('\n')[0]
-      });
-      // Don't throw - graceful degradation
+      console.error('❌ KYT ChatGPT: Error capturing stream:', error);
+      // Ensure streaming state is cleared even on error
+      window.dispatchEvent(new CustomEvent('KYT_STREAM_STATE', { detail: { streaming: false } }));
     }
   }
 
@@ -826,8 +872,9 @@
   // Configuration: DOM observer is OPT-IN (disabled by default)
   // Fetch interception handles 95% of message capture
   const KYT_CONFIG = {
-    enableDOMObserver: false,  // Set to true for voice input capture
-    enableVoiceCapture: false  // Alternative flag for voice-specific features
+    enableDOMObserver: false, // Disabled in favor of fetch interception
+    enableVoiceCapture: true, // Enabled for WebSocket voice capture
+    debugMode: true
   };
 
   // ChatGPT-specific message container selectors
@@ -883,7 +930,8 @@
     if (!node || !node.tagName) return true;
 
     const tagName = node.tagName.toLowerCase();
-    const className = node.className || '';
+    // FIX: Handle SVG className which is an object (SVGAnimatedString)
+    const className = (typeof node.className === 'string') ? node.className : (node.className?.baseVal || '');
     const ariaLabel = node.getAttribute('aria-label') || '';
 
     // Check tag names
@@ -1029,7 +1077,7 @@
       return null;
     }
 
-    const text = node.textContent?.trim();
+    let text = node.textContent?.trim();
 
     // Filter out empty, whitespace-only, or very short text
     if (!text || text.length < 50 || /^\s*$/.test(text)) return null;
@@ -1078,6 +1126,13 @@
     if (text.length > 10000) {
       console.log(`⚠️ KYT ChatGPT DOM: Skipping oversized text (${text.length} chars) - likely conversation history`);
       return null;
+    }
+
+    // Clean up prefixes
+    if (text.startsWith('You said:')) {
+      text = text.replace('You said:', '').trim();
+    } else if (text.startsWith('ChatGPT said:')) {
+      text = text.replace('ChatGPT said:', '').trim();
     }
 
     seenNodes.add(node);
@@ -1247,4 +1302,65 @@
 
   console.log('✅ KYT ChatGPT: Fetch override installed in PAGE CONTEXT');
   console.log(`ℹ️ KYT ChatGPT: DOM observer ${KYT_CONFIG.enableDOMObserver || KYT_CONFIG.enableVoiceCapture ? 'ENABLED' : 'DISABLED (fetch-only mode)'}`);
+  /**
+   * Process full conversation tree from JSON response
+   * This is the robust method for Voice Capture (and text)
+   */
+  function processConversationTree(response) {
+    if (!response || !response.mapping) return;
+
+    try {
+      const nodes = Object.values(response.mapping);
+
+      // Sort nodes by create_time
+      nodes.sort((a, b) => (a.message?.create_time || 0) - (b.message?.create_time || 0));
+
+      for (const node of nodes) {
+        if (!node.message) continue;
+
+        const isUser = node.message.author.role === 'user';
+        const isAssistant = node.message.author.role === 'assistant';
+
+        if (!isUser && !isAssistant) continue;
+
+        const contentParts = node.message.content?.parts || [];
+        const content = contentParts.map(part => {
+          if (typeof part === 'string') return part;
+          return JSON.stringify(part);
+        }).join('\n').trim();
+
+        if (!content) continue;
+
+        const messageData = {
+          content: content,
+          role: node.message.author.role,
+          conversationId: response.conversation_id,
+          model: node.message.metadata?.model_slug || 'unknown',
+          originalId: node.message.id,
+          isVoice: node.message.metadata?.voice_mode_message || false,
+          timestamp: node.message.create_time ? node.message.create_time * 1000 : Date.now(),
+          platform: 'chatgpt',
+          captureMethod: 'fetch_tree'
+        };
+
+        // Deduplication
+        let shouldCapture = true;
+        if (window.KYT_Deduplicator) {
+          shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch_tree');
+        }
+
+        if (shouldCapture) {
+          console.log(`🎙️ KYT Voice Capture (Inject): Found new ${messageData.isVoice ? 'VOICE' : 'TEXT'} message from ${messageData.role}`);
+          window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+            detail: messageData
+          }));
+        } else {
+          console.log('⏭️ KYT Voice Capture: Duplicate skipped');
+        }
+      }
+    } catch (error) {
+      console.error('❌ KYT Voice Capture: Error processing tree:', error);
+    }
+  }
+
 })();

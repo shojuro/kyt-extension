@@ -23,6 +23,7 @@ logs/
 debug.log
 error.log
 validation/*.log
+debug_*.txt
 
 # ============================================
 # CHROME EXTENSION ARTIFACTS
@@ -76,7 +77,6 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
 yarn.lock
 
 # ============================================
@@ -101,12 +101,40 @@ dist/
 # ============================================
 test_data/captured_*.json
 validation/user_data/
+.test-profile/
+test-results/
+
+# Test conversation exports
+conversation_export*.json
+tier_examples.json
+tier_test_results.txt
+*_test_results.txt
 
 # ============================================
 # BASELINE DATA (Validation Results)
 # ============================================
 baselines/
 *.baseline.json
+
+# ============================================
+# SYNTHETIC DATA GENERATION
+# ============================================
+# Generated training datasets (never commit generated data)
+data/
+data/*.json
+!data/.gitkeep
+
+# Samples and checkpoints
+data/samples/
+data/checkpoints/
+
+# Cost tracking (contains API usage data)
+cost_tracking.json
+scripts/cost_tracking.json
+
+# Generation progress files
+*_progress.json
+*_checkpoint_*.json
 
 # ============================================
 # DIAGNOSTIC SCRIPTS WITH HARDCODED SECRETS
@@ -118,3 +146,18 @@ verify_*.js
 phase0_*.js
 phase0_*.mjs
 check_message_count.mjs
+
+# Local/personal files
+CLAUDE.md
+gravity_results.csv
+test_output.txt
+
+# ============================================
+# DEVELOPMENT SCRIPTS AND DEBUG FILES
+# ============================================
+debug_import*.js
+diagnostic_*.js
+test_*.js
+test_output*.txt
+import_result.json
+generate_*.js

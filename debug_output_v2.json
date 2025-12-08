@@ -1,0 +1,74 @@
+Environment USER_ID: 0499c405-3bff-4901-bc94-d5d0a0c301e4
+Checking RLS policies for table "messages"...
+Active Policies: [
+  {
+    "cmd": "UPDATE",
+    "qual": "(user_id = auth.uid())",
+    "roles": [
+      "public"
+    ],
+    "tablename": "messages",
+    "permissive": "PERMISSIVE",
+    "policyname": "messages_update_policy",
+    "schemaname": "public",
+    "with_check": null
+  },
+  {
+    "cmd": "DELETE",
+    "qual": "(user_id = auth.uid())",
+    "roles": [
+      "public"
+    ],
+    "tablename": "messages",
+    "permissive": "PERMISSIVE",
+    "policyname": "messages_delete_policy",
+    "schemaname": "public",
+    "with_check": null
+  },
+  {
+    "cmd": "INSERT",
+    "qual": null,
+    "roles": [
+      "public"
+    ],
+    "tablename": "messages",
+    "permissive": "PERMISSIVE",
+    "policyname": "messages_insert_policy",
+    "schemaname": "public",
+    "with_check": "(user_id = auth.uid())"
+  },
+  {
+    "cmd": "SELECT",
+    "qual": "(user_id = auth.uid())",
+    "roles": [
+      "public"
+    ],
+    "tablename": "messages",
+    "permissive": "PERMISSIVE",
+    "policyname": "messages_select_policy",
+    "schemaname": "public",
+    "with_check": null
+  },
+  {
+    "cmd": "ALL",
+    "qual": "(user_id = '00000000-0000-0000-0000-000000000000'::uuid)",
+    "roles": [
+      "public"
+    ],
+    "tablename": "messages",
+    "permissive": "PERMISSIVE",
+    "policyname": "messages_temp_user_access",
+    "schemaname": "public",
+    "with_check": "(user_id = '00000000-0000-0000-0000-000000000000'::uuid)"
+  }
+]
+RLS Status: [
+  {
+    "relname": "messages",
+    "relrowsecurity": true
+  },
+  {
+    "relname": "messages",
+    "relrowsecurity": true
+  }
+]

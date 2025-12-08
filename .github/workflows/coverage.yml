@@ -1,0 +1,154 @@
+name: Test Coverage
+
+# Coverage gates prevent "I'll add tests later" syndrome
+# Why: Uncovered code in a PII app = unverified security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  coverage:
+    name: Coverage Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write  # For posting coverage comments
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Check coverage thresholds
+        id: coverage
+        run: |
+          # Extract coverage from json-summary
+          if [ -f "coverage/coverage-summary.json" ]; then
+            LINES=$(cat coverage/coverage-summary.json | jq '.total.lines.pct')
+            FUNCTIONS=$(cat coverage/coverage-summary.json | jq '.total.functions.pct')
+            BRANCHES=$(cat coverage/coverage-summary.json | jq '.total.branches.pct')
+            STATEMENTS=$(cat coverage/coverage-summary.json | jq '.total.statements.pct')
+
+            echo "lines=$LINES" >> $GITHUB_OUTPUT
+            echo "functions=$FUNCTIONS" >> $GITHUB_OUTPUT
+            echo "branches=$BRANCHES" >> $GITHUB_OUTPUT
+            echo "statements=$STATEMENTS" >> $GITHUB_OUTPUT
+
+            echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Coverage |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|----------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Lines | ${LINES}% |" >> $GITHUB_STEP_SUMMARY
+            echo "| Functions | ${FUNCTIONS}% |" >> $GITHUB_STEP_SUMMARY
+            echo "| Branches | ${BRANCHES}% |" >> $GITHUB_STEP_SUMMARY
+            echo "| Statements | ${STATEMENTS}% |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ No coverage report found"
+            exit 1
+          fi
+
+      - name: Post coverage comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const lines = '${{ steps.coverage.outputs.lines }}';
+            const functions = '${{ steps.coverage.outputs.functions }}';
+            const branches = '${{ steps.coverage.outputs.branches }}';
+            const statements = '${{ steps.coverage.outputs.statements }}';
+
+            // Determine status emoji
+            const getEmoji = (pct) => {
+              const num = parseFloat(pct);
+              if (num >= 80) return '🟢';
+              if (num >= 50) return '🟡';
+              return '🔴';
+            };
+
+            const body = `## 📊 Coverage Report
+
+            | Metric | Coverage | Status |
+            |--------|----------|--------|
+            | Lines | ${lines}% | ${getEmoji(lines)} |
+            | Functions | ${functions}% | ${getEmoji(functions)} |
+            | Branches | ${branches}% | ${getEmoji(branches)} |
+            | Statements | ${statements}% | ${getEmoji(statements)} |
+
+            ---
+            <details>
+            <summary>Coverage Legend</summary>
+
+            - 🟢 >= 80% (Good)
+            - 🟡 50-79% (Needs improvement)
+            - 🔴 < 50% (Critical - add tests!)
+
+            </details>
+
+            *Coverage thresholds are configured in \`vitest.config.js\`*`;
+
+            // Find existing comment
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existingComment = comments.data.find(c =>
+              c.user.login === 'github-actions[bot]' &&
+              c.body.includes('Coverage Report')
+            );
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+      - name: Fail if coverage below threshold
+        run: |
+          # The vitest config has thresholds, but let's also check here
+          # for a clear error message
+          LINES="${{ steps.coverage.outputs.lines }}"
+          THRESHOLD=20
+
+          if (( $(echo "$LINES < $THRESHOLD" | bc -l) )); then
+            echo "❌ Coverage ($LINES%) is below threshold ($THRESHOLD%)"
+            echo "Add more tests before merging!"
+            exit 1
+          fi
+
+          echo "✅ Coverage ($LINES%) meets threshold ($THRESHOLD%)"

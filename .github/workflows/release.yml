@@ -1,0 +1,206 @@
+name: Release
+
+# Automated releases with changelog generation
+# Why: Professional releases without manual changelog maintenance
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on version tags like v1.0.0
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Is this a pre-release?'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for changelog
+
+      - name: Get version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "📦 Releasing version: $VERSION"
+
+      - name: Get previous tag
+        id: prev_tag
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          echo "tag=$PREV_TAG" >> $GITHUB_OUTPUT
+          echo "Previous tag: ${PREV_TAG:-'(none - first release)'}"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PREV_TAG="${{ steps.prev_tag.outputs.tag }}"
+
+          echo "## What's Changed in v${VERSION}" > CHANGELOG_BODY.md
+          echo "" >> CHANGELOG_BODY.md
+
+          # Get commit range
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+
+          # Categorize commits by conventional commit prefix
+          echo "### 🚀 Features" >> CHANGELOG_BODY.md
+          git log $RANGE --pretty=format:"- %s (%h)" --grep="^feat" 2>/dev/null | head -20 >> CHANGELOG_BODY.md || echo "_No new features_" >> CHANGELOG_BODY.md
+          echo "" >> CHANGELOG_BODY.md
+
+          echo "### 🐛 Bug Fixes" >> CHANGELOG_BODY.md
+          git log $RANGE --pretty=format:"- %s (%h)" --grep="^fix" 2>/dev/null | head -20 >> CHANGELOG_BODY.md || echo "_No bug fixes_" >> CHANGELOG_BODY.md
+          echo "" >> CHANGELOG_BODY.md
+
+          echo "### 🔒 Security" >> CHANGELOG_BODY.md
+          git log $RANGE --pretty=format:"- %s (%h)" --grep="^security\|^sec" 2>/dev/null | head -20 >> CHANGELOG_BODY.md || echo "_No security updates_" >> CHANGELOG_BODY.md
+          echo "" >> CHANGELOG_BODY.md
+
+          echo "### 📚 Documentation" >> CHANGELOG_BODY.md
+          git log $RANGE --pretty=format:"- %s (%h)" --grep="^docs" 2>/dev/null | head -10 >> CHANGELOG_BODY.md || echo "_No documentation changes_" >> CHANGELOG_BODY.md
+          echo "" >> CHANGELOG_BODY.md
+
+          echo "### 🔧 Other Changes" >> CHANGELOG_BODY.md
+          git log $RANGE --pretty=format:"- %s (%h)" --grep="^chore\|^refactor\|^style\|^test\|^ci" 2>/dev/null | head -10 >> CHANGELOG_BODY.md || echo "_No other changes_" >> CHANGELOG_BODY.md
+          echo "" >> CHANGELOG_BODY.md
+
+          # Add stats
+          echo "### 📊 Stats" >> CHANGELOG_BODY.md
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git rev-list --count $RANGE)
+            FILES=$(git diff --shortstat $RANGE | grep -oP '\d+ file' | grep -oP '\d+' || echo "0")
+            echo "- **Commits:** $COMMITS" >> CHANGELOG_BODY.md
+            echo "- **Files changed:** $FILES" >> CHANGELOG_BODY.md
+          else
+            echo "- First release!" >> CHANGELOG_BODY.md
+          fi
+          echo "" >> CHANGELOG_BODY.md
+
+          # Add full commit list (collapsed)
+          echo "<details>" >> CHANGELOG_BODY.md
+          echo "<summary>Full Commit History</summary>" >> CHANGELOG_BODY.md
+          echo "" >> CHANGELOG_BODY.md
+          git log $RANGE --pretty=format:"- %s (%h) - %an" 2>/dev/null | head -50 >> CHANGELOG_BODY.md
+          echo "" >> CHANGELOG_BODY.md
+          echo "</details>" >> CHANGELOG_BODY.md
+
+          cat CHANGELOG_BODY.md
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Package extension
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Create release directory
+          mkdir -p release
+
+          # Package Chrome extension
+          if [ -d "build" ]; then
+            cd build
+            zip -r "../release/kyt-extension-v${VERSION}-chrome.zip" .
+            cd ..
+          fi
+
+          # List release artifacts
+          echo "📦 Release artifacts:"
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "v${{ steps.version.outputs.version }}"
+          body_path: CHANGELOG_BODY.md
+          draft: false
+          prerelease: ${{ inputs.prerelease || false }}
+          files: |
+            release/*.zip
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update CHANGELOG.md
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DATE=$(date +%Y-%m-%d)
+
+          # Create or prepend to CHANGELOG.md
+          if [ -f "CHANGELOG.md" ]; then
+            # Prepend new version
+            echo "# Changelog" > CHANGELOG_NEW.md
+            echo "" >> CHANGELOG_NEW.md
+            echo "## [${VERSION}] - ${DATE}" >> CHANGELOG_NEW.md
+            cat CHANGELOG_BODY.md | tail -n +2 >> CHANGELOG_NEW.md
+            echo "" >> CHANGELOG_NEW.md
+            tail -n +2 CHANGELOG.md >> CHANGELOG_NEW.md
+            mv CHANGELOG_NEW.md CHANGELOG.md
+          else
+            # Create new changelog
+            echo "# Changelog" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "All notable changes to this project will be documented in this file." >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "## [${VERSION}] - ${DATE}" >> CHANGELOG.md
+            cat CHANGELOG_BODY.md | tail -n +2 >> CHANGELOG.md
+          fi
+
+      - name: Commit changelog
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          if git diff --quiet CHANGELOG.md; then
+            echo "No changelog changes to commit"
+          else
+            git add CHANGELOG.md
+            git commit -m "docs: Update CHANGELOG for v${{ steps.version.outputs.version }}"
+            git push origin HEAD:main
+          fi
+
+      - name: Summary
+        run: |
+          echo "## 🎉 Release v${{ steps.version.outputs.version }} Created!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          for f in release/*; do
+            SIZE=$(ls -lh "$f" | awk '{print $5}')
+            echo "| $(basename $f) | $SIZE |" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View Release](https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }})" >> $GITHUB_STEP_SUMMARY

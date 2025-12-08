@@ -10,11 +10,31 @@ const lastCaptureTime = document.getElementById('lastCaptureTime');
 const chatgptPlatform = document.getElementById('chatgptPlatform');
 const claudePlatform = document.getElementById('claudePlatform');
 const apiStatus = document.getElementById('apiStatus');
+const hfKeyStatus = document.getElementById('hfKeyStatus');
 const transformStatus = document.getElementById('transformStatus');
 const debugModeToggle = document.getElementById('debugModeToggle');
 const testCaptureBtn = document.getElementById('testCaptureBtn');
 const setupBtn = document.getElementById('setupBtn');
+const importBtn = document.getElementById('importBtn');
 const testResult = document.getElementById('testResult');
+const tierBadge = document.getElementById('tierBadge');
+const tierDescription = document.getElementById('tierDescription');
+const upgradeBtn = document.getElementById('upgradeBtn');
+const manageBillingBtn = document.getElementById('manageBillingBtn');
+const rescanBtn = document.getElementById('rescanBtn');
+const capturedCount = document.getElementById('capturedCount');
+const syncedCount = document.getElementById('syncedCount');
+const pendingCount = document.getElementById('pendingCount');
+const lastSyncTime = document.getElementById('lastSyncTime');
+const forceSyncBtn = document.getElementById('forceSyncBtn');
+const syncResult = document.getElementById('syncResult');
+
+// Tier descriptions for display
+const TIER_INFO = {
+  free: { label: 'FREE', description: 'Basic features' },
+  pro: { label: 'PRO', description: 'Unlimited memories, priority support' },
+  dev: { label: 'DEV', description: 'API access, advanced features' }
+};
 
 /**
  * Update status indicator with color coding
@@ -121,15 +141,28 @@ async function loadConfig() {
     if (!config) {
       apiStatus.textContent = '❌ Not Configured';
       apiStatus.style.color = '#721c24';
+      hfKeyStatus.textContent = '❌ Not Configured';
+      hfKeyStatus.style.color = '#721c24';
       transformStatus.textContent = '⚠️ Unknown';
       transformStatus.style.color = '#856404';
       return;
     }
 
-    // Check API keys
+    // Check API keys (Supabase + OpenAI)
     const hasKeys = config.supabaseUrl && config.supabaseKey && config.openaiKey;
     apiStatus.textContent = hasKeys ? '✅ Configured' : '⚠️ Incomplete';
     apiStatus.style.color = hasKeys ? '#155724' : '#856404';
+
+    // Check HuggingFace key (REQUIRED for sync - Qwen3 embeddings)
+    const hasHfKey = !!config.huggingfaceKey;
+    if (hasHfKey) {
+      hfKeyStatus.textContent = '✅ Configured';
+      hfKeyStatus.style.color = '#155724';
+    } else {
+      hfKeyStatus.textContent = '❌ Missing (Required for sync!)';
+      hfKeyStatus.style.color = '#721c24';
+      hfKeyStatus.style.fontWeight = '700';
+    }
 
     // Check query transformation
     const transformDisabled = config.disableQueryTransformation;
@@ -139,6 +172,7 @@ async function loadConfig() {
   } catch (error) {
     console.error('Error loading config:', error);
     apiStatus.textContent = '❌ Error';
+    hfKeyStatus.textContent = '❌ Error';
     transformStatus.textContent = '❌ Error';
   }
 }
@@ -213,15 +247,322 @@ function openSetup() {
   chrome.runtime.openOptionsPage();
 }
 
+/**
+ * Open import modal
+ */
+function openImport() {
+  chrome.windows.create({
+    url: 'popup/import-modal.html',
+    type: 'popup',
+    width: 350,
+    height: 600
+  });
+}
+
+/**
+ * Rescan page messages (Recovery Mode)
+ */
+async function rescanMessages() {
+  rescanBtn.disabled = true;
+  rescanBtn.textContent = '🔄 Scanning...';
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) throw new Error('No active tab');
+
+    // Send message to content script
+    await chrome.tabs.sendMessage(tab.id, { type: 'SCAN_DOM' });
+
+    testResult.className = 'test-result success';
+    testResult.textContent = '✅ Rescan command sent. Check console for details.';
+    testResult.classList.remove('hidden');
+
+  } catch (error) {
+    console.error('Rescan failed:', error);
+    testResult.className = 'test-result error';
+    testResult.textContent = `❌ Rescan failed: ${error.message}`;
+    testResult.classList.remove('hidden');
+  } finally {
+    setTimeout(() => {
+      rescanBtn.disabled = false;
+      rescanBtn.textContent = '🔄 Rescan Page Messages';
+    }, 2000);
+  }
+}
+
+/**
+ * Load and display subscription tier
+ */
+async function loadSubscription() {
+  try {
+    // Get user tier from storage (synced from database via background script)
+    const result = await chrome.storage.local.get(['user_tier', 'user_id', 'api_config']);
+    const tier = result.user_tier || 'free';
+    const userId = result.user_id;
+    const config = result.api_config;
+
+    // Update tier badge
+    const info = TIER_INFO[tier] || TIER_INFO.free;
+    tierBadge.textContent = info.label;
+    tierBadge.className = `tier-badge tier-${tier}`;
+    tierDescription.textContent = info.description;
+
+    // Show/hide buttons based on tier
+    if (tier === 'free') {
+      upgradeBtn.classList.remove('hidden');
+      manageBillingBtn.classList.add('hidden');
+    } else {
+      upgradeBtn.classList.add('hidden');
+      manageBillingBtn.classList.remove('hidden');
+    }
+
+  } catch (error) {
+    console.error('Error loading subscription:', error);
+    // Default to free tier on error
+    tierBadge.textContent = 'FREE';
+    tierBadge.className = 'tier-badge tier-free';
+    tierDescription.textContent = 'Basic features';
+  }
+}
+
+/**
+ * Handle upgrade button click - redirect to Stripe Checkout
+ */
+async function handleUpgrade() {
+  upgradeBtn.disabled = true;
+  upgradeBtn.textContent = '⏳ Loading...';
+
+  try {
+    const result = await chrome.storage.local.get(['user_id', 'api_config']);
+    const userId = result.user_id;
+    const config = result.api_config;
+
+    if (!userId || !config?.supabaseUrl || !config?.supabaseKey) {
+      throw new Error('Please configure API keys first');
+    }
+
+    // Call create-checkout Edge Function
+    const response = await fetch(`${config.supabaseUrl}/functions/v1/create-checkout`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.supabaseKey}`,
+      },
+      body: JSON.stringify({
+        userId: userId,
+        priceId: 'price_xxx_pro', // TODO: Replace with real price ID after Stripe setup
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to create checkout session');
+    }
+
+    const { url } = await response.json();
+
+    // Open checkout in new tab
+    chrome.tabs.create({ url });
+
+  } catch (error) {
+    console.error('Upgrade error:', error);
+    alert(`Upgrade failed: ${error.message}`);
+  } finally {
+    upgradeBtn.disabled = false;
+    upgradeBtn.textContent = '⚡ Upgrade to Pro';
+  }
+}
+
+/**
+ * Handle manage billing button click - redirect to Stripe Billing Portal
+ */
+async function handleManageBilling() {
+  manageBillingBtn.disabled = true;
+  manageBillingBtn.textContent = '⏳ Loading...';
+
+  try {
+    const result = await chrome.storage.local.get(['user_id', 'api_config']);
+    const userId = result.user_id;
+    const config = result.api_config;
+
+    if (!userId || !config?.supabaseUrl || !config?.supabaseKey) {
+      throw new Error('Please configure API keys first');
+    }
+
+    // Call billing-portal Edge Function
+    const response = await fetch(`${config.supabaseUrl}/functions/v1/billing-portal`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.supabaseKey}`,
+      },
+      body: JSON.stringify({
+        userId: userId,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to create billing portal session');
+    }
+
+    const { url } = await response.json();
+
+    // Open billing portal in new tab
+    chrome.tabs.create({ url });
+
+  } catch (error) {
+    console.error('Billing portal error:', error);
+    alert(`Billing portal failed: ${error.message}`);
+  } finally {
+    manageBillingBtn.disabled = false;
+    manageBillingBtn.textContent = '⚙️ Manage Subscription';
+  }
+}
+
+/**
+ * Load and display sync status (captured vs synced messages)
+ */
+async function loadSyncStatus() {
+  try {
+    const result = await chrome.storage.local.get(['captured_messages', 'last_sync_status']);
+    const messages = result.captured_messages || [];
+    const syncStatus = result.last_sync_status || { syncedMessageIds: [], lastSyncTime: 0 };
+
+    const captured = messages.length;
+    const synced = (syncStatus.syncedMessageIds || []).length;
+    const pending = Math.max(0, captured - synced);
+
+    capturedCount.textContent = captured;
+    syncedCount.textContent = synced;
+    pendingCount.textContent = pending;
+    lastSyncTime.textContent = formatTimestamp(syncStatus.lastSyncTime);
+
+    // Highlight pending count if there are unsynced messages
+    if (pending > 0) {
+      pendingCount.style.color = '#f5576c';
+      pendingCount.style.fontWeight = '700';
+    } else {
+      pendingCount.style.color = '#155724';
+      pendingCount.style.fontWeight = '600';
+    }
+
+  } catch (error) {
+    console.error('Error loading sync status:', error);
+  }
+}
+
+/**
+ * Force resync all messages by clearing syncedMessageIds
+ */
+async function forceResync() {
+  forceSyncBtn.disabled = true;
+  forceSyncBtn.textContent = '⏳ Checking config...';
+
+  try {
+    // Pre-check: Verify HuggingFace key is configured (required for embeddings)
+    const configResult = await chrome.storage.local.get(['api_config']);
+    const config = configResult.api_config;
+
+    if (!config?.huggingfaceKey) {
+      syncResult.className = 'test-result error';
+      syncResult.textContent = '❌ HuggingFace API key is required for sync. Click "Configure API Keys" to add it.';
+      syncResult.classList.remove('hidden');
+      forceSyncBtn.disabled = false;
+      forceSyncBtn.textContent = '⚡ Force Resync All Messages';
+      return;
+    }
+
+    forceSyncBtn.textContent = '⏳ Clearing sync state...';
+
+    // Step 1: Clear the syncedMessageIds to force full resync
+    const result = await chrome.storage.local.get(['last_sync_status']);
+    const syncStatus = result.last_sync_status || {};
+
+    const previousCount = (syncStatus.syncedMessageIds || []).length;
+
+    // Reset sync state
+    await chrome.storage.local.set({
+      last_sync_status: {
+        ...syncStatus,
+        syncedMessageIds: [],
+        lastSyncTime: 0
+      }
+    });
+
+    console.log(`🔄 Cleared ${previousCount} synced message IDs`);
+
+    // Step 2: Trigger sync via background script
+    forceSyncBtn.textContent = '🔄 Syncing to database...';
+
+    const syncResponse = await chrome.runtime.sendMessage({
+      type: 'FORCE_SYNC'
+    });
+
+    if (syncResponse && syncResponse.success) {
+      syncResult.className = 'test-result success';
+      syncResult.textContent = `✅ Success! Synced ${syncResponse.synced} messages to database.`;
+    } else {
+      throw new Error(syncResponse?.error || 'Sync failed');
+    }
+
+    syncResult.classList.remove('hidden');
+
+    // Refresh sync status display
+    await loadSyncStatus();
+
+  } catch (error) {
+    console.error('Force resync failed:', error);
+    syncResult.className = 'test-result error';
+    syncResult.textContent = `❌ Resync failed: ${error.message}`;
+    syncResult.classList.remove('hidden');
+  } finally {
+    forceSyncBtn.disabled = false;
+    forceSyncBtn.textContent = '⚡ Force Resync All Messages';
+  }
+}
+
 // Event listeners
+forceSyncBtn.addEventListener('click', forceResync);
+upgradeBtn.addEventListener('click', handleUpgrade);
+manageBillingBtn.addEventListener('click', handleManageBilling);
 debugModeToggle.addEventListener('change', saveDebugMode);
 testCaptureBtn.addEventListener('click', testCapture);
+rescanBtn.addEventListener('click', rescanMessages);
 setupBtn.addEventListener('click', openSetup);
+importBtn.addEventListener('click', openImport);
 
-// Initial load
-loadStats();
-loadConfig();
-loadDebugMode();
+/**
+ * Check if this is first install and redirect to import onboarding
+ */
+async function checkFirstInstallRedirect() {
+  try {
+    const result = await chrome.storage.local.get(['show_import_onboarding']);
+    if (result.show_import_onboarding === true) {
+      // Redirect to import modal with first-install mode
+      window.location.href = 'import-modal.html?mode=first-install';
+      return true; // Redirecting
+    }
+  } catch (error) {
+    console.error('Error checking first install:', error);
+  }
+  return false; // Not redirecting
+}
 
-// Refresh stats every 5 seconds
-setInterval(loadStats, 5000);
+// Initial load - check for first-install redirect first
+checkFirstInstallRedirect().then(redirecting => {
+  if (!redirecting) {
+    // Only load normal UI if not redirecting
+    loadStats();
+    loadConfig();
+    loadDebugMode();
+    loadSubscription();
+    loadSyncStatus();
+
+    // Refresh stats every 5 seconds
+    setInterval(() => {
+      loadStats();
+      loadSyncStatus();
+    }, 5000);
+  }
+});

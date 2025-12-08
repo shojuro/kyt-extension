@@ -1,0 +1,257 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rollback_to:
+        description: 'Commit SHA to rollback to (leave empty for normal deploy)'
+        required: false
+        type: string
+
+env:
+  SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+
+jobs:
+  # ===========================================
+  # DEPLOY SUPABASE EDGE FUNCTIONS
+  # ===========================================
+  deploy-functions:
+    name: Deploy Edge Functions
+    runs-on: ubuntu-latest
+    environment: staging
+    outputs:
+      deploy_sha: ${{ steps.get_sha.outputs.sha }}
+    steps:
+      - name: Determine deploy commit
+        id: get_sha
+        run: |
+          if [ -n "${{ inputs.rollback_to }}" ]; then
+            echo "🔄 Rolling back to: ${{ inputs.rollback_to }}"
+            echo "sha=${{ inputs.rollback_to }}" >> $GITHUB_OUTPUT
+          else
+            echo "📦 Deploying current commit"
+            echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.get_sha.outputs.sha }}
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link to Supabase project
+        run: |
+          supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Deploy Edge Functions
+        id: deploy
+        run: |
+          DEPLOYED_FUNCTIONS=""
+          FAILED_FUNCTIONS=""
+
+          for func_dir in supabase/functions/*/; do
+            func_name=$(basename "$func_dir")
+            if [[ "$func_name" != _* ]]; then
+              echo "Deploying function: $func_name"
+              if supabase functions deploy "$func_name" --no-verify-jwt 2>&1; then
+                DEPLOYED_FUNCTIONS="$DEPLOYED_FUNCTIONS $func_name"
+              else
+                FAILED_FUNCTIONS="$FAILED_FUNCTIONS $func_name"
+              fi
+            fi
+          done
+
+          echo "deployed=$DEPLOYED_FUNCTIONS" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED_FUNCTIONS" >> $GITHUB_OUTPUT
+
+          if [ -n "$FAILED_FUNCTIONS" ]; then
+            echo "❌ Failed to deploy:$FAILED_FUNCTIONS"
+            exit 1
+          fi
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Run database migrations
+        run: |
+          supabase db push
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        continue-on-error: true
+
+  # ===========================================
+  # SMOKE TESTS AGAINST STAGING
+  # ===========================================
+  smoke-test:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    needs: [deploy-functions]
+    outputs:
+      result: ${{ steps.test.outputs.result }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run smoke tests
+        id: test
+        run: |
+          echo "Running smoke tests against staging..."
+
+          # Test save_chat_turn function
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ secrets.SUPABASE_URL }}/functions/v1/save_chat_turn" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{}' || echo "000")
+
+          if [ "$RESPONSE" = "000" ]; then
+            echo "result=failed" >> $GITHUB_OUTPUT
+            echo "❌ Failed to connect to edge function"
+            exit 1
+          fi
+
+          echo "result=success" >> $GITHUB_OUTPUT
+          echo "✅ Edge function is responding (HTTP $RESPONSE)"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+  # ===========================================
+  # SAVE SUCCESSFUL DEPLOYMENT
+  # ===========================================
+  save-deployment:
+    name: Save Deployment State
+    runs-on: ubuntu-latest
+    needs: [deploy-functions, smoke-test]
+    if: success()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Tag successful deployment
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          # Create/update the last-successful-staging tag
+          git tag -f last-successful-staging ${{ needs.deploy-functions.outputs.deploy_sha }}
+          git push origin last-successful-staging --force
+
+          echo "✅ Tagged ${{ needs.deploy-functions.outputs.deploy_sha }} as last-successful-staging"
+
+  # ===========================================
+  # AUTO-ROLLBACK ON FAILURE
+  # ===========================================
+  rollback:
+    name: Auto-Rollback
+    runs-on: ubuntu-latest
+    needs: [deploy-functions, smoke-test]
+    if: failure() && !inputs.rollback_to  # Don't rollback a rollback
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get last successful deployment
+        id: last_good
+        run: |
+          # Get the last successful deployment tag
+          LAST_GOOD=$(git rev-parse last-successful-staging 2>/dev/null || echo "")
+
+          if [ -z "$LAST_GOOD" ]; then
+            echo "⚠️ No previous successful deployment found - cannot rollback"
+            echo "has_rollback=false" >> $GITHUB_OUTPUT
+          else
+            echo "Last successful deployment: $LAST_GOOD"
+            echo "sha=$LAST_GOOD" >> $GITHUB_OUTPUT
+            echo "has_rollback=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger rollback deployment
+        if: steps.last_good.outputs.has_rollback == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            console.log('🔄 Triggering rollback to: ${{ steps.last_good.outputs.sha }}');
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy-staging.yml',
+              ref: 'main',
+              inputs: {
+                rollback_to: '${{ steps.last_good.outputs.sha }}'
+              }
+            });
+
+            console.log('Rollback deployment triggered!');
+
+      - name: Create incident issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `🚨 Deployment Failed - Auto-Rollback Triggered`;
+            const body = `## Deployment Failure
+
+            **Time:** ${new Date().toISOString()}
+            **Failed Commit:** ${{ github.sha }}
+            **Rolled Back To:** ${{ steps.last_good.outputs.sha || 'N/A - No previous deployment' }}
+
+            ### What Happened
+            The staging deployment failed smoke tests and an automatic rollback was triggered.
+
+            ### Action Required
+            1. Check the [failed workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            2. Identify the issue in commit ${{ github.sha }}
+            3. Fix and redeploy
+
+            ### Logs
+            - Deploy job: Check the workflow run for details
+            - Smoke test: Failed to verify edge functions are working
+
+            ---
+            *This issue was automatically created by the deployment workflow.*`;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['incident', 'deployment', 'automated']
+            });
+
+  # ===========================================
+  # NOTIFY ON COMPLETION
+  # ===========================================
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [deploy-functions, smoke-test]
+    if: always()
+    steps:
+      - name: Deployment Summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy Functions | ${{ needs.deploy-functions.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Smoke Tests | ${{ needs.smoke-test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.smoke-test.result }}" = "failure" ]; then
+            echo "⚠️ **Auto-rollback has been triggered**" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -n "${{ inputs.rollback_to }}" ]; then
+            echo "🔄 **This was a rollback deployment**" >> $GITHUB_STEP_SUMMARY
+            echo "Rolled back to: ${{ inputs.rollback_to }}" >> $GITHUB_STEP_SUMMARY
+          fi

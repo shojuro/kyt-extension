@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Import Chat History</title>
+  <style>
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      margin: 0;
+      padding: 20px;
+      width: 350px;
+      background-color: #f9fafb;
+      color: #111827;
+    }
+    
+    .container {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    
+    h1 {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 0;
+      color: #111827;
+    }
+    
+    p {
+      font-size: 14px;
+      color: #4b5563;
+      margin: 0;
+      line-height: 1.5;
+    }
+    
+    .card {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      border: none;
+      width: 100%;
+    }
+    
+    .btn-primary {
+      background-color: #2563eb;
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      background-color: #1d4ed8;
+    }
+    
+    .btn-secondary {
+      background-color: #f3f4f6;
+      color: #374151;
+      border: 1px solid #d1d5db;
+    }
+    
+    .btn-secondary:hover {
+      background-color: #e5e7eb;
+    }
+    
+    .progress-container {
+      display: none;
+      margin-top: 12px;
+    }
+    
+    .progress-bar {
+      height: 8px;
+      background-color: #e5e7eb;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+    
+    .progress-fill {
+      height: 100%;
+      background-color: #2563eb;
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    
+    .stats {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: #6b7280;
+    }
+    
+    .error {
+      color: #dc2626;
+      font-size: 13px;
+      background-color: #fef2f2;
+      border: 1px solid #fee2e2;
+      padding: 8px;
+      border-radius: 6px;
+      display: none;
+    }
+    
+    .success {
+      color: #059669;
+      font-size: 13px;
+      background-color: #ecfdf5;
+      border: 1px solid #d1fae5;
+      padding: 8px;
+      border-radius: 6px;
+      display: none;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .btn-inactive {
+      opacity: 0.5;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .btn-complete {
+      background: #10b981 !important;
+      border-color: #10b981 !important;
+      color: white !important;
+    }
+
+    .upload-zone {
+      border: 2px dashed #d1d5db;
+      border-radius: 8px;
+      padding: 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin: 12px 0;
+    }
+
+    .upload-zone:hover, .upload-zone.dragover {
+      border-color: #2563eb;
+      background: #f0f7ff;
+    }
+
+    .upload-icon {
+      font-size: 32px;
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .upload-hint {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: 4px;
+    }
+
+    .feature-list, .instructions {
+      text-align: left;
+      padding-left: 20px;
+      margin: 12px 0;
+    }
+
+    .feature-list li, .instructions li {
+      margin-bottom: 6px;
+    }
+
+    h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0 0 12px 0;
+      color: #111827;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Permission View (first-install only) -->
+  <div class="container hidden" id="permission-view">
+    <h1>Welcome to K.Y.T. Memory</h1>
+    <div class="card">
+      <p><strong>Import your chat history?</strong></p>
+      <p style="margin-top: 8px;">We can import your last 90 days of ChatGPT and Claude conversations.</p>
+      <ul class="feature-list">
+        <li>✓ Private & secure (processed locally)</li>
+        <li>✓ Takes 2-5 minutes</li>
+        <li>✓ Skip anytime</li>
+      </ul>
+    </div>
+    <div class="button-row">
+      <button class="btn btn-primary" id="btn-accept-import">Yes, Import History</button>
+      <button class="btn btn-secondary" id="btn-skip-import">Skip for Now</button>
+    </div>
+  </div>
+
+  <!-- ZIP Fallback View -->
+  <div class="container hidden" id="fallback-view">
+    <h2>⚠️ Automatic import unavailable</h2>
+    <div class="card">
+      <p id="fallback-reason">You're not logged into ChatGPT.</p>
+      <p style="margin-top: 8px;"><strong>You can still import via export file:</strong></p>
+      <ol class="instructions" id="export-instructions">
+        <!-- Platform-specific instructions injected by JS -->
+      </ol>
+    </div>
+    <div class="upload-zone" id="upload-zone">
+      <input type="file" id="file-input" accept=".zip" hidden>
+      <div class="upload-content">
+        <span class="upload-icon">📁</span>
+        <p>Drop ZIP file here or click to browse</p>
+        <p class="upload-hint">Accepted: .zip files up to 500MB</p>
+      </div>
+    </div>
+    <div class="button-row">
+      <button class="btn btn-secondary" id="btn-back-to-platforms">← Back to Platforms</button>
+    </div>
+  </div>
+
+  <!-- Main View -->
+  <div class="container" id="main-view">
+    <h1>Import Chat History</h1>
+    
+    <div class="card">
+      <p>Import your last 90 days of chat history to enable full memory recall.</p>
+      
+      <div style="margin-top: 12px; font-size: 13px; color: #6b7280;">
+        <ul style="padding-left: 20px; margin: 0;">
+          <li>Includes ChatGPT & Claude</li>
+          <li>Private & Secure</li>
+          <li>Runs in background</li>
+        </ul>
+      </div>
+    </div>
+
+    <div id="platform-select" class="card">
+      <p style="margin-bottom: 12px; font-weight: 500;">Select Platform:</p>
+      <div style="display: flex; gap: 8px;">
+        <button class="btn btn-secondary" id="btn-chatgpt">ChatGPT</button>
+        <button class="btn btn-secondary" id="btn-claude">Claude</button>
+      </div>
+    </div>
+
+    <div id="status-area">
+      <div class="progress-container" id="progress-container">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <div class="stats">
+          <span id="progress-text">Starting...</span>
+          <span id="progress-count">0 msgs</span>
+        </div>
+      </div>
+      
+      <div class="error" id="error-msg"></div>
+      <div class="success" id="success-msg"></div>
+    </div>
+
+    <div style="display: flex; gap: 8px; margin-top: 8px;">
+      <button class="btn btn-primary" id="btn-start" disabled>Start Import</button>
+      <button class="btn btn-secondary" id="btn-cancel">Cancel</button>
+    </div>
+  </div>
+
+  <script type="module" src="import-modal.js"></script>
+</body>
+</html>

@@ -1,0 +1,89 @@
+name: Dependabot Auto-Merge
+
+# Auto-merge Dependabot PRs for security patches
+# Why: Security patches should be applied ASAP without waiting for you
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: Auto-Merge Security Patches
+    runs-on: ubuntu-latest
+    # Only run for Dependabot PRs
+    if: github.actor == 'dependabot[bot]'
+
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for CI to pass
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          running-workflow-name: 'Auto-Merge Security Patches'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 30
+          allowed-conclusions: success
+
+      - name: Auto-merge patch updates
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        run: |
+          echo "🔧 Auto-merging patch update: ${{ steps.metadata.outputs.dependency-names }}"
+          gh pr merge "${{ github.event.pull_request.number }}" \
+            --auto \
+            --squash \
+            --body "Auto-merged by Dependabot Auto-Merge workflow"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auto-merge minor security updates
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+          contains(steps.metadata.outputs.dependency-type, 'direct:production')
+        run: |
+          echo "🔒 Auto-merging minor security update: ${{ steps.metadata.outputs.dependency-names }}"
+          gh pr merge "${{ github.event.pull_request.number }}" \
+            --auto \
+            --squash \
+            --body "Auto-merged security update by Dependabot Auto-Merge workflow"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Label major updates for review
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        run: |
+          echo "⚠️ Major update detected - requires manual review"
+          gh pr edit "${{ github.event.pull_request.number }}" \
+            --add-label "requires-review,major-update"
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --body "⚠️ **Major version update detected**
+
+          This PR updates \`${{ steps.metadata.outputs.dependency-names }}\` to a new major version.
+
+          **Before merging:**
+          - [ ] Review changelog for breaking changes
+          - [ ] Test locally
+          - [ ] Update code if needed
+
+          Major updates are NOT auto-merged for safety."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "## Dependabot Auto-Merge Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Dependency | ${{ steps.metadata.outputs.dependency-names }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Update Type | ${{ steps.metadata.outputs.update-type }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dependency Type | ${{ steps.metadata.outputs.dependency-type }} |" >> $GITHUB_STEP_SUMMARY

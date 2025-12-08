@@ -13,16 +13,38 @@
   console.log('🚀 KYT ChatGPT Content: Initializing...');
 
   // === PAGE CONTEXT INJECTION ===
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('platforms/chatgpt/inject.js');
-  script.onload = function () {
+  // Inject API interception script (existing)
+  const injectScript = document.createElement('script');
+  injectScript.src = chrome.runtime.getURL('platforms/chatgpt/inject.js');
+  injectScript.onload = function () {
     console.log('✅ KYT ChatGPT Content: inject.js loaded into page context');
     this.remove();
   };
-  script.onerror = function () {
+  injectScript.onerror = function () {
     console.error('❌ KYT ChatGPT Content: Failed to load inject.js');
   };
-  (document.head || document.documentElement).appendChild(script);
+  (document.head || document.documentElement).appendChild(injectScript);
+
+  // Inject DOM observer script (new - mobile sync capture)
+  const domObserverScript = document.createElement('script');
+  domObserverScript.src = chrome.runtime.getURL('platforms/chatgpt/dom-observer.js');
+  domObserverScript.onload = function () {
+    console.log('✅ KYT ChatGPT Content: dom-observer.js loaded into page context');
+    this.remove();
+
+    // Sync debug mode
+    chrome.storage.local.get(['kytDebugMode'], (result) => {
+      if (result.kytDebugMode) {
+        window.dispatchEvent(new CustomEvent('KYT_DOM_COMMAND', {
+          detail: { command: 'enableDebug' }
+        }));
+      }
+    });
+  };
+  domObserverScript.onerror = function () {
+    console.error('❌ KYT ChatGPT Content: Failed to load dom-observer.js');
+  };
+  (document.head || document.documentElement).appendChild(domObserverScript);
 
   // Import queue manager (using dynamic import since this is a content script)
   // Note: Content scripts can import modules if listed in web_accessible_resources or if using a bundler.
@@ -59,24 +81,42 @@
   })();
 
   // === EVENT LISTENER FOR PAGE CONTEXT MESSAGES ===
+  // API-intercepted messages (existing)
   window.addEventListener('KYT_MESSAGE_CAPTURED', async function (event) {
     const messageData = event.detail;
-    console.log('📨 KYT ChatGPT Content: Received message from page context');
+    console.log('📨 KYT ChatGPT Content: Received message from page context (API)');
     console.log('   Content preview:', messageData.content.substring(0, 50) + '...');
     console.log('   Capture method:', messageData.captureMethod || 'fetch');
 
-    // Check if extension context is still valid
-    if (!chrome.runtime?.id) {
-      console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated - message not saved');
-      console.warn('   Please reload the page to restore functionality');
-      return;
-    }
-
-    // Use Queue Manager if available, otherwise fallback to direct send
+    // Always use Queue Manager - it handles context invalidation gracefully
+    // Even if context is invalid, queue manager will persist to local storage
     if (queueManager) {
       console.log('📥 KYT ChatGPT Content: Enqueuing message via Queue Manager');
       await queueManager.capture(messageData);
     } else {
+      // Queue Manager not ready - check context validity first
+      if (!chrome.runtime?.id) {
+        console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated and Queue Manager not ready');
+        console.warn('   Attempting emergency local storage backup...');
+        // Emergency fallback: store directly in chrome.storage.local (unencrypted)
+        try {
+          const emergencyKey = 'kyt_emergency_queue';
+          const result = await chrome.storage.local.get([emergencyKey]);
+          const queue = result[emergencyKey] || [];
+          queue.push({
+            ...messageData,
+            id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            timestamp: Date.now(),
+            emergencyBackup: true
+          });
+          await chrome.storage.local.set({ [emergencyKey]: queue });
+          console.log('💾 KYT ChatGPT Content: Message saved to emergency backup');
+        } catch (e) {
+          console.error('❌ KYT ChatGPT Content: Emergency backup failed:', e);
+        }
+        return;
+      }
+
       console.warn('⚠️ KYT ChatGPT Content: Queue Manager not ready, falling back to direct send');
       // Forward to background script for storage (Legacy/Fallback)
       chrome.runtime.sendMessage({
@@ -91,6 +131,143 @@
           console.error('❌ KYT ChatGPT Content: Failed to forward message:', error);
         }
       });
+    }
+  });
+
+  // DOM-observed messages (new - mobile sync)
+  window.addEventListener('KYT_DOM_MESSAGE_CAPTURED', async function (event) {
+    const messageData = event.detail;
+    console.log('📱 KYT ChatGPT Content: Received message from DOM observer (Mobile Sync)');
+    console.log('   Content preview:', messageData.content.substring(0, 50) + '...');
+    console.log('   Source:', messageData.source);
+
+    // Always use Queue Manager - it handles context invalidation gracefully
+    if (queueManager) {
+      console.log('📥 KYT ChatGPT Content: Enqueuing DOM message via Queue Manager');
+      await queueManager.capture(messageData);
+    } else {
+      // Queue Manager not ready - check context validity first
+      if (!chrome.runtime?.id) {
+        console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated and Queue Manager not ready');
+        console.warn('   Attempting emergency local storage backup for DOM message...');
+        try {
+          const emergencyKey = 'kyt_emergency_queue';
+          const result = await chrome.storage.local.get([emergencyKey]);
+          const queue = result[emergencyKey] || [];
+          queue.push({
+            ...messageData,
+            id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            timestamp: Date.now(),
+            emergencyBackup: true
+          });
+          await chrome.storage.local.set({ [emergencyKey]: queue });
+          console.log('💾 KYT ChatGPT Content: DOM message saved to emergency backup');
+        } catch (e) {
+          console.error('❌ KYT ChatGPT Content: Emergency backup failed for DOM message:', e);
+        }
+        return;
+      }
+
+      console.warn('⚠️ KYT ChatGPT Content: Queue Manager not ready, falling back to direct send');
+      chrome.runtime.sendMessage({
+        type: 'SAVE_MESSAGE',
+        data: messageData
+      }).then(() => {
+        console.log('✅ KYT ChatGPT Content: DOM message forwarded to background');
+      }).catch(error => {
+        console.error('❌ KYT ChatGPT Content: Failed to forward DOM message:', error);
+      });
+    }
+  });
+
+  // DOM observer status updates
+  window.addEventListener('KYT_DOM_OBSERVER_STATUS', function (event) {
+    const { status, restartAttempts } = event.detail;
+    console.log(`🔍 KYT DOM Observer Status: ${status} (restarts: ${restartAttempts})`);
+
+    // Forward to background for statistics
+    if (chrome.runtime?.id) {
+      chrome.runtime.sendMessage({
+        type: 'DOM_OBSERVER_STATUS',
+        status,
+        restartAttempts
+      }).catch(() => {
+        // Ignore if extension context invalid
+      });
+    }
+  });
+
+  // === TEST API BRIDGE ===
+  // Bridge chrome.storage.local API for test script running in page context
+  window.addEventListener('KYT_TEST_STORAGE_GET', async function (event) {
+    const { requestId, keys } = event.detail;
+
+    try {
+      chrome.storage.local.get(keys, (result) => {
+        window.dispatchEvent(new CustomEvent('KYT_TEST_STORAGE_RESPONSE', {
+          detail: {
+            requestId,
+            success: true,
+            result
+          }
+        }));
+      });
+    } catch (error) {
+      window.dispatchEvent(new CustomEvent('KYT_TEST_STORAGE_RESPONSE', {
+        detail: {
+          requestId,
+          success: false,
+          error: error.message
+        }
+      }));
+    }
+  });
+
+  window.addEventListener('KYT_TEST_STORAGE_SET', async function (event) {
+    const { requestId, items } = event.detail;
+
+    try {
+      chrome.storage.local.set(items, () => {
+        window.dispatchEvent(new CustomEvent('KYT_TEST_STORAGE_RESPONSE', {
+          detail: {
+            requestId,
+            success: true
+          }
+        }));
+      });
+    } catch (error) {
+      window.dispatchEvent(new CustomEvent('KYT_TEST_STORAGE_RESPONSE', {
+        detail: {
+          requestId,
+          success: false,
+          error: error.message
+        }
+      }));
+    }
+  });
+
+  // Bridge chrome.runtime.sendMessage for test script
+  window.addEventListener('KYT_TEST_RUNTIME_MESSAGE', async function (event) {
+    const { requestId, message } = event.detail;
+
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        window.dispatchEvent(new CustomEvent('KYT_TEST_RUNTIME_RESPONSE', {
+          detail: {
+            requestId,
+            success: true,
+            response
+          }
+        }));
+      });
+    } catch (error) {
+      window.dispatchEvent(new CustomEvent('KYT_TEST_RUNTIME_RESPONSE', {
+        detail: {
+          requestId,
+          success: false,
+          error: error.message
+        }
+      }));
     }
   });
 
@@ -165,6 +342,10 @@
   // Forward logs from page context (inject.js) to background script (Service Worker console)
   window.addEventListener('KYT_DEBUG_LOG', function (event) {
     const { message, data } = event.detail;
+
+    // Check if extension context is valid
+    if (!chrome.runtime?.id) return;
+
     chrome.runtime.sendMessage({
       type: 'DEBUG_LOG',
       message: message,
@@ -198,6 +379,13 @@
       }
 
       return true; // Keep message channel open for async response
+    } else if (message.type === 'SCAN_DOM') {
+      console.log('🔍 KYT ChatGPT Content: Received SCAN_DOM command');
+      window.dispatchEvent(new CustomEvent('KYT_DOM_COMMAND', {
+        detail: { command: 'scan' }
+      }));
+      sendResponse({ success: true });
+      return false;
     }
   });
 

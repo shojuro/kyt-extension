@@ -1,0 +1,34 @@
+# Supabase Configuration
+# Ref: https://supabase.com/docs/guides/cli/config
+
+[api]
+enabled = true
+
+# Edge Functions Configuration
+# Note: verify_jwt defaults to true, override per-function below
+
+[functions.save_chat_turn]
+verify_jwt = true
+
+[functions.save-memory-batch]
+verify_jwt = true
+
+[functions.track-progress]
+verify_jwt = false
+
+[functions.semantic-search]
+verify_jwt = true
+
+# Stripe Integration Functions
+[functions.stripe-webhook]
+# IMPORTANT: Webhook uses Stripe signature verification instead of JWT
+# Stripe sends webhooks directly - no Supabase auth token
+verify_jwt = false
+
+[functions.create-checkout]
+# Requires authenticated user to create checkout
+verify_jwt = true
+
+[functions.billing-portal]
+# Requires authenticated user to access billing portal
+verify_jwt = true
