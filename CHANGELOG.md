@@ -75,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Migration Files:**
 - `supabase/fixes/20251208_comprehensive_fix.sql` - All SQL changes consolidated
+  - **Note:** Includes `DROP FUNCTION` before `CREATE` (return type changed: `bm25_score` → `fts_score`)
 - `supabase/functions/_shared/get_relevant_memories.ts` - TypeScript changes applied
 
 **Verified Functionality:**
