@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Session Status (2025-12-08)
+
+**Branch**: `feature/history-import`
+
+**Current State**: PAUSED - Supabase MCP authentication not working
+
+**Blocker**: Supabase MCP server failing to authenticate. Requires manual reinstallation/reconfiguration before any database work can proceed.
+
+**To Resume**:
+1. Fix Supabase MCP authentication in Claude Code settings (`~/.claude/settings.local.json`)
+2. Verify MCP connection with a simple query test
+3. Continue with history-import feature development
+
+**History-Import Feature Status**:
+- Files exist in `src/history-import/`:
+  - `chatgpt-fetcher.js` - ChatGPT history fetcher
+  - `claude-fetcher.js` - Claude history fetcher
+  - `deduplication.js` - Deduplication logic
+  - `error-handlers.js` - Error handling
+  - `index.js` - Main entry point
+  - `progress-tracker.js` - Progress UI
+  - `rate-limiter.js` - Rate limiting
+  - `types.js` - Type definitions
+  - `validation.js` - Validation logic
+  - `zip-parser.js` - ZIP file parsing
+- NOT YET TESTED - requires database connection to validate
+- NOT YET INTEGRATED - popup UI not connected
+
+---
+
 ### Changed
 
 #### Qwen3-Embedding-8B Migration (Critical Fix)
