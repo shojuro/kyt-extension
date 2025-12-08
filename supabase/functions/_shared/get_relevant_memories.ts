@@ -28,7 +28,7 @@ type Candidate = {
     gravity_score?: number;
     entity_boost?: boolean;
     rrf_score?: number;  // Added by RRF merge
-    bm25_score?: number;  // Added by BM25 search
+    fts_score?: number;  // Full-text search score from ts_rank_cd (NOT actual BM25)
 };
 export type CandidateWithScore = Candidate & { rerank_score: number };
 
@@ -38,29 +38,20 @@ export interface SearchOptions {
     hydeWeight?: number;  // Default: 0.6
 }
 
-/** Simple BM25-style keyword boost (max 30% of score) */
-function applyBm25Boost(query: string, items: CandidateWithScore[]): CandidateWithScore[] {
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    if (terms.length === 0) return items;
-
-    const bm25Scores = items.map((item) => {
-        const txt = item.content.toLowerCase();
-        let score = 0;
-        for (const term of terms) {
-            const matches = txt.match(new RegExp(`\\b${term}\\b`, "g")) ?? [];
-            score += matches.length;
-        }
-        return score;
-    });
-
-    const maxScore = Math.max(...bm25Scores, 1);
-    return items.map((item, i) => {
-        let boost = (0.3 * bm25Scores[i]) / maxScore;
-
-        // Apply Entity Boost (0.1) if present
-        if (item.entity_boost) {
-            boost += 0.1;
-        }
+/**
+ * Apply entity boost only (0.1 boost for entity matches)
+ *
+ * NOTE: Keyword boost REMOVED - was double-counting with server-side BM25.
+ * Server-side `mergeWithBM25Results()` already applies: gravity × (1 + bm25_boost)
+ * Adding a second client-side keyword boost created TRIPLE-dipping:
+ *   1. ts_rank_cd → fts_score (server)
+ *   2. mergeWithBM25Results applies 30% boost (server merge)
+ *   3. applyBm25Boost added ANOTHER 30% (removed)
+ */
+function applyEntityBoost(items: CandidateWithScore[]): CandidateWithScore[] {
+    return items.map((item) => {
+        // Apply Entity Boost (0.1) if present - entity matches get priority
+        const boost = item.entity_boost ? 0.1 : 0;
 
         return {
             ...item,
@@ -195,7 +186,7 @@ function mergeWithBM25Results(
     for (const result of vectorResults) {
         candidateMap.set(result.id, {
             ...result,
-            bm25_score: 0  // Default: no BM25 match
+            fts_score: 0  // Default: no FTS match
         });
     }
 
@@ -203,8 +194,8 @@ function mergeWithBM25Results(
     for (const bm25Result of bm25Results) {
         const existing = candidateMap.get(bm25Result.id);
         if (existing) {
-            // Update existing with BM25 score
-            existing.bm25_score = bm25Result.bm25_score || 0;
+            // Update existing with FTS score
+            existing.fts_score = bm25Result.fts_score || 0;
         } else {
             // Add new result from BM25 (not found by vector search)
             candidateMap.set(bm25Result.id, {
@@ -216,18 +207,18 @@ function mergeWithBM25Results(
 
     // Convert to array and calculate final score
     const merged = Array.from(candidateMap.values()).map(candidate => {
-        // BM25 boost: scale bm25_score to 0-0.3 range (max 30% boost)
+        // FTS boost: scale fts_score to 0-0.3 range (max 30% boost)
         // ts_rank_cd returns ~0-1 range, so we cap at 0.3
-        const bm25Boost = Math.min((candidate.bm25_score || 0) * 0.3, 0.3);
+        const ftsBoost = Math.min((candidate.fts_score || 0) * 0.3, 0.3);
 
-        // Final score: gravity × (1 + bm25_boost)
-        // This ensures gravity DOMINATES while BM25 provides additive boost
+        // Final score: gravity × (1 + fts_boost)
+        // This ensures gravity DOMINATES while FTS provides additive boost
         const gravityScore = candidate.gravity_score || 0.5;
-        const finalScore = gravityScore * (1 + bm25Boost);
+        const finalScore = gravityScore * (1 + ftsBoost);
 
         return {
             ...candidate,
-            gravity_score: finalScore,  // Updated with BM25 boost
+            gravity_score: finalScore,  // Updated with FTS boost
             rrf_score: finalScore  // For compatibility with downstream processing
         };
     });
@@ -427,8 +418,8 @@ async function rerankAndFilter(
         }));
     }
 
-    // Apply BM25 + Entity Boost
-    const boosted = applyBm25Boost(query, ordered);
+    // Apply Entity Boost only (BM25 handled server-side in mergeWithBM25Results)
+    const boosted = applyEntityBoost(ordered);
 
     // Confidence filter (>= 0.70)
     const filtered = boosted.filter((c) => c.rerank_score >= 0.7);

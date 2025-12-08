@@ -19,6 +19,9 @@
 -- 1. Create BM25 Search Function
 -- ============================================
 
+-- DROP existing function first (return type changed: bm25_score -> fts_score)
+DROP FUNCTION IF EXISTS match_messages_with_bm25(text, integer, integer, uuid);
+
 CREATE OR REPLACE FUNCTION match_messages_with_bm25(
   query_text TEXT,
   match_count INT DEFAULT 50,
@@ -39,7 +42,7 @@ RETURNS TABLE (
   intimacy_level INT,
   access_count INT,
   last_accessed TIMESTAMPTZ,
-  bm25_score FLOAT
+  fts_score FLOAT  -- Note: Using fts_score (not bm25_score) - ts_rank_cd approximates but is NOT actual BM25
 ) AS $$
 DECLARE
   v_tsquery tsquery;
@@ -98,10 +101,10 @@ BEGIN
     ct.intimacy_level::INT,
     ct.access_count,
     ct.last_accessed,
-    -- BM25-like score using ts_rank_cd (cover density ranking)
+    -- Full-Text Search score using ts_rank_cd (cover density ranking)
     -- Flag 32: Divides rank by document length + 1 (length normalization)
-    -- This approximates BM25's document length normalization
-    ts_rank_cd(ct.content_tsvector, v_tsquery, 32)::FLOAT AS bm25_score
+    -- Note: ts_rank_cd is NOT actual BM25, but approximates it with length normalization
+    ts_rank_cd(ct.content_tsvector, v_tsquery, 32)::FLOAT AS fts_score
   FROM chat_turns ct
   WHERE
     -- Security: User isolation via RLS
@@ -109,9 +112,9 @@ BEGIN
     -- Full-text match: content matches query
     AND ct.content_tsvector @@ v_tsquery
     -- Temporal exclusion: Avoid returning very recent context
-    -- Note: Using 7-day buffer to handle client-server clock skew (cloud environments may have significant drift)
-    -- This allows messages with timestamps up to 7 days in the "future" relative to server time
-    AND ct.created_at <= NOW() - (exclude_recent_seconds || ' seconds')::INTERVAL + INTERVAL '7 days'
+    -- Note: Using 3-day buffer to handle client-server clock skew (cloud environments may have ~2 days drift)
+    -- 3 days balances skew tolerance vs. potential security gap
+    AND ct.created_at <= NOW() - (exclude_recent_seconds || ' seconds')::INTERVAL + INTERVAL '3 days'
   ORDER BY
     -- Primary sort: Gravity score (intimacy/impact dominates for Lonelies ICP)
     -- High-intimacy memories rank above trivial keyword matches
@@ -132,24 +135,41 @@ COMMENT ON FUNCTION match_messages_with_bm25 IS
 -- ============================================
 
 -- Test helper: Temporarily disable BM25 (for Test 3)
+-- SECURITY: Only works in test environments (database name must contain 'test' or 'dev')
 CREATE OR REPLACE FUNCTION test_disable_bm25()
 RETURNS VOID AS $$
+DECLARE
+  v_db_name TEXT;
 BEGIN
+  -- Environment guard: ONLY run in test/dev databases
+  SELECT current_database() INTO v_db_name;
+  IF v_db_name NOT LIKE '%test%' AND v_db_name NOT LIKE '%dev%' AND v_db_name NOT LIKE '%local%' THEN
+    RAISE EXCEPTION 'SECURITY: test_disable_bm25 can only run in test/dev/local databases, not in %', v_db_name;
+  END IF;
+
   -- Drop the index to simulate BM25 failure
-  -- In production, this would never be called
   DROP INDEX IF EXISTS idx_chat_turns_content_tsvector;
-  RAISE NOTICE 'BM25 index disabled for testing';
+  RAISE NOTICE 'BM25 index disabled for testing in %', v_db_name;
 END;
 $$ LANGUAGE plpgsql;
 
 -- Test helper: Restore BM25 (for Test 3)
+-- SECURITY: Only works in test environments (database name must contain 'test' or 'dev')
 CREATE OR REPLACE FUNCTION test_restore_bm25()
 RETURNS VOID AS $$
+DECLARE
+  v_db_name TEXT;
 BEGIN
+  -- Environment guard: ONLY run in test/dev databases
+  SELECT current_database() INTO v_db_name;
+  IF v_db_name NOT LIKE '%test%' AND v_db_name NOT LIKE '%dev%' AND v_db_name NOT LIKE '%local%' THEN
+    RAISE EXCEPTION 'SECURITY: test_restore_bm25 can only run in test/dev/local databases, not in %', v_db_name;
+  END IF;
+
   -- Recreate the index
   CREATE INDEX IF NOT EXISTS idx_chat_turns_content_tsvector
     ON chat_turns USING GIN (content_tsvector);
-  RAISE NOTICE 'BM25 index restored';
+  RAISE NOTICE 'BM25 index restored in %', v_db_name;
 END;
 $$ LANGUAGE plpgsql;
 
