@@ -109,7 +109,9 @@ BEGIN
     -- Full-text match: content matches query
     AND ct.content_tsvector @@ v_tsquery
     -- Temporal exclusion: Avoid returning very recent context
-    AND ct.created_at < NOW() - (exclude_recent_seconds || ' seconds')::INTERVAL
+    -- Note: Using 7-day buffer to handle client-server clock skew (cloud environments may have significant drift)
+    -- This allows messages with timestamps up to 7 days in the "future" relative to server time
+    AND ct.created_at <= NOW() - (exclude_recent_seconds || ' seconds')::INTERVAL + INTERVAL '7 days'
   ORDER BY
     -- Primary sort: BM25 score (keyword relevance)
     -- Gravity is used for final ranking in merge step

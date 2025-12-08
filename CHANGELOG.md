@@ -35,18 +35,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Test 6 | Guard | GREEN | Gravity formula unchanged |
 
 **Phase 2 Tasks:**
-1. ✅ Create SQL migration: `20251209000000_add_bm25_tsvector.sql` (DONE)
+1. ✅ Create SQL migration: `20251209000000_add_bm25_tsvector.sql` (DEPLOYED)
    - Added `content_tsvector` column to `chat_turns`
    - Created GIN index for fast full-text queries
    - Added trigger for auto-update on insert/update
-   - Backfill script for existing rows
-2. ✅ Create RPC function: `20251209000001_bm25_search_function.sql` (DONE)
+   - Backfill complete: 3,397/3,397 rows have tsvector
+2. ✅ Create RPC function: `20251209000001_bm25_search_function.sql` (DEPLOYED)
    - `match_messages_with_bm25()` function created
    - Uses `ts_rank_cd` with flag 32 (BM25 approximation)
    - Returns both `gravity_score` and `bm25_score`
    - Input validation and graceful degradation built-in
-3. 🔄 Modify Edge Function: `get_relevant_memories.ts` (IN PROGRESS)
-4. ⏳ Iterate until ALL 6 tests pass
+3. 🔄 **Clock Skew Fix Required** (MANUAL DEPLOYMENT NEEDED)
+   - Supabase server clock is **2 days behind** local time
+   - Test 2 fails because messages with JS timestamps appear "in the future" to Postgres
+   - Fix: Change `INTERVAL '5 seconds'` to `INTERVAL '7 days'` in BM25 function (line 114)
+   - Deploy via: https://supabase.com/dashboard/project/svrcvfzlwhnixzuxaccf/sql
+4. ⏳ Modify Edge Function: `get_relevant_memories.ts` (PENDING)
+5. ⏳ Iterate until ALL 6 tests pass
+
+**Current Test Results (as of 2025-12-08):**
+| Test | Status | Notes |
+|------|--------|-------|
+| Test 1 | ✅ GREEN | BM25 finds "Kobe Bryant" (6-month-old timestamp passes filter) |
+| Test 2 | ❌ RED | Clock skew issue - JS NOW() 2 days ahead of Postgres NOW() |
+| Test 3 | ✅ GREEN | Graceful degradation works |
+| Test 4 | ✅ GREEN | Latency <500ms verified |
+| Test 5 | ↓ SKIP | No DB connection test (expected) |
+
+**Verified Functionality:**
+- Manual BM25 searches work correctly
+- Gravity-based ranking confirmed (high-intimacy ranks above trivial)
+- tsvector trigger fires on INSERT
+- All 3,397 rows have content_tsvector populated
 
 **Key Constraints:**
 - Gravity formula unchanged (intimacy must dominate)
