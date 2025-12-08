@@ -3,6 +3,12 @@
 # Compliance: CLAUDE.md Rule 5 (Security First)
 
 # ============================================
+# CLAUDE CODE / MCP CONFIGURATION
+# ============================================
+.mcp.json
+.claude/
+
+# ============================================
 # SECRETS AND CREDENTIALS
 # ============================================
 .env

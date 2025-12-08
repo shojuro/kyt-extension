@@ -11,14 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Branch**: `feature/history-import`
 
-**Current State**: PAUSED - Supabase MCP authentication not working
+**Current State**: READY - Supabase MCP authentication working ✅
 
-**Blocker**: Supabase MCP server failing to authenticate. Requires manual reinstallation/reconfiguration before any database work can proceed.
-
-**To Resume**:
-1. Fix Supabase MCP authentication in Claude Code settings (`~/.claude/settings.local.json`)
-2. Verify MCP connection with a simple query test
-3. Continue with history-import feature development
+**Previous Blocker** (RESOLVED): Supabase MCP server authentication was failing. Resolved by configuring HTTP-based MCP connection via `.mcp.json`.
 
 **History-Import Feature Status**:
 - Files exist in `src/history-import/`:
@@ -34,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `zip-parser.js` - ZIP file parsing
 - NOT YET TESTED - requires database connection to validate
 - NOT YET INTEGRATED - popup UI not connected
+
+**Next Steps**:
+1. Test history-import functions against live database
+2. Integrate popup UI for import triggers
+3. End-to-end validation of import flow
 
 ---
 
