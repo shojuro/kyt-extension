@@ -1,8 +1,7 @@
 # Supabase Configuration
 # Ref: https://supabase.com/docs/guides/cli/config
 
-[project]
-id = "svrcvfzlwhnixzuxaccf"
+project_id = "svrcvfzlwhnixzuxaccf"
 
 [api]
 enabled = true

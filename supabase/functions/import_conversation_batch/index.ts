@@ -4,7 +4,7 @@
  * Processes historical conversation imports with:
  * - 90-day window filtering
  * - Conversation chunking (5-turn windows, 2-turn overlap)
- * - Batched AI processing (HyDE + embeddings) - Day 3
+ * - Batched AI processing (HyDE + embeddings)
  * - Auto-resume capability - Day 4
  *
  * @see CLAUDE.md - Anti-Theater Rules (this is REAL implementation)
@@ -12,16 +12,19 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { messagesToTurnChunks, type RawMessage, type TurnChunk } from '../_shared/conversation-chunker.ts';
-// Day 3: Uncomment for AI processing
-import { generateHyDE } from '../_shared/hyde-generator.ts';
+import { generateHypotheticalDocument } from '../_shared/hyde-generator.ts';
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
+import { classifyMemory } from '../_shared/memory-classifier.ts';
 
 // =============================================================================
 // Constants
 // =============================================================================
 
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
-const BATCH_SIZE = 100; // Messages per batch for DB insert
+const DB_BATCH_SIZE = 50; // Chunks per DB insert batch
+const HYDE_BATCH_SIZE = 20; // Chunks per HyDE batch
+const EMBEDDING_BATCH_SIZE = 50; // Texts per embedding batch
+const RATE_LIMIT_MS = 200; // Delay between API batches
 const MAX_MESSAGES = 10000; // Safety limit
 
 const corsHeaders = {
@@ -34,6 +37,24 @@ const corsHeaders = {
 // =============================================================================
 
 /**
+ * Sleep for rate limiting
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Split array into chunks
+ */
+function chunkArray<T>(array: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
+}
+
+/**
  * Filter messages to 90-day window
  */
 function filterTo90Days(messages: RawMessage[]): RawMessage[] {
@@ -44,29 +65,153 @@ function filterTo90Days(messages: RawMessage[]): RawMessage[] {
   });
 }
 
-/**
- * Generate content hash for deduplication
- * MD5 of: content + timestamp + role
- */
-async function generateContentHash(content: string, timestamp: number, role: string): Promise<string> {
-  const input = `${content}|${timestamp}|${role}`;
-  const encoder = new TextEncoder();
-  const data = encoder.encode(input);
-  const hashBuffer = await crypto.subtle.digest('MD5', data).catch(() => null);
+// =============================================================================
+// Batched AI Processing
+// =============================================================================
 
-  if (!hashBuffer) {
-    // Fallback: simple hash if MD5 not available
-    let hash = 0;
-    for (let i = 0; i < input.length; i++) {
-      const char = input.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash;
+interface ProcessedChunk extends TurnChunk {
+  embedding: number[] | null;
+  hyde_questions: string[];
+  impact_score: number;
+  intimacy_level: number;
+}
+
+/**
+ * Process chunks with batched HyDE generation
+ *
+ * @param chunks - Turn chunks to process
+ * @param openaiKey - OpenAI API key for HyDE
+ * @returns Chunks with HyDE questions attached
+ */
+async function batchProcessHyDE(
+  chunks: TurnChunk[],
+  openaiKey: string
+): Promise<{ chunk: TurnChunk; hydeDoc: string | null }[]> {
+  const results: { chunk: TurnChunk; hydeDoc: string | null }[] = [];
+  const batches = chunkArray(chunks, HYDE_BATCH_SIZE);
+
+  console.log(`[import] Processing ${chunks.length} chunks for HyDE in ${batches.length} batches`);
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+
+    // Process batch in parallel
+    const hydePromises = batch.map(async (chunk) => {
+      try {
+        // Generate HyDE for chunk content (first 500 chars as query)
+        const query = chunk.content.substring(0, 500);
+        const hydeDoc = await generateHypotheticalDocument(query, openaiKey);
+        return { chunk, hydeDoc };
+      } catch (e) {
+        console.warn(`[import] HyDE failed for chunk, continuing:`, e.message);
+        return { chunk, hydeDoc: null };
+      }
+    });
+
+    const batchResults = await Promise.allSettled(hydePromises);
+
+    for (const result of batchResults) {
+      if (result.status === 'fulfilled') {
+        results.push(result.value);
+      } else {
+        // Should not happen since we catch inside, but safety
+        console.error('[import] HyDE promise rejected:', result.reason);
+      }
     }
-    return Math.abs(hash).toString(16);
+
+    // Rate limit between batches
+    if (i < batches.length - 1) {
+      await sleep(RATE_LIMIT_MS);
+    }
   }
 
-  const hashArray = new Uint8Array(hashBuffer);
-  return Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('');
+  return results;
+}
+
+/**
+ * Process chunks with batched embedding generation
+ *
+ * @param textsToEmbed - Array of text content to embed
+ * @param hfClient - HuggingFace client instance
+ * @returns Array of embeddings (4096 dimensions each)
+ */
+async function batchProcessEmbeddings(
+  textsToEmbed: string[],
+  hfClient: HuggingFaceClient
+): Promise<(number[] | null)[]> {
+  const results: (number[] | null)[] = [];
+  const batches = chunkArray(textsToEmbed, EMBEDDING_BATCH_SIZE);
+
+  console.log(`[import] Generating embeddings for ${textsToEmbed.length} texts in ${batches.length} batches`);
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+
+    try {
+      const embeddings = await hfClient.generateEmbeddingsBatch(batch);
+      results.push(...embeddings);
+    } catch (e) {
+      console.error(`[import] Embedding batch ${i} failed:`, e.message);
+      // Fill with nulls for failed batch
+      results.push(...batch.map(() => null));
+    }
+
+    // Rate limit between batches
+    if (i < batches.length - 1) {
+      await sleep(RATE_LIMIT_MS);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Classify chunks for gravity scoring (impact + intimacy)
+ */
+async function batchClassifyChunks(
+  chunks: TurnChunk[],
+  openaiKey: string
+): Promise<{ impact_score: number; intimacy_level: number }[]> {
+  const results: { impact_score: number; intimacy_level: number }[] = [];
+
+  // Process in smaller batches to avoid rate limits
+  const batches = chunkArray(chunks, HYDE_BATCH_SIZE);
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+
+    const classifyPromises = batch.map(async (chunk) => {
+      try {
+        const classification = await classifyMemory(
+          { content: chunk.content },
+          openaiKey
+        );
+        return {
+          impact_score: classification?.impact_score || 0,
+          intimacy_level: classification?.intimacy_level || 0
+        };
+      } catch (e) {
+        return { impact_score: 0, intimacy_level: 0 };
+      }
+    });
+
+    const batchResults = await Promise.allSettled(classifyPromises);
+
+    for (const result of batchResults) {
+      if (result.status === 'fulfilled') {
+        results.push(result.value);
+      } else {
+        results.push({ impact_score: 0, intimacy_level: 0 });
+      }
+    }
+
+    // Rate limit
+    if (i < batches.length - 1) {
+      await sleep(RATE_LIMIT_MS);
+    }
+  }
+
+  return results;
 }
 
 // =============================================================================
@@ -80,7 +225,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { messages, user_id, platform = 'chatgpt', resume_token } = await req.json();
+    const { messages, user_id, platform = 'chatgpt', resume_token, skip_ai = false } = await req.json();
 
     // ==========================================================================
     // Input Validation
@@ -116,13 +261,17 @@ Deno.serve(async (req) => {
     console.log(`[import] Starting import: ${messages.length} messages for user ${user_id.substring(0, 8)}...`);
 
     // ==========================================================================
-    // Initialize Supabase Client
+    // Initialize Clients
     // ==========================================================================
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
+
+    const openaiKey = Deno.env.get('OPENAI_API_KEY') || '';
+    const hfKey = Deno.env.get('HUGGINGFACE_API_KEY') || '';
+    const hfClient = new HuggingFaceClient(hfKey);
 
     // ==========================================================================
     // Step 1: Filter to 90-day window
@@ -166,7 +315,56 @@ Deno.serve(async (req) => {
     console.log(`[import] Created ${chunks.length} chunks from ${recentMessages.length} messages`);
 
     // ==========================================================================
-    // Step 3: Insert chunks to database (Day 2: No AI processing yet)
+    // Step 3: AI Processing (HyDE + Embeddings + Classification)
+    // ==========================================================================
+
+    let processedChunks: ProcessedChunk[] = [];
+
+    if (skip_ai || !hfKey) {
+      // Skip AI processing - null embeddings
+      console.log(`[import] Skipping AI processing (skip_ai=${skip_ai}, hfKey=${!!hfKey})`);
+      processedChunks = chunks.map(chunk => ({
+        ...chunk,
+        embedding: null,
+        hyde_questions: [],
+        impact_score: 0,
+        intimacy_level: 0,
+      }));
+    } else {
+      console.log(`[import] Starting AI processing for ${chunks.length} chunks...`);
+
+      // 3a. Generate HyDE documents (parallel batched)
+      const hydeResults = await batchProcessHyDE(chunks, openaiKey);
+
+      // 3b. Prepare texts for embedding (chunk content + HyDE docs)
+      const textsToEmbed: string[] = hydeResults.map(({ chunk, hydeDoc }) => {
+        // Combine chunk content with HyDE for richer embedding
+        return hydeDoc ? `${chunk.content}\n\n${hydeDoc}` : chunk.content;
+      });
+
+      // 3c. Generate embeddings (batched)
+      const embeddings = await batchProcessEmbeddings(textsToEmbed, hfClient);
+
+      // 3d. Classify for gravity (impact + intimacy)
+      const classifications = await batchClassifyChunks(chunks, openaiKey);
+
+      // 3e. Combine results
+      processedChunks = chunks.map((chunk, idx) => ({
+        ...chunk,
+        embedding: embeddings[idx] || null,
+        hyde_questions: hydeResults[idx]?.hydeDoc
+          ? [hydeResults[idx].hydeDoc!.substring(0, 500)]
+          : [],
+        impact_score: classifications[idx]?.impact_score || 0,
+        intimacy_level: classifications[idx]?.intimacy_level || 0,
+      }));
+
+      const embeddingsGenerated = embeddings.filter(e => e !== null).length;
+      console.log(`[import] AI complete: ${embeddingsGenerated}/${chunks.length} embeddings generated`);
+    }
+
+    // ==========================================================================
+    // Step 4: Insert to database
     // ==========================================================================
 
     let insertedCount = 0;
@@ -175,10 +373,12 @@ Deno.serve(async (req) => {
     const errors: string[] = [];
 
     // Process in batches
-    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-      const batch = chunks.slice(i, i + BATCH_SIZE);
+    const dbBatches = chunkArray(processedChunks, DB_BATCH_SIZE);
 
-      const records = batch.map((chunk: TurnChunk) => ({
+    for (let i = 0; i < dbBatches.length; i++) {
+      const batch = dbBatches[i];
+
+      const records = batch.map((chunk: ProcessedChunk) => ({
         user_id: chunk.user_id,
         conversation_id: chunk.conversation_id,
         platform: chunk.platform || platform,
@@ -189,12 +389,10 @@ Deno.serve(async (req) => {
         start_timestamp: chunk.start_timestamp,
         end_timestamp: chunk.end_timestamp,
         topics: chunk.topics,
-        // Day 2: Skip AI processing - null embeddings
-        embedding: null,
-        impact_score: 0,
-        intimacy_level: 0,
-        // Day 3: Add HyDE questions
-        hypothetical_questions: [],
+        embedding: chunk.embedding,
+        impact_score: chunk.impact_score,
+        intimacy_level: chunk.intimacy_level,
+        hypothetical_questions: chunk.hyde_questions,
         last_accessed: new Date().toISOString(),
         access_count: 0,
       }));
@@ -209,7 +407,7 @@ Deno.serve(async (req) => {
           .select('id');
 
         if (error) {
-          console.error(`[import] Batch ${i}-${i + batch.length} error:`, error.message);
+          console.error(`[import] DB batch ${i} error:`, error.message);
           errorCount += batch.length;
           errors.push(error.message);
         } else {
@@ -218,7 +416,7 @@ Deno.serve(async (req) => {
           duplicateCount += batch.length - batchInserted;
         }
       } catch (e) {
-        console.error(`[import] Batch ${i}-${i + batch.length} exception:`, e.message);
+        console.error(`[import] DB batch ${i} exception:`, e.message);
         errorCount += batch.length;
         errors.push(e.message);
       }
@@ -233,13 +431,14 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({
       success: errorCount === 0,
       status: 'complete', // Day 4: May return 'partial' with resume_token
-      processed: chunks.length,
+      processed: recentMessages.length, // Messages processed (not chunks)
       inserted: insertedCount,
-      duplicates_skipped: duplicateCount,
-      filtered_old: filteredCount,
-      chunks_created: chunks.length,
+      skipped: duplicateCount, // Test expects 'skipped'
+      filtered: filteredCount, // Test expects 'filtered'
+      chunks_created: processedChunks.length,
+      embeddings_generated: processedChunks.filter(c => c.embedding !== null).length,
       errors: errorCount,
-      error_messages: errors.slice(0, 5), // Limit error messages
+      error_messages: errors.slice(0, 5),
     }), {
       status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }

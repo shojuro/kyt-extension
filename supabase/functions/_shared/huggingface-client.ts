@@ -51,6 +51,53 @@ export class HuggingFaceClient {
         });
     }
 
+    /**
+     * Generate embeddings for multiple texts in a single API call
+     *
+     * @param texts - Array of texts to embed (max 50 recommended)
+     * @param requestId - Request ID for tracing
+     * @returns Array of embedding arrays (4096 dimensions each)
+     */
+    async generateEmbeddingsBatch(texts: string[], requestId?: string): Promise<number[][]> {
+        if (texts.length === 0) return [];
+
+        const url = `${HuggingFaceClient.NEBIUS_API_URL}/v1/embeddings`;
+
+        return retryWrapper(async () => {
+            const response = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${this.apiKey}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    input: texts, // Array of strings for batch
+                    model: HuggingFaceClient.EMBEDDING_MODEL
+                })
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`HF Batch Embedding API Error: ${response.status} - ${errorText}`);
+            }
+
+            const data = await response.json();
+
+            // Log cost (approx $0.0001 per text in batch)
+            await CostMonitor.logUsage(
+                "huggingface",
+                HuggingFaceClient.EMBEDDING_MODEL,
+                "embedding_batch",
+                0.0001 * texts.length,
+                requestId
+            );
+
+            // Nebius returns embeddings sorted by index, but ensure order
+            const sortedData = data.data.sort((a: any, b: any) => a.index - b.index);
+            return sortedData.map((item: any) => item.embedding);
+        });
+    }
+
     async rerank(query: string, documents: string[], requestId?: string): Promise<HFRerankResponse[]> {
         const url = `${HuggingFaceClient.HF_ROUTER_URL}/v1/rerank`;
 
