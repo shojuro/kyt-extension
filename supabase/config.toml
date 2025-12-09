@@ -34,3 +34,8 @@ verify_jwt = true
 [functions.billing-portal]
 # Requires authenticated user to access billing portal
 verify_jwt = true
+
+# History Import Function
+[functions.import_conversation_batch]
+# Service role key required for import operations
+verify_jwt = true
