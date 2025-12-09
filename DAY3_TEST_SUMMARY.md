@@ -41,7 +41,7 @@
 {
   api_config: {
     supabaseUrl: "https://...",
-    supabaseKey: "eyJ...",
+    supabaseKey: "your-anon-key",
     openaiKey: "sk-..."
   },
   captured_messages: Array(19),

@@ -7,7 +7,7 @@
  *
  * Usage:
  *   SUPABASE_URL=https://xxx.supabase.co \
- *   SUPABASE_SERVICE_ROLE_KEY=eyJ... \
+ *   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key \
  *   HUGGINGFACE_API_KEY=hf_... \
  *   node scripts/backfill-qwen3-embeddings.js
  *
