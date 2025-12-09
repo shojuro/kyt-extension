@@ -179,12 +179,7 @@ describe.skipIf(!hasDbConnection)('Suite 4: Architectural Guards', () => {
     // This should work with service key but demonstrates RLS exists
     const testId = crypto.randomUUID();
 
-    // Check we can query the table structure
-    const { data: columns, error: colError } = await supabase
-      .rpc('get_table_columns', { table_name: 'import_progress' })
-      .catch(() => ({ data: null, error: { message: 'RPC not found' } }));
-
-    // Alternative: Check if required columns exist via direct insert/select
+    // Check required columns exist via direct insert/select
     const { data: insertResult, error: insertError } = await supabase
       .from('import_progress')
       .insert({
