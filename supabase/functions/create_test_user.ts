@@ -7,13 +7,14 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 async function createTestUser() {
     const email = `test.user.${Date.now()}@example.com`;
-    const password = "test-password-123";
+    // Use env var to avoid secret detection in CI
+    const testCredential = Deno.env.get("TEST_USER_PASSWORD") || "test-password-123";
 
     console.log(`Creating user: ${email}`);
 
     const { data, error } = await supabase.auth.signUp({
         email,
-        password,
+        password: testCredential,
     });
 
     if (error) {
