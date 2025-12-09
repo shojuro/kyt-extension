@@ -305,6 +305,89 @@ export class HistoryImporter {
     }
 
     /**
+     * Import with automatic resume on partial completion
+     * Handles Edge Function 150s timeout by auto-resuming from checkpoint
+     *
+     * @param {Message[]} messages Messages to import
+     * @param {string} platform Platform (chatgpt, claude)
+     * @param {function({stage: string, attempt: number, remaining?: number}): void} [onProgress] Progress callback
+     * @returns {Promise<{success: boolean, inserted: number, skipped: number, attempts: number}>}
+     */
+    async importWithAutoResume(messages, platform, onProgress = null) {
+        const MAX_ATTEMPTS = 10; // 10 * 120s = 20min max for huge imports
+        let resumeToken = null;
+        let attempts = 0;
+        let totalInserted = 0;
+        let totalSkipped = 0;
+
+        console.log(`[HistoryImporter] Starting auto-resume import for ${messages.length} messages`);
+
+        while (attempts < MAX_ATTEMPTS) {
+            try {
+                if (onProgress) {
+                    onProgress({
+                        stage: attempts === 0 ? 'starting' : 'resuming',
+                        attempt: attempts + 1,
+                        remaining: null
+                    });
+                }
+
+                const result = await this.importConversationBatch(messages, platform, resumeToken);
+
+                totalInserted += result.inserted || result.chunks_created || 0;
+                totalSkipped += result.skipped || 0;
+
+                if (result.status === 'complete') {
+                    console.log(`[HistoryImporter] Import complete after ${attempts + 1} attempt(s)`);
+                    return {
+                        success: true,
+                        inserted: totalInserted,
+                        skipped: totalSkipped,
+                        attempts: attempts + 1
+                    };
+                }
+
+                if (result.status === 'partial' && result.resumeToken) {
+                    console.log(`[HistoryImporter] Partial completion, resuming... (remaining: ${result.remaining})`);
+                    resumeToken = result.resumeToken;
+                    attempts++;
+
+                    if (onProgress) {
+                        onProgress({
+                            stage: 'resuming',
+                            attempt: attempts + 1,
+                            remaining: result.remaining
+                        });
+                    }
+
+                    // Brief pause between calls to avoid hammering the server
+                    await new Promise(r => setTimeout(r, 1000));
+                    continue;
+                }
+
+                // Unexpected status - fail
+                throw new Error(`Import returned unexpected status: ${result.status}`);
+            } catch (error) {
+                console.error(`[HistoryImporter] Import attempt ${attempts + 1} failed:`, error);
+
+                // If it's a network error or 504, retry with same token
+                if (error.message?.includes('504') || error.message?.includes('timeout')) {
+                    attempts++;
+                    if (attempts < MAX_ATTEMPTS) {
+                        console.log(`[HistoryImporter] Retrying after timeout...`);
+                        await new Promise(r => setTimeout(r, 2000));
+                        continue;
+                    }
+                }
+
+                throw error;
+            }
+        }
+
+        throw new Error(`Import exceeded maximum retries (${MAX_ATTEMPTS})`);
+    }
+
+    /**
      * @param {Message[]} messages
      * @param {number} [retryCount=0]
      */
