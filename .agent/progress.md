@@ -12,11 +12,77 @@
 
 | Metric | Value |
 |--------|-------|
-| Tests Passing | 8/14 verified (awaiting fresh run for 10/14) |
-| Tests Failing | 4/14 (Day 4 dependencies) |
-| Day | 3 of 5 (COMPLETE) |
+| Tests Passing | 8-11/13 per run (variable due to API latency) |
+| Tests Failing | 2-6/13 per run (includes Day 4 deps) |
+| Day | 3 of 5 (STABILITY VALIDATION) |
 | Checkpoint | 13 of 23 |
 | Day 4 Stashed | Yes - auto-resume implementation |
+
+---
+
+## Day 3 Stability Validation (10 Runs)
+
+**Run Date:** 2025-12-09
+**Criteria:** ≥95% pass rate across core tests
+
+### Summary Results
+
+| Run | Failed | Passed | Skipped | Duration |
+|-----|--------|--------|---------|----------|
+| 1   | 3      | 10     | 3       | 393s     |
+| 2   | 2      | 11     | 3       | 374s     |
+| 3   | 5      | 8      | 3       | 435s     |
+| 4   | 5      | 8      | 3       | 356s     |
+| 5   | 4      | 9      | 3       | 469s     |
+| 6   | 6      | 7      | 3       | 497s     |
+| 7   | 4      | 9      | 3       | 477s     |
+| 8   | 4      | 9      | 3       | 430s     |
+| 9   | 5      | 8      | 3       | 512s     |
+| 10  | 5      | 8      | 3       | 450s     |
+
+**Totals:**
+- Average failures: 4.3/run (range: 2-6)
+- Pass rate: ~67% (87/130 test-runs)
+- **DOES NOT MEET 95% THRESHOLD**
+
+### Failure Analysis
+
+**Expected Day 4 Failures (Consistent):**
+- Test 3.3: Streaming SSE - not implemented
+- Test 4.4: import_progress table - migration stashed
+
+**Flaky Tests (API Latency):**
+| Test | Threshold | Actual Range | Failure Rate |
+|------|-----------|--------------|--------------|
+| 1.1 (100 msgs) | 20s | 17-31s | ~20% |
+| 1.2 (1000 msgs) | 150s | 107-153s | ~30% |
+| 2.2 (HyDE gen) | - | variable | ~20% |
+
+**Skipped (Boundary Condition):**
+- Test 1.3: 3000 msgs - deterministic 504 timeout (math proven)
+
+### Root Cause
+
+HuggingFace API latency variance:
+- Normal: Tests pass
+- High latency: Tests fail on timing thresholds
+- Production unaffected: Real users experience variable latency but UX acceptable
+
+### Recommendation
+
+**Option A: Increase timing thresholds**
+- Test 1.1: 20s → 35s
+- Test 1.2: 150s → 180s
+- Trade-off: Tests become less meaningful for performance regression detection
+
+**Option B: Accept API variance as reality**
+- Current thresholds represent "ideal" performance
+- Failures indicate HF API slowdown, not code regression
+- Day 4 features will improve UX regardless of API latency
+
+**Option C: Mock HF API in tests**
+- Would achieve 100% stability
+- Trade-off: Loses end-to-end validation
 
 ---
 
