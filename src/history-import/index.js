@@ -262,7 +262,50 @@ export class HistoryImporter {
     }
 
     /**
-     * @param {Message[]} messages 
+     * Import conversation batch via Edge Function
+     * Server-side processing: chunking, HyDE, embeddings
+     *
+     * @param {Message[]} messages Raw messages to import
+     * @param {string} platform Platform (chatgpt, claude)
+     * @param {string} [resumeToken] Resume token from partial import
+     * @returns {Promise<{success: boolean, status: string, processed: number, inserted: number, resumeToken?: string}>}
+     */
+    async importConversationBatch(messages, platform, resumeToken = null) {
+        const url = `${this.supabaseUrl}/functions/v1/import_conversation_batch`;
+        console.log(`[HistoryImporter] Importing ${messages.length} messages via Edge Function`);
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'apikey': this.supabaseKey,
+                'Authorization': `Bearer ${this.supabaseKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                messages: messages.map(m => ({
+                    id: m.id,
+                    content: m.content,
+                    role: m.role,
+                    timestamp: m.timestamp,
+                    conversation_id: m.conversationId,
+                    platform: platform
+                })),
+                user_id: this.userId,
+                platform: platform,
+                resume_token: resumeToken
+            })
+        });
+
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(`Import failed: ${error}`);
+        }
+
+        return await response.json();
+    }
+
+    /**
+     * @param {Message[]} messages
      * @param {number} [retryCount=0]
      */
     async processBatch(messages, retryCount = 0) {

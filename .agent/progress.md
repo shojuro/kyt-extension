@@ -3,7 +3,7 @@
 **Feature:** History Import via Edge Function
 **Branch:** feature/history-import
 **Start Date:** 2025-12-09
-**Phase:** Day 1 - Test Specifications
+**Phase:** Day 2 - Edge Function Core (Complete)
 
 ---
 
@@ -11,14 +11,51 @@
 
 | Metric | Value |
 |--------|-------|
-| Tests Written | 14/14 (includes 2 skipped, 1 passing) |
-| Tests Passing | 1/14 (expected - TDD Phase 1) |
-| Day | 1 of 5 |
-| Checkpoint | 6 of 23 |
+| Tests Written | 14/14 |
+| Tests Passing | 3/14 |
+| Day | 2 of 5 |
+| Checkpoint | 9 of 23 |
 
 ---
 
-## Day 1 Progress
+## Day 2 Progress (Complete)
+
+### Tasks
+- [x] Create Edge Function directory
+- [x] Migrate conversation-chunker.js to TypeScript (296 lines)
+- [x] Create Edge Function skeleton with Deno.serve (258 lines)
+- [x] Implement 90-day window filter
+- [x] Implement basic DB insert (no AI yet)
+- [x] Update client to call import_conversation_batch
+- [x] Run tests - 3/14 GREEN
+
+### Checkpoints
+- [x] Checkpoint 7: Create Edge Function core
+- [x] Checkpoint 8: Add conversation chunking (TypeScript)
+- [x] Checkpoint 9: Run tests - 3/14 GREEN
+
+---
+
+## Test Results (Accurate)
+
+### Passing Tests (3/14)
+- **Test 4.1**: Client delegates to Edge Function ✓
+- **Test 4.2**: No HF calls in client code ✓
+- **Test 4.3**: Edge Function imports AI modules (Day 3 ready) ✓
+
+### Failing Tests (11/14)
+- **10 tests (1.1-3.3, 4.4)**: 404 - Edge Function not deployed yet
+- **1 test (4.4)**: Missing `import_progress` table (Day 4 dependency)
+
+### Notes
+- Test 4.3 passes because AI **imports** exist, not because AI is **implemented**
+- AI functions (generateHyDE, generateEmbeddings) are imported but not called yet
+- Actual AI processing is Day 3 task
+- import_progress table will be created in Day 4 migration
+
+---
+
+## Day 1 Progress (Complete)
 
 ### Tasks
 - [x] Switch to feature branch
@@ -30,36 +67,17 @@
 - [x] Run tests - confirm all fail (13 failed, 1 passed, 2 skipped)
 
 ### Checkpoints
-- [x] Checkpoint 1: Initialize .agent/ harness
-- [x] Checkpoint 2: Performance test suite
-- [x] Checkpoint 3: Data quality test suite
-- [x] Checkpoint 4: Edge cases test suite
-- [x] Checkpoint 5: Architectural guards
-- [x] Checkpoint 6: Confirm all tests fail (0/11 - TDD Phase 1 complete)
+- [x] Checkpoint 1-6: Complete
 
 ---
 
-## Session Log
+## Files Created/Modified
 
-### 2025-12-09 Session 1
-- Created `.agent/progress.md`
-- Created `tests/specs/` directory
-- Created `tests/integration/` directory
-- Wrote `tests/specs/history-import.spec.js` (10 tests across 3 suites)
-- Wrote `tests/integration/import-architectural.test.js` (4 tests)
-- Ran tests: 13 failed, 1 passed, 2 skipped (expected for TDD Phase 1)
-- Test 4.2 passes because client code correctly has no HF embedding calls
-- All other tests fail because Edge Function doesn't exist yet (404)
-
----
-
-## Files Modified
-
-| File | Status |
-|------|--------|
-| `.agent/progress.md` | Created |
-| `tests/specs/history-import.spec.js` | Created (10 tests) |
-| `tests/integration/import-architectural.test.js` | Created (4 tests) |
+| File | Lines | Status |
+|------|-------|--------|
+| `supabase/functions/import_conversation_batch/index.ts` | 258 | Created |
+| `supabase/functions/_shared/conversation-chunker.ts` | 296 | Created |
+| `src/history-import/index.js` | +45 | Modified (added importConversationBatch) |
 
 ---
 
@@ -71,11 +89,17 @@ None currently.
 
 ## Next Actions
 
-**Day 1 Complete! Moving to Day 2.**
+**Day 3: Batched AI Processing**
 
-1. Create Edge Function core (`supabase/functions/import_conversation_batch/index.ts`)
-2. Copy conversation-chunker.js to `_shared/` as TypeScript
-3. Implement message validation and chunking
-4. Basic database insert (no AI yet)
+1. Uncomment AI processing in index.ts (imports exist, need to call them)
+2. Create batched HyDE wrapper (20 chunks/batch)
+3. Add batch method to huggingface-client.ts (50 texts/batch)
+4. Add rate limiting (200ms between batches)
+5. Deploy Edge Function
+6. Run tests
 
-**Day 2 Target:** 2/14 tests GREEN (basic insert works)
+**Day 3 Target:** 9/14 tests GREEN
+- Suite 1: Performance (3) - should pass after deployment
+- Suite 2: Data Quality (3) - should pass with AI processing
+- Suite 4: 4.1-4.3 (already passing)
+- Suite 3 + Test 4.4: Still failing (Day 4 features)
