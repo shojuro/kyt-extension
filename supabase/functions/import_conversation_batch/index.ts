@@ -161,8 +161,17 @@ async function updateProgress(
 /**
  * Mark progress as complete
  */
-async function markComplete(supabase: any, progressId: string): Promise<void> {
-  await updateProgress(supabase, progressId, { status: 'completed' });
+async function markComplete(
+  supabase: any,
+  progressId: string,
+  chunksProcessed?: number,
+  chunksInserted?: number
+): Promise<void> {
+  await updateProgress(supabase, progressId, {
+    status: 'completed',
+    ...(chunksProcessed !== undefined && { last_processed_index: chunksProcessed }),
+    ...(chunksInserted !== undefined && { resume_data: { chunks_inserted: chunksInserted } }),
+  });
 }
 
 // =============================================================================
@@ -664,9 +673,39 @@ Deno.serve(async (req) => {
     // Step 2: Create conversation chunks
     // ==========================================================================
 
-    const chunks = messagesToTurnChunks(recentMessages, user_id);
+    const allChunks = messagesToTurnChunks(recentMessages, user_id);
 
-    console.log(`[import] Created ${chunks.length} chunks from ${recentMessages.length} messages`);
+    console.log(`[import] Created ${allChunks.length} chunks from ${recentMessages.length} messages`);
+
+    // ==========================================================================
+    // Step 2b: Skip already processed chunks on resume
+    // ==========================================================================
+
+    const chunks = allChunks.slice(startIndex);
+    const skippedChunks = startIndex;
+
+    if (chunks.length === 0) {
+      // All chunks already processed in previous run
+      console.log(`[import] All ${allChunks.length} chunks already processed, marking complete`);
+      if (progress) {
+        await markComplete(supabase, progress.id, allChunks.length, 0);
+      }
+      return new Response(JSON.stringify({
+        success: true,
+        status: 'complete',
+        processed: recentMessages.length,
+        filtered_old: filteredCount,
+        chunks_created: allChunks.length,
+        inserted: 0,
+        skipped: allChunks.length,
+        message: 'All chunks already processed in previous run'
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    console.log(`[import] Processing ${chunks.length} chunks (skipping ${skippedChunks} already processed)`);
 
     // ==========================================================================
     // Step 3: AI Processing (HyDE + Embeddings + Classification)
@@ -785,13 +824,15 @@ Deno.serve(async (req) => {
         errors.push(e.message);
       }
 
-      // Update progress after each batch
+      // Update progress after each batch (use global index for resume)
       if (progress) {
+        const globalIndex = startIndex + chunksProcessed;
         await updateProgress(supabase, progress.id, {
           processed_messages: recentMessages.length,
-          last_processed_index: chunksProcessed,
+          last_processed_index: globalIndex,  // CRITICAL: Global index for correct resume
           resume_data: {
-            chunks_processed: chunksProcessed,
+            chunks_processed: globalIndex,
+            total_chunks: allChunks.length,
             filtered_count: filteredCount,
             platform
           }
@@ -799,28 +840,30 @@ Deno.serve(async (req) => {
       }
     }
 
-    console.log(`[import] ${timedOut ? 'Partial' : 'Complete'}: ${insertedCount} inserted, ${duplicateCount} duplicates, ${errorCount} errors`);
+    console.log(`[import] ${timedOut ? 'Partial' : 'Complete'}: ${insertedCount} inserted, ${duplicateCount} duplicates, ${errorCount} errors (global progress: ${startIndex + chunksProcessed}/${allChunks.length})`);
 
     // ==========================================================================
     // Response (with auto-resume support)
     // ==========================================================================
 
     // Mark complete if finished
+    const globalProcessed = startIndex + chunksProcessed;
     if (!timedOut && progress) {
-      await markComplete(supabase, progress.id);
+      await markComplete(supabase, progress.id, globalProcessed, insertedCount);
     }
 
-    // Calculate remaining chunks for partial response
-    const remainingChunks = processedChunks.length - chunksProcessed;
+    // Calculate remaining chunks for partial response (from total, not current batch)
+    const remainingChunks = allChunks.length - globalProcessed;
 
     return new Response(JSON.stringify({
       success: errorCount === 0 && !timedOut,
       status: timedOut ? 'partial' : 'complete',
       processed: recentMessages.length,
       inserted: insertedCount,
-      skipped: duplicateCount,
+      skipped: duplicateCount + skippedChunks,  // Include previously processed
       filtered: filteredCount,
-      chunks_created: chunksProcessed,
+      chunks_created: globalProcessed,  // Global count
+      chunks_total: allChunks.length,   // Total for progress tracking
       embeddings_generated: processedChunks.slice(0, chunksProcessed).filter(c => c.embedding !== null).length,
       errors: errorCount,
       error_messages: errors.slice(0, 5),
