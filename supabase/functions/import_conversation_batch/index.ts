@@ -28,6 +28,7 @@ const RATE_LIMIT_MS = 200; // Delay between API batches
 const MAX_MESSAGES = 10000; // Safety limit
 const TIMEOUT_BUFFER_MS = 120000; // 120s timeout buffer (30s safety for 150s limit)
 const CHUNK_BATCH_SIZE = 100; // Chunks to process before checking timeout
+const MAX_CHUNKS_PER_CALL = 40; // Max chunks to AI-process per call (prevent 504 timeout)
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -708,6 +709,19 @@ Deno.serve(async (req) => {
     console.log(`[import] Processing ${chunks.length} chunks (skipping ${skippedChunks} already processed)`);
 
     // ==========================================================================
+    // Step 2c: Limit chunks per call to prevent timeout (Day 5 fix)
+    // ==========================================================================
+
+    // With 3000 messages → ~120 chunks, AI processing takes >150s
+    // Solution: Process max 40 chunks per call, return partial for remainder
+    const chunksToProcess = chunks.slice(0, MAX_CHUNKS_PER_CALL);
+    const willNeedResume = chunks.length > MAX_CHUNKS_PER_CALL;
+
+    if (willNeedResume) {
+      console.log(`[import] Limiting to ${MAX_CHUNKS_PER_CALL} chunks this call (${chunks.length - MAX_CHUNKS_PER_CALL} will need resume)`);
+    }
+
+    // ==========================================================================
     // Step 3: AI Processing (HyDE + Embeddings + Classification)
     // ==========================================================================
 
@@ -716,7 +730,7 @@ Deno.serve(async (req) => {
     if (skip_ai || !hfKey) {
       // Skip AI processing - null embeddings
       console.log(`[import] Skipping AI processing (skip_ai=${skip_ai}, hfKey=${!!hfKey})`);
-      processedChunks = chunks.map(chunk => ({
+      processedChunks = chunksToProcess.map(chunk => ({
         ...chunk,
         embedding: null,
         hyde_questions: [],
@@ -724,10 +738,10 @@ Deno.serve(async (req) => {
         intimacy_level: 0,
       }));
     } else {
-      console.log(`[import] Starting AI processing for ${chunks.length} chunks...`);
+      console.log(`[import] Starting AI processing for ${chunksToProcess.length} chunks...`);
 
       // 3a. Generate HyDE documents (parallel batched)
-      const hydeResults = await batchProcessHyDE(chunks, openaiKey);
+      const hydeResults = await batchProcessHyDE(chunksToProcess, openaiKey);
 
       // 3b. Prepare texts for embedding (chunk content + HyDE docs)
       const textsToEmbed: string[] = hydeResults.map(({ chunk, hydeDoc }) => {
@@ -739,10 +753,10 @@ Deno.serve(async (req) => {
       const embeddings = await batchProcessEmbeddings(textsToEmbed, hfClient);
 
       // 3d. Classify for gravity (impact + intimacy)
-      const classifications = await batchClassifyChunks(chunks, openaiKey);
+      const classifications = await batchClassifyChunks(chunksToProcess, openaiKey);
 
       // 3e. Combine results
-      processedChunks = chunks.map((chunk, idx) => ({
+      processedChunks = chunksToProcess.map((chunk, idx) => ({
         ...chunk,
         embedding: embeddings[idx] || null,
         hyde_questions: hydeResults[idx]?.hydeDoc
@@ -753,7 +767,7 @@ Deno.serve(async (req) => {
       }));
 
       const embeddingsGenerated = embeddings.filter(e => e !== null).length;
-      console.log(`[import] AI complete: ${embeddingsGenerated}/${chunks.length} embeddings generated`);
+      console.log(`[import] AI complete: ${embeddingsGenerated}/${chunksToProcess.length} embeddings generated`);
     }
 
     // ==========================================================================
@@ -840,24 +854,25 @@ Deno.serve(async (req) => {
       }
     }
 
-    console.log(`[import] ${timedOut ? 'Partial' : 'Complete'}: ${insertedCount} inserted, ${duplicateCount} duplicates, ${errorCount} errors (global progress: ${startIndex + chunksProcessed}/${allChunks.length})`);
+    // Determine if this is a partial response (either timed out OR more chunks remain)
+    const isPartial = timedOut || willNeedResume;
+    const globalProcessed = startIndex + chunksProcessed;
+    const remainingChunks = allChunks.length - globalProcessed;
+
+    console.log(`[import] ${isPartial ? 'Partial' : 'Complete'}: ${insertedCount} inserted, ${duplicateCount} duplicates, ${errorCount} errors (global progress: ${globalProcessed}/${allChunks.length}, remaining: ${remainingChunks})`);
 
     // ==========================================================================
     // Response (with auto-resume support)
     // ==========================================================================
 
-    // Mark complete if finished
-    const globalProcessed = startIndex + chunksProcessed;
-    if (!timedOut && progress) {
+    // Only mark complete when truly finished (no more chunks to process)
+    if (!isPartial && progress) {
       await markComplete(supabase, progress.id, globalProcessed, insertedCount);
     }
 
-    // Calculate remaining chunks for partial response (from total, not current batch)
-    const remainingChunks = allChunks.length - globalProcessed;
-
     return new Response(JSON.stringify({
-      success: errorCount === 0 && !timedOut,
-      status: timedOut ? 'partial' : 'complete',
+      success: errorCount === 0 && !isPartial,
+      status: isPartial ? 'partial' : 'complete',
       processed: recentMessages.length,
       inserted: insertedCount,
       skipped: duplicateCount + skippedChunks,  // Include previously processed
@@ -868,7 +883,7 @@ Deno.serve(async (req) => {
       errors: errorCount,
       error_messages: errors.slice(0, 5),
       // Auto-resume fields (only present when partial)
-      ...(timedOut && progress ? {
+      ...(isPartial && progress ? {
         resumeToken: progress.id,
         remaining: remainingChunks,
       } : {}),
