@@ -5,8 +5,8 @@ export class HuggingFaceClient {
     private apiKey: string;
     private static readonly EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B";
     private static readonly RERANK_MODEL = "BAAI/bge-reranker-v2-m3";
-    // Direct Nebius API for embeddings (OpenAI-compatible)
-    private static readonly NEBIUS_API_URL = "https://api.studio.nebius.ai";
+    // HuggingFace Router for Nebius embeddings (works with HF API key)
+    private static readonly NEBIUS_API_URL = "https://router.huggingface.co/nebius";
     // HuggingFace Inference API for reranking (Nebius router)
     private static readonly HF_ROUTER_URL = "https://router.huggingface.co/nebius";
 
