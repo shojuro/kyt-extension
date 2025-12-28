@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Session Status (2025-12-28)
+
+**Branch**: `feature/history-import`
+
+**Current Work**: Fix ChatGPT Message Capture (Voice + Manual Input)
+
+#### Issue: Messages Not Being Captured
+
+**Problem**: ChatGPT Mobile Voice and Manual input stopped being captured despite extension initializing correctly.
+
+**Evidence**:
+- `✅ KYT: Fetch override installed in PAGE CONTEXT` (working)
+- `✅ KYT: DOM observer enabled for voice capture` (working)
+- `🌊 KYT ChatGPT: Capturing SSE stream` (MISSING - never appears)
+- `🎤 KYT ChatGPT: Voice transcript captured` (MISSING - never appears)
+
+**Root Causes Identified**:
+1. **Fetch Capture**: Only metadata endpoints (`/conversation/init`) intercepted, not actual message POST
+2. **WebSocket Voice**: Only control messages captured (`unsubscribe`, `client_presence`), no transcripts
+3. **DOM Observer**: Selectors may be outdated after ChatGPT UI changes
+
+**Files to Modify**:
+- `platforms/chatgpt/inject.js` - Fetch/WebSocket diagnostics & fixes
+- `platforms/chatgpt/dom-observer.js` - DOM selectors & debug mode
+
+**Implementation Plan**: See `/home/penguinzyue/.claude/plans/eventual-nibbling-sprout.md`
+
+---
+
 ### Session Status (2025-12-08)
 
 **Branch**: `feature/history-import`

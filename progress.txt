@@ -1,0 +1,58 @@
+# KYT Validation Sprint - Progress Tracker
+# Last Updated: 2025-12-28
+
+## Current Branch: feature/history-import
+
+## Active Work: Fix ChatGPT Message Capture
+
+### Status: IN PROGRESS - Diagnostics Phase
+
+### Problem Summary
+ChatGPT Mobile Voice and Manual input are not being captured.
+Extension initializes correctly but message capture mechanisms are failing.
+
+### Root Causes Identified
+1. Fetch Capture - Only metadata endpoints intercepted, not actual messages
+2. WebSocket Voice - Only control messages captured, no transcripts
+3. DOM Observer - Selectors may be outdated after ChatGPT UI changes
+
+### Implementation Steps
+[x] Phase 1: Investigation - Analyze console logs, read inject.js/dom-observer.js
+[x] Phase 2: Plan - Design diagnostic-first fix approach
+[ ] Step 1: Add diagnostics to understand current ChatGPT API structure
+[ ] Step 2: Fix Fetch capture (expand content-types, endpoint patterns)
+[ ] Step 3: Fix WebSocket voice capture (add OpenAI Realtime API formats)
+[ ] Step 4: Fix DOM Observer (update selectors)
+[ ] Step 5: Test and verify capture logs appear
+[ ] Step 6: Remove diagnostic code, finalize
+
+### Files to Modify
+- platforms/chatgpt/inject.js (Fetch/WebSocket capture)
+- platforms/chatgpt/dom-observer.js (DOM fallback capture)
+
+### Plan File
+/home/penguinzyue/.claude/plans/eventual-nibbling-sprout.md
+
+---
+
+## Recent Completed Work
+
+### RAG System Fix (2025-12-28) - COMPLETE
+- Embedding endpoint: api.studio.nebius.ai -> router.huggingface.co/nebius
+- Reranking: BGE reranker -> Jina Reranker API (free tier)
+- Confidence filter: 0.70 -> 0.40 threshold
+- Setup UI: Added Jina API key field
+- Commits: 905b306, 27ffebe, 64b9bf8
+
+### History Import Feature (2025-12-08) - VALIDATED
+- Database: 3,397 chat_turns, 1,378 messages
+- Edge function: save_chat_turn_batch working
+- Popup UI: Import modal fully wired
+- Test status: All 218 tests pass
+
+---
+
+## Test Results Summary
+- Total test files: 15 passed
+- Total tests: 218 passed, 5 skipped
+- Last run: 2025-12-28
