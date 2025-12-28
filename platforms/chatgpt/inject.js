@@ -424,6 +424,16 @@
     // Ensure url is a string for checks
     const urlString = String(url);
 
+    // DIAGNOSTIC: Log ALL backend-api calls with details (for debugging capture issues)
+    if (urlString.includes('/backend-api/') || urlString.includes('chatgpt.com/api')) {
+      console.log('🔍 KYT DIAG Fetch:', {
+        url: urlString.substring(0, 150),
+        method: options?.method || 'GET',
+        hasBody: !!options?.body,
+        bodyPreview: options?.body ? String(options.body).substring(0, 100) : null
+      });
+    }
+
     // DEBUG: Log all fetch URLs to identify changes
     if (urlString.includes('/backend-api/')) {
       logToBackground('Fetch intercepted', { url: urlString.substring(0, 100), method: options?.method || 'GET' });
@@ -483,6 +493,13 @@
       if (response.ok && ENABLE_FETCH_CAPTURE) {
         const contentType = response.headers.get('content-type') || '';
 
+        // DIAGNOSTIC: Log response details to identify content-type changes
+        console.log('🔍 KYT DIAG Response:', {
+          url: urlString.substring(0, 100),
+          status: response.status,
+          contentType: contentType
+        });
+
         if (contentType.includes('application/json')) {
           // Handle full JSON response (common for initial load or non-streaming)
           const clone = response.clone();
@@ -492,9 +509,14 @@
               processConversationTree(json);
             }
           }).catch(err => console.warn('⚠️ KYT ChatGPT: Error parsing JSON response:', err));
-        } else if (contentType.includes('text/event-stream')) {
-          // Handle SSE stream (common for generation)
-          console.log('🌊 KYT ChatGPT: Capturing SSE stream');
+        } else if (
+          contentType.includes('text/event-stream') ||
+          contentType.includes('text/plain') ||
+          contentType.includes('application/octet-stream') ||
+          contentType.includes('application/stream+json')
+        ) {
+          // Handle SSE stream (common for generation) - expanded content-type matching
+          console.log('🌊 KYT ChatGPT: Capturing stream (type:', contentType, ')');
           captureResponseStream(response, {
             conversationId: conversationId,
             platform: 'chatgpt',
@@ -503,6 +525,15 @@
           }).catch(error => {
             console.error('❌ KYT ChatGPT: Failed to capture response stream:', error);
           });
+        } else if (response.body) {
+          // Fallback: If response has body but unknown content-type, try stream capture
+          console.log('⚠️ KYT ChatGPT: Unknown content-type, attempting stream capture:', contentType);
+          captureResponseStream(response, {
+            conversationId: conversationId,
+            platform: 'chatgpt',
+            model: modelName,
+            timestamp: Date.now()
+          }).catch(() => {});
         }
       }
 
@@ -610,6 +641,18 @@
             return;
           }
 
+          // DIAGNOSTIC: Log ALL WebSocket message structures (for debugging voice capture)
+          const msgType = data.type || data.event || data.kind || Object.keys(data).join(',');
+          console.log('🔍 KYT WS DIAG:', {
+            type: msgType,
+            hasText: !!data.text,
+            hasTranscript: !!data.transcript,
+            hasContent: !!data.content || !!data.message?.content,
+            hasItem: !!data.item,
+            hasDelta: !!data.delta,
+            keys: Object.keys(data).slice(0, 10)
+          });
+
           // Handle array root elements (ChatGPT often sends [payload])
           if (Array.isArray(data)) {
             // If it's an array, we'll process each item or just the first one if it matches our criteria
@@ -666,6 +709,23 @@
           } else if (data.payload?.payload?.content?.parts?.[0]) {
             // Conversation turn structure
             transcriptText = data.payload.payload.content.parts[0];
+          }
+
+          // OpenAI Realtime API formats (new voice protocol)
+          if (!transcriptText) {
+            if (data.type === 'response.audio_transcript.delta' && data.delta) {
+              transcriptText = data.delta;
+            } else if (data.type === 'conversation.item.input_audio_transcription.completed' && data.transcript) {
+              transcriptText = data.transcript;
+            } else if (data.type === 'input_audio_buffer.speech_stopped' && data.transcript) {
+              transcriptText = data.transcript;
+            } else if (data.type === 'response.text.delta' && data.delta) {
+              transcriptText = data.delta;
+            } else if (data.response?.output?.[0]?.content?.[0]?.transcript) {
+              transcriptText = data.response.output[0].content[0].transcript;
+            } else if (data.type === 'conversation.item.created' && data.item?.content?.[0]?.transcript) {
+              transcriptText = data.item.content[0].transcript;
+            }
           }
 
           if (transcriptText && transcriptText.trim().length > 0) {

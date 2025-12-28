@@ -21,26 +21,30 @@
 
   // Configuration
   const CONFIG = {
-    // Selector tiers (fallback from most stable to least)
+    // Selector tiers (fallback from most stable to least) - expanded for ChatGPT UI changes
     SELECTOR_TIERS: [
       // Tier 1: Data attributes (most stable)
       '[data-testid="conversation"]',
+      '[data-testid="conversation-panel"]',
 
       // Tier 2: Role-based (semantic)
       '[role="presentation"]',
+      '[role="main"]',
+      '[role="article"]',
 
       // Tier 3: Class patterns (more fragile)
       'main .flex.flex-col',
+      'main [class*="react-scroll"]',
 
       // Tier 4: Structural fallback
       'main > div > div'
     ],
 
-    // Message node selectors
+    // Message node selectors (expanded for ChatGPT UI changes)
     MESSAGE_SELECTORS: {
       userMessage: '[data-message-author-role="user"]',
       assistantMessage: '[data-message-author-role="assistant"]',
-      messageFallback: '.group.w-full, [data-testid*="conversation-turn"], article'
+      messageFallback: '.group.w-full, [data-testid*="conversation-turn"], article, [data-message-id], [class*="agent-turn"], [class*="user-turn"]'
     },
 
     // Performance tuning
@@ -60,7 +64,7 @@
   let debounceTimer = null;
   let pendingMutations = [];
   let isProcessing = false;
-  let debugMode = false;
+  let debugMode = true; // DIAGNOSTIC: Enabled for message capture debugging
 
   // STREAMING STATE: Track when SSE stream is active to prevent capturing partial messages
   let isStreaming = false;
