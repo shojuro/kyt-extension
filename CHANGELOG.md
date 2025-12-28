@@ -7,32 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Session Status (2025-12-28)
+### Fixed (2025-12-29)
 
-**Branch**: `feature/history-import`
+#### ChatGPT Mobile Message Capture - VERIFIED ✅
 
-**Current Work**: Fix ChatGPT Message Capture (Voice + Manual Input)
+**Problem**: Mobile-synced messages and voice input were not being captured.
 
-#### Issue: Messages Not Being Captured
+**Root Cause**: GET requests to `/backend-api/conversation/{id}` were skipped because the fetch handler required `options.body` (only present in POST requests).
 
-**Problem**: ChatGPT Mobile Voice and Manual input stopped being captured despite extension initializing correctly.
+**Fix** (commit 06203f1):
+- Added dedicated handler for GET `/backend-api/conversation/{id}` requests
+- Processes JSON response through `processConversationTree()` to extract all messages
+- Added `fetch_tree` to deduplication confidence map (95% priority)
 
-**Evidence**:
-- `✅ KYT: Fetch override installed in PAGE CONTEXT` (working)
-- `✅ KYT: DOM observer enabled for voice capture` (working)
-- `🌊 KYT ChatGPT: Capturing SSE stream` (MISSING - never appears)
-- `🎤 KYT ChatGPT: Voice transcript captured` (MISSING - never appears)
+**Files Modified**:
+- `platforms/chatgpt/inject.js` - GET conversation handler (lines 445-484)
 
-**Root Causes Identified**:
-1. **Fetch Capture**: Only metadata endpoints (`/conversation/init`) intercepted, not actual message POST
-2. **WebSocket Voice**: Only control messages captured (`unsubscribe`, `client_presence`), no transcripts
-3. **DOM Observer**: Selectors may be outdated after ChatGPT UI changes
+**Verification**:
+- ✅ Mobile-synced message captured: "Testing typing in mobile 1242am"
+- ✅ Voice message captured and synced to Supabase
+- ✅ Typed message captured and synced to Supabase
+- ✅ HyDE questions generated for chunks
+- ✅ Embeddings generated via HuggingFace
 
-**Files to Modify**:
-- `platforms/chatgpt/inject.js` - Fetch/WebSocket diagnostics & fixes
-- `platforms/chatgpt/dom-observer.js` - DOM selectors & debug mode
+### Added (2025-12-28)
 
-**Implementation Plan**: See `/home/penguinzyue/.claude/plans/eventual-nibbling-sprout.md`
+#### Diagnostic Instrumentation (commit 64bdb00)
+
+- Fetch diagnostics for `/backend-api/` calls
+- Response content-type logging
+- WebSocket message structure logging
+- DOM observer debug mode
+- OpenAI Realtime API voice transcript patterns
+- Expanded DOM selectors for ChatGPT UI changes
 
 ---
 
