@@ -18,6 +18,7 @@ loadBtn.addEventListener('click', async () => {
         Supabase Key: ${config.supabaseKey ? '✅ Set (' + config.supabaseKey.substring(0, 20) + '...)' : '❌ Missing'}<br>
         OpenAI Key: ${config.openaiKey ? '✅ Set (' + config.openaiKey.substring(0, 15) + '...)' : '❌ Missing'}<br>
         HuggingFace Key: ${config.huggingfaceKey ? '✅ Set (' + config.huggingfaceKey.substring(0, 10) + '...)' : '❌ Missing (Required for Qwen3)'}<br>
+        Jina Key: ${config.jinaKey ? '✅ Set (' + config.jinaKey.substring(0, 10) + '...)' : '⚠️ Missing (Reranking disabled)'}<br>
         User ID: ${config.userId ? '✅ Set (' + config.userId + ')' : '⚠️ Default (Temp ID)'}<br>
         Query Transformation: ${config.disableQueryTransformation ? '❌ Disabled (Phase 1 fix)' : '✅ Enabled'}
       `;
@@ -27,6 +28,7 @@ loadBtn.addEventListener('click', async () => {
       if (config.supabaseKey) document.getElementById('supabaseKey').value = config.supabaseKey;
       if (config.openaiKey) document.getElementById('openaiKey').value = config.openaiKey;
       if (config.huggingfaceKey) document.getElementById('huggingfaceKey').value = config.huggingfaceKey;
+      if (config.jinaKey) document.getElementById('jinaKey').value = config.jinaKey;
       if (config.userId) document.getElementById('userId').value = config.userId;
       // Phase 1 Fix: Default to true (enabled) for semantic search fix
       document.getElementById('disableQueryTransformation').checked =
@@ -50,6 +52,7 @@ form.addEventListener('submit', async (e) => {
     supabaseKey: document.getElementById('supabaseKey').value.trim(),
     openaiKey: document.getElementById('openaiKey').value.trim(),
     huggingfaceKey: document.getElementById('huggingfaceKey').value.trim(),
+    jinaKey: document.getElementById('jinaKey').value.trim() || null, // Optional: for cross-encoder reranking
     userId: document.getElementById('userId').value.trim() || null, // Store null if empty
     disableQueryTransformation: document.getElementById('disableQueryTransformation').checked
   };
@@ -66,6 +69,7 @@ form.addEventListener('submit', async (e) => {
       Supabase Key: ${config.supabaseKey.substring(0, 20)}...<br>
       OpenAI Key: ${config.openaiKey.substring(0, 15)}...<br>
       HuggingFace Key: ${config.huggingfaceKey ? config.huggingfaceKey.substring(0, 10) + '...' : '❌ Missing'}<br>
+      Jina Key: ${config.jinaKey ? config.jinaKey.substring(0, 10) + '...' : '⚠️ Not set (Reranking disabled)'}<br>
       User ID: ${config.userId ? config.userId : '⚠️ Default (Temp ID)'}<br>
       Query Transformation: ${config.disableQueryTransformation ? '❌ Disabled (Phase 1 fix)' : '✅ Enabled'}
     `;
