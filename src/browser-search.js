@@ -86,9 +86,9 @@ async function generateQueryEmbedding(query, _apiKey) {
         await new Promise(resolve => setTimeout(resolve, API_RETRY_DELAY_MS));
       }
 
-      // Use Nebius API directly (OpenAI-compatible format)
+      // Use HuggingFace Router to Nebius (accepts HF API key, OpenAI-compatible format)
       const response = await fetchWithTimeout(
-        'https://api.studio.nebius.ai/v1/embeddings',
+        'https://router.huggingface.co/nebius/v1/embeddings',
         {
           method: 'POST',
           headers: {
@@ -121,7 +121,7 @@ async function generateQueryEmbedding(query, _apiKey) {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Nebius API error: ${response.status} - ${errorText}`);
+        throw new Error(`HF Router (Nebius) API error: ${response.status} - ${errorText}`);
       }
 
       const responseData = await response.json();
@@ -608,15 +608,12 @@ async function rerankResults(query, results) {
   }
 
   try {
-    // Prepare query-passage pairs for cross-encoding
-    const inputs = results.map(r => ({
-      text: query,
-      text_pair: r.content || ''
-    }));
+    // Prepare documents for HF Router reranking
+    const documents = results.map(r => r.content || '');
 
-    // Use direct HuggingFace Inference API endpoint
+    // Use HuggingFace Router to Nebius for reranking (better CORS support)
     const response = await fetchWithTimeout(
-      'https://api-inference.huggingface.co/models/BAAI/bge-reranker-v2-m3',
+      'https://router.huggingface.co/nebius/v1/rerank',
       {
         method: 'POST',
         headers: {
@@ -624,8 +621,10 @@ async function rerankResults(query, results) {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          inputs: inputs,
-          options: { wait_for_model: false } // Don't wait - faster, may 503
+          query: query,
+          documents: documents,
+          model: 'BAAI/bge-reranker-v2-m3',
+          return_documents: false
         })
       },
       API_TIMEOUT_MS
@@ -649,19 +648,14 @@ async function rerankResults(query, results) {
       return results; // Return original results on error
     }
 
-    const scores = await response.json();
+    const data = await response.json();
 
-    // Map scores back to results
+    // Map scores back to results (HF Router format: { results: [{ index, score }, ...] })
     const reranked = results.map((result, idx) => {
-      // Handle different score formats from HuggingFace
-      let score = 0;
-      if (Array.isArray(scores) && scores[idx] !== undefined) {
-        score = typeof scores[idx] === 'number' ? scores[idx] : (scores[idx]?.score || scores[idx]?.[0] || 0);
-      }
-
+      const rerankItem = data.results?.find(r => r.index === idx);
       return {
         ...result,
-        rerank_score: score
+        rerank_score: rerankItem?.score || 0
       };
     });
 
