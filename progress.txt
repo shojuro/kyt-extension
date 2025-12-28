@@ -5,7 +5,7 @@
 
 ## Active Work: Fix ChatGPT Message Capture
 
-### Status: IN PROGRESS - Diagnostics Phase
+### Status: IN PROGRESS - Diagnostics Implemented (commit 64bdb00)
 
 ### Problem Summary
 ChatGPT Mobile Voice and Manual input are not being captured.
@@ -19,12 +19,17 @@ Extension initializes correctly but message capture mechanisms are failing.
 ### Implementation Steps
 [x] Phase 1: Investigation - Analyze console logs, read inject.js/dom-observer.js
 [x] Phase 2: Plan - Design diagnostic-first fix approach
-[ ] Step 1: Add diagnostics to understand current ChatGPT API structure
-[ ] Step 2: Fix Fetch capture (expand content-types, endpoint patterns)
-[ ] Step 3: Fix WebSocket voice capture (add OpenAI Realtime API formats)
-[ ] Step 4: Fix DOM Observer (update selectors)
-[ ] Step 5: Test and verify capture logs appear
-[ ] Step 6: Remove diagnostic code, finalize
+[x] Step 1: Add diagnostics to understand current ChatGPT API structure
+    - Fetch diagnostics for /backend-api/ calls (inject.js)
+    - Response content-type logging (inject.js)
+    - WebSocket message structure logging (inject.js)
+    - Debug mode enabled (dom-observer.js)
+    - OpenAI Realtime API patterns added (inject.js)
+    - Expanded selectors for ChatGPT UI changes (dom-observer.js)
+[ ] Step 2: Test extension - reload and gather diagnostic data
+[ ] Step 3: Analyze findings and implement targeted fixes
+[ ] Step 4: Verify capture logs appear
+[ ] Step 5: Remove diagnostic code, finalize
 
 ### Files to Modify
 - platforms/chatgpt/inject.js (Fetch/WebSocket capture)
