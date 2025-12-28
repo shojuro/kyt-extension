@@ -564,8 +564,8 @@ export async function searchHybrid(query, options = {}) {
 
       mergedResults = mergedResults.slice(0, limit);
 
-      // PHASE 8: Apply BGE reranker for final ranking
-      console.log(`   🎯 Applying BGE reranker...`);
+      // PHASE 8: Apply Jina cross-encoder reranker for final ranking
+      // (Replaced broken BGE/Nebius reranker - HuggingFace doesn't support serverless reranking)
       const rerankedResults = await rerankResults(query, mergedResults);
 
       console.log(`   ✅ Hybrid search complete: ${rerankedResults.length} final results`);
@@ -589,42 +589,48 @@ export async function searchHybrid(query, options = {}) {
   }
 
 /**
- * Rerank results using BGE-reranker-v2-m3 via HuggingFace Inference API
- * Improves final ranking by cross-encoding query+passage pairs
- * Uses timeout to prevent Chrome message channel timeout
+ * Rerank results using Jina Reranker API
+ * Replaces broken HuggingFace/Nebius BGE reranker (400 error - not supported)
+ * Jina provides properly calibrated 0.0-1.0 scores for confidence filtering
+ *
  * @param {string} query - User's search query
  * @param {Array} results - Results from RRF fusion
- * @returns {Promise<Array>} - Reranked results sorted by relevance
+ * @returns {Promise<Array>} - Reranked results with cross_encoder_score
  */
 async function rerankResults(query, results) {
   if (results.length === 0) return results;
 
   const config = await getConfig();
-  const HF_API_KEY = config.huggingfaceKey;
+  const JINA_API_KEY = config.jinaKey;
 
-  if (!HF_API_KEY) {
-    console.warn('   ⚠️  HuggingFace API key not configured, skipping reranking');
-    return results; // Graceful degradation
+  if (!JINA_API_KEY) {
+    console.warn('   ⚠️  Jina API key not configured, skipping reranking');
+    // Return with fallback scores for confidence filter compatibility
+    return results.map(r => ({
+      ...r,
+      cross_encoder_score: r.weighted_score || 0.5 // Fallback to RRF score or neutral
+    }));
   }
 
   try {
-    // Prepare documents for HF Router reranking
-    const documents = results.map(r => r.content || '');
+    // Prepare documents for Jina reranking (max 20 for latency)
+    const documents = results.slice(0, 20).map(r => r.content || '');
 
-    // Use HuggingFace Router to Nebius for reranking (better CORS support)
+    console.log(`   🎯 Calling Jina Reranker (${documents.length} docs)...`);
+
     const response = await fetchWithTimeout(
-      'https://router.huggingface.co/nebius/v1/rerank',
+      'https://api.jina.ai/v1/rerank',
       {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${HF_API_KEY}`,
+          'Authorization': `Bearer ${JINA_API_KEY}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
+          model: 'jina-reranker-v2-base-multilingual',
           query: query,
           documents: documents,
-          model: 'BAAI/bge-reranker-v2-m3',
-          return_documents: false
+          top_n: Math.min(documents.length, 10) // Return top 10
         })
       },
       API_TIMEOUT_MS
@@ -632,41 +638,56 @@ async function rerankResults(query, results) {
 
     // Handle rate limiting (429)
     if (response.status === 429) {
-      console.warn('   ⏳ Reranker rate limited, skipping reranking');
-      return results;
-    }
-
-    // Handle model loading (503) - skip reranking, not critical
-    if (response.status === 503) {
-      console.warn('   ⏳ Reranker model loading, skipping reranking');
-      return results;
+      console.warn('   ⏳ Jina rate limited, using RRF scores as fallback');
+      return results.map(r => ({
+        ...r,
+        cross_encoder_score: r.weighted_score || 0.5
+      }));
     }
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`   ⚠️  Reranker API error: ${response.status} - ${errorText}`);
-      return results; // Return original results on error
+      console.error(`   ⚠️  Jina API error: ${response.status} - ${errorText}`);
+      return results.map(r => ({
+        ...r,
+        cross_encoder_score: r.weighted_score || 0.5
+      }));
     }
 
     const data = await response.json();
 
-    // Map scores back to results (HF Router format: { results: [{ index, score }, ...] })
+    // Jina format: { results: [{ index, relevance_score, document: {...} }, ...] }
+    // Create a map for O(1) lookup
+    const scoreMap = new Map();
+    if (data.results && Array.isArray(data.results)) {
+      for (const item of data.results) {
+        scoreMap.set(item.index, item.relevance_score);
+      }
+    }
+
+    // Map scores back to results, keeping original order for now
     const reranked = results.map((result, idx) => {
-      const rerankItem = data.results?.find(r => r.index === idx);
+      const jinaScore = scoreMap.get(idx);
       return {
         ...result,
-        rerank_score: rerankItem?.score || 0
+        cross_encoder_score: jinaScore !== undefined ? jinaScore : 0,
+        rerank_score: jinaScore !== undefined ? jinaScore : 0 // Alias for backwards compat
       };
     });
 
-    // Sort by rerank score (higher is better)
-    reranked.sort((a, b) => b.rerank_score - a.rerank_score);
+    // Sort by cross_encoder_score (higher is better)
+    reranked.sort((a, b) => b.cross_encoder_score - a.cross_encoder_score);
 
-    console.log(`   ✅ Reranked ${reranked.length} results`);
+    const topScore = reranked[0]?.cross_encoder_score?.toFixed(3) || 'N/A';
+    console.log(`   ✅ Jina reranked ${reranked.length} results (top score: ${topScore})`);
     return reranked;
 
   } catch (error) {
-    console.error('   ⚠️  Reranking failed:', error.message);
-    return results; // Graceful degradation
+    console.error('   ⚠️  Jina reranking failed:', error.message);
+    // Graceful degradation with RRF scores
+    return results.map(r => ({
+      ...r,
+      cross_encoder_score: r.weighted_score || 0.5
+    }));
   }
 }

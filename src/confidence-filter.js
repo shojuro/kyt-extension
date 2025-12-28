@@ -4,8 +4,11 @@
  * Priority 2 feature: Filter search results by cross-encoder confidence scores.
  * Implements "no results > wrong results" philosophy.
  *
- * Version: 1.0.0
- * Zero build cost: Uses existing cross_encoder_score from Priority 1 reranker
+ * Version: 2.0.0
+ * Updated: Uses Jina cross-encoder scores (0.0-1.0 calibrated)
+ * Previous: BGE reranker via HuggingFace (broken - 400 error, not supported)
+ *
+ * Architecture: High precision, acceptable recall
  * Precision Impact: Reduces false positives by 30-50%
  */
 
@@ -14,8 +17,10 @@
 // ============================================================================
 
 const FILTER_CONFIG = {
-  // Default threshold (tunable: 0.70, 0.75, 0.80)
-  defaultThreshold: 0.70,  // Start at 0.70 - MMR items typically in 0.65-0.74 range
+  // Default threshold for Jina cross-encoder scores (0.0-1.0 range)
+  // Jina scores are properly calibrated: 0.40 is a good starting point
+  // Tune empirically: 0.35-0.50 range works well for memory retrieval
+  defaultThreshold: 0.40,
 
   // Debug configuration
   debugMode: false
@@ -45,16 +50,16 @@ const FILTER_CONFIG = {
  * const filtered = filterByConfidence(
  *   [
  *     { message_id: 'a', cross_encoder_score: 0.85, content: '...' },
- *     { message_id: 'b', cross_encoder_score: 0.72, content: '...' },
- *     { message_id: 'c', cross_encoder_score: 0.65, content: '...' }
+ *     { message_id: 'b', cross_encoder_score: 0.52, content: '...' },
+ *     { message_id: 'c', cross_encoder_score: 0.35, content: '...' }
  *   ],
- *   0.70
+ *   0.40  // Jina cross-encoder threshold
  * );
  * // Returns:
  * // {
  * //   results: [
  * //     { message_id: 'a', cross_encoder_score: 0.85, ... },
- * //     { message_id: 'b', cross_encoder_score: 0.72, ... }
+ * //     { message_id: 'b', cross_encoder_score: 0.52, ... }
  * //   ],
  * //   status: 'success',
  * //   message: 'Found 2 relevant memories.',

@@ -10,8 +10,9 @@ import { filterByConfidence, updateConfig, getConfig, __testing__ } from '../src
 
 describe('Confidence Filter', () => {
   // Reset config before each test
+  // Default threshold 0.40 tuned for Jina cross-encoder scores (0.0-1.0 calibrated)
   beforeEach(() => {
-    updateConfig({ debugMode: false, defaultThreshold: 0.70 });
+    updateConfig({ debugMode: false, defaultThreshold: 0.40 });
   });
 
   describe('filterByConfidence()', () => {
@@ -78,10 +79,10 @@ describe('Confidence Filter', () => {
       expect(filtered2.status).toBe('no_results');
     });
 
-    it('should use default threshold of 0.70 when not specified', () => {
+    it('should use default threshold of 0.40 when not specified', () => {
       const results = [
-        { message_id: 'a', cross_encoder_score: 0.72, content: 'Above default' },
-        { message_id: 'b', cross_encoder_score: 0.68, content: 'Below default' }
+        { message_id: 'a', cross_encoder_score: 0.52, content: 'Above default (Jina score)' },
+        { message_id: 'b', cross_encoder_score: 0.35, content: 'Below default (Jina score)' }
       ];
 
       const filtered = filterByConfidence(results);
@@ -212,7 +213,7 @@ describe('Confidence Filter', () => {
       const config = getConfig();
 
       expect(config).toBeDefined();
-      expect(config.defaultThreshold).toBe(0.70);
+      expect(config.defaultThreshold).toBe(0.40); // Jina cross-encoder threshold
       expect(config.debugMode).toBeDefined();
     });
 

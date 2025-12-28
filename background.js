@@ -1007,13 +1007,13 @@ async function getContextForInjection(userMessage, config) {
     }
 
     // === PRIORITY 2: CONFIDENCE THRESHOLD FILTERING ===
-    // Apply confidence threshold to keyword-boosted results
-    // Philosophy: No results > wrong results
-    // Note: filterByConfidence uses fallback logic: cross_encoder_score ?? weighted_score ?? 0
-    //       Without cross-encoder, it filters based on weighted_score (which includes keyword boost)
+    // Apply confidence threshold to reranked results
+    // Philosophy: No results > wrong results (high precision, acceptable recall)
+    // Uses cross_encoder_score from Jina reranker (0.0-1.0 calibrated scores)
+    // Threshold 0.40 tuned for Jina - adjust empirically if needed
     if (filteredItems.length > 0) {
       try {
-        const confidenceThreshold = contextConfig.confidenceThreshold || 0.70;
+        const confidenceThreshold = contextConfig.confidenceThreshold || 0.40;
         console.log(`🎯 Applying confidence filter (threshold: ${confidenceThreshold}) to ${filteredItems.length} candidates...`);
 
         const filterResult = filterByConfidence(filteredItems, confidenceThreshold);
