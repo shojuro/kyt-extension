@@ -82,7 +82,7 @@
     }
 
     getConfidence(method) {
-      const map = { 'websocket': 95, 'fetch': 95, 'dom': 70 };
+      const map = { 'websocket': 95, 'fetch': 95, 'fetch_tree': 95, 'dom': 70 };
       return map[method] || 50;
     }
 
@@ -441,6 +441,47 @@
 
     // Check if this is a platform API call
     const isChatGPTAPI = platform.detectAPICall(urlString, options);
+
+    // Check if this is a GET request to fetch conversation (mobile sync scenario)
+    const isConversationFetch = isChatGPTAPI &&
+      (!options?.body) &&
+      urlString.includes('/backend-api/conversation/') &&
+      !urlString.includes('/conversation/gen_title') &&
+      !urlString.includes('/conversation/init');
+
+    if (isConversationFetch) {
+      // Handle GET requests that fetch full conversation JSON (mobile-synced messages)
+      console.log('🔍 KYT ChatGPT: Intercepted conversation fetch (GET):', urlString.substring(0, 100));
+
+      // Extract conversation ID from URL
+      const match = urlString.match(/\/conversation\/([a-f0-9-]+)/);
+      const conversationId = match ? match[1] : 'unknown';
+
+      const response = await originalFetch.apply(this, args);
+
+      if (response.ok && ENABLE_FETCH_CAPTURE) {
+        const contentType = response.headers.get('content-type') || '';
+
+        console.log('🔍 KYT DIAG Response (GET):', {
+          url: urlString.substring(0, 100),
+          status: response.status,
+          contentType: contentType,
+          conversationId: conversationId
+        });
+
+        if (contentType.includes('application/json')) {
+          const clone = response.clone();
+          clone.json().then(json => {
+            if (json && json.mapping) {
+              console.log('🎯 KYT ChatGPT: Captured conversation tree from GET (mobile sync)');
+              processConversationTree(json);
+            }
+          }).catch(err => console.warn('⚠️ KYT ChatGPT: Error parsing GET response:', err));
+        }
+      }
+
+      return response;
+    }
 
     if (isChatGPTAPI && options?.body) {
       // DEBUG: Log ALL backend-api calls to find voice endpoint
