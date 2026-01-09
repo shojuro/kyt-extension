@@ -103,7 +103,7 @@ if (window.KYT_CLAUDE_INJECTED) {
     }
 
     getConfidence(method) {
-      const map = { 'websocket': 95, 'fetch': 95, 'dom': 70 };
+      const map = { 'websocket': 95, 'fetch': 95, 'fetch_tree': 95, 'dom': 70 };
       return map[method] || 50;
     }
 
@@ -366,6 +366,89 @@ if (window.KYT_CLAUDE_INJECTED) {
     }
   }
 
+/**
+ * Strip K.Y.T. Memory Injection Protocol blocks from content
+ * Prevents recursive pollution where injection blocks get saved as memories
+ * @param {string} content - Message content that may contain injection blocks
+ * @returns {string} - Clean content without injection blocks
+ */
+function stripInjectionBlock(content) {
+  // AGGRESSIVE PATTERN: Strip ANYTHING that looks like a K.Y.T. injection block
+  const kytHeaderPattern = /={3,}[\s\S]*?K\.Y\.T\.[\s\S]*?(?:={3,}|$)/g;
+  const contextBlockPattern = /\[(SESSION_CONTEXT|RETRIEVAL_CONTEXT|DATA_PROVENANCE|Retrieved Items)\][\s\S]*?(?=\n\n[^\[]|$)/g;
+  const standaloneMarkers = /\[(?:Memory Context|Query Optimized|End of (?:Memory|Knowledge Base) Context)\][^\n]*/g;
+  const separatorPattern = /={80,}/g;
+
+  let cleaned = content;
+  cleaned = cleaned.replace(kytHeaderPattern, '');
+  cleaned = cleaned.replace(contextBlockPattern, '');
+  cleaned = cleaned.replace(standaloneMarkers, '');
+  cleaned = cleaned.replace(separatorPattern, '');
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+  return cleaned;
+}
+
+/**
+ * Process full conversation from JSON response (mobile sync capture)
+ * Claude format: { uuid, name, chat_messages: [{ uuid, text, sender, created_at }] }
+ */
+function processClaudeConversation(response) {
+  if (!response || !response.chat_messages || !Array.isArray(response.chat_messages)) {
+    return;
+  }
+
+  try {
+    const conversationId = response.uuid || 'unknown';
+
+    // Sort by created_at timestamp
+    const messages = [...response.chat_messages].sort((a, b) => {
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    });
+
+    for (const msg of messages) {
+      const content = msg.text?.trim();
+      if (!content) continue;
+
+      // Map Claude's sender to role
+      const role = msg.sender === 'human' ? 'user' : 'assistant';
+
+      // Strip injection blocks from content
+      const cleanedContent = stripInjectionBlock(content);
+
+      const messageData = {
+        content: cleanedContent,
+        role: role,
+        conversationId: conversationId,
+        model: 'claude-3-opus',
+        originalId: msg.uuid,
+        timestamp: msg.created_at ? new Date(msg.created_at).getTime() : Date.now(),
+        platform: 'claude',
+        captureMethod: 'fetch_tree'
+      };
+
+      // Deduplication check
+      let shouldCapture = true;
+      if (window.KYT_Deduplicator) {
+        shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch_tree');
+      }
+
+      if (shouldCapture) {
+        console.log(`🎙️ KYT Claude (Mobile Sync): Captured ${role} message:`,
+          messageData.content.substring(0, 50) + '...');
+
+        window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+          detail: messageData
+        }));
+      } else {
+        console.log('⏭️ KYT Claude: Duplicate skipped');
+      }
+    }
+  } catch (error) {
+    console.error('❌ KYT Claude: Error processing conversation:', error);
+  }
+}
+
 // Wrap window.fetch to intercept Claude API calls
 const originalFetch = window.fetch;
 window.fetch = async function(...args) {
@@ -375,6 +458,49 @@ window.fetch = async function(...args) {
   if (typeof url === 'string' && url.includes('claude.ai/api')) {
     const endpoint = url.replace(/https:\/\/claude\.ai\/api\//, '');
     console.log('🔍 KYT Claude API Call:', endpoint.substring(0, 100));
+  }
+
+  // Check if this is a GET request to fetch conversation (mobile sync scenario)
+  const urlString = typeof url === 'string' ? url : String(url);
+  const isConversationFetch =
+    urlString.includes('claude.ai/api/') &&
+    urlString.includes('/chat_conversations/') &&
+    !urlString.includes('/completion') &&
+    (!options?.body) &&
+    (options?.method === 'GET' || !options?.method);
+
+  if (isConversationFetch) {
+    // Handle GET requests that fetch full conversation JSON (mobile-synced messages)
+    console.log('🔍 KYT Claude: Intercepted conversation fetch (GET):', urlString.substring(0, 100));
+
+    // Extract conversation ID from URL
+    const match = urlString.match(/\/chat_conversations\/([^\/]+)/);
+    const conversationId = match ? match[1] : 'unknown';
+
+    const response = await originalFetch.apply(this, args);
+
+    if (response.ok) {
+      const contentType = response.headers.get('content-type') || '';
+
+      console.log('🔍 KYT DIAG Response (GET):', {
+        url: urlString.substring(0, 100),
+        status: response.status,
+        contentType: contentType,
+        conversationId: conversationId
+      });
+
+      if (contentType.includes('application/json')) {
+        const clone = response.clone();
+        clone.json().then(json => {
+          if (json && json.chat_messages) {
+            console.log('🎯 KYT Claude: Captured conversation from GET (mobile sync)');
+            processClaudeConversation(json);
+          }
+        }).catch(err => console.warn('⚠️ KYT Claude: Error parsing GET response:', err));
+      }
+    }
+
+    return response;
   }
 
   // Check if this is a Claude message completion request
