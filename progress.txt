@@ -6,9 +6,10 @@
 ## Active Work: Fix Mobile Message Capture (ChatGPT + Claude)
 
 ### ChatGPT Status: VERIFIED ✅ (commit 06203f1)
-### Claude Status: FIX COMMITTED (commit 9bc546d) - Pending Verification
+### Claude Status: ENHANCED DIAGNOSTICS (commit 850e27e) - Pending Verification
 ### NOTE: Previous fix (2df2dd6) was applied to wrong file (inject.js)
-### This fix (9bc546d) applied to correct file (content_test.js)
+### Fix (9bc546d) applied to correct file (content_test.js)
+### Diagnostics (850e27e) added to identify why messages aren't captured
 
 ### Problem Summary
 ChatGPT Mobile Voice and Manual input are not being captured.
@@ -38,6 +39,16 @@ Extension initializes correctly but message capture mechanisms are failing.
     - HyDE questions generated ✅
     - Embeddings generated via HuggingFace ✅
 [ ] Step 6: Remove diagnostic code (optional - can keep for future debugging)
+
+### Claude Mobile Investigation (In Progress)
+[x] Step 1: Applied GET handler to correct file (content_test.js, not inject.js)
+[x] Step 2: User tested - GET handler fires but no messages captured
+[x] Step 3: Added enhanced diagnostics (commit 850e27e)
+    - Field name detection: text, content, message, body
+    - Per-message structure logging
+    - Processing summary with capture/skip counts
+[ ] Step 4: Await diagnostic output to identify field name mismatch
+[ ] Step 5: Apply fix based on actual API response structure
 
 ### Files Modified
 - platforms/chatgpt/inject.js (Fetch/WebSocket capture) - FIXED
