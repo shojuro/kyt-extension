@@ -439,17 +439,32 @@ function processClaudeConversation(response) {
     let skippedDuplicate = 0;
 
     for (const msg of messages) {
-      // Try multiple possible field names for message content
-      const content = (msg.text || msg.content || msg.message || msg.body || '')?.trim?.() || '';
+      // Extract content - handle both string and array-of-blocks format
+      let content = '';
+      if (typeof msg.text === 'string' && msg.text.trim()) {
+        // Preferred: direct text field
+        content = msg.text.trim();
+      } else if (Array.isArray(msg.content)) {
+        // Claude API returns content as array of content blocks: [{type: 'text', text: '...'}]
+        content = msg.content
+          .filter(block => block && block.type === 'text')
+          .map(block => block.text || '')
+          .join('\n')
+          .trim();
+      } else if (typeof msg.content === 'string' && msg.content.trim()) {
+        // Fallback: content as string
+        content = msg.content.trim();
+      }
 
-      // DIAGNOSTIC: Log each message's structure
-      if (processedCount === 0 || !content) {
-        console.log('🔍 KYT DIAG msg structure:', {
+      // DIAGNOSTIC: Log extraction results
+      if (processedCount === 0) {
+        console.log('🔍 KYT DIAG msg extraction:', {
           hasText: !!msg.text,
           hasContent: !!msg.content,
-          textType: typeof msg.text,
-          contentType: typeof msg.content,
-          extractedContent: content?.substring?.(0, 50) || content,
+          contentIsArray: Array.isArray(msg.content),
+          contentBlockCount: Array.isArray(msg.content) ? msg.content.length : 0,
+          extractedLength: content.length,
+          extractedPreview: content.substring(0, 80),
           sender: msg.sender
         });
       }
