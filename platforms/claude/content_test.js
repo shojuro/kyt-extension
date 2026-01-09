@@ -456,26 +456,23 @@ function processClaudeConversation(response) {
         content = msg.content.trim();
       }
 
-      // DIAGNOSTIC: Log extraction results
-      if (processedCount === 0) {
-        console.log('🔍 KYT DIAG msg extraction:', {
-          hasText: !!msg.text,
-          hasContent: !!msg.content,
-          contentIsArray: Array.isArray(msg.content),
-          contentBlockCount: Array.isArray(msg.content) ? msg.content.length : 0,
-          extractedLength: content.length,
-          extractedPreview: content.substring(0, 80),
-          sender: msg.sender
-        });
-      }
+      // DIAGNOSTIC: Log extraction results for EVERY message to debug role mapping
+      console.log('🔍 KYT DIAG msg:', {
+        index: processedCount,
+        sender: msg.sender,
+        senderLower: msg.sender?.toLowerCase?.(),
+        extractedLength: content.length,
+        preview: content.substring(0, 40) + '...'
+      });
 
       if (!content) {
         skippedNoContent++;
         continue;
       }
 
-      // Map Claude's sender to role
-      const role = msg.sender === 'human' ? 'user' : 'assistant';
+      // Map Claude's sender to role - CASE INSENSITIVE
+      const senderLower = (msg.sender || '').toLowerCase();
+      const role = senderLower === 'human' ? 'user' : 'assistant';
 
       // Strip injection blocks from content
       const cleanedContent = stripInjectionBlock(content);
@@ -498,8 +495,9 @@ function processClaudeConversation(response) {
       }
 
       if (shouldCapture) {
-        console.log(`🎙️ KYT Claude (Mobile Sync): Captured ${role} message:`,
-          messageData.content.substring(0, 50) + '...');
+        // DIAGNOSTIC: Log role assignment for each message
+        console.log(`🎙️ KYT Claude (Mobile Sync): sender="${msg.sender}" → role="${role}"`);
+        console.log(`   Content: ${messageData.content.substring(0, 50)}...`);
 
         window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
           detail: messageData
