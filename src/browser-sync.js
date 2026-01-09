@@ -274,18 +274,23 @@ export async function syncMessages(messagesToSync) {
     }, {});
     console.log(`📊 KYT Sync: Syncing ${messagesToSync.length} messages -`, platformCounts);
 
-    // PHASE 0 DIAGNOSTIC: Log source field attribution for each message
-    // messagesToSync.forEach(msg => {
-    //   console.log('📊 SYNC DEBUG:', {
-    //     messageId: msg.messageId.substring(0, 20),
-    //     user_id: config.userId || 'DEFAULT',
-    //     original_platform: msg.platform,
-    //     will_store_as: msg.platform || 'chatgpt',
-    //     role: msg.role, // CRITICAL DIAGNOSTIC
-    //     content_preview: msg.content?.substring(0, 20),
-    //     timestamp: new Date(msg.timestamp).toISOString()
-    //   });
-    // });
+    // DIAGNOSTIC: Log role distribution and each message's role
+    const roleCounts = messagesToSync.reduce((acc, m) => {
+      const role = m.role || 'undefined';
+      acc[role] = (acc[role] || 0) + 1;
+      return acc;
+    }, {});
+    console.log(`📊 KYT Sync: Role distribution -`, roleCounts);
+
+    // Log each message's role for verification
+    messagesToSync.forEach((msg, idx) => {
+      console.log(`📊 SYNC DEBUG [${idx}]:`, {
+        messageId: msg.messageId?.substring(0, 20) || 'no-id',
+        role: msg.role || 'MISSING',
+        platform: msg.platform || 'unknown',
+        content_preview: msg.content?.substring(0, 30) + '...'
+      });
+    });
 
     // Prepare data for Supabase
     const messagesWithEmbeddings = messagesToSync.map((msg, idx) => ({
@@ -317,7 +322,10 @@ export async function syncMessages(messagesToSync) {
 
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
-      console.log(`   Processing batch ${i + 1}/${batches.length} (${batch.length} messages)...`);
+
+      // Log roles in this batch
+      const batchRoles = batch.map(m => m.role);
+      console.log(`   Processing batch ${i + 1}/${batches.length}: ${batch.length} messages, roles: [${batchRoles.join(', ')}]`);
 
       // Add a small delay between batches to prevent rate limiting/timeouts
       if (i > 0) {
@@ -330,7 +338,7 @@ export async function syncMessages(messagesToSync) {
           'Content-Type': 'application/json',
           'apikey': config.supabaseKey,
           'Authorization': `Bearer ${config.supabaseKey}`,
-          'Prefer': 'resolution=merge-duplicates'
+          'Prefer': 'resolution=merge-duplicates,return=representation'  // Add return=representation to see what was inserted
         },
         body: JSON.stringify(batch)
       });
@@ -339,6 +347,16 @@ export async function syncMessages(messagesToSync) {
         const error = await response.json();
         throw new Error(`Supabase error (batch ${i + 1}): ${error.message || response.statusText}`);
       }
+
+      // Log Supabase response to verify what was actually inserted
+      const responseData = await response.json();
+      console.log(`   ✅ Batch ${i + 1} response: ${responseData.length} records inserted/updated`);
+      if (responseData.length > 0) {
+        responseData.forEach((r, j) => {
+          console.log(`      [${j}] role=${r.role}, message_id=${r.message_id?.substring(0, 15)}...`);
+        });
+      }
+
       successCount += batch.length;
     }
 
