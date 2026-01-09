@@ -6,10 +6,11 @@
 ## Active Work: Fix Mobile Message Capture (ChatGPT + Claude)
 
 ### ChatGPT Status: VERIFIED ✅ (commit 06203f1)
-### Claude Status: CONTENT ARRAY FIX (commit 141723b) - Pending Verification
+### Claude Status: VERIFIED ✅ (commit 904cc4a)
 ### NOTE: Previous fix (2df2dd6) was applied to wrong file (inject.js)
 ### Fix (9bc546d) applied to correct file (content_test.js)
-### Diagnostics (850e27e) added to identify why messages aren't captured
+### Content array fix (141723b) - extracts text from content blocks array
+### Role diagnostic (904cc4a) - confirmed user + assistant roles syncing correctly
 
 ### Problem Summary
 ChatGPT Mobile Voice and Manual input are not being captured.
@@ -54,7 +55,12 @@ Extension initializes correctly but message capture mechanisms are failing.
 [x] Step 5: Applied fix (commit 141723b)
     - Parse content array to extract text from content blocks
     - Handle both string and array-of-blocks format
-[ ] Step 6: Await user verification - test mobile sync
+[x] Step 6: User verification - PASSED (commit 904cc4a)
+    - Added role distribution logging to sync
+    - Supabase confirmed both role=user and role=assistant inserted
+    - Mobile text input: captured and synced ✅
+    - Mobile dictation: captured and synced ✅
+    - Mobile voice: captured and synced ✅
 
 ### Files Modified
 - platforms/chatgpt/inject.js (Fetch/WebSocket capture) - FIXED
