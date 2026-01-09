@@ -16,6 +16,11 @@
 import { messagesToTurnChunks } from './conversation-chunker.js';
 import { generateHypotheticalQuestions } from './hyde-preprocessor.js';
 
+// SYNC LOCK: Prevent race conditions when multiple syncs happen in parallel
+// This addresses the 10x parallel processing issue
+let syncInProgress = false;
+let syncPending = false;
+
 // API timeout settings (prevent Chrome message channel timeout)
 const SYNC_API_TIMEOUT_MS = 30000; // 30 seconds for sync (batch operations need more time)
 
@@ -463,11 +468,47 @@ export async function syncMessages(messagesToSync) {
 
 /**
  * Sync messages to Supabase with embeddings (Legacy/Default wrapper)
+ * Uses a lock mechanism to prevent race conditions when multiple syncs trigger in parallel
  * @returns {Promise<Object>} Sync result
  */
 export async function syncToSupabase() {
-  const messagesToSync = await getMessagesToSync();
-  return syncMessages(messagesToSync);
+  // SYNC LOCK: Prevent race conditions
+  if (syncInProgress) {
+    // If a sync is already running, mark that we have pending work
+    // but don't queue up - the running sync will catch new messages
+    if (!syncPending) {
+      console.log('⏳ KYT Sync: Already in progress, marking pending for next cycle');
+      syncPending = true;
+    }
+    return { success: true, synced: 0, message: 'Sync already in progress, queued for next cycle' };
+  }
+
+  syncInProgress = true;
+  console.log('🔒 KYT Sync: Acquired sync lock');
+
+  try {
+    const messagesToSync = await getMessagesToSync();
+    const result = await syncMessages(messagesToSync);
+
+    // If there were pending syncs, schedule another after a brief delay
+    if (syncPending) {
+      syncPending = false;
+      console.log('🔄 KYT Sync: Processing pending sync request...');
+      // Small delay to batch any other pending work
+      setTimeout(async () => {
+        try {
+          await syncToSupabase();
+        } catch (e) {
+          console.error('❌ KYT Sync: Pending sync failed:', e);
+        }
+      }, 500);
+    }
+
+    return result;
+  } finally {
+    syncInProgress = false;
+    console.log('🔓 KYT Sync: Released sync lock');
+  }
 }
 
 /**

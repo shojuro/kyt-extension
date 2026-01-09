@@ -31,6 +31,8 @@ if (window.KYT_CLAUDE_INJECTED) {
       }
 
       this.recentMessages = new Map();
+      this.processedMessageIds = new Set(); // MessageId-first deduplication (API UUIDs)
+      this.maxMessageIdSetSize = options.maxMessageIdSetSize || 2000; // Max IDs to track
       this.dedupeWindow = options.dedupeWindow || 5000; // 5 seconds
       this.maxMapSize = options.maxMapSize || 1000; // Max entries to prevent DoS
       this.cleanupInterval = setInterval(() => this.cleanup(), 2000); // Run every 2s
@@ -49,7 +51,34 @@ if (window.KYT_CLAUDE_INJECTED) {
       this._cleanupInProgress = false;
     }
 
-    shouldCapture(content, captureMethod) {
+    shouldCapture(content, captureMethod, messageId = null) {
+      // PRIORITY 1: MessageId-first deduplication (trust API UUIDs)
+      // This is the most reliable - API provides unique UUIDs for each message
+      if (messageId && typeof messageId === 'string' && messageId.trim()) {
+        const cleanId = messageId.trim();
+        if (this.processedMessageIds.has(cleanId)) {
+          console.log(`⏭️ KYT Dedupe: Skipping by messageId (${cleanId.substring(0, 12)}...)`);
+          this.stats.duplicatesSkipped++;
+          return false;
+        }
+
+        // Track this messageId
+        this.processedMessageIds.add(cleanId);
+
+        // FIFO eviction if Set is at max size
+        if (this.processedMessageIds.size >= this.maxMessageIdSetSize) {
+          const oldestId = this.processedMessageIds.values().next().value;
+          this.processedMessageIds.delete(oldestId);
+          console.log('🗑️ KYT Dedupe: FIFO eviction for messageIds, Set at max size:', this.maxMessageIdSetSize);
+        }
+
+        console.log(`✅ KYT Dedupe: New message by ID (${cleanId.substring(0, 12)}...)`);
+        this.stats.totalAttempts++;
+        this.stats.captured++;
+        return true;
+      }
+
+      // PRIORITY 2: Content-hash deduplication (fallback when no messageId)
       // Input validation
       if (content === undefined || content === null || content === '') {
         console.warn('⚠️ KYT Dedupe: Invalid content (empty/null/undefined), skipping deduplication');
@@ -83,7 +112,7 @@ if (window.KYT_CLAUDE_INJECTED) {
             this.stats.upgradeCaptures++;
             return true;
           } else {
-            console.log(`⏭️ KYT Dedupe: Skipping duplicate (${captureMethod} ${confidence}% <= ${lastCapture.captureMethod} ${lastCapture.confidence}%)`);
+            console.log(`⏭️ KYT Dedupe: Skipping duplicate by hash (${captureMethod} ${confidence}% <= ${lastCapture.captureMethod} ${lastCapture.confidence}%)`);
             this.stats.duplicatesSkipped++;
             return false;
           }
@@ -373,20 +402,59 @@ if (window.KYT_CLAUDE_INJECTED) {
  * @returns {string} - Clean content without injection blocks
  */
 function stripInjectionBlock(content) {
-  // AGGRESSIVE PATTERN: Strip ANYTHING that looks like a K.Y.T. injection block
-  const kytHeaderPattern = /={3,}[\s\S]*?K\.Y\.T\.[\s\S]*?(?:={3,}|$)/g;
-  const contextBlockPattern = /\[(SESSION_CONTEXT|RETRIEVAL_CONTEXT|DATA_PROVENANCE|Retrieved Items)\][\s\S]*?(?=\n\n[^\[]|$)/g;
-  const standaloneMarkers = /\[(?:Memory Context|Query Optimized|End of (?:Memory|Knowledge Base) Context)\][^\n]*/g;
-  const separatorPattern = /={80,}/g;
+  // SAFER: Only strip if K.Y.T. markers are actually present
+  const hasKYTMarkers = content.includes('[SESSION_CONTEXT]') ||
+                        content.includes('[RETRIEVAL_CONTEXT]') ||
+                        content.includes('[DATA_PROVENANCE]') ||
+                        content.includes('[Retrieved Items]') ||
+                        content.includes('K.Y.T.');
 
-  let cleaned = content;
-  cleaned = cleaned.replace(kytHeaderPattern, '');
-  cleaned = cleaned.replace(contextBlockPattern, '');
-  cleaned = cleaned.replace(standaloneMarkers, '');
-  cleaned = cleaned.replace(separatorPattern, '');
-  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+  if (!hasKYTMarkers) {
+    return content; // Fast path: nothing to strip
+  }
 
-  return cleaned;
+  // Line-by-line approach - much safer than greedy regex
+  const lines = content.split('\n');
+  const result = [];
+  let inBlock = false;
+  let blockDepth = 0;
+
+  for (const line of lines) {
+    // Check for block start markers
+    if (line.match(/^\[(SESSION_CONTEXT|RETRIEVAL_CONTEXT|DATA_PROVENANCE|Retrieved Items)\]/) ||
+        line.match(/^={3,}.*K\.Y\.T\./)) {
+      inBlock = true;
+      blockDepth++;
+      continue;
+    }
+
+    // Check for block end markers
+    if (inBlock && (line.match(/^={3,}$/) || line.trim() === '')) {
+      blockDepth--;
+      if (blockDepth <= 0) {
+        inBlock = false;
+        blockDepth = 0;
+      }
+      continue;
+    }
+
+    // Skip standalone markers
+    if (line.match(/^\[(?:Memory Context|Query Optimized|End of (?:Memory|Knowledge Base) Context)\]/)) {
+      continue;
+    }
+
+    // Skip separator lines
+    if (line.match(/^={80,}$/)) {
+      continue;
+    }
+
+    // Keep non-block content
+    if (!inBlock) {
+      result.push(line);
+    }
+  }
+
+  return result.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 /**
@@ -438,34 +506,51 @@ function processClaudeConversation(response) {
     let skippedNoContent = 0;
     let skippedDuplicate = 0;
 
-    for (const msg of messages) {
-      // Extract content - handle both string and array-of-blocks format
+    for (let idx = 0; idx < messages.length; idx++) {
+      const msg = messages[idx];
+
+      // Extract content from ALL possible field locations with tracking
       let content = '';
+      let extractedFrom = 'none';
+
+      // Priority 1: Direct text field (most common for Claude)
       if (typeof msg.text === 'string' && msg.text.trim()) {
-        // Preferred: direct text field
         content = msg.text.trim();
-      } else if (Array.isArray(msg.content)) {
-        // Claude API returns content as array of content blocks: [{type: 'text', text: '...'}]
+        extractedFrom = 'text';
+      }
+      // Priority 2: Content array (Claude API format)
+      else if (Array.isArray(msg.content)) {
         content = msg.content
           .filter(block => block && block.type === 'text')
           .map(block => block.text || '')
           .join('\n')
           .trim();
-      } else if (typeof msg.content === 'string' && msg.content.trim()) {
-        // Fallback: content as string
+        extractedFrom = 'content_array';
+      }
+      // Priority 3: Content string
+      else if (typeof msg.content === 'string' && msg.content.trim()) {
         content = msg.content.trim();
+        extractedFrom = 'content_string';
+      }
+      // Priority 4: Message field (alternative API format)
+      else if (typeof msg.message === 'string' && msg.message.trim()) {
+        content = msg.message.trim();
+        extractedFrom = 'message';
+      }
+      // Priority 5: Body field
+      else if (typeof msg.body === 'string' && msg.body.trim()) {
+        content = msg.body.trim();
+        extractedFrom = 'body';
       }
 
-      // DIAGNOSTIC: Log extraction results for EVERY message to debug role mapping
-      console.log('🔍 KYT DIAG msg:', {
-        index: processedCount,
-        sender: msg.sender,
-        senderLower: msg.sender?.toLowerCase?.(),
-        extractedLength: content.length,
-        preview: content.substring(0, 40) + '...'
-      });
+      // Log extraction result for debugging
+      console.log(`📝 KYT Content Extraction [${idx}]: extractedFrom=${extractedFrom}, length=${content.length}, sender=${msg.sender}`);
 
       if (!content) {
+        // CRITICAL: Full message dump for failed extractions
+        console.error(`❌ KYT: NO CONTENT EXTRACTED [${idx}]`);
+        console.error(`   Keys available: ${Object.keys(msg).join(', ')}`);
+        console.error(`   FULL MSG DUMP:`, JSON.stringify(msg, null, 2));
         skippedNoContent++;
         continue;
       }
@@ -476,6 +561,15 @@ function processClaudeConversation(response) {
 
       // Strip injection blocks from content
       const cleanedContent = stripInjectionBlock(content);
+
+      // CRITICAL: Validate content wasn't stripped to nothing
+      if (!cleanedContent || cleanedContent.length < 2) {
+        console.error(`❌ KYT: Content stripped to empty! [${idx}]`);
+        console.error(`   Original (${content.length} chars):`, content.substring(0, 200));
+        console.error(`   Cleaned (${cleanedContent?.length || 0} chars):`, cleanedContent);
+        skippedNoContent++;
+        continue;
+      }
 
       const messageData = {
         content: cleanedContent,
@@ -488,10 +582,10 @@ function processClaudeConversation(response) {
         captureMethod: 'fetch_tree'
       };
 
-      // Deduplication check
+      // Deduplication check - pass msg.uuid for MessageId-first dedup
       let shouldCapture = true;
       if (window.KYT_Deduplicator) {
-        shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch_tree');
+        shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch_tree', msg.uuid);
       }
 
       if (shouldCapture) {
@@ -522,6 +616,10 @@ function processClaudeConversation(response) {
   }
 }
 
+// Conversation-level dedup to prevent 10x parallel processing
+const recentConversationFetches = new Map();
+const CONVERSATION_DEDUP_WINDOW = 2000; // 2 seconds
+
 // Wrap window.fetch to intercept Claude API calls
 const originalFetch = window.fetch;
 window.fetch = async function(...args) {
@@ -549,6 +647,22 @@ window.fetch = async function(...args) {
     // Extract conversation ID from URL
     const match = urlString.match(/\/chat_conversations\/([^\/]+)/);
     const conversationId = match ? match[1] : 'unknown';
+
+    // CONVERSATION-LEVEL DEDUP: Prevent 10x parallel processing of same conversation
+    const now = Date.now();
+    const lastFetch = recentConversationFetches.get(conversationId);
+    if (lastFetch && (now - lastFetch) < CONVERSATION_DEDUP_WINDOW) {
+      console.log(`⏭️ KYT Claude: Skipping duplicate conversation fetch (${conversationId.substring(0, 8)}...) - processed ${now - lastFetch}ms ago`);
+      return originalFetch.apply(this, args);
+    }
+    recentConversationFetches.set(conversationId, now);
+
+    // Cleanup old entries (older than 10s)
+    for (const [id, timestamp] of recentConversationFetches) {
+      if (now - timestamp > 10000) {
+        recentConversationFetches.delete(id);
+      }
+    }
 
     const response = await originalFetch.apply(this, args);
 
@@ -633,9 +747,10 @@ window.fetch = async function(...args) {
             });
 
             // Check deduplication before dispatching (with error boundary)
+            // Pass messageId for MessageId-first dedup (generated ID for POST, API UUID for GET)
             let shouldCapture = true; // Default: always capture (fail-open)
             try {
-              shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch');
+              shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch', messageData.messageId);
             } catch (dedupeError) {
               console.error('❌ KYT Claude: Deduplication error, capturing anyway:', dedupeError);
               // Record error for health monitoring
