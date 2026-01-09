@@ -9,19 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed (2025-01-09)
 
-#### Claude Mobile Message Capture (commit 2df2dd6)
+#### Claude Mobile Message Capture (commit 9bc546d)
 
 **Problem**: Claude mobile-synced messages (text, dictation, voice) were not being captured.
 
 **Root Cause**: Same as ChatGPT - GET requests to `/chat_conversations/{id}` were skipped because handler only processed POST requests with body.
 
+**Note**: Initial fix (2df2dd6) was applied to wrong file (`inject.js`). Manifest actually loads `content_test.js`.
+
 **Fix**:
 - Added `processClaudeConversation()` function for Claude's JSON format
 - Added GET `/chat_conversations/` handler (excludes `/completion`)
 - Added `fetch_tree` to deduplication confidence map (95%)
+- Added `stripInjectionBlock()` utility function
 
 **Files Modified**:
-- `platforms/claude/inject.js` - GET conversation handler + processor
+- `platforms/claude/content_test.js` - GET conversation handler + processor (CORRECT FILE)
 
 **Pending Verification**: User needs to test mobile sync
 

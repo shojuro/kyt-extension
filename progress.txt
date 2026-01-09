@@ -6,7 +6,9 @@
 ## Active Work: Fix Mobile Message Capture (ChatGPT + Claude)
 
 ### ChatGPT Status: VERIFIED ✅ (commit 06203f1)
-### Claude Status: FIX COMMITTED (commit 2df2dd6) - Pending Verification
+### Claude Status: FIX COMMITTED (commit 9bc546d) - Pending Verification
+### NOTE: Previous fix (2df2dd6) was applied to wrong file (inject.js)
+### This fix (9bc546d) applied to correct file (content_test.js)
 
 ### Problem Summary
 ChatGPT Mobile Voice and Manual input are not being captured.
@@ -37,9 +39,10 @@ Extension initializes correctly but message capture mechanisms are failing.
     - Embeddings generated via HuggingFace ✅
 [ ] Step 6: Remove diagnostic code (optional - can keep for future debugging)
 
-### Files to Modify
-- platforms/chatgpt/inject.js (Fetch/WebSocket capture)
+### Files Modified
+- platforms/chatgpt/inject.js (Fetch/WebSocket capture) - FIXED
 - platforms/chatgpt/dom-observer.js (DOM fallback capture)
+- platforms/claude/content_test.js (Mobile sync GET handler) - FIXED (9bc546d)
 
 ### Plan File
 /home/penguinzyue/.claude/plans/eventual-nibbling-sprout.md
