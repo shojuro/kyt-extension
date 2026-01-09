@@ -394,7 +394,33 @@ function stripInjectionBlock(content) {
  * Claude format: { uuid, name, chat_messages: [{ uuid, text, sender, created_at }] }
  */
 function processClaudeConversation(response) {
+  // DIAGNOSTIC: Log the response structure comprehensively
+  const firstMsg = response?.chat_messages?.[0];
+  console.log('🔍 KYT DIAG processClaudeConversation called with:', {
+    hasResponse: !!response,
+    responseKeys: response ? Object.keys(response).slice(0, 15) : [],
+    hasChatMessages: !!response?.chat_messages,
+    chatMessagesLength: response?.chat_messages?.length || 0,
+    firstMessage: firstMsg ? {
+      allKeys: Object.keys(firstMsg),
+      sender: firstMsg.sender,
+      // Check all possible text field names
+      hasText: !!firstMsg.text,
+      hasContent: !!firstMsg.content,
+      hasMessage: !!firstMsg.message,
+      hasBody: !!firstMsg.body,
+      // Show actual values
+      textValue: firstMsg.text?.substring?.(0, 80) || firstMsg.text,
+      contentValue: firstMsg.content?.substring?.(0, 80) || firstMsg.content,
+      messageValue: firstMsg.message?.substring?.(0, 80) || firstMsg.message,
+      // Check if text is nested
+      textContent: firstMsg.text?.content?.substring?.(0, 80),
+      contentText: firstMsg.content?.text?.substring?.(0, 80)
+    } : 'NO_MESSAGES'
+  });
+
   if (!response || !response.chat_messages || !Array.isArray(response.chat_messages)) {
+    console.log('⚠️ KYT DIAG: No chat_messages array found');
     return;
   }
 
@@ -406,9 +432,32 @@ function processClaudeConversation(response) {
       return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
     });
 
+    console.log(`🔍 KYT DIAG: Processing ${messages.length} messages for conversation ${conversationId}`);
+
+    let processedCount = 0;
+    let skippedNoContent = 0;
+    let skippedDuplicate = 0;
+
     for (const msg of messages) {
-      const content = msg.text?.trim();
-      if (!content) continue;
+      // Try multiple possible field names for message content
+      const content = (msg.text || msg.content || msg.message || msg.body || '')?.trim?.() || '';
+
+      // DIAGNOSTIC: Log each message's structure
+      if (processedCount === 0 || !content) {
+        console.log('🔍 KYT DIAG msg structure:', {
+          hasText: !!msg.text,
+          hasContent: !!msg.content,
+          textType: typeof msg.text,
+          contentType: typeof msg.content,
+          extractedContent: content?.substring?.(0, 50) || content,
+          sender: msg.sender
+        });
+      }
+
+      if (!content) {
+        skippedNoContent++;
+        continue;
+      }
 
       // Map Claude's sender to role
       const role = msg.sender === 'human' ? 'user' : 'assistant';
@@ -440,10 +489,21 @@ function processClaudeConversation(response) {
         window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
           detail: messageData
         }));
+        processedCount++;
       } else {
         console.log('⏭️ KYT Claude: Duplicate skipped');
+        skippedDuplicate++;
       }
     }
+
+    // DIAGNOSTIC: Summary
+    console.log('🔍 KYT DIAG Summary:', {
+      totalMessages: messages.length,
+      captured: processedCount,
+      skippedNoContent: skippedNoContent,
+      skippedDuplicate: skippedDuplicate
+    });
+
   } catch (error) {
     console.error('❌ KYT Claude: Error processing conversation:', error);
   }
