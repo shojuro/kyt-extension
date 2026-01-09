@@ -1,11 +1,12 @@
 # KYT Validation Sprint - Progress Tracker
-# Last Updated: 2025-12-29
+# Last Updated: 2025-01-09
 
 ## Current Branch: feature/history-import
 
-## Active Work: Fix ChatGPT Message Capture
+## Active Work: Fix Mobile Message Capture (ChatGPT + Claude)
 
-### Status: VERIFIED ✅ (commit 06203f1)
+### ChatGPT Status: VERIFIED ✅ (commit 06203f1)
+### Claude Status: FIX COMMITTED (commit 2df2dd6) - Pending Verification
 
 ### Problem Summary
 ChatGPT Mobile Voice and Manual input are not being captured.
@@ -13,9 +14,10 @@ Extension initializes correctly but message capture mechanisms are failing.
 
 ### Root Causes Identified
 1. Fetch Capture - Only metadata endpoints intercepted, not actual messages
-2. **FIXED: Mobile Sync** - GET /conversation/{id} requests skipped (no body)
-3. WebSocket Voice - Only control messages captured, no transcripts
-4. DOM Observer - Selectors may be outdated after ChatGPT UI changes
+2. **FIXED: ChatGPT Mobile Sync** - GET /conversation/{id} requests skipped (no body)
+3. **FIXED: Claude Mobile Sync** - GET /chat_conversations/{id} requests skipped (no body)
+4. WebSocket Voice - Only control messages captured, no transcripts
+5. DOM Observer - Selectors may be outdated after UI changes
 
 ### Implementation Steps
 [x] Phase 1: Investigation - Analyze console logs, read inject.js/dom-observer.js
