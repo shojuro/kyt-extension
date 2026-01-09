@@ -6,7 +6,7 @@
 ## Active Work: Fix Mobile Message Capture (ChatGPT + Claude)
 
 ### ChatGPT Status: VERIFIED ✅ (commit 06203f1)
-### Claude Status: ENHANCED DIAGNOSTICS (commit 850e27e) - Pending Verification
+### Claude Status: CONTENT ARRAY FIX (commit 141723b) - Pending Verification
 ### NOTE: Previous fix (2df2dd6) was applied to wrong file (inject.js)
 ### Fix (9bc546d) applied to correct file (content_test.js)
 ### Diagnostics (850e27e) added to identify why messages aren't captured
@@ -47,8 +47,14 @@ Extension initializes correctly but message capture mechanisms are failing.
     - Field name detection: text, content, message, body
     - Per-message structure logging
     - Processing summary with capture/skip counts
-[ ] Step 4: Await diagnostic output to identify field name mismatch
-[ ] Step 5: Apply fix based on actual API response structure
+[x] Step 4: Analyzed diagnostic output - identified root cause
+    - `contentType: 'object'` - msg.content is array of content blocks
+    - Format: [{ type: 'text', text: 'actual message' }]
+    - All 8 messages skipped because .trim() fails on object
+[x] Step 5: Applied fix (commit 141723b)
+    - Parse content array to extract text from content blocks
+    - Handle both string and array-of-blocks format
+[ ] Step 6: Await user verification - test mobile sync
 
 ### Files Modified
 - platforms/chatgpt/inject.js (Fetch/WebSocket capture) - FIXED
