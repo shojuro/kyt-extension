@@ -15,11 +15,14 @@
 
 import { messagesToTurnChunks } from './conversation-chunker.js';
 import { generateHypotheticalQuestions } from './hyde-preprocessor.js';
+import {
+  isEmbeddingCircuitOpen,
+  recordEmbeddingSuccess,
+  recordEmbeddingFailure
+} from './embedding-circuit-breaker.js';
 
 // SYNC LOCK: Prevent race conditions when multiple syncs happen in parallel
-// This addresses the 10x parallel processing issue
 let syncInProgress = false;
-let syncPending = false;
 
 // API timeout settings (prevent Chrome message channel timeout)
 const SYNC_API_TIMEOUT_MS = 30000; // 30 seconds for sync (batch operations need more time)
@@ -125,13 +128,20 @@ function batchByTokens(texts, maxTokensPerBatch = 8000) {
 /**
  * Generate embeddings using Qwen3-Embedding-8B via HuggingFace Inference Providers
  * Produces 4096-dimensional embeddings (matches database schema)
- * Routes through HuggingFace's router to Nebius backend (OpenAI-compatible format)
+ * Routes through HuggingFace's router to Scaleway backend (OpenAI-compatible format)
  *
  * @param {string[]} texts - Array of message content strings
  * @param {string} _apiKey - Unused (kept for backward compatibility)
  * @returns {Promise<number[][]>} Array of 4096-dimensional embeddings
+ * @throws {Error} If circuit breaker is open or API fails
  */
 async function generateEmbeddings(texts, _apiKey) {
+  // Check circuit breaker FIRST
+  const circuitStatus = await isEmbeddingCircuitOpen();
+  if (circuitStatus.open) {
+    throw new Error(`Embedding circuit breaker open: ${circuitStatus.reason}`);
+  }
+
   // Get HuggingFace key from config
   const config = await getConfig();
   const HF_API_KEY = config.huggingfaceKey;
@@ -145,8 +155,8 @@ async function generateEmbeddings(texts, _apiKey) {
   // Batch by tokens (Qwen3 has similar limits)
   const batches = batchByTokens(texts, 4000);
 
-  // HuggingFace Inference Providers router endpoint (routes to Nebius backend)
-  const HF_ROUTER_URL = 'https://router.huggingface.co/nebius/v1/embeddings';
+  // HuggingFace Inference Providers router endpoint (routes to Scaleway backend)
+  const HF_ROUTER_URL = 'https://router.huggingface.co/scaleway/v1/embeddings';
 
   console.log(`📊 Generating Qwen3 embeddings via HuggingFace: ${batches.length} batches for ${texts.length} messages`);
 
@@ -166,48 +176,55 @@ async function generateEmbeddings(texts, _apiKey) {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'Qwen/Qwen3-Embedding-8B',
+          model: 'qwen3-embedding-8b',
           input: batch
         })
       },
       SYNC_API_TIMEOUT_MS
     );
 
-    // Handle rate limiting (429)
-    if (response.status === 429) {
-      console.warn(`   ⏳ Rate limited (429), waiting 10s and retrying...`);
-      await new Promise(resolve => setTimeout(resolve, 10000));
-
-      const retryResponse = await fetchWithTimeout(
-        HF_ROUTER_URL,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${HF_API_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model: 'Qwen/Qwen3-Embedding-8B',
-            input: batch
-          })
-        },
-        SYNC_API_TIMEOUT_MS * 2
-      );
-
-      if (!retryResponse.ok) {
-        const errorText = await retryResponse.text();
-        throw new Error(`HuggingFace API error on retry: ${retryResponse.status} - ${errorText}`);
-      }
-
-      const retryData = await retryResponse.json();
-      // OpenAI-compatible format: { data: [{ embedding: [...] }, ...] }
-      const retryEmbeddings = retryData.data.map(item => item.embedding);
-      allEmbeddings.push(...retryEmbeddings);
-      continue;
-    }
-
+    // Handle non-OK responses with circuit breaker
     if (!response.ok) {
       const errorText = await response.text();
+
+      // Record failure in circuit breaker
+      await recordEmbeddingFailure(response.status, errorText);
+
+      // For 429, attempt one retry after delay (if circuit hasn't tripped)
+      if (response.status === 429) {
+        console.warn(`   ⏳ Rate limited (429), waiting 10s and retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+
+        const retryResponse = await fetchWithTimeout(
+          HF_ROUTER_URL,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${HF_API_KEY}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model: 'qwen3-embedding-8b',
+              input: batch
+            })
+          },
+          SYNC_API_TIMEOUT_MS * 2
+        );
+
+        if (!retryResponse.ok) {
+          const retryErrorText = await retryResponse.text();
+          await recordEmbeddingFailure(retryResponse.status, retryErrorText);
+          throw new Error(`HuggingFace API error on retry: ${retryResponse.status} - ${retryErrorText}`);
+        }
+
+        // Retry succeeded
+        await recordEmbeddingSuccess();
+        const retryData = await retryResponse.json();
+        const retryEmbeddings = retryData.data.map(item => item.embedding);
+        allEmbeddings.push(...retryEmbeddings);
+        continue;
+      }
+
       throw new Error(`HuggingFace API error: ${response.status} - ${errorText}`);
     }
 
@@ -227,24 +244,168 @@ async function generateEmbeddings(texts, _apiKey) {
     }
   }
 
+  // All batches succeeded - record success
+  await recordEmbeddingSuccess();
   return allEmbeddings;
 }
 
 /**
- * Get messages that need syncing (not yet synced)
+ * Query existing message IDs from Supabase (single request for small sets)
+ * Used when message count is <= 50 to avoid chunking overhead
+ *
+ * @param {string[]} messageIds - Array of message IDs to check
+ * @param {Object} config - API configuration with supabaseUrl and supabaseKey
+ * @returns {Promise<Set<string>>} Set of existing message IDs in database
+ */
+async function queryExistingIdsSingle(messageIds, config) {
+  if (messageIds.length === 0) {
+    return new Set();
+  }
+
+  const quotedIds = messageIds.map(id => `"${id}"`).join(',');
+  const response = await fetchWithTimeout(
+    `${config.supabaseUrl}/rest/v1/messages?message_id=in.(${quotedIds})&select=message_id`,
+    {
+      headers: {
+        'apikey': config.supabaseKey,
+        'Authorization': `Bearer ${config.supabaseKey}`
+      }
+    },
+    10000 // 10 second timeout for this check
+  );
+
+  if (!response.ok) {
+    throw new Error(`DB query failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return new Set(data.map(m => m.message_id));
+}
+
+/**
+ * Query existing message IDs from Supabase in chunks
+ * Prevents URL length overflow with large message sets (50 IDs per chunk)
+ *
+ * @param {string[]} messageIds - Array of message IDs to check
+ * @param {Object} config - API configuration with supabaseUrl and supabaseKey
+ * @param {number} chunkSize - Max IDs per request (default 50)
+ * @returns {Promise<Set<string>>} Set of existing message IDs in database
+ */
+async function queryExistingIdsChunked(messageIds, config, chunkSize = 50) {
+  const existingIds = new Set();
+
+  for (let i = 0; i < messageIds.length; i += chunkSize) {
+    const chunk = messageIds.slice(i, i + chunkSize);
+    const quotedIds = chunk.map(id => `"${id}"`).join(',');
+
+    try {
+      const response = await fetchWithTimeout(
+        `${config.supabaseUrl}/rest/v1/messages?message_id=in.(${quotedIds})&select=message_id`,
+        {
+          headers: {
+            'apikey': config.supabaseKey,
+            'Authorization': `Bearer ${config.supabaseKey}`
+          }
+        },
+        10000 // 10 second timeout per chunk
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        data.forEach(m => existingIds.add(m.message_id));
+      } else {
+        console.warn(`⚠️ Chunk ${Math.floor(i / chunkSize) + 1} query failed: ${response.status}`);
+        // Continue with other chunks - partial data is better than none
+      }
+    } catch (chunkError) {
+      console.warn(`⚠️ Chunk ${Math.floor(i / chunkSize) + 1} error:`, chunkError.message);
+      // Continue with other chunks
+    }
+
+    // Small delay between chunks to avoid rate limiting
+    if (i + chunkSize < messageIds.length) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  return existingIds;
+}
+
+/**
+ * Get messages that need syncing using database-first approach
+ *
+ * ARCHITECTURE FIX: Replaces stale local syncedMessageIds cache with direct DB queries
+ *
+ * Problem solved:
+ * - Previous implementation used local syncedMessageIds that accumulated forever
+ * - Same API message IDs (e.g., from Claude) caused false "already synced" detection
+ * - Result: Messages lost when page refreshed and same conversation re-captured
+ *
+ * Solution:
+ * - Pre-filter by timestamp for performance (only check recent messages)
+ * - Query Supabase directly to check which messages actually exist
+ * - Use chunked queries to avoid URL length limits (50 IDs per request)
+ * - Safe fallback: if DB unreachable, send all and let Supabase upsert handle duplicates
+ *
  * @returns {Promise<Object[]>} Messages to sync
  */
 async function getMessagesToSync() {
-  const result = await chrome.storage.local.get(['captured_messages', 'last_sync_status']);
+  const result = await chrome.storage.local.get([
+    'captured_messages',
+    'last_successful_sync_time'
+  ]);
+
   const allMessages = result.captured_messages || [];
-  const lastSync = result.last_sync_status || { lastSyncTime: 0, syncedMessageIds: [] };
 
-  // Filter out already synced messages
-  const syncedIds = new Set(lastSync.syncedMessageIds || []);
-  const newMessages = allMessages.filter(msg => !syncedIds.has(msg.messageId));
+  if (allMessages.length === 0) {
+    console.log('📦 No local messages to sync');
+    return [];
+  }
 
-  console.log(`📦 Found ${newMessages.length} new messages to sync (${allMessages.length} total)`);
-  return newMessages;
+  // Defensive: Prevent future timestamps from blocking all syncs
+  const now = Date.now();
+  const lastSyncTime = Math.min(
+    result.last_successful_sync_time || 0,
+    now
+  );
+
+  // Pre-filter by timestamp + validate messageId (INSIDE callback for correct scoping)
+  const candidateMessages = allMessages.filter(msg => {
+    if (!msg.messageId) return false;
+    const messageTime = msg.capturedAt ?? msg.timestamp ?? 0;
+    return messageTime > lastSyncTime;
+  });
+
+  if (candidateMessages.length === 0) {
+    console.log(`✅ No new messages since last sync (${new Date(lastSyncTime).toISOString()})`);
+    return [];
+  }
+
+  console.log(`🔍 Checking ${candidateMessages.length} candidates (since ${new Date(lastSyncTime).toISOString()})`);
+
+  try {
+    const config = await getConfig();
+    const messageIds = candidateMessages.map(m => m.messageId);
+
+    // Fast path for small sets, chunked for large sets
+    const existingIds = messageIds.length <= 50
+      ? await queryExistingIdsSingle(messageIds, config)
+      : await queryExistingIdsChunked(messageIds, config, 50);
+
+    const newMessages = candidateMessages.filter(
+      msg => !existingIds.has(msg.messageId)
+    );
+
+    console.log(`📦 Found ${newMessages.length} new messages to sync (${existingIds.size} already in DB, ${allMessages.length} total local)`);
+    return newMessages;
+
+  } catch (error) {
+    console.warn('⚠️ DB check failed, using safe fallback:', error.message);
+    // SAFE FALLBACK: Return all candidates, let Supabase upsert handle duplicates
+    // This works because we use on_conflict=message_id with merge-duplicates
+    console.log(`📦 Fallback: syncing all ${candidateMessages.length} candidates (Supabase will dedupe)`);
+    return candidateMessages;
+  }
 }
 
 /**
@@ -267,9 +428,17 @@ export async function syncMessages(messagesToSync) {
       };
     }
 
-    // Generate embeddings
+    // Generate embeddings (graceful degradation: null if unavailable)
     const texts = messagesToSync.map(m => m.content);
-    const embeddings = await generateEmbeddings(texts, config.openaiKey);
+    let embeddings;
+    let embeddingsAvailable = false;
+    try {
+      embeddings = await generateEmbeddings(texts, config.openaiKey);
+      embeddingsAvailable = true;
+    } catch (embeddingError) {
+      console.warn(`⚠️ Embeddings unavailable, syncing without: ${embeddingError.message}`);
+      embeddings = new Array(texts.length).fill(null);
+    }
 
     // Log platform distribution for diagnostics
     const platformCounts = messagesToSync.reduce((acc, m) => {
@@ -400,9 +569,15 @@ export async function syncMessages(messagesToSync) {
 
       console.log(`✅ HyDE preprocessing complete for ${chunksWithHyDE.length} chunks`);
 
-      // Generate embeddings for turn chunks
+      // Generate embeddings for turn chunks (graceful degradation: null if unavailable)
       const turnTexts = chunksWithHyDE.map(chunk => chunk.content);
-      const turnEmbeddings = await generateEmbeddings(turnTexts, config.openaiKey);
+      let turnEmbeddings;
+      try {
+        turnEmbeddings = await generateEmbeddings(turnTexts, config.openaiKey);
+      } catch (turnEmbedError) {
+        console.warn(`⚠️ Turn embeddings unavailable, syncing without: ${turnEmbedError.message}`);
+        turnEmbeddings = new Array(turnTexts.length).fill(null);
+      }
 
       // Prepare turn chunks with embeddings and HyDE questions
       const chunksWithEmbeddings = chunksWithHyDE.map((chunk, idx) => ({
@@ -433,26 +608,27 @@ export async function syncMessages(messagesToSync) {
       console.log('📊 No conversation turns created (insufficient messages for chunking)');
     }
 
-    // Update sync status
-    const result = await chrome.storage.local.get(['last_sync_status']);
-    const syncStatus = result.last_sync_status || { syncedMessageIds: [] };
-
-    syncStatus.lastSyncTime = Date.now();
-    syncStatus.syncedCount = messagesToSync.length;
-    syncStatus.syncedMessageIds = [
-      ...(syncStatus.syncedMessageIds || []),
-      ...messagesToSync.map(m => m.messageId)
-    ];
-
-    await chrome.storage.local.set({ last_sync_status: syncStatus });
+    // Update sync status - use timestamp-based tracking (no more accumulating syncedMessageIds)
+    // The database is now the source of truth for which messages exist
+    const syncTimestamp = Date.now();
+    await chrome.storage.local.set({
+      last_successful_sync_time: syncTimestamp,
+      last_sync_status: {
+        lastSyncTime: syncTimestamp,
+        syncedCount: messagesToSync.length,
+        // Keep minimal status for UI/debugging, but NOT used for sync decisions
+        lastSyncedMessageIds: messagesToSync.slice(-10).map(m => m.messageId) // Only last 10 for debugging
+      }
+    });
 
     const chunkCount = turnChunks.length;
-    console.log(`✅ Sync complete: ${messagesToSync.length} messages + ${chunkCount} turn chunks`);
+    console.log(`✅ Sync complete: ${messagesToSync.length} messages + ${chunkCount} turn chunks (embeddings: ${embeddingsAvailable})`);
 
     return {
       success: true,
       synced: messagesToSync.length,
       chunks: chunkCount,
+      embeddingsGenerated: embeddingsAvailable,
       message: `Successfully synced ${messagesToSync.length} messages + ${chunkCount} turn chunks`
     };
 
@@ -467,47 +643,22 @@ export async function syncMessages(messagesToSync) {
 }
 
 /**
- * Sync messages to Supabase with embeddings (Legacy/Default wrapper)
- * Uses a lock mechanism to prevent race conditions when multiple syncs trigger in parallel
+ * Sync messages to Supabase with embeddings
+ * Uses a lock to prevent concurrent syncs. No recursive retry loop -
+ * retry scheduling is owned by the debounce logic in background.js.
  * @returns {Promise<Object>} Sync result
  */
 export async function syncToSupabase() {
-  // SYNC LOCK: Prevent race conditions
   if (syncInProgress) {
-    // If a sync is already running, mark that we have pending work
-    // but don't queue up - the running sync will catch new messages
-    if (!syncPending) {
-      console.log('⏳ KYT Sync: Already in progress, marking pending for next cycle');
-      syncPending = true;
-    }
-    return { success: true, synced: 0, message: 'Sync already in progress, queued for next cycle' };
+    return { success: true, synced: 0, message: 'Sync already in progress' };
   }
 
   syncInProgress = true;
-  console.log('🔒 KYT Sync: Acquired sync lock');
-
   try {
     const messagesToSync = await getMessagesToSync();
-    const result = await syncMessages(messagesToSync);
-
-    // If there were pending syncs, schedule another after a brief delay
-    if (syncPending) {
-      syncPending = false;
-      console.log('🔄 KYT Sync: Processing pending sync request...');
-      // Small delay to batch any other pending work
-      setTimeout(async () => {
-        try {
-          await syncToSupabase();
-        } catch (e) {
-          console.error('❌ KYT Sync: Pending sync failed:', e);
-        }
-      }, 500);
-    }
-
-    return result;
+    return await syncMessages(messagesToSync);
   } finally {
     syncInProgress = false;
-    console.log('🔓 KYT Sync: Released sync lock');
   }
 }
 

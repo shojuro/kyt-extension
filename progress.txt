@@ -74,6 +74,28 @@ Extension initializes correctly but message capture mechanisms are failing.
 
 ## Recent Completed Work
 
+### Memory Retrieval Pipeline Fix (2026-02-06) - COMPLETE
+Fixes: Embeddings returned 403/422 (provider migration), search timeouts, low recall
+
+**Part 1: Provider Migration (root cause fix)**
+- HF router URL: nebius → scaleway (HF migrated Qwen3-Embedding-8B)
+- Model ID: `Qwen/Qwen3-Embedding-8B` → `qwen3-embedding-8b` (Scaleway's providerId)
+- Files: src/browser-sync.js, src/browser-search.js
+
+**Part 2: Pipeline Resilience (defense in depth)**
+- Fix A: Shared circuit breaker — extracted to src/embedding-circuit-breaker.js (ES6 exports)
+  Both sync and search import it. Search skips instantly when circuit open (no 24s timeout).
+- Fix B: Adaptive confidence — searchHybrid() returns .metadata.semanticAvailable
+  BM25-only mode uses 0.25 threshold (vs 0.40 with semantic)
+- Fix C: Semantic threshold 0.65 → 0.50 (Supabase RPC already applies match_threshold)
+- Fix D: MMR lambda 0.3 → 0.5 (balanced relevance/diversity for entity queries)
+
+**Part 3: Role Labeling Fix**
+- inject.js inferMessageRole() defaulted to 'user' when DOM attributes didn't match
+- Root cause: checked `data-author` but ChatGPT uses `data-message-author-role`
+- Fix: Added `data-message-author-role` check with element.closest() ancestor traversal
+- File: platforms/chatgpt/inject.js
+
 ### RAG System Fix (2025-12-28) - COMPLETE
 - Embedding endpoint: api.studio.nebius.ai -> router.huggingface.co/nebius
 - Reranking: BGE reranker -> Jina Reranker API (free tier)

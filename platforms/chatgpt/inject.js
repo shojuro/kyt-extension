@@ -1242,6 +1242,12 @@
 
   // Attempt to determine message role from context
   function inferMessageRole(text, element) {
+    // Check ChatGPT's data-message-author-role (most reliable for ChatGPT DOM)
+    const messageAuthorRole = element.getAttribute('data-message-author-role') ||
+      element.closest('[data-message-author-role]')?.getAttribute('data-message-author-role');
+    if (messageAuthorRole === 'user') return 'user';
+    if (messageAuthorRole === 'assistant' || messageAuthorRole === 'system') return messageAuthorRole;
+
     // Check aria attributes (more stable than classes)
     const ariaLabel = element.getAttribute('aria-label') ||
       element.closest('[aria-label]')?.getAttribute('aria-label') || '';

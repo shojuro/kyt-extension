@@ -13,6 +13,11 @@
 import { transformQuery, extractRecentTopics } from './query-transformer.js';
 import { searchBM25, getAdaptiveWeights, countQueryWords } from './bm25-search.js';
 import { QueryExpander } from './query-expansion.js';
+import {
+  isEmbeddingCircuitOpen,
+  recordEmbeddingSuccess,
+  recordEmbeddingFailure
+} from './embedding-circuit-breaker.js';
 
 // Initialize expander
 const queryExpander = new QueryExpander();
@@ -62,13 +67,20 @@ async function getConfig() {
 }
 
 /**
- * Generate embedding for search query using Qwen3-Embedding-8B via Nebius API
+ * Generate embedding for search query using Qwen3-Embedding-8B via Scaleway API
  * Uses timeout and retry logic to prevent Chrome message channel timeout
  * @param {string} query - Search query text
  * @param {string} _apiKey - Unused (kept for backward compatibility)
  * @returns {Promise<number[]|null>} 4096-dimensional embedding vector, or null on failure
  */
 async function generateQueryEmbedding(query, _apiKey) {
+  // Check shared circuit breaker FIRST — skip instantly if open
+  const circuitStatus = await isEmbeddingCircuitOpen();
+  if (circuitStatus.open) {
+    console.warn(`⚠️ Embedding circuit breaker open, skipping search embedding: ${circuitStatus.reason}`);
+    return null;
+  }
+
   const config = await getConfig();
   const HF_API_KEY = config.huggingfaceKey;
 
@@ -86,9 +98,9 @@ async function generateQueryEmbedding(query, _apiKey) {
         await new Promise(resolve => setTimeout(resolve, API_RETRY_DELAY_MS));
       }
 
-      // Use HuggingFace Router to Nebius (accepts HF API key, OpenAI-compatible format)
+      // Use HuggingFace Router to Scaleway (accepts HF API key, OpenAI-compatible format)
       const response = await fetchWithTimeout(
-        'https://router.huggingface.co/nebius/v1/embeddings',
+        'https://router.huggingface.co/scaleway/v1/embeddings',
         {
           method: 'POST',
           headers: {
@@ -96,8 +108,8 @@ async function generateQueryEmbedding(query, _apiKey) {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            model: 'Qwen/Qwen3-Embedding-8B',
-            input: query  // Nebius uses 'input' not 'inputs'
+            model: 'qwen3-embedding-8b',
+            input: query  // Scaleway uses 'input' not 'inputs'
           })
         },
         API_TIMEOUT_MS
@@ -106,6 +118,7 @@ async function generateQueryEmbedding(query, _apiKey) {
       // Handle rate limiting (429)
       if (response.status === 429) {
         console.warn(`   ⏳ Rate limited (429), waiting before retry...`);
+        await recordEmbeddingFailure(429, 'Rate limited');
         lastError = new Error('Rate limited, retry needed');
         await new Promise(resolve => setTimeout(resolve, 2000));
         continue; // Retry
@@ -114,32 +127,38 @@ async function generateQueryEmbedding(query, _apiKey) {
       // Handle model loading (503) - retry
       if (response.status === 503) {
         const errorData = await response.json().catch(() => ({}));
-        console.warn(`   ⏳ Model loading (503): ${errorData.error || 'Model is loading'}`);
+        const errorMsg = errorData.error || 'Model is loading';
+        console.warn(`   ⏳ Model loading (503): ${errorMsg}`);
+        await recordEmbeddingFailure(503, errorMsg);
         lastError = new Error('Model is loading, retry needed');
         continue; // Retry
       }
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`HF Router (Nebius) API error: ${response.status} - ${errorText}`);
+        await recordEmbeddingFailure(response.status, errorText);
+        throw new Error(`HF Router (Scaleway) API error: ${response.status} - ${errorText}`);
       }
 
       const responseData = await response.json();
 
       // OpenAI-compatible format: { data: [{ embedding: [...4096 floats...] }] }
       if (responseData.data && Array.isArray(responseData.data) && responseData.data[0]?.embedding) {
+        await recordEmbeddingSuccess();
         return responseData.data[0].embedding;
       }
 
       // Fallback: handle legacy format if present
       if (Array.isArray(responseData) && Array.isArray(responseData[0])) {
+        await recordEmbeddingSuccess();
         return responseData[0];
       }
       if (Array.isArray(responseData)) {
+        await recordEmbeddingSuccess();
         return responseData;
       }
 
-      throw new Error('Unexpected embedding response format from Nebius');
+      throw new Error('Unexpected embedding response format from Scaleway');
 
     } catch (error) {
       lastError = error;
@@ -492,6 +511,7 @@ export async function searchHybrid(query, options = {}) {
       }
 
       // Run semantic vector search (Supabase, slower but powerful)
+      let semanticAvailable = false;
       if (enableSemantic) {
         console.log(`   🧠 Running semantic vector search...`);
         const semanticResults = await searchMessages(query, {
@@ -503,6 +523,10 @@ export async function searchHybrid(query, options = {}) {
           minTimestamp
         });
         console.log(`   ✅ Semantic: ${semanticResults.length} results`);
+
+        if (semanticResults.length > 0) {
+          semanticAvailable = true;
+        }
 
         // Normalize semantic results to have message_id
         const normalizedSemanticResults = semanticResults.map(r => ({
@@ -565,11 +589,14 @@ export async function searchHybrid(query, options = {}) {
       mergedResults = mergedResults.slice(0, limit);
 
       // PHASE 8: Apply Jina cross-encoder reranker for final ranking
-      // (Replaced broken BGE/Nebius reranker - HuggingFace doesn't support serverless reranking)
+      // (Replaced broken BGE reranker - HuggingFace doesn't support serverless reranking)
       const rerankedResults = await rerankResults(query, mergedResults);
 
-      console.log(`   ✅ Hybrid search complete: ${rerankedResults.length} final results`);
+      console.log(`   ✅ Hybrid search complete: ${rerankedResults.length} final results (semanticAvailable: ${semanticAvailable})`);
       console.log(`   📊 Top result score: ${rerankedResults[0]?.rerank_score?.toFixed(4) || rerankedResults[0]?.weighted_score?.toFixed(4) || 'N/A'}\n`);
+
+      // Attach metadata so callers can adapt (e.g., lower confidence threshold in BM25-only mode)
+      rerankedResults.metadata = { semanticAvailable };
 
       return rerankedResults;
 
@@ -590,7 +617,7 @@ export async function searchHybrid(query, options = {}) {
 
 /**
  * Rerank results using Jina Reranker API
- * Replaces broken HuggingFace/Nebius BGE reranker (400 error - not supported)
+ * Replaces broken HuggingFace BGE reranker (400 error - not supported)
  * Jina provides properly calibrated 0.0-1.0 scores for confidence filtering
  *
  * @param {string} query - User's search query

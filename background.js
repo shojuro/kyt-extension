@@ -26,7 +26,70 @@ self.HistoryImporter = HistoryImporter; // Expose for debugging
 
 let activeImporter = null;
 
-// ... existing imports ...
+// ===== DEBOUNCED SYNC SCHEDULING =====
+// Replaces per-message immediate sync with batched debounce
+let syncDebounceTimer = null;
+let syncMaxWaitTimer = null;
+const SYNC_DEBOUNCE_MS = 5000;   // 5 seconds after last save
+const SYNC_MAX_WAIT_MS = 30000;  // Force sync after 30 seconds of continuous saves
+
+/**
+ * Schedule a debounced sync to Supabase.
+ * Resets the 5s debounce timer on each call. Forces sync after 30s max-wait.
+ * Persists kyt_sync_pending flag for service worker restart recovery.
+ */
+function scheduleDebouncedSync() {
+  // Persist pending flag for crash recovery
+  chrome.storage.local.set({ kyt_sync_pending: true });
+
+  // Reset debounce timer
+  if (syncDebounceTimer) {
+    clearTimeout(syncDebounceTimer);
+  }
+
+  syncDebounceTimer = setTimeout(async () => {
+    syncDebounceTimer = null;
+    if (syncMaxWaitTimer) {
+      clearTimeout(syncMaxWaitTimer);
+      syncMaxWaitTimer = null;
+    }
+    await executeDebouncedSync();
+  }, SYNC_DEBOUNCE_MS);
+
+  // Start max-wait timer if not already running
+  if (!syncMaxWaitTimer) {
+    syncMaxWaitTimer = setTimeout(async () => {
+      syncMaxWaitTimer = null;
+      if (syncDebounceTimer) {
+        clearTimeout(syncDebounceTimer);
+        syncDebounceTimer = null;
+      }
+      await executeDebouncedSync();
+    }, SYNC_MAX_WAIT_MS);
+  }
+}
+
+/**
+ * Execute the actual sync (called by debounce/max-wait timers)
+ */
+async function executeDebouncedSync() {
+  try {
+    console.log('🔄 Debounced sync triggered');
+    const syncResult = await syncToSupabase();
+    if (syncResult.success) {
+      console.log(`✅ Debounced sync: ${syncResult.synced} messages synced (embeddings: ${syncResult.embeddingsGenerated ?? 'n/a'})`);
+    } else {
+      console.warn('⚠️ Debounced sync failed:', syncResult.error);
+    }
+  } catch (err) {
+    console.warn('⚠️ Debounced sync error:', err.message);
+  } finally {
+    chrome.storage.local.set({ kyt_sync_pending: false });
+  }
+}
+
+// Counter for throttling storage quota checks
+let saveMessageCounter = 0;
 
 // Initialize queue processor on startup
 chrome.runtime.onStartup.addListener(() => {
@@ -76,28 +139,6 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Periodic queue processing (every 1 min - more aggressive for MV3 service worker keepalive)
 chrome.alarms.create('processQueue', { periodInMinutes: 1 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'processQueue') {
-    try {
-      queueProcessor.processQueue();
-      // Also process any pending local queues (context invalidation recovery)
-      processPendingLocalQueues();
-    } catch (error) {
-      console.error('❌ Failed to process queue on alarm:', error);
-      // Store error for later diagnosis
-      chrome.storage.local.get(['error_log'], (result) => {
-        const errors = result.error_log || [];
-        errors.push({
-          timestamp: Date.now(),
-          context: 'queue_processor_alarm',
-          error: error.message,
-          stack: error.stack
-        });
-        chrome.storage.local.set({ error_log: errors });
-      });
-    }
-  }
-});
 
 /**
  * Process pending local queues (context invalidation recovery)
@@ -402,34 +443,32 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   console.log('⏰ Periodic sync alarm created (5 minute interval)');
 });
 
-// Day 4: Periodic sync handler
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === 'periodicSync') {
-    console.log('⏰ Periodic sync triggered');
-
-    try {
-      const syncResult = await syncToSupabase();
-      if (syncResult.success) {
-        console.log(`✅ Periodic sync: ${syncResult.synced} messages synced`);
-      } else {
-        console.warn('⚠️ Periodic sync failed:', syncResult.error);
-      }
-    } catch (error) {
-      console.error('❌ Periodic sync error:', error);
-    }
-  }
-});
+// Periodic sync handler is in the consolidated alarm listener below
 
 // Day 4: Check API configuration on startup
 chrome.runtime.onStartup.addListener(async () => {
   console.log('🔍 KYT Background: Extension startup - checking API config');
 
-  const result = await chrome.storage.local.get(['api_config']);
+  const result = await chrome.storage.local.get(['api_config', 'kyt_sync_pending']);
   if (!result.api_config) {
     console.warn('⚠️ API config not found - sync will fail until configured');
     console.warn('   Use SET_API_CONFIG message to configure Supabase + OpenAI keys');
   } else {
     console.log('✅ API config found');
+
+    // Recover pending sync from a previous service worker that was terminated mid-debounce
+    if (result.kyt_sync_pending) {
+      console.log('🔄 Recovering pending sync from previous session');
+      await chrome.storage.local.set({ kyt_sync_pending: false });
+      try {
+        const syncResult = await syncToSupabase();
+        if (syncResult.success) {
+          console.log(`✅ Startup recovery sync: ${syncResult.synced} messages synced`);
+        }
+      } catch (err) {
+        console.warn('⚠️ Startup recovery sync failed:', err.message);
+      }
+    }
   }
 });
 
@@ -568,11 +607,15 @@ async function saveMessage(messageData) {
     console.log(`   Source: ${source}`);
     console.log(`   Hash: ${contentHash.substring(0, 16)}...`);
 
-    // Check storage quota and evict if needed
-    const quotaStatus = await checkStorageQuota();
-    console.log(`📊 Storage: ${quotaStatus.usagePercent.toFixed(1)}% (${quotaStatus.messageCount} messages)`);
+    // Check storage quota and evict if needed (every 50th save to reduce noise)
+    saveMessageCounter++;
+    const shouldCheckQuota = saveMessageCounter % 50 === 0;
+    const quotaStatus = shouldCheckQuota ? await checkStorageQuota() : null;
+    if (quotaStatus) {
+      console.log(`📊 Storage: ${quotaStatus.usagePercent.toFixed(1)}% (${quotaStatus.messageCount} messages)`);
+    }
 
-    if (quotaStatus.isExceeded) {
+    if (quotaStatus && quotaStatus.isExceeded) {
       console.warn(`⚠️  Storage quota exceeded (${quotaStatus.usagePercent.toFixed(1)}% > ${STORAGE_CONFIG.MAX_USAGE_PERCENT}%)`);
       const evictionResult = await evictOldMessages();
 
@@ -870,7 +913,7 @@ async function getContextForInjection(userMessage, config) {
 
       contextItems = await searchHybrid(queryToUse, {
         limit: contextConfig.maxContextItems,
-        semanticThreshold: 0.65, // PRECISION TUNING: Increased to 0.65 (User: Precision > Recall)
+        semanticThreshold: 0.50, // Supabase RPC already applies match_threshold; client-side 0.65 was redundant
         bm25Threshold: 0.1,
         enableBM25: true,
         enableSemantic: true,
@@ -949,8 +992,8 @@ async function getContextForInjection(userMessage, config) {
     // Apply MMR (Maximal Marginal Relevance) reranking for precision and diversity
     if (filteredItems.length > 1) {
       const mmrConfig = contextConfig.mmrPreset || 'DIVERSITY'; // Default to DIVERSITY preset
-      // DIVERSITY TUNING: Override lambda to 0.3 for better entity separation
-      const mmrLambda = 0.3;
+      // RELEVANCE/DIVERSITY BALANCE: 50/50 — entity-specific queries need relevance priority
+      const mmrLambda = 0.5;
 
       console.log(`🎯 Applying MMR reranking (preset: ${mmrConfig}, λ=${mmrLambda})`);
 
@@ -1010,10 +1053,15 @@ async function getContextForInjection(userMessage, config) {
     // Apply confidence threshold to reranked results
     // Philosophy: No results > wrong results (high precision, acceptable recall)
     // Uses cross_encoder_score from Jina reranker (0.0-1.0 calibrated scores)
-    // Threshold 0.40 tuned for Jina - adjust empirically if needed
+    // Adaptive: 0.40 when semantic search contributed, 0.25 in BM25-only mode
     if (filteredItems.length > 0) {
       try {
-        const confidenceThreshold = contextConfig.confidenceThreshold || 0.40;
+        const semanticWasAvailable = contextItems.metadata?.semanticAvailable ?? true;
+        const defaultThreshold = semanticWasAvailable ? 0.40 : 0.25;
+        const confidenceThreshold = contextConfig.confidenceThreshold || defaultThreshold;
+        if (!semanticWasAvailable) {
+          console.log(`🎯 BM25-only mode detected — adaptive confidence threshold: ${confidenceThreshold}`);
+        }
         console.log(`🎯 Applying confidence filter (threshold: ${confidenceThreshold}) to ${filteredItems.length} candidates...`);
 
         const filterResult = filterByConfidence(filteredItems, confidenceThreshold);
@@ -1144,30 +1192,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'SAVE_MESSAGE':
-      // Async save with IMMEDIATE sync to Supabase
+      // Save locally, then schedule debounced batch sync (not per-message)
       saveMessage(message.data)
-        .then(async (success) => {
-          if (success) {
-            // IMMEDIATE SYNC: Await sync completion before responding
-            // Critical for voice/mobile transcription where users expect instant sync
-            console.log('🚀 Immediate sync triggered');
-            try {
-              const syncResult = await syncToSupabase();
-              if (syncResult.success) {
-                console.log(`✅ Immediate sync: ${syncResult.synced} messages synced`);
-                sendResponse({ success: true, synced: true });
-              } else {
-                console.warn('⚠️ Immediate sync failed:', syncResult.error);
-                // Message is saved locally, will retry on periodic sync
-                sendResponse({ success: true, synced: false, error: syncResult.error });
-              }
-            } catch (err) {
-              console.warn('⚠️ Immediate sync error:', err.message);
-              // Message is saved locally, will retry on periodic sync
-              sendResponse({ success: true, synced: false, error: err.message });
-            }
+        .then((result) => {
+          if (result && result.saved !== false) {
+            // Schedule debounced sync (batches multiple saves into one sync)
+            scheduleDebouncedSync();
+            sendResponse({ success: true, queued: true });
           } else {
-            sendResponse({ success: false });
+            sendResponse({ success: true, queued: false, reason: result?.reason });
           }
         })
         .catch(error => {
@@ -1564,43 +1597,84 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 /**
- * Health monitoring - Periodic storage stats logging
+ * Health monitoring - alarm created alongside others
  */
 chrome.alarms.create('health_check', { periodInMinutes: 5 });
 
+/**
+ * CONSOLIDATED ALARM LISTENER
+ * Handles all alarms: processQueue, periodicSync, health_check
+ * Replaces 4 separate listeners that were scattered across the file
+ */
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === 'health_check') {
-    const stats = await getStorageStats();
-
-    if (stats) {
-      console.log('📊 KYT Health Check:', {
-        messages: stats.totalMessages,
-        errors: stats.totalErrors,
-        storage: `${stats.storageSizeKB}KB / ${stats.storageLimitKB}KB (${stats.usagePercent}%)`,
-        lastSave: `${Math.floor(stats.timeSinceLastSave / 1000)}s ago`
-      });
-
-      // Proactive eviction if storage > 80%
-      if (parseFloat(stats.usagePercent) > STORAGE_CONFIG.MAX_USAGE_PERCENT) {
-        console.warn(`⚠️ Storage usage > ${STORAGE_CONFIG.MAX_USAGE_PERCENT}% - triggering eviction`);
-
-        evictOldMessages().then(evictionResult => {
-          if (evictionResult.evicted > 0) {
-            console.log(`✅ Health check eviction: ${evictionResult.evicted} messages removed`);
-            console.log(`   Storage reduced: ${evictionResult.oldUsagePercent.toFixed(1)}% → ${evictionResult.newUsagePercent.toFixed(1)}%`);
-          } else if (evictionResult.reason === 'at_minimum') {
-            console.warn(`⚠️ Cannot evict - at minimum message threshold (${STORAGE_CONFIG.MIN_MESSAGES_TO_KEEP})`);
-          }
-        }).catch(err => {
-          console.error('❌ Health check eviction failed:', err);
+  switch (alarm.name) {
+    case 'processQueue':
+      try {
+        queueProcessor.processQueue();
+        processPendingLocalQueues();
+      } catch (error) {
+        console.error('❌ Failed to process queue on alarm:', error);
+        chrome.storage.local.get(['error_log'], (result) => {
+          const errors = result.error_log || [];
+          errors.push({
+            timestamp: Date.now(),
+            context: 'queue_processor_alarm',
+            error: error.message,
+            stack: error.stack
+          });
+          chrome.storage.local.set({ error_log: errors });
         });
       }
+      break;
 
-      // Warn if no saves for 10 minutes
-      if (stats.timeSinceLastSave > 10 * 60 * 1000 && stats.totalMessages > 0) {
-        console.warn('⚠️ WARNING: No messages saved in 10+ minutes. User inactive or API broken?');
+    case 'periodicSync':
+      try {
+        // Also check if there's a pending sync from a crashed debounce timer
+        const pendingResult = await chrome.storage.local.get(['kyt_sync_pending']);
+        if (pendingResult.kyt_sync_pending) {
+          console.log('⏰ Periodic sync: recovering pending debounced sync');
+          await chrome.storage.local.set({ kyt_sync_pending: false });
+        }
+
+        const syncResult = await syncToSupabase();
+        if (syncResult.success && syncResult.synced > 0) {
+          console.log(`✅ Periodic sync: ${syncResult.synced} messages synced`);
+        }
+      } catch (error) {
+        console.error('❌ Periodic sync error:', error);
       }
+      break;
+
+    case 'health_check': {
+      const stats = await getStorageStats();
+      if (stats) {
+        console.log('📊 KYT Health Check:', {
+          messages: stats.totalMessages,
+          errors: stats.totalErrors,
+          storage: `${stats.storageSizeKB}KB / ${stats.storageLimitKB}KB (${stats.usagePercent}%)`,
+          lastSave: `${Math.floor(stats.timeSinceLastSave / 1000)}s ago`
+        });
+
+        if (parseFloat(stats.usagePercent) > STORAGE_CONFIG.MAX_USAGE_PERCENT) {
+          console.warn(`⚠️ Storage usage > ${STORAGE_CONFIG.MAX_USAGE_PERCENT}% - triggering eviction`);
+          evictOldMessages().then(evictionResult => {
+            if (evictionResult.evicted > 0) {
+              console.log(`✅ Health check eviction: ${evictionResult.evicted} messages removed`);
+            }
+          }).catch(err => {
+            console.error('❌ Health check eviction failed:', err);
+          });
+        }
+
+        if (stats.timeSinceLastSave > 10 * 60 * 1000 && stats.totalMessages > 0) {
+          console.warn('⚠️ WARNING: No messages saved in 10+ minutes. User inactive or API broken?');
+        }
+      }
+      break;
     }
+
+    default:
+      console.warn(`⚠️ Unknown alarm: ${alarm.name}`);
   }
 });
 
@@ -1683,11 +1757,5 @@ console.log('   Note: chrome.runtime.sendMessage() from service worker to itself
 // Initialize queue processor
 queueProcessor.initialize();
 
-// Set up periodic alarm for queue processing
-chrome.alarms.create('process_queue', { periodInMinutes: 1 });
-
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'process_queue') {
-    queueProcessor.processQueue();
-  }
-});
+// Note: queue processing alarm 'processQueue' is created above (line ~141)
+// Consolidated alarm listener handles all alarms below
