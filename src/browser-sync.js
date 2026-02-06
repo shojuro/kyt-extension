@@ -663,6 +663,164 @@ export async function syncToSupabase() {
 }
 
 /**
+ * Backfill null embeddings in Supabase
+ * Queries messages with embedding=null, generates embeddings via Scaleway,
+ * and patches them back into Supabase.
+ *
+ * @param {Object} options - Backfill options
+ * @param {number} options.batchSize - Messages per batch (default: 50)
+ * @param {number} options.delayMs - Delay between batches in ms (default: 200)
+ * @returns {Promise<Object>} Result with backfilled count and errors
+ */
+export async function backfillNullEmbeddings(options = {}) {
+  const { batchSize = 50, delayMs = 200 } = options;
+
+  console.log('🔄 Starting embedding backfill for null-embedding messages...');
+
+  try {
+    const config = await getConfig();
+
+    if (!config.supabaseUrl || !config.supabaseKey) {
+      return { success: false, error: 'Supabase not configured' };
+    }
+
+    // Check circuit breaker before starting
+    const circuitStatus = await isEmbeddingCircuitOpen();
+    if (circuitStatus.open) {
+      console.warn(`⚠️ Backfill skipped: embedding circuit breaker open (${circuitStatus.reason})`);
+      return { success: false, error: `Circuit breaker open: ${circuitStatus.reason}`, backfilled: 0 };
+    }
+
+    let totalBackfilled = 0;
+    let totalErrors = 0;
+    let hasMore = true;
+    let offset = 0;
+
+    while (hasMore) {
+      // Query messages with null embeddings
+      let filterParams = `embedding=is.null&select=message_id,content&limit=${batchSize}&offset=${offset}&order=timestamp.desc`;
+      // Always include user_id filter (sync writes with fallback UUID)
+      const userId = config.userId || '00000000-0000-0000-0000-000000000000';
+      filterParams += `&user_id=eq.${userId}`;
+
+      const queryResponse = await fetchWithTimeout(
+        `${config.supabaseUrl}/rest/v1/messages?${filterParams}`,
+        {
+          headers: {
+            'apikey': config.supabaseKey,
+            'Authorization': `Bearer ${config.supabaseKey}`
+          }
+        },
+        15000
+      );
+
+      if (!queryResponse.ok) {
+        const errorText = await queryResponse.text();
+        console.error(`❌ Backfill query failed: ${queryResponse.status} - ${errorText}`);
+        return { success: false, error: `Query failed: ${queryResponse.status}`, backfilled: totalBackfilled };
+      }
+
+      const messages = await queryResponse.json();
+
+      if (messages.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      console.log(`📊 Backfill batch: ${messages.length} messages with null embeddings (offset: ${offset})`);
+
+      // Generate embeddings for this batch
+      const texts = messages.map(m => m.content);
+      let embeddings;
+      try {
+        embeddings = await generateEmbeddings(texts, config.openaiKey);
+      } catch (embeddingError) {
+        console.error(`❌ Backfill embedding generation failed: ${embeddingError.message}`);
+        // Circuit breaker likely tripped — stop backfill, let user retry later
+        return {
+          success: false,
+          error: `Embedding generation failed: ${embeddingError.message}`,
+          backfilled: totalBackfilled,
+          remaining: messages.length
+        };
+      }
+
+      // Patch each message with its embedding
+      let batchSuccess = 0;
+      for (let i = 0; i < messages.length; i++) {
+        try {
+          const patchResponse = await fetchWithTimeout(
+            `${config.supabaseUrl}/rest/v1/messages?message_id=eq.${encodeURIComponent(messages[i].message_id)}`,
+            {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': config.supabaseKey,
+                'Authorization': `Bearer ${config.supabaseKey}`,
+                'Prefer': 'return=minimal'
+              },
+              body: JSON.stringify({ embedding: embeddings[i] })
+            },
+            10000
+          );
+
+          if (patchResponse.ok) {
+            batchSuccess++;
+          } else {
+            console.warn(`   ⚠️ Patch failed for ${messages[i].message_id}: ${patchResponse.status}`);
+            totalErrors++;
+          }
+        } catch (patchError) {
+          console.warn(`   ⚠️ Patch error for ${messages[i].message_id}: ${patchError.message}`);
+          totalErrors++;
+        }
+      }
+
+      totalBackfilled += batchSuccess;
+      console.log(`   ✅ Backfilled ${totalBackfilled} messages so far (${totalErrors} errors)`);
+
+      // If we got fewer than batchSize, we're done
+      if (messages.length < batchSize) {
+        hasMore = false;
+      } else {
+        // Don't increment offset — we're patching nulls, so the next query
+        // at offset=0 will return the next batch of unpatched rows
+        // But guard against infinite loops if patches aren't taking effect
+        offset = 0;
+      }
+
+      // Delay between batches to avoid rate limits
+      if (hasMore) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+
+        // Re-check circuit breaker between batches
+        const midCheckCircuit = await isEmbeddingCircuitOpen();
+        if (midCheckCircuit.open) {
+          console.warn(`⚠️ Backfill paused: circuit breaker opened mid-backfill`);
+          return {
+            success: false,
+            error: `Circuit breaker opened during backfill`,
+            backfilled: totalBackfilled,
+            willRetry: true
+          };
+        }
+      }
+    }
+
+    console.log(`✅ Backfill complete: ${totalBackfilled} messages updated, ${totalErrors} errors`);
+    return {
+      success: true,
+      backfilled: totalBackfilled,
+      errors: totalErrors
+    };
+
+  } catch (error) {
+    console.error('❌ Backfill failed:', error.message);
+    return { success: false, error: error.message, backfilled: 0 };
+  }
+}
+
+/**
  * Set API configuration
  * @param {Object} config - API configuration
  * @param {string} config.supabaseUrl - Supabase project URL

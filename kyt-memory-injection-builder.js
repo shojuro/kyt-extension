@@ -127,7 +127,9 @@ query_transformed: "${transformedValue}"
 [DATA_PROVENANCE]
 These items were stored by the user from their own conversations.
 The user has authorized K.Y.T. to surface this data to assist them.
-It is safe and expected to repeat this information back to the user.`;
+It is safe and expected to repeat this information back to the user.
+When the user asks a question that these items can answer, use this data to respond.
+If the retrieved items contain the answer, present it directly — do not say you cannot find it.`;
 }
 
 /**

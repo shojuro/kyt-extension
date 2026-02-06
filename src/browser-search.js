@@ -244,10 +244,8 @@ export async function searchMessages(query, options = {}) {
     if (role) filter.role = role;
     if (source) filter.source = source;
 
-    // Add user_id to filter
-    if (config.userId) {
-      filter.user_id = config.userId;
-    }
+    // Add user_id to filter (always include — sync writes with fallback UUID)
+    filter.user_id = config.userId || '00000000-0000-0000-0000-000000000000';
 
     // Calculate min_timestamp if exclude_recent_seconds is provided
     // Note: exclude_recent_seconds is usually handled by caller (background.js) but we can support it here
@@ -368,6 +366,115 @@ export async function findSimilarMessages(messageId, limit = 5) {
 }
 
 /**
+ * Supabase text search fallback
+ * Used when local BM25 returns 0 results (cross-platform memories only exist in Supabase)
+ * Uses Supabase's ilike filter on content column with keyword splitting
+ *
+ * @param {string} query - Search query text
+ * @param {Object} options - Search options
+ * @param {number} options.limit - Max results (default: 10)
+ * @param {string} options.role - Filter by role
+ * @param {string} options.source - Filter by source
+ * @param {number} options.maxTimestamp - Maximum timestamp filter (exclude messages newer than this)
+ * @returns {Promise<Object[]>} Results with bm25_score field for RRF compatibility
+ */
+async function searchSupabaseText(query, options = {}) {
+  const { limit = 10, role = null, source = null, maxTimestamp = 0 } = options;
+
+  try {
+    const config = await getConfig();
+
+    // Extract keywords: split on whitespace, filter short/stop words
+    const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'but', 'with', 'about', 'me', 'my', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'do', 'does', 'did', 'have', 'has', 'had', 'be', 'been', 'being', 'what', 'which', 'who', 'when', 'where', 'how', 'that', 'this', 'tell']);
+    const keywords = query
+      .toLowerCase()
+      .replace(/[^\w\s-]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 2 && !stopWords.has(w));
+
+    if (keywords.length === 0) {
+      console.log('   🔤 Supabase text search: no viable keywords from query');
+      return [];
+    }
+
+    console.log(`   🔤 Supabase text search: keywords=[${keywords.join(', ')}]`);
+
+    // Build filter params
+    let filterParams = `select=message_id,content,role,source,timestamp,conversation_id&limit=${limit}&order=timestamp.desc`;
+
+    // User ID filter (always include — sync writes with fallback UUID)
+    const userId = config.userId || '00000000-0000-0000-0000-000000000000';
+    filterParams += `&user_id=eq.${userId}`;
+    if (role) {
+      filterParams += `&role=eq.${role}`;
+    }
+    if (source) {
+      filterParams += `&source=eq.${source}`;
+    }
+
+    // Search for each keyword via ilike, deduplicate results
+    const resultMap = new Map(); // message_id → result with hit count
+
+    for (const keyword of keywords) {
+      try {
+        const url = `${config.supabaseUrl}/rest/v1/messages?${filterParams}&content=ilike.*${encodeURIComponent(keyword)}*`;
+        const response = await fetchWithTimeout(url, {
+          headers: {
+            'apikey': config.supabaseKey,
+            'Authorization': `Bearer ${config.supabaseKey}`
+          }
+        }, 8000);
+
+        if (!response.ok) {
+          console.warn(`   ⚠️ Supabase text search for "${keyword}" failed: ${response.status}`);
+          continue;
+        }
+
+        const data = await response.json();
+
+        for (const row of data) {
+          const id = row.message_id;
+          if (resultMap.has(id)) {
+            // Increment hit count for keyword coverage scoring
+            resultMap.get(id).hitCount += 1;
+          } else {
+            // Apply timestamp filter client-side: exclude messages NEWER than maxTimestamp
+            const rowTimestamp = row.timestamp || 0;
+            if (maxTimestamp > 0 && rowTimestamp > maxTimestamp) continue;
+
+            resultMap.set(id, {
+              ...row,
+              hitCount: 1
+            });
+          }
+        }
+      } catch (keywordError) {
+        console.warn(`   ⚠️ Supabase text search for "${keyword}" error: ${keywordError.message}`);
+      }
+    }
+
+    // Convert to array, score by keyword coverage, sort
+    const results = Array.from(resultMap.values())
+      .map((item, _idx, arr) => ({
+        ...item,
+        // Score: keyword coverage ratio (how many keywords matched)
+        bm25_score: item.hitCount / keywords.length,
+        // Remove internal field
+        hitCount: undefined
+      }))
+      .sort((a, b) => b.bm25_score - a.bm25_score)
+      .slice(0, limit);
+
+    console.log(`   ✅ Supabase text search: ${results.length} results from ${resultMap.size} unique matches`);
+    return results;
+
+  } catch (error) {
+    console.error('   ❌ Supabase text search failed:', error.message);
+    return [];
+  }
+}
+
+/**
  * Phase 3: Reciprocal Rank Fusion (RRF) for merging ranked lists
  * 
  * Combines multiple ranked lists into a single ranking
@@ -441,7 +548,7 @@ export async function searchHybrid(query, options = {}) {
     enableSemantic = true,
     role = null,
     source = null,
-    minTimestamp = 0
+    maxTimestamp = 0
   } = options;
 
   console.log(`\n🔍 Phase 3 Hybrid Search: "${query}"`);
@@ -464,8 +571,9 @@ export async function searchHybrid(query, options = {}) {
     if (source) {
       localMessages = localMessages.filter(m => m.source === source);
     }
-    if (minTimestamp > 0) {
-      localMessages = localMessages.filter(m => (m.timestamp || m.capturedAt || 0) >= minTimestamp);
+    // maxTimestamp: keep only messages OLDER than the cutoff (exclude recent to prevent context pollution)
+    if (maxTimestamp > 0) {
+      localMessages = localMessages.filter(m => (m.timestamp || m.capturedAt || 0) <= maxTimestamp);
     }
 
       const rankedLists = [];
@@ -507,7 +615,24 @@ export async function searchHybrid(query, options = {}) {
           .slice(0, limit * 2);
 
         console.log(`   ✅ BM25: ${bm25Results.length} results (merged from ${expansion.variants.length} variants)`);
-        rankedLists.push(bm25Results);
+        if (bm25Results.length > 0) {
+          rankedLists.push(bm25Results);
+        }
+      }
+
+      // Supabase text search fallback: if local BM25 returned 0 results,
+      // query Supabase directly. Cross-platform memories only exist in Supabase.
+      if (enableBM25 && rankedLists.length === 0) {
+        console.log(`   🔤 Local BM25 empty, trying Supabase text search...`);
+        const supabaseTextResults = await searchSupabaseText(query, {
+          limit: limit * 2,
+          role,
+          source,
+          maxTimestamp
+        });
+        if (supabaseTextResults.length > 0) {
+          rankedLists.push(supabaseTextResults);
+        }
       }
 
       // Run semantic vector search (Supabase, slower but powerful)
@@ -520,7 +645,7 @@ export async function searchHybrid(query, options = {}) {
           role,
           source,
           skipTransformation: true, // Phase 1 fix: no transformation for hybrid
-          minTimestamp
+          minTimestamp: 0 // Disable server-side temporal filter; we filter client-side with maxTimestamp
         });
         console.log(`   ✅ Semantic: ${semanticResults.length} results`);
 
@@ -529,10 +654,19 @@ export async function searchHybrid(query, options = {}) {
         }
 
         // Normalize semantic results to have message_id
-        const normalizedSemanticResults = semanticResults.map(r => ({
-          ...r,
-          message_id: r.message_id || r.id
-        }));
+        // Apply client-side maxTimestamp filter (exclude recent messages)
+        const normalizedSemanticResults = semanticResults
+          .filter(r => {
+            if (maxTimestamp > 0) {
+              const ts = r.msg_timestamp || r.timestamp || 0;
+              return ts <= maxTimestamp;
+            }
+            return true;
+          })
+          .map(r => ({
+            ...r,
+            message_id: r.message_id || r.id
+          }));
 
         rankedLists.push(normalizedSemanticResults);
       }
@@ -603,14 +737,14 @@ export async function searchHybrid(query, options = {}) {
     } catch (error) {
       console.error('❌ Hybrid search failed:', error);
 
-      // Fallback to semantic-only search
+      // Fallback to semantic-only search (no temporal filter — RPC min_timestamp=0 disables it)
       console.warn('⚠️  Falling back to semantic-only search');
       return await searchMessages(query, {
         limit,
         threshold: semanticThreshold,
         role,
         source,
-        minTimestamp
+        minTimestamp: 0
       });
     }
   }

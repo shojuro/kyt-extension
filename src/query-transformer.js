@@ -141,44 +141,40 @@ export async function transformQuery(userQuery, context = {}, apiKey) {
  * @returns {boolean} True if pollution detected
  */
 function detectQueryPollution(originalQuery, transformedQuery, recentTopics) {
-  // If transformed is much longer (>2x), it might be polluted
-  const lengthRatio = transformedQuery.length / originalQuery.length;
-
-  if (lengthRatio < 2) {
-    return false; // Length is reasonable
-  }
-
-  // Extract words from original query (lowercased)
+  // Extract words (3+ chars) from original query
   const originalWords = new Set(
-    originalQuery.toLowerCase().match(/\b\w+\b/g) || []
+    originalQuery.toLowerCase().match(/\b\w{3,}\b/g) || []
   );
 
-  // Extract words from transformed query
-  const transformedWords = transformedQuery.toLowerCase().match(/\b\w+\b/g) || [];
+  // Extract words (3+ chars) from transformed query
+  const transformedWords = transformedQuery.toLowerCase().match(/\b\w{3,}\b/g) || [];
 
-  // Count how many transformed words are NOT in original and NOT in recent topics
-  let irrelevantCount = 0;
+  if (transformedWords.length === 0) {
+    return false; // Empty transform, not polluted per se
+  }
+
+  // Count words in transformed that are completely new (not in original)
+  const newWords = transformedWords.filter(w => !originalWords.has(w));
+
+  // Semantic drift: if >50% of transformed words are new, it has drifted
+  if (newWords.length / transformedWords.length > 0.5) {
+    return true;
+  }
+
+  // Also check for technical term pollution (original check, no length gate)
   const recentTopicsSet = new Set(recentTopics.map(t => t.toLowerCase()));
+  let irrelevantCount = 0;
 
   for (const word of transformedWords) {
-    // Skip common words (the, and, or, etc.)
-    if (word.length <= 3) continue;
-
-    // Check if word is:
-    // 1. NOT in original query
-    // 2. NOT in recent topics
-    // 3. IS a technical term (implies pollution)
     if (!originalWords.has(word) && !recentTopicsSet.has(word)) {
-      // Check if it's a technical term
       const isTechnical = /^(javascript|supabase|api|function|debug|postgres|database|code|error|bug|sync|embed|vector)$/i.test(word);
-
       if (isTechnical) {
         irrelevantCount++;
       }
     }
   }
 
-  // If we have 2+ irrelevant technical terms, it's likely polluted
+  // 2+ irrelevant technical terms = polluted
   return irrelevantCount >= 2;
 }
 

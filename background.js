@@ -12,7 +12,7 @@
  */
 
 // Day 2: Import browser-compatible sync and search modules
-import { syncToSupabase, setApiConfig } from './src/browser-sync.js';
+import { syncToSupabase, setApiConfig, backfillNullEmbeddings } from './src/browser-sync.js';
 import { searchMessages, findSimilarMessages, searchHybrid } from './src/browser-search.js';
 import { applyMMR, MMR_PRESETS } from './src/mmr.js';
 import { transformQuery, extractRecentTopics, fetchRecentTopicsFromSupabase } from './src/query-transformer.js';
@@ -824,6 +824,7 @@ async function getStorageStats() {
  */
 async function getContextForInjection(userMessage, config) {
   const startTime = performance.now();
+  console.log(`🔍 getContextForInjection() called with query: "${userMessage.substring(0, 80)}${userMessage.length > 80 ? '...' : ''}"`);
 
   try {
     // PHASE 1 FIX #2: Use cached API config (survives service worker sleep)
@@ -908,8 +909,9 @@ async function getContextForInjection(userMessage, config) {
 
       console.log(`🔍 Context Retrieval: Using query "${queryToUse}"`);
 
-      // Calculate minTimestamp to exclude recent memories (Context Pollution Prevention)
-      const minTimestamp = Date.now() - (contextConfig.excludeRecentSeconds * 1000);
+      // Calculate maxTimestamp to exclude recent memories (Context Pollution Prevention)
+      // Everything with timestamp <= maxTimestamp is eligible (i.e., older than excludeRecentSeconds)
+      const maxTimestamp = Date.now() - (contextConfig.excludeRecentSeconds * 1000);
 
       contextItems = await searchHybrid(queryToUse, {
         limit: contextConfig.maxContextItems,
@@ -919,10 +921,27 @@ async function getContextForInjection(userMessage, config) {
         enableSemantic: true,
         role: null, // Don't filter by role (get both user and assistant context)
         source: null, // Don't filter by source
-        minTimestamp: minTimestamp // Pass temporal filter
+        maxTimestamp: maxTimestamp // Exclude messages newer than this timestamp
       });
 
       console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search`);
+      console.log(`🔍 Search pipeline result: ${contextItems.length} items, semanticAvailable: ${contextItems.metadata?.semanticAvailable}`);
+
+      // E1: If transformed query returned 0 results, retry with original query
+      if (contextItems.length === 0 && transformationMetadata.transformed) {
+        console.log('🔄 Retry: Transformed query returned 0 results, retrying with original query...');
+        contextItems = await searchHybrid(userMessage, {
+          limit: contextConfig.maxContextItems,
+          semanticThreshold: 0.50,
+          bm25Threshold: 0.1,
+          enableBM25: true,
+          enableSemantic: true,
+          role: null,
+          source: null,
+          maxTimestamp: maxTimestamp
+        });
+        console.log(`🔄 Retry result: ${contextItems.length} items with original query`);
+      }
 
     } catch (searchError) {
       console.error('❌ Context Retrieval failed:', searchError);
@@ -1105,7 +1124,11 @@ async function getContextForInjection(userMessage, config) {
           content: item.content,
           platform: item.source === 'cli' ? 'terminal' : (item.platform || 'chatgpt'),
           timestamp: new Date(item.msg_timestamp || item.timestamp).toISOString(),
-          similarity: item.distance ? (1 - item.distance) : (item.weighted_score || 0.5),
+          similarity: item.cross_encoder_score != null
+            ? item.cross_encoder_score                               // Jina reranker (calibrated 0-1)
+            : item.distance != null
+              ? Math.max(0, 1 - item.distance)                       // Semantic cosine (distance→similarity)
+              : (item.weighted_score || item.rrf_score || 0.5),       // RRF/BM25 fallback
           source_type: item.source || 'conversation'
         })),
         latencyMs: elapsedTime,
@@ -1673,6 +1696,24 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       break;
     }
 
+    case 'backfillEmbeddings':
+      try {
+        console.log('⏰ Backfill retry alarm fired');
+        const backfillResult = await backfillNullEmbeddings();
+        if (backfillResult.success) {
+          console.log(`✅ Backfill retry complete: ${backfillResult.backfilled} messages patched`);
+          // Clear the alarm — no more retries needed
+          chrome.alarms.clear('backfillEmbeddings');
+        } else if (backfillResult.willRetry || backfillResult.remaining) {
+          console.warn(`⚠️ Backfill retry incomplete, will try again in 5 minutes`);
+          // Alarm is already periodic if created with periodInMinutes, but ours was one-shot
+          chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 5 });
+        }
+      } catch (error) {
+        console.error('❌ Backfill retry alarm error:', error.message);
+      }
+      break;
+
     default:
       console.warn(`⚠️ Unknown alarm: ${alarm.name}`);
   }
@@ -1705,6 +1746,37 @@ chrome.runtime.onInstalled.addListener((details) => {
       console.error('❌ KYT: Failed to initialize storage:', error);
     });
   } else if (details.reason === 'update') {
+    // Reset embedding circuit breaker on update (new code may fix provider issues)
+    chrome.storage.local.remove('kyt_embedding_circuit_breaker', () => {
+      console.log('🔌 Embedding circuit breaker reset on extension update');
+    });
+
+    // Clear stale process_queue alarm (old snake_case naming)
+    chrome.alarms.clear('process_queue', (wasCleared) => {
+      if (wasCleared) console.log('🧹 Cleared stale process_queue alarm');
+    });
+
+    // Backfill null embeddings (messages synced during 403/422 era)
+    // Run after a short delay to let service worker fully initialize
+    setTimeout(async () => {
+      console.log('🔄 Extension update: starting embedding backfill...');
+      try {
+        const result = await backfillNullEmbeddings();
+        if (result.success) {
+          console.log(`✅ Update backfill: ${result.backfilled} messages patched`);
+        } else {
+          console.warn(`⚠️ Update backfill incomplete: ${result.error} (backfilled: ${result.backfilled || 0})`);
+          // Schedule retry alarm if backfill was interrupted
+          if (result.willRetry || result.remaining) {
+            chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 5 });
+            console.log('⏰ Backfill retry alarm set (5 minutes)');
+          }
+        }
+      } catch (err) {
+        console.error('❌ Update backfill error:', err.message);
+      }
+    }, 3000);
+
     // Migration: Set Phase 1 default for existing users
     chrome.storage.local.get(['api_config'], (result) => {
       const existingConfig = result.api_config || {};
@@ -1744,7 +1816,10 @@ globalThis.KYT_DEBUG = {
   viewStorage: () => chrome.storage.local.get(null).then(console.log),
 
   // Clear all storage (use with caution!)
-  clearStorage: () => chrome.storage.local.clear().then(() => console.log('✅ Storage cleared'))
+  clearStorage: () => chrome.storage.local.clear().then(() => console.log('✅ Storage cleared')),
+
+  // Backfill null embeddings in Supabase (for messages synced during 403/422 era)
+  backfillEmbeddings: () => backfillNullEmbeddings().then(console.log)
 };
 
 console.log('✅ KYT Background: Service worker ready');
@@ -1752,6 +1827,7 @@ console.log('   Debug: Use KYT_DEBUG object for testing');
 console.log('   - KYT_DEBUG.getStats() - View storage statistics');
 console.log('   - KYT_DEBUG.getContext("test message") - Test context retrieval');
 console.log('   - KYT_DEBUG.viewStorage() - View all storage');
+console.log('   - KYT_DEBUG.backfillEmbeddings() - Backfill null embeddings in Supabase');
 console.log('   Note: chrome.runtime.sendMessage() from service worker to itself does not work');
 
 // Initialize queue processor
