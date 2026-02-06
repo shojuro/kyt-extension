@@ -1,9 +1,42 @@
 # KYT Validation Sprint - Progress Tracker
-# Last Updated: 2025-01-09
+# Last Updated: 2026-02-06
 
 ## Current Branch: feature/history-import
 
-## Active Work: Fix Mobile Message Capture (ChatGPT + Claude)
+## Active Work: Memory Retrieval Pipeline Fix (2026-02-06)
+
+### Embedding Provider Migration: FIXED
+- **Root cause**: HuggingFace migrated Qwen3-Embedding-8B from Nebius to Scaleway
+- **URL fix**: `router.huggingface.co/nebius/` -> `router.huggingface.co/scaleway/`
+- **Model ID fix**: Scaleway expects `qwen3-embedding-8b` (lowercase, no org prefix), not `Qwen/Qwen3-Embedding-8B`
+- Files: `src/browser-sync.js`, `src/browser-search.js`
+
+### Pipeline Resilience: IMPLEMENTED
+1. **Shared circuit breaker** - Extracted to `src/embedding-circuit-breaker.js` (ES6 exports)
+   - Both sync and search import shared module
+   - Search skips embedding API instantly when circuit open (no 24s timeout waste)
+2. **Semantic threshold** - `background.js` searchHybrid: 0.65 -> 0.50
+   - Supabase RPC already applies `match_threshold`; client-side 0.65 was redundant double-filter
+3. **Adaptive confidence** - BM25-only mode uses threshold 0.25 (vs 0.40 with semantic)
+   - `searchHybrid()` returns `.metadata.semanticAvailable`
+   - `getContextForInjection()` adapts threshold when semantic search unavailable
+4. **MMR lambda** - 0.3 -> 0.5 (balanced relevance/diversity for entity-specific queries)
+
+### DOM Role Mislabeling: FIXED
+- **Root cause**: `inject.js:inferMessageRole()` checked `data-author` but ChatGPT uses `data-message-author-role`
+- All fallback paths defaulted to `'user'`, so assistant messages stored as user
+- **Fix**: Added `data-message-author-role` check (highest priority), changed default to `'assistant'`
+- File: `platforms/chatgpt/inject.js`
+
+### Verification Status
+- [ ] Reload extension, trigger sync -> no 403/422 errors
+- [ ] Search query -> semantic results returned
+- [ ] DOM-captured assistant messages have role='assistant' in database
+- [ ] BM25-only fallback works when embedding endpoint is down
+
+---
+
+## Previous Work: Fix Mobile Message Capture (ChatGPT + Claude)
 
 ### ChatGPT Status: VERIFIED ✅ (commit 06203f1)
 ### Claude Status: VERIFIED ✅ (commit 904cc4a)
@@ -74,27 +107,13 @@ Extension initializes correctly but message capture mechanisms are failing.
 
 ## Recent Completed Work
 
-### Memory Retrieval Pipeline Fix (2026-02-06) - COMPLETE
-Fixes: Embeddings returned 403/422 (provider migration), search timeouts, low recall
-
-**Part 1: Provider Migration (root cause fix)**
-- HF router URL: nebius → scaleway (HF migrated Qwen3-Embedding-8B)
-- Model ID: `Qwen/Qwen3-Embedding-8B` → `qwen3-embedding-8b` (Scaleway's providerId)
-- Files: src/browser-sync.js, src/browser-search.js
-
-**Part 2: Pipeline Resilience (defense in depth)**
-- Fix A: Shared circuit breaker — extracted to src/embedding-circuit-breaker.js (ES6 exports)
-  Both sync and search import it. Search skips instantly when circuit open (no 24s timeout).
-- Fix B: Adaptive confidence — searchHybrid() returns .metadata.semanticAvailable
-  BM25-only mode uses 0.25 threshold (vs 0.40 with semantic)
-- Fix C: Semantic threshold 0.65 → 0.50 (Supabase RPC already applies match_threshold)
-- Fix D: MMR lambda 0.3 → 0.5 (balanced relevance/diversity for entity queries)
-
-**Part 3: Role Labeling Fix**
-- inject.js inferMessageRole() defaulted to 'user' when DOM attributes didn't match
-- Root cause: checked `data-author` but ChatGPT uses `data-message-author-role`
-- Fix: Added `data-message-author-role` check with element.closest() ancestor traversal
-- File: platforms/chatgpt/inject.js
+### Memory Retrieval Pipeline Fix (2026-02-06) - IN VERIFICATION
+- Embedding provider: Nebius -> Scaleway (model ID: qwen3-embedding-8b)
+- Shared circuit breaker: src/embedding-circuit-breaker.js
+- Adaptive confidence: 0.40 (semantic) / 0.25 (BM25-only)
+- Semantic threshold: 0.65 -> 0.50
+- MMR lambda: 0.3 -> 0.5
+- DOM role fix: data-message-author-role check added to inject.js
 
 ### RAG System Fix (2025-12-28) - COMPLETE
 - Embedding endpoint: api.studio.nebius.ai -> router.huggingface.co/nebius

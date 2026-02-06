@@ -1242,7 +1242,7 @@
 
   // Attempt to determine message role from context
   function inferMessageRole(text, element) {
-    // Check ChatGPT's data-message-author-role (most reliable for ChatGPT DOM)
+    // Check data-message-author-role (ChatGPT's actual attribute)
     const messageAuthorRole = element.getAttribute('data-message-author-role') ||
       element.closest('[data-message-author-role]')?.getAttribute('data-message-author-role');
     if (messageAuthorRole === 'user') return 'user';
@@ -1255,7 +1255,7 @@
     if (ariaLabel.toLowerCase().includes('user')) return 'user';
     if (ariaLabel.toLowerCase().includes('assistant') || ariaLabel.toLowerCase().includes('chatgpt')) return 'assistant';
 
-    // Check data attributes
+    // Check data attributes (legacy)
     const dataAuthor = element.getAttribute('data-author') ||
       element.closest('[data-author]')?.getAttribute('data-author');
     if (dataAuthor) return dataAuthor === 'user' ? 'user' : 'assistant';
@@ -1264,8 +1264,9 @@
     if (text.startsWith('You said:') || text.includes('🎤')) return 'user';
     if (text.startsWith('ChatGPT said:') || text.includes('🤖')) return 'assistant';
 
-    // Default to 'user' (DB constraint: user|assistant|system only)
-    return 'user';
+    // Default to 'assistant' — most DOM-captured messages without explicit role markers
+    // are assistant responses (user messages are typically captured via SSE/fetch first)
+    return 'assistant';
   }
 
   // Mutation observer for DOM-based capture
