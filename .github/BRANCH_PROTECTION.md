@@ -13,20 +13,19 @@ Even as a solo developer, branch protection prevents catastrophic mistakes.
 - [x] **Require a pull request before merging**
   - Required approvals: 0 (solo dev)
   - [x] Dismiss stale PR approvals when new commits are pushed
-  - [x] Require review from Code Owners (optional)
 
 - [x] **Require status checks to pass**
   - [x] Require branches to be up to date
-  - Required checks:
-    - `lint` (from ci.yml)
-    - `test-unit` (from ci.yml)
-    - `secret-scan` (from security.yml)
-    - `dependency-audit` (from security.yml)
+  - Required checks (must match job `name:` in workflow files):
+    - `Lint` (from ci.yml — runs ESLint)
+    - `Unit Tests` (from ci.yml)
+    - `Secret Detection` (from security.yml)
+    - `Dependency Vulnerabilities` (from security.yml)
 
 - [x] **Require conversation resolution before merging**
 
 - [x] **Do not allow bypassing the above settings**
-  - Even you can't bypass - this is intentional
+  - Even you can't bypass — this is intentional
 
 - [x] **Restrict deletions**
 
@@ -44,21 +43,38 @@ Even as a solo developer, branch protection prevents catastrophic mistakes.
 
 Pattern: `feature/*` or `feat/*`
 
-- [x] Require linear history (optional but clean)
 - [x] Block force pushes (protect WIP work)
 
 ---
 
-## Quick Setup Commands
+## Setup Script
+
+Run this once to apply branch protection via the GitHub API:
 
 ```bash
-# GitHub CLI (gh) setup
-gh api repos/{owner}/{repo}/branches/main/protection \
+scripts/setup-branch-protection.sh
+```
+
+Or manually via `gh`:
+
+```bash
+gh api repos/shojuro/kyt-extension/branches/main/protection \
   -X PUT \
-  -F required_status_checks='{"strict":true,"contexts":["lint","test-unit","secret-scan"]}' \
+  -F required_status_checks='{"strict":true,"contexts":["Lint","Unit Tests","Secret Detection","Dependency Vulnerabilities"]}' \
   -F enforce_admins=true \
   -F required_pull_request_reviews='{"dismiss_stale_reviews":true,"required_approving_review_count":0}' \
   -F restrictions=null \
   -F allow_force_pushes=false \
   -F allow_deletions=false
+```
+
+## Verify Protection
+
+```bash
+gh api repos/shojuro/kyt-extension/branches/main/protection --jq '{
+  required_checks: .required_status_checks.contexts,
+  enforce_admins: .enforce_admins.enabled,
+  force_pushes: .allow_force_pushes.enabled,
+  deletions: .allow_deletions.enabled
+}'
 ```

@@ -1,7 +1,7 @@
 name: Backup Verification
 
-# Run weekly to verify backups are working
-# Most overlooked: "I have backups" but never tested restore
+# Run weekly to verify backups are accessible and restorable.
+# For a PII app, untested backups = no backups.
 
 on:
   schedule:
@@ -22,48 +22,128 @@ jobs:
         with:
           version: latest
 
-      - name: Check Supabase backup status
+      - name: Verify Supabase project is accessible
+        id: health
         run: |
-          echo "🔍 Verifying Supabase backup configuration..."
-          echo ""
-          echo "📋 Backup Checklist:"
-          echo ""
-          echo "1. Point-in-Time Recovery (PITR):"
-          echo "   - Go to: Supabase Dashboard → Project Settings → Database"
-          echo "   - Verify PITR is enabled (Pro plan required)"
-          echo "   - Retention period: minimum 7 days recommended"
-          echo ""
-          echo "2. Daily Backups:"
-          echo "   - Supabase automatically creates daily backups"
-          echo "   - Verify at: Dashboard → Database → Backups"
-          echo ""
-          echo "3. Manual Backup Test:"
-          echo "   - Download a backup from Dashboard"
-          echo "   - Restore to a test project"
-          echo "   - Verify data integrity"
-          echo ""
+          echo "Checking Supabase project health..."
 
-          # Create reminder issue if this is the first Sunday of the month
-          DAY=$(date +%d)
-          if [ "$DAY" -le 7 ]; then
-            echo "📅 Monthly reminder: Test a full backup restore this week!"
+          # Verify the REST API is reachable
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            || echo "000")
+
+          echo "rest_status=$RESPONSE" >> $GITHUB_OUTPUT
+
+          if [ "$RESPONSE" = "000" ]; then
+            echo "CRITICAL: Cannot reach Supabase REST API"
+            echo "healthy=false" >> $GITHUB_OUTPUT
+          elif [ "$RESPONSE" -ge 200 ] && [ "$RESPONSE" -lt 300 ]; then
+            echo "Supabase REST API is healthy (HTTP $RESPONSE)"
+            echo "healthy=true" >> $GITHUB_OUTPUT
+          else
+            echo "WARNING: Supabase returned HTTP $RESPONSE"
+            echo "healthy=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Generate backup report
+      - name: Verify critical tables exist and have data
+        if: steps.health.outputs.healthy == 'true'
+        id: tables
         run: |
-          echo "## 🗄️ Weekly Backup Verification Report" >> $GITHUB_STEP_SUMMARY
+          echo "Checking critical tables..."
+
+          # Count rows in messages table (the core PII store)
+          MESSAGES=$(curl -s \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/messages?select=message_id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Prefer: count=exact" \
+            -I 2>/dev/null | grep -i "content-range" | grep -oP '\d+$' || echo "unknown")
+
+          echo "messages_count=$MESSAGES" >> $GITHUB_OUTPUT
+          echo "Messages table: ~$MESSAGES rows"
+
+          # Count rows in chat_turns table
+          TURNS=$(curl -s \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/chat_turns?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Prefer: count=exact" \
+            -I 2>/dev/null | grep -i "content-range" | grep -oP '\d+$' || echo "unknown")
+
+          echo "turns_count=$TURNS" >> $GITHUB_OUTPUT
+          echo "Chat turns table: ~$TURNS rows"
+
+          if [ "$MESSAGES" = "unknown" ] || [ "$MESSAGES" = "0" ]; then
+            echo "WARNING: Messages table is empty or inaccessible"
+          fi
+
+      - name: Test schema dump (backup readiness)
+        if: steps.health.outputs.healthy == 'true'
+        run: |
+          echo "Testing schema dump (verifies backup tooling works)..."
+
+          # Link to project
+          supabase link --project-ref ${{ secrets.SUPABASE_PROJECT_ID }} 2>/dev/null || true
+
+          # Attempt schema-only dump (does not download data, just structure)
+          # This verifies the backup path is functional
+          if supabase db dump --schema public --data-only=false > /dev/null 2>&1; then
+            echo "Schema dump: OK (backup tooling functional)"
+          else
+            echo "WARNING: Schema dump failed (check Supabase CLI auth)"
+          fi
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Generate backup report
+        if: always()
+        run: |
+          echo "## Weekly Backup Verification Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Date:** $(date -u)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Action Items" >> $GITHUB_STEP_SUMMARY
+          echo "### Automated Checks" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- [ ] Verify PITR is enabled in Supabase Dashboard" >> $GITHUB_STEP_SUMMARY
-          echo "- [ ] Check latest backup timestamp" >> $GITHUB_STEP_SUMMARY
-          echo "- [ ] Monthly: Test restore to staging" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| REST API reachable | HTTP ${{ steps.health.outputs.rest_status || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Messages table | ${{ steps.tables.outputs.messages_count || 'N/A' }} rows |" >> $GITHUB_STEP_SUMMARY
+          echo "| Chat turns table | ${{ steps.tables.outputs.turns_count || 'N/A' }} rows |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Manual Action Items" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Verify PITR is enabled in Supabase Dashboard (Settings > Database)" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Check latest backup timestamp in Dashboard > Database > Backups" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Monthly: Test full restore to a staging project" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Why This Matters" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "This app stores users' private thoughts and memories." >> $GITHUB_STEP_SUMMARY
           echo "Data loss is **catastrophic** and **irreversible**." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Untested backups = No backups" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create alert issue if unhealthy
+        if: steps.health.outputs.healthy == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Check for existing open alert
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'backup-alert'
+            });
+
+            if (issues.data.length > 0) {
+              console.log('Alert issue already exists');
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'ALERT: Backup verification failed',
+              body: `## Backup Verification Failed\n\n**Time:** ${new Date().toISOString()}\n**REST API Status:** ${{ steps.health.outputs.rest_status }}\n\nThe weekly backup verification could not confirm that the Supabase project is healthy.\n\n### Immediate Actions\n1. Check Supabase Dashboard status\n2. Verify project is not paused\n3. Check if secrets (SUPABASE_URL, SUPABASE_ANON_KEY) are still valid\n\n---\n*Automated alert from backup-verify.yml*`,
+              labels: ['backup-alert', 'critical', 'automated']
+            });

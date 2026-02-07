@@ -140,15 +140,14 @@ jobs:
 
       - name: Fail if coverage below threshold
         run: |
-          # The vitest config has thresholds, but let's also check here
-          # for a clear error message
+          # Match vitest.config.js thresholds (single source of truth)
           LINES="${{ steps.coverage.outputs.lines }}"
-          THRESHOLD=20
+          THRESHOLD=40
 
           if (( $(echo "$LINES < $THRESHOLD" | bc -l) )); then
-            echo "❌ Coverage ($LINES%) is below threshold ($THRESHOLD%)"
+            echo "Coverage ($LINES%) is below threshold ($THRESHOLD%)"
             echo "Add more tests before merging!"
             exit 1
           fi
 
-          echo "✅ Coverage ($LINES%) meets threshold ($THRESHOLD%)"
+          echo "Coverage ($LINES%) meets threshold ($THRESHOLD%)"

@@ -129,15 +129,18 @@ jobs:
           # Create release directory
           mkdir -p release
 
-          # Package Chrome extension
-          if [ -d "build" ]; then
-            cd build
+          # Package Chrome extension from dist/ (built by npm run build)
+          if [ -d "dist" ]; then
+            cd dist
             zip -r "../release/kyt-extension-v${VERSION}-chrome.zip" .
             cd ..
+          else
+            echo "ERROR: dist/ not found — build step may have failed"
+            exit 1
           fi
 
           # List release artifacts
-          echo "📦 Release artifacts:"
+          echo "Release artifacts:"
           ls -la release/
 
       - name: Create GitHub Release

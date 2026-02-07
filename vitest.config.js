@@ -28,12 +28,12 @@ export default defineConfig({
         'platforms/'
       ],
       // Coverage thresholds - fail if coverage drops below these
-      // Start conservative, increase as you add tests
+      // Target: 40% (short-term), increase to 60% as test coverage grows
       thresholds: {
-        lines: 20,
-        functions: 20,
-        branches: 20,
-        statements: 20
+        lines: 40,
+        functions: 40,
+        branches: 40,
+        statements: 40
       }
     }
   }

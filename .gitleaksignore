@@ -1,0 +1,12 @@
+# .gitleaksignore — Gitleaks false-positive allowlist
+# Each line is a fingerprint, rule ID, or path pattern to ignore.
+# See: https://github.com/gitleaks/gitleaks#gitleaksignore
+
+# Test/fallback UUIDs used as default user_id when auth is unavailable
+# These are NOT secrets — they are zero-value placeholders
+00000000-0000-0000-0000-000000000000
+00000000-0000-0000-0000-000000000001
+
+# Supabase anon keys are PUBLIC by design (RLS enforces security, not the key)
+# See: https://supabase.com/docs/guides/api/api-keys
+# If your anon key appears in client-side code, that is expected and safe.

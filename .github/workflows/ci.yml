@@ -14,10 +14,10 @@ concurrency:
 
 jobs:
   # ===========================================
-  # JOB 1: LINT & TYPE CHECK (fast feedback)
+  # JOB 1: LINT (real — runs ESLint)
   # ===========================================
   lint:
-    name: Lint & Format Check
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -32,12 +32,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Add these when you have linting configured:
-      # - name: Run ESLint
-      #   run: npm run lint
-
-      # - name: Check formatting
-      #   run: npm run format:check
+      - name: Run ESLint
+        run: npm run lint
 
   # ===========================================
   # JOB 2: UNIT TESTS (parallel with lint)
@@ -101,8 +97,8 @@ jobs:
 
       - name: Run History Import Integration Tests
         run: |
-          echo "🧪 Running critical history-import test suite..."
-          echo "⏱️  Expected duration: 6-8 minutes (3000-message auto-resume test)"
+          echo "Running critical history-import test suite..."
+          echo "Expected duration: 6-8 minutes (3000-message auto-resume test)"
           npm test -- tests/specs/history-import.spec.js --reporter=verbose
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -123,7 +119,7 @@ jobs:
           retention-days: 7
 
   # ===========================================
-  # JOB 4: E2E TESTS (runs after unit tests pass)
+  # JOB 4: E2E TESTS (visible failures, not silently swallowed)
   # ===========================================
   test-e2e:
     name: E2E Tests
@@ -148,14 +144,14 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run E2E tests
-        run: |
-          # E2E tests for Chrome extensions require headed browser mode
-          # which is challenging in CI. Skip if no matching tests found.
-          npx playwright test tests/e2e --pass-with-no-tests || echo "E2E tests skipped (extension tests require headed mode)"
+        # continue-on-error: failures are visible as warnings in the UI,
+        # not silently swallowed. Remove continue-on-error once E2E tests
+        # are reliable in headless CI.
+        continue-on-error: true
+        run: npx playwright test tests/e2e
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
@@ -187,25 +183,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Add your build command when you have one:
-      # - name: Build extension
-      #   run: npm run build
+      - name: Build extension
+        run: npm run build
 
-      - name: Verify manifest.json is valid
+      - name: Validate manifest.json in dist
         run: |
-          echo "Validating manifest.json..."
-          node -e "JSON.parse(require('fs').readFileSync('manifest.json'))"
-          echo "✅ manifest.json is valid JSON"
-
-      - name: Package extension (for artifact)
-        run: |
-          mkdir -p dist
-          # Copy necessary files for Chrome extension
-          cp manifest.json dist/
-          cp background.js dist/
-          cp -r src dist/ 2>/dev/null || true
-          cp -r popup dist/ 2>/dev/null || true
-          cp -r platforms dist/ 2>/dev/null || true
+          node -e "
+            const m = JSON.parse(require('fs').readFileSync('dist/manifest.json'));
+            if (m.manifest_version !== 3) throw new Error('Expected MV3');
+            console.log('manifest.json valid: ' + m.name + ' v' + m.version);
+          "
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v4
@@ -215,7 +202,7 @@ jobs:
           retention-days: 30
 
   # ===========================================
-  # JOB 6: SECURITY SCAN (optional but recommended)
+  # JOB 6: SECURITY SCAN (parallel, not gated behind tests)
   # ===========================================
   security:
     name: Security Scan
@@ -240,10 +227,10 @@ jobs:
       - name: Check for secrets in code
         run: |
           echo "Scanning for potential secrets..."
-          # Basic secret detection (consider using gitleaks for production)
+          # Basic secret detection (gitleaks runs in security.yml for full coverage)
           if grep -rE "(sk-[a-zA-Z0-9]{20,}|password\s*=\s*['\"][^'\"]+['\"])" --include="*.js" --include="*.ts" --exclude-dir=node_modules .; then
-            echo "⚠️ Potential secrets found in code!"
+            echo "Potential secrets found in code!"
             exit 1
           else
-            echo "✅ No obvious secrets detected"
+            echo "No obvious secrets detected"
           fi
