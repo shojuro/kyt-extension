@@ -586,16 +586,19 @@ export async function syncMessages(messagesToSync) {
       }));
 
       // Insert to chat_turns table
-      const turnsResponse = await fetch(`${config.supabaseUrl}/rest/v1/chat_turns`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': config.supabaseKey,
-          'Authorization': `Bearer ${config.supabaseKey}`,
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify(chunksWithEmbeddings)
-      });
+      const turnsResponse = await fetch(
+        `${config.supabaseUrl}/rest/v1/chat_turns?on_conflict=user_id,conversation_id,platform,start_timestamp`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': config.supabaseKey,
+            'Authorization': `Bearer ${config.supabaseKey}`,
+            'Prefer': 'resolution=ignore-duplicates,return=minimal'
+          },
+          body: JSON.stringify(chunksWithEmbeddings)
+        }
+      );
 
       if (!turnsResponse.ok) {
         const turnError = await turnsResponse.json();

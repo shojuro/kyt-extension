@@ -505,7 +505,7 @@
       content: userMessageBuffer.content,
       timestamp: userMessageBuffer.timestamp,
       conversationId: userMessageBuffer.conversationId,
-      messageId: generateMessageId(), // Generate ID at flush time
+      messageId: generateMessageId(userMessageBuffer.content, 'user'),
       source: 'dom'
     };
 
@@ -564,7 +564,7 @@
       role,
       conversationId,
       timestamp: Date.now(),
-      messageId: generateMessageId(),
+      messageId: generateMessageId(sanitizedContent, role),
       source: 'dom'
     };
   }
@@ -624,12 +624,17 @@
   }
 
   /**
-   * Generate unique message ID
+   * Generate deterministic message ID from content + role (FNV-1a hash)
    */
-  function generateMessageId() {
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substring(2, 11);
-    return `msg_${timestamp}_${random}`;
+  function generateMessageId(content, role) {
+    let hash = 0;
+    const str = (content || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return `msg_dom_${hash.toString(36)}_${role || 'unknown'}`;
   }
 
   /**

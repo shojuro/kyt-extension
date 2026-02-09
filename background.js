@@ -502,30 +502,19 @@ async function hashContent(content) {
 }
 
 /**
- * Check for duplicate message within time window
+ * Check for duplicate message by scanning last N messages
  * @param {Array} messages - Existing messages
  * @param {string} contentHash - Hash of new message content
- * @param {number} timestamp - New message timestamp
- * @param {number} windowMs - Dedup window in milliseconds (default 5000)
+ * @param {number} maxScan - Max messages to scan backwards (default 200)
  * @returns {Object|null} Duplicate message if found, null otherwise
  */
-function findDuplicate(messages, contentHash, timestamp, windowMs = 5000) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-
-    // Check if within time window
-    const timeDiff = Math.abs(timestamp - (msg.timestamp || msg.capturedAt));
-    if (timeDiff > windowMs) {
-      // Messages are sorted by time, so we can stop here
-      break;
-    }
-
-    // Check hash match
-    if (msg.contentHash === contentHash) {
-      return msg;
+function findDuplicate(messages, contentHash, maxScan = 200) {
+  const startIdx = Math.max(0, messages.length - maxScan);
+  for (let i = messages.length - 1; i >= startIdx; i--) {
+    if (messages[i].contentHash === contentHash) {
+      return messages[i];
     }
   }
-
   return null;
 }
 
@@ -558,10 +547,8 @@ async function saveMessage(messageData) {
     const contentHash = await hashContent(messageData.content);
     const timestamp = messageData.timestamp || Date.now();
 
-    // Check for duplicates within 5-second window (or infinite for rescan)
-    // If source is 'dom_rescan', we check entire history to prevent duplicates of already-synced messages
-    const windowMs = messageData.source === 'dom_rescan' ? Infinity : 5000;
-    const duplicate = findDuplicate(messages, contentHash, timestamp, windowMs);
+    // Check for duplicates by scanning last 200 messages (content-hash based, no time window)
+    const duplicate = findDuplicate(messages, contentHash);
 
     if (duplicate) {
       console.log(`🔄 KYT Background: Duplicate detected (blocked)`);
@@ -1746,14 +1733,33 @@ chrome.runtime.onInstalled.addListener((details) => {
       console.error('❌ KYT: Failed to initialize storage:', error);
     });
   } else if (details.reason === 'update') {
-    // Reset embedding circuit breaker on update (new code may fix provider issues)
+    // Reset circuit breakers on update (new code may fix provider issues)
     chrome.storage.local.remove('kyt_embedding_circuit_breaker', () => {
       console.log('🔌 Embedding circuit breaker reset on extension update');
+    });
+    chrome.storage.local.remove('kyt_jina_circuit_breaker', () => {
+      console.log('🔌 Jina circuit breaker reset on extension update');
     });
 
     // Clear stale process_queue alarm (old snake_case naming)
     chrome.alarms.clear('process_queue', (wasCleared) => {
       if (wasCleared) console.log('🧹 Cleared stale process_queue alarm');
+    });
+
+    // Re-inject Claude bridge into open tabs (restore chrome.runtime connection)
+    // Old bridge becomes a no-op via generation guard (window.__kytBridgeGeneration)
+    chrome.tabs.query({ url: 'https://claude.ai/*' }, async (tabs) => {
+      for (const tab of tabs) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ['platforms/claude/content_bridge.js']
+          });
+          console.log(`🔌 Re-injected Claude bridge into tab ${tab.id}`);
+        } catch (e) {
+          console.warn(`⚠️ Failed to re-inject bridge into tab ${tab.id}:`, e.message);
+        }
+      }
     });
 
     // Backfill null embeddings (messages synced during 403/422 era)

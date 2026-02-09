@@ -1299,7 +1299,7 @@
             conversationId: 'dom_capture',  // Will be updated by content script if available
             model: 'chatgpt',
             timestamp: Date.now(),
-            messageId: `msg_dom_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            messageId: `msg_dom_${(window.KYT_Deduplicator?.hashContent(window.KYT_Deduplicator?.normalizeContent(text)) || Date.now())}_${role}`,
             platform: 'chatgpt',
             captureMethod: 'dom',  // Track capture method for deduplication (vs 'websocket' or 'fetch')
             confidence: 70  // DOM observer = 70% confidence (protocol-level = 95%)
@@ -1445,6 +1445,7 @@
           conversationId: response.conversation_id,
           model: node.message.metadata?.model_slug || 'unknown',
           originalId: node.message.id,
+          messageId: node.message.id || `msg_tree_${node.message.create_time || Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           isVoice: node.message.metadata?.voice_mode_message || false,
           timestamp: node.message.create_time ? node.message.create_time * 1000 : Date.now(),
           platform: 'chatgpt',
