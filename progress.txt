@@ -1,9 +1,29 @@
 # KYT Validation Sprint - Progress Tracker
-# Last Updated: 2026-02-06
+# Last Updated: 2026-02-11
 
 ## Current Branch: feature/history-import
 
-## Active Work: Memory Retrieval Pipeline Fix (2026-02-06)
+## Active Work: Claude Bridge Queue-Manager Resilience (2026-02-11)
+
+### Claude Bridge: Queue-Manager Integration - COMPLETE
+- **Problem**: After extension reload, `content_bridge.js` drops captured messages silently
+  when `chrome.runtime.id` becomes undefined (context invalidation). ChatGPT platform
+  already handled this via `queue-manager.js`; Claude bridge had no fallback.
+- **Fix**: Added same queue-manager integration to `platforms/claude/content_bridge.js`
+  that `platforms/chatgpt/content.js` already uses.
+- **3-tier fallback**:
+  1. Queue Manager (`queueManager.capture()`) — encrypted chrome.storage.local
+  2. Emergency chrome.storage.local (`kyt_emergency_queue`) — when QM not ready + context invalid
+  3. Direct `chrome.runtime.sendMessage` — when QM not ready + context still valid
+- **Recovery**: `background.js:processPendingLocalQueues()` already processes `kyt_emergency_queue`
+  on startup, install, and alarm — no background changes needed.
+- **Manifest**: `src/content/queue-manager.js` already in `web_accessible_resources` for `claude.ai`
+- File: `platforms/claude/content_bridge.js`
+- Tests: 216 passed, 5 skipped, 2 pre-existing failures (embedding dimension config in history-import.spec.js)
+
+---
+
+## Previous Work: Memory Retrieval Pipeline Fix (2026-02-06)
 
 ### Embedding Provider Migration: FIXED
 - **Root cause**: HuggingFace migrated Qwen3-Embedding-8B from Nebius to Scaleway
@@ -131,6 +151,6 @@ Extension initializes correctly but message capture mechanisms are failing.
 ---
 
 ## Test Results Summary
-- Total test files: 15 passed
-- Total tests: 218 passed, 5 skipped
-- Last run: 2025-12-28
+- Total test files: 14 passed, 1 failed (pre-existing embedding dimension issue)
+- Total tests: 216 passed, 5 skipped, 2 failed (pre-existing)
+- Last run: 2026-02-11
