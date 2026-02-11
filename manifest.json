@@ -5,7 +5,10 @@
   "description": "Capture and search conversations across ChatGPT, Claude, and more with long-term semantic memory",
   "permissions": [
     "storage",
-    "alarms"
+    "alarms",
+    "scripting",
+    "identity",
+    "tabs"
   ],
   "background": {
     "service_worker": "background.js",
@@ -30,7 +33,8 @@
   "host_permissions": [
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
-    "https://claude.ai/*"
+    "https://claude.ai/*",
+    "https://svrcvfzlwhnixzuxaccf.supabase.co/*"
   ],
   "content_scripts": [
     {
@@ -63,7 +67,8 @@
         "platforms/claude/content_bridge.js"
       ],
       "run_at": "document_start",
-      "all_frames": false
+      "all_frames": false,
+      "type": "module"
     }
   ],
   "web_accessible_resources": [

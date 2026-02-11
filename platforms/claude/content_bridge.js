@@ -19,17 +19,18 @@ console.log('🔵 BRIDGE: chrome.runtime available:', typeof chrome?.runtime !==
 console.log('🔵 BRIDGE: Generation:', BRIDGE_GENERATION);
 
 // Queue Manager — provides 3-tier offline fallback for captured messages
-let queueManager = null;
+// Static import: resolved by Chrome at injection time (bypasses page CSP)
+import { queueManager } from '../../src/content/queue-manager.js';
+
+let queueManagerReady = false;
 
 (async () => {
   try {
-    const src = chrome.runtime.getURL('src/content/queue-manager.js');
-    const module = await import(src);
-    queueManager = module.queueManager;
     await queueManager.initialize();
+    queueManagerReady = true;
     console.log('🔵 BRIDGE: Queue Manager initialized');
   } catch (e) {
-    console.warn('🔵 BRIDGE: Queue Manager not available, using direct send only', e.message);
+    console.warn('🔵 BRIDGE: Queue Manager initialization failed:', e.message);
   }
 })();
 
@@ -45,52 +46,11 @@ window.addEventListener('KYT_MESSAGE_CAPTURED', async (event) => {
 
   console.log('🔵 BRIDGE: Received KYT_MESSAGE_CAPTURED event');
 
-  // Use Queue Manager if available — handles context invalidation gracefully
-  if (queueManager) {
-    console.log('🔵 BRIDGE: Enqueuing via Queue Manager');
-    await queueManager.capture(messageData);
-    return;
-  }
-
-  // Queue Manager not ready — check context validity
-  if (!chrome.runtime?.id) {
-    console.warn('⚠️ BRIDGE: Extension context invalidated and Queue Manager not ready');
-    // Emergency fallback: store directly in chrome.storage.local
-    try {
-      const emergencyKey = 'kyt_emergency_queue';
-      const result = await chrome.storage.local.get([emergencyKey]);
-      const queue = result[emergencyKey] || [];
-      queue.push({
-        ...messageData,
-        id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        timestamp: Date.now(),
-        emergencyBackup: true
-      });
-      await chrome.storage.local.set({ [emergencyKey]: queue });
-      console.log('💾 BRIDGE: Message saved to emergency backup');
-    } catch (e) {
-      console.error('❌ BRIDGE: Emergency backup failed:', e);
-    }
-    return;
-  }
-
-  // Direct send (legacy fallback — QM not ready but context valid)
-  console.log('🔵 BRIDGE: Forwarding to background (direct)...');
-  chrome.runtime.sendMessage({
-    type: 'SAVE_MESSAGE',
-    data: messageData
-  }, (response) => {
-    if (chrome.runtime.lastError) {
-      const error = chrome.runtime.lastError.message;
-      if (error.includes('Extension context invalidated')) {
-        console.warn('⚠️ BRIDGE: Extension was reloaded - please refresh page');
-      } else {
-        console.error('🔵 BRIDGE: Background message failed:', error);
-      }
-    } else {
-      console.log('🔵 BRIDGE: ✅ Background confirmed receipt:', response);
-    }
-  });
+  // Queue Manager handles all fallbacks internally:
+  // context valid → sendMessage to background
+  // context invalid → encrypted chrome.storage.local → unencrypted storage → window.localStorage
+  console.log('🔵 BRIDGE: Enqueuing via Queue Manager');
+  await queueManager.capture(messageData);
 });
 
 // Listen for context requests from MAIN world

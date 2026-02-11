@@ -9,17 +9,23 @@
 - **Problem**: After extension reload, `content_bridge.js` drops captured messages silently
   when `chrome.runtime.id` becomes undefined (context invalidation). ChatGPT platform
   already handled this via `queue-manager.js`; Claude bridge had no fallback.
-- **Fix**: Added same queue-manager integration to `platforms/claude/content_bridge.js`
-  that `platforms/chatgpt/content.js` already uses.
-- **3-tier fallback**:
-  1. Queue Manager (`queueManager.capture()`) — encrypted chrome.storage.local
-  2. Emergency chrome.storage.local (`kyt_emergency_queue`) — when QM not ready + context invalid
-  3. Direct `chrome.runtime.sendMessage` — when QM not ready + context still valid
-- **Recovery**: `background.js:processPendingLocalQueues()` already processes `kyt_emergency_queue`
-  on startup, install, and alarm — no background changes needed.
-- **Manifest**: `src/content/queue-manager.js` already in `web_accessible_resources` for `claude.ai`
-- File: `platforms/claude/content_bridge.js`
-- Tests: 216 passed, 5 skipped, 2 pre-existing failures (embedding dimension config in history-import.spec.js)
+- **Fix**: Static import of queue-manager into `platforms/claude/content_bridge.js`
+  with module content script (`"type": "module"` in manifest).
+- **CSP fix**: Initial dynamic `import()` failed on claude.ai because classic content
+  scripts route module fetches through the host page's CSP, which blocks
+  `chrome-extension://` origins. Switching to `"type": "module"` makes Chrome resolve
+  imports at injection time via the extension's own loader, bypassing page CSP.
+- **Simplification**: Since `queueManager` is always available via static import,
+  the handler is now a single `queueManager.capture(messageData)` call. The queue
+  manager handles the full fallback chain internally:
+  1. `chrome.runtime.sendMessage` to background (context valid)
+  2. Encrypted `chrome.storage.local` (context invalid, crypto key available)
+  3. Unencrypted `chrome.storage.local` (no crypto key)
+  4. `window.localStorage` emergency fallback (chrome.storage unavailable)
+- **Recovery**: `background.js:processPendingLocalQueues()` already processes pending
+  queues on startup, install, and alarm — no background changes needed.
+- Files: `platforms/claude/content_bridge.js`, `manifest.json`
+- Tests: 215 passed, 5 skipped, 3 pre-existing failures (embedding dimension + dedup flake in history-import.spec.js)
 
 ---
 
