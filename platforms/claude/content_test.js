@@ -347,17 +347,17 @@ if (window.KYT_CLAUDE_INJECTED) {
 
       // VALIDATION FIX: Create promise and track for deduplication
       const promise = new Promise((resolve) => {
-        // PHASE 1 FIX #5: Increase timeout to 10s with better error logging
+        // 15s MAIN world timeout — leaves 3s margin after 12s background timeout
         const timeout = setTimeout(() => {
           pendingContextRequests.delete(requestId);
           inflightContextByHash.delete(messageHash); // VALIDATION FIX: Cleanup dedup map
-          console.error('⏱️ KYT Claude: Context timeout after 10s', {
+          console.error('⏱️ KYT Claude: Context timeout after 15s', {
             requestId: requestId,
             userMessage: body.prompt.substring(0, 50),
             pendingRequests: pendingContextRequests.size
           });
           resolve(bodyString);
-        }, 10000); // Increased from 5000ms
+        }, 15000);
 
         // Store request in Map - prevents garbage collection
         pendingContextRequests.set(requestId, {

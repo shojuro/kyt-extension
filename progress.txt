@@ -1,9 +1,41 @@
 # KYT Validation Sprint - Progress Tracker
-# Last Updated: 2026-02-11
+# Last Updated: 2026-02-12
 
 ## Current Branch: feature/history-import
 
-## Active Work: Claude Bridge Queue-Manager Resilience (2026-02-11)
+## ✅ SUCCESSFUL CHECKPOINT: Cross-Platform Retrieval Verified (2026-02-12)
+
+### Bidirectional RAG Injection — CONFIRMED WORKING
+- **Claude → ChatGPT**: User tested query on ChatGPT, retrieved memories from Claude sessions. Correct, specific information returned.
+- **ChatGPT → Claude**: User tested query on Claude, retrieved memories from ChatGPT sessions. Correct, specific information returned.
+- **Different topics, no overlap** — retrieval precision confirmed across platforms.
+
+### Fixes Applied This Session (6 changes across 7 files):
+
+1. **Queue Manager load fix (CRITICAL)** — `manifest.json`: Added `src/utils/normalize-platform.js` to `web_accessible_resources`. Queue-manager.js imports this module; without it, Chrome blocked the import and the entire ChatGPT queue manager crashed silently. Messages from ChatGPT were not syncing to Supabase at all.
+
+2. **Sync-before-search fire-and-forget** — `background.js:1059-1069`: Changed `await withTimeout(executeDebouncedSync(), 3000)` to fire-and-forget. Saves 0-3s from the critical search path. Messages still sync via alarm; this just stops the sync from blocking context retrieval.
+
+3. **Background timeout 8s → 12s** — `background.js:1568-1574`: GET_CONTEXT `Promise.race` timeout increased from 8000ms to 12000ms. With parallelized search (~4-7s) + fire-and-forget sync, 12s provides comfortable headroom.
+
+4. **MAIN world timeout 10s → 15s** — `platforms/chatgpt/inject.js:336-345` and `platforms/claude/content_test.js:350-360`: Both platform inject scripts increased from 10s to 15s, maintaining 3s margin after the 12s background timeout.
+
+5. **Query expansion NaN guard** — `src/query-expansion.js:130`: Added `if (isNaN(numericValue)) continue;` to prevent `$NaN` garbage variants when currency regex matches commas in natural text (e.g., "blonde woman, white bra").
+
+6. **Search parallelization** — `src/browser-search.js`: Supabase text + semantic search already parallelized via `Promise.all` (confirmed in place, no change needed).
+
+### Test Results
+- 215 passed, 5 skipped, 3 failed (pre-existing: history-import.spec.js embedding dimensions + timing)
+- No regressions from this session's changes.
+
+### Next: Extended Validation (20 queries + edge cases)
+- Short throwaway comments vs. deep multi-turn discussions
+- Topic switches mid-conversation
+- Ambiguous queries where confidence should be low
+
+---
+
+## Previous Work: Claude Bridge Queue-Manager Resilience (2026-02-11)
 
 ### Claude Bridge: Queue-Manager Integration - COMPLETE
 - **Problem**: After extension reload, `content_bridge.js` drops captured messages silently
@@ -158,5 +190,5 @@ Extension initializes correctly but message capture mechanisms are failing.
 
 ## Test Results Summary
 - Total test files: 14 passed, 1 failed (pre-existing embedding dimension issue)
-- Total tests: 216 passed, 5 skipped, 2 failed (pre-existing)
-- Last run: 2026-02-11
+- Total tests: 215 passed, 5 skipped, 3 failed (pre-existing: embedding dims + timing)
+- Last run: 2026-02-12

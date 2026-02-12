@@ -333,16 +333,16 @@
       const requestId = `ctx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
       return new Promise((resolve) => {
-        // PHASE 1 FIX #5: Increase timeout to 10s with better error logging
+        // 15s MAIN world timeout — leaves 3s margin after 12s background timeout
         const timeout = setTimeout(() => {
           pendingContextRequests.delete(requestId);
-          console.error('⏱️ KYT ChatGPT: Context timeout after 10s', {
+          console.error('⏱️ KYT ChatGPT: Context timeout after 15s', {
             requestId: requestId,
             userMessage: userContent.substring(0, 50),
             pendingRequests: pendingContextRequests.size
           });
           resolve(bodyString);
-        }, 10000); // Increased from 5000ms
+        }, 15000);
 
         // Store request in Map - prevents garbage collection
         pendingContextRequests.set(requestId, {

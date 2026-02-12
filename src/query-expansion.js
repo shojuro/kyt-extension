@@ -127,6 +127,7 @@ export class QueryExpander {
 
             // Skip if it's just a plain small number (likely not currency)
             const numericValue = parseInt(intPart.replace(/,/g, ''));
+            if (isNaN(numericValue)) continue;
             if (numericValue < 10 && !full.includes('$') && !decPart) continue;
             const withoutCommas = intPart.replace(/,/g, '');
             const withCommas = numericValue.toLocaleString('en-US');

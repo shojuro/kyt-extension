@@ -13,7 +13,7 @@
 
 // Day 2: Import browser-compatible sync and search modules
 import { syncToSupabase, setApiConfig, backfillNullEmbeddings } from './src/browser-sync.js';
-import { searchMessages, findSimilarMessages, searchHybrid } from './src/browser-search.js';
+import { searchMessages, findSimilarMessages, searchHybrid, prewarmEmbeddingModel } from './src/browser-search.js';
 import { applyMMR, MMR_PRESETS } from './src/mmr.js';
 import { transformQuery, extractRecentTopics, fetchRecentTopicsFromSupabase } from './src/query-transformer.js';
 import { queueProcessor } from './src/background/queue-processor.js';
@@ -22,9 +22,72 @@ import { classifyContent } from './src/taxonomy-classifier.js';
 import { applyKeywordBoost } from './src/keyword-boost.js';
 import { filterByConfidence } from './src/confidence-filter.js';
 import { HistoryImporter } from './src/history-import/index.js';
+import { getSession, refreshSession, isAuthenticated, getAccessToken, AUTH_SESSION_KEY } from './src/auth/auth-service.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
 self.HistoryImporter = HistoryImporter; // Expose for debugging
 
 let activeImporter = null;
+
+// ===== DEFENSIVE TIMEOUT HELPER =====
+// Races a promise against a timeout. On timeout, resolves with undefined
+// instead of rejecting — callers treat undefined as "stage skipped".
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => {
+      console.warn(`\u23f1\ufe0f ${label} exceeded ${ms}ms, skipping`);
+      resolve(undefined);
+    }, ms))
+  ]);
+}
+
+// ===== INJECTION HEALTH STATS =====
+const INJECTION_STATS_KEY = 'kyt_injection_stats';
+
+async function updateInjectionStats(update) {
+  const result = await chrome.storage.local.get([INJECTION_STATS_KEY]);
+  const stats = result[INJECTION_STATS_KEY] || {
+    totalAttempts: 0,
+    successful: 0,
+    empty: 0,
+    timeouts: 0,
+    errors: 0,
+    totalItemsReturned: 0,
+    totalLatencyMs: 0,
+    lastAttempt: null,
+    lastSuccess: null,
+    recentResults: [] // Last 10 results for popup display
+  };
+
+  if (update.attempt) {
+    stats.totalAttempts++;
+    stats.lastAttempt = Date.now();
+  }
+  if (update.success) {
+    stats.successful++;
+    stats.lastSuccess = Date.now();
+    stats.totalItemsReturned += update.itemCount || 0;
+  }
+  if (update.empty) stats.empty++;
+  if (update.timeout) stats.timeouts++;
+  if (update.error) stats.errors++;
+  if (update.latencyMs) stats.totalLatencyMs += update.latencyMs;
+
+  if (update.result) {
+    stats.recentResults.unshift({
+      timestamp: Date.now(),
+      success: !!update.success,
+      items: update.itemCount || 0,
+      latencyMs: update.latencyMs || 0,
+      empty: !!update.empty,
+      error: update.errorMsg || null
+    });
+    if (stats.recentResults.length > 10) stats.recentResults.pop();
+  }
+
+  await chrome.storage.local.set({ [INJECTION_STATS_KEY]: stats });
+  return stats;
+}
 
 // ===== DEBOUNCED SYNC SCHEDULING =====
 // Replaces per-message immediate sync with batched debounce
@@ -70,16 +133,51 @@ function scheduleDebouncedSync() {
 }
 
 /**
- * Execute the actual sync (called by debounce/max-wait timers)
+ * Execute the actual sync (called by debounce/max-wait timers).
+ * Uses edge functions for authenticated users, legacy direct API otherwise.
  */
 async function executeDebouncedSync() {
   try {
     console.log('🔄 Debounced sync triggered');
-    const syncResult = await syncToSupabase();
-    if (syncResult.success) {
-      console.log(`✅ Debounced sync: ${syncResult.synced} messages synced (embeddings: ${syncResult.embeddingsGenerated ?? 'n/a'})`);
+    const mode = await getRoutingMode();
+
+    if (mode === 'edge') {
+      // Edge function path: load messages and sync via server
+      const { syncViaEdgeFunction } = await import('./src/edge-sync.js');
+      const stored = await chrome.storage.local.get(['captured_messages', 'last_sync_status']);
+      const messages = stored.captured_messages || [];
+      const syncStatus = stored.last_sync_status || { syncedMessageIds: [] };
+      const syncedSet = new Set(syncStatus.syncedMessageIds || []);
+
+      // Filter to unsynced messages
+      const unsynced = messages.filter((m) => !syncedSet.has(m.messageId));
+      if (unsynced.length === 0) {
+        console.log('✅ Debounced sync: nothing to sync (all messages already synced)');
+        return;
+      }
+
+      const syncResult = await syncViaEdgeFunction(unsynced);
+      if (syncResult.success || syncResult.synced > 0) {
+        // Mark synced
+        const newSyncedIds = [...syncedSet, ...unsynced.map((m) => m.messageId)];
+        await chrome.storage.local.set({
+          last_sync_status: {
+            syncedMessageIds: newSyncedIds,
+            lastSyncTime: Date.now(),
+          },
+        });
+        console.log(`✅ Debounced sync (edge): ${syncResult.synced} synced, ${syncResult.duplicates} dupes`);
+      } else {
+        console.warn('⚠️ Debounced sync (edge) failed:', syncResult.errors, 'errors');
+      }
     } else {
-      console.warn('⚠️ Debounced sync failed:', syncResult.error);
+      // Legacy path
+      const syncResult = await syncToSupabase();
+      if (syncResult.success) {
+        console.log(`✅ Debounced sync: ${syncResult.synced} messages synced (embeddings: ${syncResult.embeddingsGenerated ?? 'n/a'})`);
+      } else {
+        console.warn('⚠️ Debounced sync failed:', syncResult.error);
+      }
     }
   } catch (err) {
     console.warn('⚠️ Debounced sync error:', err.message);
@@ -404,7 +502,28 @@ async function getApiConfig() {
   }
 
   console.log('📥 Loading API config from storage');
-  const result = await chrome.storage.local.get(['api_config']);
+  const result = await chrome.storage.local.get(['api_config', AUTH_SESSION_KEY]);
+
+  // Prefer auth session for authenticated users
+  const session = result[AUTH_SESSION_KEY];
+  if (session?.access_token && session.expires_at > Math.floor(Date.now() / 1000)) {
+    cachedApiConfig = {
+      supabaseUrl: SUPABASE_URL,
+      supabaseKey: SUPABASE_ANON_KEY,
+      accessToken: session.access_token,
+      userId: session.user?.id,
+      authMode: 'jwt',
+      // Legacy fields — not needed for edge mode, but some code paths read them
+      openaiKey: result.api_config?.openaiKey || null,
+      huggingfaceKey: result.api_config?.huggingfaceKey || null,
+      jinaKey: result.api_config?.jinaKey || null,
+      disableQueryTransformation: result.api_config?.disableQueryTransformation ?? true,
+    };
+    configLoadTime = Date.now();
+    return cachedApiConfig;
+  }
+
+  // Fall back to legacy api_config
   if (!result.api_config) {
     throw new Error('API configuration not found - run setup.html');
   }
@@ -412,6 +531,23 @@ async function getApiConfig() {
   cachedApiConfig = result.api_config;
   configLoadTime = Date.now();
   return cachedApiConfig;
+}
+
+/**
+ * Determine routing mode: 'edge' (authenticated), 'legacy' (API keys), or 'unconfigured'.
+ * Edge mode routes sync/search through Supabase Edge Functions.
+ * Legacy mode uses direct HuggingFace + Supabase REST calls.
+ */
+async function getRoutingMode() {
+  const result = await chrome.storage.local.get([AUTH_SESSION_KEY, 'api_config']);
+  const session = result[AUTH_SESSION_KEY];
+  if (session?.access_token && session.expires_at > Math.floor(Date.now() / 1000)) {
+    return 'edge';
+  }
+  if (result.api_config?.supabaseUrl && result.api_config?.supabaseKey) {
+    return 'legacy';
+  }
+  return 'unconfigured';
 }
 
 // Clear cache before service worker suspends
@@ -449,12 +585,31 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 chrome.runtime.onStartup.addListener(async () => {
   console.log('🔍 KYT Background: Extension startup - checking API config');
 
-  const result = await chrome.storage.local.get(['api_config', 'kyt_sync_pending']);
-  if (!result.api_config) {
-    console.warn('⚠️ API config not found - sync will fail until configured');
-    console.warn('   Use SET_API_CONFIG message to configure Supabase + OpenAI keys');
+  // Refresh auth session on startup if it exists
+  try {
+    const authed = await isAuthenticated();
+    if (authed) {
+      await refreshSession();
+      console.log('✅ Auth session refreshed on startup');
+    }
+  } catch (err) {
+    console.warn('⚠️ Auth session refresh on startup failed:', err.message);
+  }
+
+  const result = await chrome.storage.local.get(['api_config', AUTH_SESSION_KEY, 'kyt_sync_pending', 'kyt_last_save_time']);
+  const hasAuth = result[AUTH_SESSION_KEY]?.access_token;
+  const hasConfig = result.api_config?.supabaseUrl;
+
+  // Restore lastSaveTime so health check doesn't show misleading "1770780747s ago" (Fix 4: RC4)
+  if (result.kyt_last_save_time) {
+    lastSaveTime = result.kyt_last_save_time;
+    console.log(`Restored lastSaveTime from storage: ${Math.floor((Date.now() - lastSaveTime) / 1000)}s ago`);
+  }
+
+  if (!hasAuth && !hasConfig) {
+    console.warn('⚠️ No auth session or API config — sync will fail until user signs in or configures keys');
   } else {
-    console.log('✅ API config found');
+    console.log(`✅ Config found (mode: ${hasAuth ? 'authenticated' : 'legacy'})`);
 
     // Recover pending sync from a previous service worker that was terminated mid-debounce
     if (result.kyt_sync_pending) {
@@ -588,6 +743,8 @@ async function saveMessage(messageData) {
     // Update metrics
     totalMessagesSaved++;
     lastSaveTime = Date.now();
+    // Persist lastSaveTime so it survives service worker restarts (Fix 4: RC4)
+    chrome.storage.local.set({ kyt_last_save_time: lastSaveTime });
 
     console.log(`✅ KYT Background: Message saved (total: ${messages.length})`);
     console.log(`   Content: "${messageData.content.substring(0, 50)}..."`);
@@ -824,7 +981,7 @@ async function getContextForInjection(userMessage, config) {
       minDistance: config?.minDistance || 0.0,
       excludeRecentSeconds: config?.excludeRecentSeconds || 120, // CONTEXT POLLUTION FIX: Exclude last 2 minutes
       debugMode: config?.debugMode || false,
-      disableQueryTransformation: config?.disableQueryTransformation || false // Allow disabling via config
+      disableQueryTransformation: config?.disableQueryTransformation ?? apiConfig.disableQueryTransformation ?? true
     };
 
     // VALIDATION FIX: Check circuit breaker before making API call
@@ -851,21 +1008,29 @@ async function getContextForInjection(userMessage, config) {
 
     if (!contextConfig.disableQueryTransformation) {
       try {
-        // Get recent messages for context (to extract topics/emotional state)
-        // PHASE 4 UPDATE: Fetch from Supabase for cross-device context
-        const recentTopics = await fetchRecentTopicsFromSupabase(apiConfig);
+        // 3s timeout: query transformation is an enhancement, not critical path.
+        // On timeout, falls through to using the original query.
+        const transformResult = await withTimeout(
+          (async () => {
+            // Get recent messages for context (to extract topics/emotional state)
+            // PHASE 4 UPDATE: Fetch from Supabase for cross-device context
+            const recentTopics = await fetchRecentTopicsFromSupabase(apiConfig);
 
-        // Transform query
-        const transformResult = await transformQuery(
-          userMessage,
-          {
-            recentTopics: recentTopics,
-            searchContext: 'chat_history'
-          },
-          apiConfig.openaiKey
+            // Transform query
+            return await transformQuery(
+              userMessage,
+              {
+                recentTopics: recentTopics,
+                searchContext: 'chat_history'
+              },
+              apiConfig.openaiKey
+            );
+          })(),
+          3000,
+          'Query transformation'
         );
 
-        if (transformResult.success && transformResult.transformed) {
+        if (transformResult?.success && transformResult.transformed) {
           searchQuery = transformResult.optimizedQuery;
           transformationMetadata = {
             transformed: true,
@@ -873,7 +1038,7 @@ async function getContextForInjection(userMessage, config) {
             optimized: searchQuery
           };
           console.log(`🔄 Query transformed: "${userMessage}" → "${searchQuery}"`);
-        } else {
+        } else if (transformResult) {
           console.log(`📊 Using original query (transformation ${transformResult.transformed ? 'succeeded' : 'skipped/failed'})`);
         }
       } catch (transformError) {
@@ -888,6 +1053,24 @@ async function getContextForInjection(userMessage, config) {
     // 2. Uses unified threshold (0.5)
     // 3. Handles query expansion automatically
 
+    // Sync-before-search: flush pending messages to Supabase so cross-platform
+    // memories are available immediately (e.g., captured on ChatGPT, searched on Claude).
+    // Fire-and-forget: don't block the search pipeline. Messages sync via alarm anyway.
+    try {
+      const pendingResult = await chrome.storage.local.get(['kyt_sync_pending']);
+      if (pendingResult.kyt_sync_pending) {
+        console.log('Sync-before-search: triggering flush (non-blocking)...');
+        if (syncDebounceTimer) { clearTimeout(syncDebounceTimer); syncDebounceTimer = null; }
+        if (syncMaxWaitTimer) { clearTimeout(syncMaxWaitTimer); syncMaxWaitTimer = null; }
+        // Fire-and-forget — don't await. Saves 0-3s from the critical path.
+        executeDebouncedSync().catch(err =>
+          console.warn('Sync-before-search background flush failed:', err.message)
+        );
+      }
+    } catch (syncErr) {
+      console.warn('Sync-before-search failed (non-fatal):', syncErr.message);
+    }
+
     let contextItems = [];
 
     try {
@@ -896,28 +1079,31 @@ async function getContextForInjection(userMessage, config) {
 
       console.log(`🔍 Context Retrieval: Using query "${queryToUse}"`);
 
-      // Calculate maxTimestamp to exclude recent memories (Context Pollution Prevention)
-      // Everything with timestamp <= maxTimestamp is eligible (i.e., older than excludeRecentSeconds)
-      const maxTimestamp = Date.now() - (contextConfig.excludeRecentSeconds * 1000);
+      // Dual-path: edge function vs legacy client-side search
+      const routingMode = await getRoutingMode();
 
-      contextItems = await searchHybrid(queryToUse, {
-        limit: contextConfig.maxContextItems,
-        semanticThreshold: 0.50, // Supabase RPC already applies match_threshold; client-side 0.65 was redundant
-        bm25Threshold: 0.1,
-        enableBM25: true,
-        enableSemantic: true,
-        role: null, // Don't filter by role (get both user and assistant context)
-        source: null, // Don't filter by source
-        maxTimestamp: maxTimestamp // Exclude messages newer than this timestamp
-      });
+      if (routingMode === 'edge') {
+        // ─── Edge function path (authenticated users) ───
+        const { searchViaEdgeFunction } = await import('./src/edge-search.js');
+        contextItems = await searchViaEdgeFunction(queryToUse, {
+          topK: contextConfig.maxContextItems,
+        });
+        console.log(`✅ Context Retrieval (edge): Found ${contextItems.length} items`);
 
-      console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search`);
-      console.log(`🔍 Search pipeline result: ${contextItems.length} items, semanticAvailable: ${contextItems.metadata?.semanticAvailable}`);
+        // Retry with original query if transformed returned 0
+        if (contextItems.length === 0 && transformationMetadata.transformed) {
+          console.log('🔄 Retry (edge): retrying with original query...');
+          contextItems = await searchViaEdgeFunction(userMessage, {
+            topK: contextConfig.maxContextItems,
+          });
+          console.log(`🔄 Retry (edge) result: ${contextItems.length} items`);
+        }
+      } else {
+        // ─── Legacy client-side path ───
+        // Calculate maxTimestamp to exclude recent memories (Context Pollution Prevention)
+        const maxTimestamp = Date.now() - (contextConfig.excludeRecentSeconds * 1000);
 
-      // E1: If transformed query returned 0 results, retry with original query
-      if (contextItems.length === 0 && transformationMetadata.transformed) {
-        console.log('🔄 Retry: Transformed query returned 0 results, retrying with original query...');
-        contextItems = await searchHybrid(userMessage, {
+        contextItems = await searchHybrid(queryToUse, {
           limit: contextConfig.maxContextItems,
           semanticThreshold: 0.50,
           bm25Threshold: 0.1,
@@ -925,9 +1111,27 @@ async function getContextForInjection(userMessage, config) {
           enableSemantic: true,
           role: null,
           source: null,
-          maxTimestamp: maxTimestamp
+          maxTimestamp: maxTimestamp,
         });
-        console.log(`🔄 Retry result: ${contextItems.length} items with original query`);
+
+        console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search`);
+        console.log(`🔍 Search pipeline result: ${contextItems.length} items, semanticAvailable: ${contextItems.metadata?.semanticAvailable}`);
+
+        // E1: If transformed query returned 0 results, retry with original query
+        if (contextItems.length === 0 && transformationMetadata.transformed) {
+          console.log('🔄 Retry: Transformed query returned 0 results, retrying with original query...');
+          contextItems = await searchHybrid(userMessage, {
+            limit: contextConfig.maxContextItems,
+            semanticThreshold: 0.50,
+            bm25Threshold: 0.1,
+            enableBM25: true,
+            enableSemantic: true,
+            role: null,
+            source: null,
+            maxTimestamp: maxTimestamp,
+          });
+          console.log(`🔄 Retry result: ${contextItems.length} items with original query`);
+        }
       }
 
     } catch (searchError) {
@@ -1063,10 +1267,23 @@ async function getContextForInjection(userMessage, config) {
     if (filteredItems.length > 0) {
       try {
         const semanticWasAvailable = contextItems.metadata?.semanticAvailable ?? true;
-        const defaultThreshold = semanticWasAvailable ? 0.40 : 0.25;
+        const jinaReranked = contextItems.metadata?.jinaReranked ?? true;
+        let defaultThreshold;
+        if (!jinaReranked) {
+          // Scores are uncalibrated RRF/weighted values (0.01-0.05 range, not 0-1).
+          // Min-max normalized in fallback, so best=1.0, rest relative.
+          // Use low threshold to avoid dropping everything.
+          defaultThreshold = 0.01;
+        } else if (!semanticWasAvailable) {
+          defaultThreshold = 0.25;
+        } else {
+          defaultThreshold = 0.40;
+        }
         const confidenceThreshold = contextConfig.confidenceThreshold || defaultThreshold;
-        if (!semanticWasAvailable) {
-          console.log(`🎯 BM25-only mode detected — adaptive confidence threshold: ${confidenceThreshold}`);
+        if (!jinaReranked) {
+          console.log(`🎯 Jina unavailable — uncalibrated threshold: ${confidenceThreshold}`);
+        } else if (!semanticWasAvailable) {
+          console.log(`🎯 BM25-only mode — adaptive threshold: ${confidenceThreshold}`);
         }
         console.log(`🎯 Applying confidence filter (threshold: ${confidenceThreshold}) to ${filteredItems.length} candidates...`);
 
@@ -1336,9 +1553,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
       return true; // Keep channel open for async
 
-    case 'GET_CONTEXT':
+    case 'GET_CONTEXT': {
       // Day 3: Get context for RAG injection (CSP fix - runs in background, no CSP restrictions)
       console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
+      const injectionStart = performance.now();
+
+      // Track injection attempt
+      updateInjectionStats({ attempt: true });
 
       // Read debug mode from storage for Memory Injection Protocol
       chrome.storage.local.get(['kytDebugMode']).then(result => {
@@ -1347,17 +1568,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           debugMode: result.kytDebugMode || false
         };
 
-        return getContextForInjection(message.userMessage, config);
+        // 12s overall timeout — leaves 3s margin before the 15s MAIN world timeout
+        // in inject.js / content_test.js. Rejects on timeout so the .catch() below handles it.
+        return Promise.race([
+          getContextForInjection(message.userMessage, config),
+          new Promise((_, reject) => setTimeout(() => {
+            reject(new Error('getContextForInjection timed out after 12000ms'));
+          }, 12000))
+        ]);
       })
         .then(contextData => {
-          console.log('✅ Context retrieved:', contextData.items?.length || 0, 'items');
+          const latencyMs = Math.round(performance.now() - injectionStart);
+          const itemCount = contextData.items?.length || 0;
+          console.log('✅ Context retrieved:', itemCount, 'items');
+
+          if (itemCount > 0) {
+            updateInjectionStats({ success: true, itemCount, latencyMs, result: true });
+          } else {
+            updateInjectionStats({ empty: true, latencyMs, result: true });
+          }
+
           sendResponse(contextData);
         })
         .catch(error => {
+          const latencyMs = Math.round(performance.now() - injectionStart);
+          const isTimeout = error.message?.includes('timed out');
           console.error('❌ Context retrieval error:', error);
+
+          updateInjectionStats({
+            error: !isTimeout,
+            timeout: isTimeout,
+            latencyMs,
+            result: true,
+            errorMsg: error.message
+          });
+
           sendResponse({ success: false, error: error.message });
         });
       return true; // Keep channel open
+    }
+
+    case 'GET_INJECTION_STATS':
+      // Return injection health stats for popup/diagnostics
+      chrome.storage.local.get([INJECTION_STATS_KEY]).then(result => {
+        const stats = result[INJECTION_STATS_KEY] || {
+          totalAttempts: 0, successful: 0, empty: 0, timeouts: 0, errors: 0,
+          totalItemsReturned: 0, totalLatencyMs: 0, recentResults: []
+        };
+        stats.avgLatencyMs = stats.totalAttempts > 0
+          ? Math.round(stats.totalLatencyMs / stats.totalAttempts)
+          : 0;
+        stats.successRate = stats.totalAttempts > 0
+          ? Math.round((stats.successful / stats.totalAttempts) * 100)
+          : 0;
+        sendResponse(stats);
+      });
+      return true;
 
     case 'GET_STATS':
       // Phase 2: Get diagnostic statistics for popup UI
@@ -1453,9 +1719,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       (async () => {
         try {
           console.log('🔄 Force sync triggered from popup');
-          const result = await syncToSupabase();
-          console.log('✅ Force sync result:', result);
-          sendResponse(result);
+          const mode = await getRoutingMode();
+
+          if (mode === 'edge') {
+            const { syncViaEdgeFunction } = await import('./src/edge-sync.js');
+            const stored = await chrome.storage.local.get(['captured_messages']);
+            const messages = stored.captured_messages || [];
+            const result = await syncViaEdgeFunction(messages);
+            console.log('✅ Force sync (edge) result:', result);
+            sendResponse(result);
+          } else {
+            const result = await syncToSupabase();
+            console.log('✅ Force sync result:', result);
+            sendResponse(result);
+          }
         } catch (error) {
           console.error('❌ Force sync failed:', error);
           sendResponse({ success: false, error: error.message });
@@ -1612,6 +1889,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.alarms.create('health_check', { periodInMinutes: 5 });
 
 /**
+ * Pre-warm embedding model every 30 minutes to avoid cold-start latency
+ */
+chrome.alarms.create('prewarmEmbedding', { delayInMinutes: 1, periodInMinutes: 30 });
+
+/**
+ * Refresh auth token every 45 minutes (Supabase JWT default TTL = 1 hour).
+ * Keeps the session alive for authenticated users.
+ */
+chrome.alarms.create('tokenRefresh', { periodInMinutes: 45 });
+
+/**
+ * Sync-on-platform-switch: when user switches to a KYT-supported tab,
+ * flush any pending messages so cross-platform search finds them immediately.
+ */
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  try {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    if (!tab.url) return;
+    const isKYTPlatform =
+      tab.url.startsWith('https://claude.ai/') ||
+      tab.url.startsWith('https://chatgpt.com/') ||
+      tab.url.startsWith('https://chat.openai.com/');
+    if (isKYTPlatform) {
+      const pendingResult = await chrome.storage.local.get(['kyt_sync_pending']);
+      if (pendingResult.kyt_sync_pending) {
+        console.log(`Platform switch detected: ${new URL(tab.url).hostname} — flushing pending sync`);
+        if (syncDebounceTimer) { clearTimeout(syncDebounceTimer); syncDebounceTimer = null; }
+        if (syncMaxWaitTimer) { clearTimeout(syncMaxWaitTimer); syncMaxWaitTimer = null; }
+        await executeDebouncedSync();
+      }
+    }
+  } catch (_err) {
+    // Tab may be inaccessible (e.g., chrome:// pages) — ignore
+  }
+});
+
+/**
  * CONSOLIDATED ALARM LISTENER
  * Handles all alarms: processQueue, periodicSync, health_check
  * Replaces 4 separate listeners that were scattered across the file
@@ -1701,6 +2015,26 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
       break;
 
+    case 'prewarmEmbedding':
+      try {
+        await prewarmEmbeddingModel();
+      } catch (error) {
+        // Pre-warm is best-effort, don't log errors to avoid noise
+      }
+      break;
+
+    case 'tokenRefresh':
+      try {
+        const authenticated = await isAuthenticated();
+        if (authenticated) {
+          await refreshSession();
+          console.log('✅ Token refresh: session refreshed via alarm');
+        }
+      } catch (error) {
+        console.warn('⚠️ Token refresh alarm failed:', error.message);
+      }
+      break;
+
     default:
       console.warn(`⚠️ Unknown alarm: ${alarm.name}`);
   }
@@ -1720,6 +2054,7 @@ chrome.runtime.onInstalled.addListener((details) => {
       install_date: Date.now(),
       version: chrome.runtime.getManifest().version,
       show_import_onboarding: true, // Show import prompt on first install
+      show_login_prompt: true, // Prompt user to sign in on first popup open
       api_config: {
         // Phase 1 Fix: Enable semantic search by default
         // Disables query transformation that breaks semantic matching
@@ -1728,7 +2063,7 @@ chrome.runtime.onInstalled.addListener((details) => {
     }).then(() => {
       console.log('✅ KYT: Storage initialized');
       console.log('   Phase 1 fix enabled: disableQueryTransformation = true');
-      console.log('   First-install import onboarding: enabled');
+      console.log('   First-install onboarding: login prompt + import enabled');
     }).catch(error => {
       console.error('❌ KYT: Failed to initialize storage:', error);
     });

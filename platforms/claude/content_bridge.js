@@ -6,6 +6,11 @@
  *
  * Architecture:
  * MAIN world (content_test.js) → CustomEvent → ISOLATED world (this file) → chrome.runtime → background.js
+ *
+ * NOTE: This file MUST remain a classic (non-module) script so that
+ * chrome.scripting.executeScript() can re-inject it after extension reload.
+ * ES module imports cause a SyntaxError in classic-script mode.
+ * The 3-tier capture fallback from queue-manager.js is inlined below.
  */
 
 // Generation guard: only the latest injected bridge responds to events.
@@ -18,21 +23,119 @@ console.log('🔵 BRIDGE: Content bridge loaded in ISOLATED world at:', new Date
 console.log('🔵 BRIDGE: chrome.runtime available:', typeof chrome?.runtime !== 'undefined');
 console.log('🔵 BRIDGE: Generation:', BRIDGE_GENERATION);
 
-// Queue Manager — provides 3-tier offline fallback for captured messages
-// Static import: resolved by Chrome at injection time (bypasses page CSP)
-import { queueManager } from '../../src/content/queue-manager.js';
+// ===== INLINED 3-TIER CAPTURE FALLBACK =====
+// Replaces the ES module import of queue-manager.js.
+// Tier 1: chrome.runtime.sendMessage (service worker alive)
+// Tier 2: chrome.storage.local with key kyt_pending_unencrypted_queue (context partially valid)
+// Tier 3: window.localStorage with key kyt_emergency_localStorage_queue (context fully invalid)
 
-let queueManagerReady = false;
+const UNENCRYPTED_QUEUE_KEY = 'kyt_pending_unencrypted_queue';
+const LOCALSTORAGE_EMERGENCY_KEY = 'kyt_emergency_localStorage_queue';
+const LOCALSTORAGE_MAX_SIZE = 50;
 
-(async () => {
+/**
+ * Capture a message using 3-tier fallback.
+ * @param {Object} messageData - Raw message data from MAIN world event
+ */
+async function captureMessage(messageData) {
+  const msgId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const queuedMessage = {
+    id: msgId,
+    messageId: msgId,
+    timestamp: Date.now(),
+    platform: messageData.platform || 'claude',
+    content: messageData.content,
+    role: messageData.role,
+    conversationId: messageData.conversationId,
+    model: messageData.model,
+    retryCount: 0
+  };
+
+  // Tier 1: sendMessage to background (context valid, service worker alive)
+  if (chrome.runtime?.id) {
+    try {
+      await chrome.runtime.sendMessage({ type: 'SAVE_MESSAGE', data: queuedMessage });
+      console.log(`✅ BRIDGE: Message ${msgId} sent to background (Tier 1)`);
+      return;
+    } catch (e) {
+      console.warn(`⚠️ BRIDGE: Tier 1 sendMessage failed: ${e.message}`);
+      // Fall through to Tier 2
+    }
+  }
+
+  // Tier 2: chrome.storage.local unencrypted queue (context partially valid)
   try {
-    await queueManager.initialize();
-    queueManagerReady = true;
-    console.log('🔵 BRIDGE: Queue Manager initialized');
+    const result = await chrome.storage.local.get([UNENCRYPTED_QUEUE_KEY]);
+    const queue = result[UNENCRYPTED_QUEUE_KEY] || [];
+    queue.push({ ...queuedMessage, emergencyBackup: true });
+    await chrome.storage.local.set({ [UNENCRYPTED_QUEUE_KEY]: queue });
+    console.log(`💾 BRIDGE: Message ${msgId} saved to chrome.storage (Tier 2)`);
+    return;
   } catch (e) {
-    console.warn('🔵 BRIDGE: Queue Manager initialization failed:', e.message);
+    console.warn(`⚠️ BRIDGE: Tier 2 chrome.storage failed: ${e.message}`);
+    // Fall through to Tier 3
+  }
+
+  // Tier 3: window.localStorage emergency queue (context fully invalid)
+  try {
+    const stored = window.localStorage.getItem(LOCALSTORAGE_EMERGENCY_KEY);
+    const queue = stored ? JSON.parse(stored) : [];
+    // Prevent overflow
+    while (queue.length >= LOCALSTORAGE_MAX_SIZE) {
+      queue.shift();
+    }
+    queue.push({ ...queuedMessage, emergencyStorage: true, storedAt: Date.now() });
+    window.localStorage.setItem(LOCALSTORAGE_EMERGENCY_KEY, JSON.stringify(queue));
+    console.log(`🆘 BRIDGE: Message ${msgId} saved to localStorage (Tier 3)`);
+  } catch (e) {
+    console.error('❌ BRIDGE: All 3 capture tiers failed:', e);
+  }
+}
+
+// ===== LOCALSTORAGE RECOVERY ON STARTUP =====
+// Drain kyt_emergency_localStorage_queue via sendMessage to background.
+// The service worker has no window.localStorage access, so recovery must happen here.
+(function recoverLocalStorageQueue() {
+  if (!chrome.runtime?.id) return; // Can't recover without valid context
+
+  try {
+    const stored = window.localStorage.getItem(LOCALSTORAGE_EMERGENCY_KEY);
+    if (!stored) return;
+
+    const queue = JSON.parse(stored);
+    if (!Array.isArray(queue) || queue.length === 0) return;
+
+    console.log(`🔄 BRIDGE: Recovering ${queue.length} messages from emergency localStorage`);
+
+    // Clear immediately to prevent double-recovery from another bridge instance
+    window.localStorage.removeItem(LOCALSTORAGE_EMERGENCY_KEY);
+
+    // Send each recovered message to background
+    const failures = [];
+    queue.forEach(msg => {
+      chrome.runtime.sendMessage({ type: 'SAVE_MESSAGE', data: msg }).catch(err => {
+        console.warn(`⚠️ BRIDGE: Failed to recover message ${msg.id}:`, err.message);
+        failures.push(msg);
+      });
+    });
+
+    // Re-store any failures (best effort, async)
+    setTimeout(() => {
+      if (failures.length > 0) {
+        try {
+          window.localStorage.setItem(LOCALSTORAGE_EMERGENCY_KEY, JSON.stringify(failures));
+          console.warn(`⚠️ BRIDGE: ${failures.length} messages re-queued to localStorage`);
+        } catch (e) {
+          // Give up
+        }
+      }
+    }, 2000);
+  } catch (e) {
+    console.warn('⚠️ BRIDGE: localStorage recovery failed:', e.message);
   }
 })();
+
+// ===== EVENT LISTENERS =====
 
 // Listen for messages from MAIN world via CustomEvent
 window.addEventListener('KYT_MESSAGE_CAPTURED', async (event) => {
@@ -45,12 +148,7 @@ window.addEventListener('KYT_MESSAGE_CAPTURED', async (event) => {
   }
 
   console.log('🔵 BRIDGE: Received KYT_MESSAGE_CAPTURED event');
-
-  // Queue Manager handles all fallbacks internally:
-  // context valid → sendMessage to background
-  // context invalid → encrypted chrome.storage.local → unencrypted storage → window.localStorage
-  console.log('🔵 BRIDGE: Enqueuing via Queue Manager');
-  await queueManager.capture(messageData);
+  await captureMessage(messageData);
 });
 
 // Listen for context requests from MAIN world
@@ -62,7 +160,7 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
 
   // Check if extension context is still valid
   // If invalid and we're the latest bridge (no newer bridge injected), return silently.
-  // The MAIN world's 10s timeout will handle it. Do NOT dispatch an error response here —
+  // The MAIN world's 15s timeout will handle it. Do NOT dispatch an error response here —
   // it would race with a newly injected bridge's success response.
   if (!chrome.runtime?.id) {
     console.warn('⚠️ BRIDGE: Extension context invalidated - cannot get context');

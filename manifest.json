@@ -67,8 +67,7 @@
         "platforms/claude/content_bridge.js"
       ],
       "run_at": "document_start",
-      "all_frames": false,
-      "type": "module"
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [
@@ -95,6 +94,7 @@
         "src/content/queue-manager.js",
         "src/storage/local-queue.js",
         "src/utils/crypto.js",
+        "src/utils/normalize-platform.js",
         "kyt-memory-injection-builder.js"
       ],
       "matches": [
