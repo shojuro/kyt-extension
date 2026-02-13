@@ -21,6 +21,7 @@ import { buildMemoryInjection, buildEmptyInjection, buildErrorInjection } from '
 import { classifyContent } from './src/taxonomy-classifier.js';
 import { applyKeywordBoost } from './src/keyword-boost.js';
 import { filterByConfidence } from './src/confidence-filter.js';
+import { detectDeflection, applyDeflectionPenalty } from './src/assistant-quality-detector.js';
 import { HistoryImporter } from './src/history-import/index.js';
 import { getSession, refreshSession, isAuthenticated, getAccessToken, AUTH_SESSION_KEY } from './src/auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
@@ -718,13 +719,17 @@ async function saveMessage(messageData) {
       return { saved: false, reason: 'duplicate', duplicateOf: duplicate.messageId };
     }
 
+    // Detect assistant deflections/echoes (Layer 1: capture-time tagging)
+    const deflectionCheck = detectDeflection(messageData.content, messageData.role);
+
     // Add new message with content hash
     const newMessage = {
       ...messageData,
       contentHash,
       capturedAt: Date.now(),
       messageId: messageData.messageId || generateMessageId(),
-      timestamp: timestamp
+      timestamp: timestamp,
+      ...(deflectionCheck.isDeflection ? { deflection: deflectionCheck.confidence } : {})
     };
 
     messages.push(newMessage);
@@ -1178,6 +1183,18 @@ async function getContextForInjection(userMessage, config) {
       }
       return true;
     });
+
+    // DEFLECTION PENALTY (Layer 2: retrieval-time)
+    // Penalize assistant deflections/echoes so they naturally fall below confidence threshold
+    for (const item of contextItems) {
+      const check = detectDeflection(item.content, item.role);
+      if (check.isDeflection && check.confidence > 0) {
+        const before = item.cross_encoder_score ?? item.weighted_score ?? item.rrf_score ?? 'n/a';
+        applyDeflectionPenalty(item, check.confidence);
+        const after = item.cross_encoder_score ?? item.weighted_score ?? item.rrf_score ?? 'n/a';
+        console.log(`🗑️ Deflection penalty: ${check.reason} | score ${before} → ${after} (ID: ${item.id || item.message_id || 'unknown'})`);
+      }
+    }
 
     // Filter by minimum distance/score (client-side double check)
     // Note: searchHybrid returns 'weighted_score' which combines distance and BM25
