@@ -1348,14 +1348,12 @@ async function getContextForInjection(userMessage, config) {
 
       console.log('✅ Memory Injection Protocol: Injection block built with', filteredItems.length, 'items');
     } else {
-      // Empty state - allow LLM to use native search
-      formattedContext = buildEmptyInjection(
-        userMessage,
-        transformationMetadata.transformed ? transformationMetadata.optimized : null,
-        elapsedTime
-      );
+      // No results — do NOT inject an empty block.
+      // An empty block saying "No relevant memories found" actively signals the LLM
+      // to skip KYT and use web search. Silence is better than a negative signal.
+      formattedContext = null;
 
-      console.log('ℹ️ Memory Injection Protocol: Empty injection (native search allowed)');
+      console.log('ℹ️ Memory Injection Protocol: No results — skipping injection (no negative signal)');
     }
 
     // VALIDATION FIX: Log API metrics periodically

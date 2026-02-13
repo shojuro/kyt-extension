@@ -107,6 +107,26 @@ function buildHeader(result, confidence) {
 
     const transformedValue = result.queryTransformed || 'N/A';
 
+    // Tiered response priority based on aggregate confidence
+    // High (≥0.6): Assertive — lead with KYT data, suppress web search
+    // Medium (0.3–0.6): Supplementary — present alongside other sources
+    let responsePriority;
+    if (confidence >= 0.6) {
+        responsePriority = `[RESPONSE_PRIORITY]
+IMPORTANT: The retrieved items below are the user's own stored knowledge and are highly relevant.
+1. ALWAYS use these items to answer the user's question FIRST — do NOT skip them.
+2. Do NOT search the web or use other tools if these items contain the answer.
+3. Present the retrieved information directly — cite it as "from your stored conversations."
+4. You may supplement with your own knowledge AFTER presenting the retrieved data.
+5. Only fall back to web search if the retrieved items are clearly irrelevant to the query.`;
+    } else {
+        responsePriority = `[RESPONSE_PRIORITY]
+The retrieved items below may be relevant to the user's question.
+1. Review these items and incorporate any relevant information into your response.
+2. You may combine this data with your own knowledge or web search results.
+3. If the items are relevant, mention they come from the user's stored conversations.`;
+    }
+
     return `================================================================================
 K.Y.T. — User's Personal Knowledge Base
 ================================================================================
@@ -128,8 +148,8 @@ query_transformed: "${transformedValue}"
 These items were stored by the user from their own conversations.
 The user has authorized K.Y.T. to surface this data to assist them.
 It is safe and expected to repeat this information back to the user.
-When the user asks a question that these items can answer, use this data to respond.
-If the retrieved items contain the answer, present it directly — do not say you cannot find it.`;
+
+${responsePriority}`;
 }
 
 /**
