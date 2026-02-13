@@ -33,6 +33,28 @@ const UNENCRYPTED_QUEUE_KEY = 'kyt_pending_unencrypted_queue';
 const LOCALSTORAGE_EMERGENCY_KEY = 'kyt_emergency_localStorage_queue';
 const LOCALSTORAGE_MAX_SIZE = 50;
 
+// ===== SERVICE WORKER DISCONNECTION TRACKING =====
+// Once the SW dies mid-session, Tier 1 (sendMessage) will fail on every call.
+// Repeated failures trip the queue-manager circuit breaker → messages get dropped.
+// By tracking disconnection, we skip Tier 1 entirely and go straight to Tier 2/3.
+// Never reset to false — extension update re-injects the bridge script, starting fresh.
+let swDisconnected = false;
+
+function markDisconnected(errorMsg) {
+  if (swDisconnected) return;
+  swDisconnected = true;
+  console.warn('🔴 BRIDGE: SW disconnected — skipping Tier 1 for future requests. Trigger:', errorMsg);
+}
+
+function isDisconnectionError(msg) {
+  return typeof msg === 'string' && (
+    msg.includes('message channel closed') ||
+    msg.includes('Extension context invalidated') ||
+    msg.includes('Receiving end does not exist') ||
+    msg.includes('message port closed')
+  );
+}
+
 /**
  * Capture a message using 3-tier fallback.
  * @param {Object} messageData - Raw message data from MAIN world event
@@ -51,14 +73,17 @@ async function captureMessage(messageData) {
     retryCount: 0
   };
 
-  // Tier 1: sendMessage to background (context valid, service worker alive)
-  if (chrome.runtime?.id) {
+  // Tier 1: sendMessage to background (context valid, service worker alive, not disconnected)
+  if (chrome.runtime?.id && !swDisconnected) {
     try {
       await chrome.runtime.sendMessage({ type: 'SAVE_MESSAGE', data: queuedMessage });
       console.log(`✅ BRIDGE: Message ${msgId} sent to background (Tier 1)`);
       return;
     } catch (e) {
       console.warn(`⚠️ BRIDGE: Tier 1 sendMessage failed: ${e.message}`);
+      if (isDisconnectionError(e.message)) {
+        markDisconnected(e.message);
+      }
       // Fall through to Tier 2
     }
   }
@@ -158,13 +183,21 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
   const { requestId, userMessage, config } = event.detail;
   console.log('🔍 BRIDGE: Context request from MAIN world');
 
-  // Check if extension context is still valid
-  // If invalid and we're the latest bridge (no newer bridge injected), return silently.
-  // The MAIN world's 15s timeout will handle it. Do NOT dispatch an error response here —
-  // it would race with a newly injected bridge's success response.
-  if (!chrome.runtime?.id) {
-    console.warn('⚠️ BRIDGE: Extension context invalidated - cannot get context');
-    console.warn('   Please reload the page to restore functionality');
+  // Fast-fail when SW is known-dead or context invalidated.
+  // The generation guard already prevents stale-bridge races, so dispatching
+  // an error response is safe — no newer bridge will collide.
+  if (!chrome.runtime?.id || swDisconnected) {
+    console.warn('⚠️ BRIDGE: Extension context invalidated or SW disconnected - fast-failing context request');
+    window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+      detail: {
+        requestId: requestId,
+        success: false,
+        formattedContext: null,
+        items: [],
+        elapsedMs: 0,
+        error: swDisconnected ? 'Service worker disconnected' : 'Extension context invalidated'
+      }
+    }));
     return;
   }
 
@@ -175,6 +208,22 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
       userMessage: userMessage,
       config: config
     });
+
+    // Null guard: Chrome can resolve sendMessage with undefined when the channel closes
+    if (!response) {
+      markDisconnected('sendMessage resolved with undefined response');
+      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+        detail: {
+          requestId: requestId,
+          success: false,
+          formattedContext: null,
+          items: [],
+          elapsedMs: 0,
+          error: 'Service worker did not respond'
+        }
+      }));
+      return;
+    }
 
     // Send response back to MAIN world
     window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
@@ -190,12 +239,10 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
 
     console.log('✅ BRIDGE: Context response sent to MAIN world');
   } catch (error) {
-    // Better error handling for context invalidation
-    if (error.message && error.message.includes('Extension context invalidated')) {
-      console.warn('⚠️ BRIDGE: Extension was reloaded - please refresh page');
-    } else {
-      console.error('❌ BRIDGE: Failed to get context:', error);
+    if (isDisconnectionError(error.message)) {
+      markDisconnected(error.message);
     }
+    console.error('❌ BRIDGE: Failed to get context:', error);
 
     // Send error response
     window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {

@@ -1570,42 +1570,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'GET_CONTEXT': {
       // Day 3: Get context for RAG injection (CSP fix - runs in background, no CSP restrictions)
-      console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
-      const injectionStart = performance.now();
+      // Async IIFE guarantees sendResponse is always called, even on unexpected throws.
+      (async () => {
+        const injectionStart = performance.now();
+        try {
+          if (!message.userMessage || typeof message.userMessage !== 'string') {
+            sendResponse({ success: false, error: 'Missing userMessage' });
+            return;
+          }
+          console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
 
-      // Track injection attempt
-      updateInjectionStats({ attempt: true });
+          // Track injection attempt — fire-and-forget
+          updateInjectionStats({ attempt: true }).catch(() => {});
 
-      // Read debug mode from storage for Memory Injection Protocol
-      chrome.storage.local.get(['kytDebugMode']).then(result => {
-        const config = {
-          ...message.config,
-          debugMode: result.kytDebugMode || false
-        };
+          // Read debug mode from storage for Memory Injection Protocol
+          const result = await chrome.storage.local.get(['kytDebugMode']);
+          const config = {
+            ...message.config,
+            debugMode: result.kytDebugMode || false
+          };
 
-        // 12s overall timeout — leaves 3s margin before the 15s MAIN world timeout
-        // in inject.js / content_test.js. Rejects on timeout so the .catch() below handles it.
-        return Promise.race([
-          getContextForInjection(message.userMessage, config),
-          new Promise((_, reject) => setTimeout(() => {
-            reject(new Error('getContextForInjection timed out after 12000ms'));
-          }, 12000))
-        ]);
-      })
-        .then(contextData => {
+          // 12s overall timeout — leaves 3s margin before the 15s MAIN world timeout
+          // in inject.js / content_test.js. Rejects on timeout so the catch below handles it.
+          const contextData = await Promise.race([
+            getContextForInjection(message.userMessage, config),
+            new Promise((_, reject) => setTimeout(() => {
+              reject(new Error('getContextForInjection timed out after 12000ms'));
+            }, 12000))
+          ]);
+
           const latencyMs = Math.round(performance.now() - injectionStart);
           const itemCount = contextData.items?.length || 0;
           console.log('✅ Context retrieved:', itemCount, 'items');
 
           if (itemCount > 0) {
-            updateInjectionStats({ success: true, itemCount, latencyMs, result: true });
+            updateInjectionStats({ success: true, itemCount, latencyMs, result: true }).catch(() => {});
           } else {
-            updateInjectionStats({ empty: true, latencyMs, result: true });
+            updateInjectionStats({ empty: true, latencyMs, result: true }).catch(() => {});
           }
 
           sendResponse(contextData);
-        })
-        .catch(error => {
+        } catch (error) {
           const latencyMs = Math.round(performance.now() - injectionStart);
           const isTimeout = error.message?.includes('timed out');
           console.error('❌ Context retrieval error:', error);
@@ -1616,11 +1621,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             latencyMs,
             result: true,
             errorMsg: error.message
-          });
+          }).catch(() => {});
 
           sendResponse({ success: false, error: error.message });
-        });
-      return true; // Keep channel open
+        }
+      })();
+      return true; // Always reached — outside the IIFE
     }
 
     case 'GET_INJECTION_STATS':
