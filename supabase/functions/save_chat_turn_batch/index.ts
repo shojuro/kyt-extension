@@ -1,10 +1,17 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
-import { extractEntities } from '../_shared/entity-extractor.ts';
+import { extractEntities, saveEntitiesWithMentions } from '../_shared/entity-extractor.ts';
 import { classifyMemory } from '../_shared/memory-classifier.ts';
 
 const MAX_BATCH_SIZE = 50;
+
+// Platform normalization (inline — Deno edge functions can't import from client src/)
+const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli']);
+function normalizePlatform(p: string | undefined): 'chatgpt' | 'claude' | 'cli' {
+  if (p && VALID_PLATFORMS.has(p)) return p as 'chatgpt' | 'claude' | 'cli';
+  return 'chatgpt';
+}
 
 const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
@@ -40,6 +47,25 @@ serve(async (req) => {
             Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
         );
 
+        // Extract user from JWT if present (authenticated mode)
+        // Override user_id on all turns with the authenticated user's ID
+        const authHeader = req.headers.get('Authorization');
+        if (authHeader?.startsWith('Bearer ') && authHeader.length > 50) {
+            try {
+                const { data: { user }, error } = await supabase.auth.getUser(
+                    authHeader.slice(7),
+                );
+                if (user && !error) {
+                    console.log(`JWT user extracted: ${user.id}, applying to ${turns.length} turns`);
+                    for (const turn of turns) {
+                        turn.user_id = user.id;
+                    }
+                }
+            } catch (jwtErr) {
+                console.warn('JWT extraction failed, using body user_id:', (jwtErr as Error).message);
+            }
+        }
+
         // FAST PATH: When skipping AI processing, do a single batch upsert
         // This is ~10x faster than sequential writes
         if (skip_ai_processing) {
@@ -48,7 +74,7 @@ serve(async (req) => {
                 return {
                     user_id: turn.user_id,
                     conversation_id: turn.conversation_id,
-                    platform: turn.platform,
+                    platform: normalizePlatform(turn.platform),
                     content: turn.content,
                     embedding: null, // Will be backfilled later
                     impact_score: 0,
@@ -122,7 +148,7 @@ serve(async (req) => {
                     .upsert({
                         user_id: turn.user_id,
                         conversation_id: turn.conversation_id,
-                        platform: turn.platform,
+                        platform: normalizePlatform(turn.platform),
                         content: turn.content,
                         embedding,
                         impact_score: gravity.impact_score,
@@ -143,6 +169,28 @@ serve(async (req) => {
                 if (error) throw error;
 
                 if (data && data.length > 0) {
+                    // Save extracted entities (missing from batch path — fix)
+                    const extractedEntities = entities.status === 'fulfilled' ? entities.value : [];
+                    if (extractedEntities.length > 0 && turn.user_id) {
+                        try {
+                            await saveEntitiesWithMentions(
+                                extractedEntities,
+                                data[0].id,
+                                turn.conversation_id || data[0].id,
+                                turn.user_id,
+                                supabase,
+                                hfClient
+                            );
+                            // Mark chat_turn as having entities extracted
+                            await supabase
+                                .from('chat_turns')
+                                .update({ entities_extracted: true })
+                                .eq('id', data[0].id);
+                        } catch (e) {
+                            console.warn(`Entity save failed for turn ${data[0].id}: ${(e as Error).message}`);
+                        }
+                    }
+
                     results.push({ id: data[0].id, success: true, duplicate: false });
                 } else {
                     results.push({ success: true, duplicate: true });

@@ -1,7 +1,58 @@
 # KYT Validation Sprint - Progress Tracker
-# Last Updated: 2026-02-12
+# Last Updated: 2026-02-14
 
 ## Current Branch: feature/history-import
+
+## ✅ Advanced GraphRAG Implementation (2026-02-14)
+
+### Problem: Concept Labeling Gap
+User remembers "the walking analogy" but stored text says "you don't tell a child who took 4 steps to scratch everything." Embedding models cannot bridge this gap — it's a concept labeling problem. GraphRAG is the solution: GPT-4o-mini labels concepts at ingest, graph walk retrieves by label at query time.
+
+### Phase 0: Bug Fixes
+- **0A: entities_extracted flag** — `save_chat_turn/index.ts` + `save_chat_turn_batch/index.ts`: After `saveEntitiesWithMentions()` succeeds, sets `chat_turns.entities_extracted = true`. Without this, backfill can't know which turns already had extraction.
+- **0B: Vector dimension mismatch** — Migration `20260216000000`: `find_similar_entities` RPC changed from `VECTOR(1536)` to `VECTOR(4096)` (Qwen3-Embedding-8B). Entity resolution depends on this.
+
+### Phase 1: Text-Based Entity Search Fallback
+- Migration `20260216000001`: Enables `pg_trgm` extension, creates GIN trigram indexes on `entities.canonical_name/normalized_name/entity_text`, adds `search_entities_by_text()` RPC with 3 strategies (trigram similarity, ILIKE substring, keyword splitting).
+- `get_relevant_memories.ts`: `searchEntities()` falls back to text search when embedding search returns 0.
+- `browser-search.js`: `searchGraphWalk()` adds text entity search fallback client-side.
+
+### Phase 2+3: Multi-Hop Graph Walk + Temporal Decay
+- Migration `20260216000002`: `temporal_decay_factor()` helper (half-life 90 days). Recursive `graph_walk_from_entities()` with `p_max_depth` and `p_max_intermediate` params. Cumulative strength = product of edge strengths × temporal decay.
+- Both server and client integration pass `p_max_depth: 2, p_max_intermediate: 20`.
+
+### Phase 4: Relationship Classification
+- Migration `20260216000003`: Adds `relationship_type` column to `entity_relationships` + index. Updates `upsert_entity_relationship` with 4th param; "keep more-specific type" conflict logic.
+- `entity-extractor.ts`: New `classifyRelationshipType()` derives type from entity metadata (family_of, works_with, illustrates, discussed_together, co_occurrence).
+
+### Phase 5: Entity Resolution (Fuzzy Dedup)
+- `entity-extractor.ts`: After exact canonical_name match fails, calls `find_similar_entities()` (4096-dim). Merges only if same `entity_type` + same relationship suffix + similarity >= 0.90. Prevents "Jenn"/"Jennifer_trainer" duplication while keeping "Jennifer_trainer"/"Jennifer_sister" distinct.
+
+### Phase 6: Query-Time Concept Detection
+- `get_relevant_memories.ts`: New `detectConceptEntities()` uses text search to find CONCEPT/ANALOGY/THEME entities. Runs in parallel with entity search + HyDE. Concept entity IDs merged into `boostEntityIds` for graph walk.
+
+### Phase 7: Entity Re-Extraction Backfill
+- New edge function `backfill_entities/index.ts`: Queries `entities_extracted = false`, runs `extractEntities()` + `saveEntitiesWithMentions()` per row. Batch size 5, max 100/invocation, 2s delay between batches.
+- `background.js`: Added `KYT_DEBUG.backfillEntities()` debug command.
+
+### New Files
+| File | Purpose |
+|------|---------|
+| `supabase/migrations/20260216000000_fix_find_similar_entities_dims.sql` | Fix VECTOR(1536)→4096 |
+| `supabase/migrations/20260216000001_text_entity_search.sql` | pg_trgm + search_entities_by_text RPC |
+| `supabase/migrations/20260216000002_multi_hop_graph_walk.sql` | Recursive graph walk + temporal decay |
+| `supabase/migrations/20260216000003_relationship_classification.sql` | relationship_type column + updated upsert |
+| `supabase/functions/backfill_entities/index.ts` | Entity re-extraction backfill |
+
+### Verification Plan
+1. Apply migrations sequentially via Supabase
+2. `SELECT * FROM search_entities_by_text('walking analogy', '<uid>', 5)` — should match ANALOGY entities
+3. `SELECT temporal_decay_factor(NOW() - INTERVAL '90 days')` → ~0.50
+4. `SELECT * FROM graph_walk_from_entities(ARRAY['<id>']::UUID[], '<uid>', 10, 2, 20)` — depth-2 results
+5. Call `backfill_entities` edge function → verify entities_extracted flipped
+6. Search "walking analogy" → concept detection finds ANALOGY entity → graph walk retrieves original chat_turn
+
+---
 
 ## ✅ SUCCESSFUL CHECKPOINT: Cross-Platform Retrieval Verified (2026-02-12)
 

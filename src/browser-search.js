@@ -16,8 +16,11 @@ import { QueryExpander } from './query-expansion.js';
 import {
   isEmbeddingCircuitOpen,
   recordEmbeddingSuccess,
-  recordEmbeddingFailure
+  recordEmbeddingFailure,
+  jinaCB
 } from './embedding-circuit-breaker.js';
+import { fetchWithTimeout } from './utils/fetch.js';
+import { generateHyDEDocument, hydeCB } from './hyde-search-generator.js';
 
 // Initialize expander
 const queryExpander = new QueryExpander();
@@ -27,32 +30,10 @@ const API_TIMEOUT_MS = 8000; // 8 seconds max for HuggingFace calls
 const API_RETRY_DELAY_MS = 500; // 500ms between retries
 const API_MAX_RETRIES = 2; // Max retries for transient failures
 
-/**
- * Fetch with timeout to prevent Chrome message channel timeout
- * @param {string} url - URL to fetch
- * @param {Object} options - Fetch options
- * @param {number} timeoutMs - Timeout in milliseconds
- * @returns {Promise<Response>} - Fetch response or throws on timeout
- */
-async function fetchWithTimeout(url, options, timeoutMs = API_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    return response;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    if (error.name === 'AbortError') {
-      throw new Error(`API request timed out after ${timeoutMs}ms`);
-    }
-    throw error;
-  }
-}
+// Jina reranker settings — capped at 5s to stay within 10s injection budget
+const JINA_TIMEOUT_MS = 5000;  // 5s timeout (was 15s, exceeded injection deadline)
+const MAX_RERANK_DOCS = 10;    // Match top_n; no point sending more than we keep
+const MAX_JINA_ATTEMPTS = 1;   // Single attempt only — skip reranking if cold
 
 /**
  * Get API configuration from chrome.storage
@@ -173,6 +154,49 @@ async function generateQueryEmbedding(query, _apiKey) {
 
   console.error(`❌ Embedding generation failed after ${API_MAX_RETRIES + 1} attempts: ${lastError?.message}`);
   return null; // Graceful degradation - semantic search will be skipped
+}
+
+/**
+ * Pre-warm the HuggingFace embedding model by sending a lightweight request.
+ * Eliminates cold-start penalty (~5-8s) on first real query.
+ * Safe to call repeatedly — returns silently if circuit breaker is open or keys missing.
+ * @returns {Promise<boolean>} true if warm-up succeeded, false otherwise
+ */
+export async function prewarmEmbeddingModel() {
+  try {
+    const circuitStatus = await isEmbeddingCircuitOpen();
+    if (circuitStatus.open) return false;
+
+    const config = await getConfig();
+    if (!config.huggingfaceKey) return false;
+
+    const response = await fetchWithTimeout(
+      'https://router.huggingface.co/scaleway/v1/embeddings',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.huggingfaceKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'qwen3-embedding-8b',
+          input: 'warmup'
+        })
+      },
+      API_TIMEOUT_MS
+    );
+
+    if (response.ok) {
+      await recordEmbeddingSuccess();
+      console.log('🔥 Embedding model pre-warmed successfully');
+      return true;
+    }
+
+    return false;
+  } catch {
+    // Silently fail — pre-warm is best-effort
+    return false;
+  }
 }
 
 /**
@@ -475,6 +499,156 @@ async function searchSupabaseText(query, options = {}) {
 }
 
 /**
+ * Graph walk: traverse entity relationships to find conceptually related chat_turns.
+ * Generates query embedding, then calls search_entities_by_embedding → graph_walk_from_entities RPCs.
+ *
+ * @param {string} query - Search query text
+ * @param {Object} options - Search options
+ * @param {number} options.limit - Max results (default: 10)
+ * @param {number} options.maxTimestamp - Exclude messages newer than this
+ * @returns {Promise<Object[]>} Results with relationship_strength for RRF
+ */
+async function searchGraphWalk(query, options = {}) {
+  const { limit = 10, maxTimestamp = 0 } = options;
+
+  if (!query) return [];
+
+  // Generate embedding for entity search
+  const queryEmbedding = await generateQueryEmbedding(query, null);
+  if (!queryEmbedding) return [];
+
+  try {
+    const config = await getConfig();
+    const userId = config.userId || '00000000-0000-0000-0000-000000000000';
+
+    // Step 1: Find entities matching the query embedding
+    const entityResponse = await fetchWithTimeout(
+      `${config.supabaseUrl}/rest/v1/rpc/search_entities_by_embedding`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': config.supabaseKey,
+          'Authorization': `Bearer ${config.supabaseKey}`
+        },
+        body: JSON.stringify({
+          query_embedding: queryEmbedding,
+          match_threshold: 0.8,
+          match_count: 5,
+          p_user_id: userId
+        })
+      },
+      5000
+    );
+
+    if (!entityResponse.ok) {
+      console.warn(`   ⚠️ Entity search failed: ${entityResponse.status}`);
+      return [];
+    }
+
+    let entities = await entityResponse.json();
+
+    // Fallback: text-based entity search if embedding search returned 0
+    if (!entities || entities.length === 0) {
+      console.log(`   🔗 Entity embedding search: 0 results, trying text fallback...`);
+      try {
+        const textResponse = await fetchWithTimeout(
+          `${config.supabaseUrl}/rest/v1/rpc/search_entities_by_text`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': config.supabaseKey,
+              'Authorization': `Bearer ${config.supabaseKey}`
+            },
+            body: JSON.stringify({
+              p_query_text: query,
+              p_user_id: userId,
+              p_match_count: 5
+            })
+          },
+          5000
+        );
+
+        if (textResponse.ok) {
+          entities = await textResponse.json();
+          if (entities && entities.length > 0) {
+            console.log(`   🔗 Entity text fallback: found ${entities.length} entities`);
+          }
+        }
+      } catch (textErr) {
+        console.warn(`   ⚠️ Entity text search failed: ${textErr.message}`);
+      }
+    }
+
+    if (!entities || entities.length === 0) {
+      return [];
+    }
+
+    const entityIds = entities.map(e => e.id);
+    console.log(`   🔗 Graph walk: found ${entityIds.length} matching entities`);
+
+    // Step 2: Walk the graph from these entities
+    const graphResponse = await fetchWithTimeout(
+      `${config.supabaseUrl}/rest/v1/rpc/graph_walk_from_entities`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': config.supabaseKey,
+          'Authorization': `Bearer ${config.supabaseKey}`
+        },
+        body: JSON.stringify({
+          p_entity_ids: entityIds,
+          p_user_id: userId,
+          p_max_results: limit,
+          p_max_depth: 2,
+          p_max_intermediate: 20
+        })
+      },
+      5000
+    );
+
+    if (!graphResponse.ok) {
+      console.warn(`   ⚠️ Graph walk RPC failed: ${graphResponse.status}`);
+      return [];
+    }
+
+    const graphData = await graphResponse.json();
+    if (!graphData || graphData.length === 0) {
+      return [];
+    }
+
+    // Apply maxTimestamp filter and map to searchHybrid format
+    const results = graphData
+      .filter(item => {
+        if (maxTimestamp > 0) {
+          return (item.start_timestamp || 0) <= maxTimestamp;
+        }
+        return true;
+      })
+      .map(item => ({
+        message_id: item.chat_turn_id,
+        id: item.chat_turn_id,
+        content: item.content,
+        conversation_id: item.conversation_id,
+        source: item.platform,
+        timestamp: item.start_timestamp,
+        graph_score: item.relationship_strength,
+        traversal_depth: item.traversal_depth,
+        connected_entity: item.connected_entity_text
+      }));
+
+    console.log(`   ✅ Graph walk: ${results.length} results (from ${graphData.length} raw)`);
+    return results;
+
+  } catch (error) {
+    console.warn(`   ⚠️ Graph walk failed: ${error.message}`);
+    return [];
+  }
+}
+
+/**
  * Phase 3: Reciprocal Rank Fusion (RRF) for merging ranked lists
  * 
  * Combines multiple ranked lists into a single ranking
@@ -546,6 +720,9 @@ export async function searchHybrid(query, options = {}) {
     semanticThreshold = 0.5,
     enableBM25 = true,
     enableSemantic = true,
+    enableHyDE = false,       // Off by default until tested
+    enableGraph = false,      // Off by default until entities are populated
+    openaiKey = null,
     role = null,
     source = null,
     maxTimestamp = 0
@@ -578,7 +755,17 @@ export async function searchHybrid(query, options = {}) {
 
       const rankedLists = [];
 
-
+      // Start HyDE generation in parallel with everything else (non-blocking)
+      let hydePromise = null;
+      if (enableHyDE && openaiKey) {
+        const cbStatus = await hydeCB.isOpen();
+        if (!cbStatus.open) {
+          console.log(`   🔮 Starting HyDE document generation in parallel...`);
+          hydePromise = generateHyDEDocument(query, openaiKey).catch(() => null);
+        } else {
+          console.log(`   ⚡ HyDE circuit breaker open, skipping`);
+        }
+      }
 
       // Run BM25 keyword search (local, fast)
       if (enableBM25 && localMessages.length > 0) {
@@ -620,55 +807,103 @@ export async function searchHybrid(query, options = {}) {
         }
       }
 
-      // Supabase text search fallback: if local BM25 returned 0 results,
-      // query Supabase directly. Cross-platform memories only exist in Supabase.
-      if (enableBM25 && rankedLists.length === 0) {
-        console.log(`   🔤 Local BM25 empty, trying Supabase text search...`);
-        const supabaseTextResults = await searchSupabaseText(query, {
-          limit: limit * 2,
-          role,
-          source,
-          maxTimestamp
-        });
-        if (supabaseTextResults.length > 0) {
-          rankedLists.push(supabaseTextResults);
+      // Run Supabase text search + semantic vector search in parallel
+      // (independent remote calls — parallelizing saves ~2-3s vs sequential)
+      if (enableBM25) console.log(`   🔤 Running Supabase text search (cross-platform recall)...`);
+      if (enableSemantic) console.log(`   🧠 Running semantic vector search...`);
+
+      let semanticAvailable = false;
+      if (enableGraph) console.log(`   🔗 Running graph walk (entity traversal)...`);
+
+      const [supabaseTextResults, semanticResults, graphWalkResults] = await Promise.all([
+        enableBM25
+          ? searchSupabaseText(query, { limit: limit * 2, role, source, maxTimestamp })
+              .catch(err => { console.warn('Supabase text search failed:', err.message); return []; })
+          : Promise.resolve([]),
+        enableSemantic
+          ? searchMessages(query, {
+              limit: limit * 2,
+              threshold: semanticThreshold,
+              role,
+              source,
+              skipTransformation: true, // Phase 1 fix: no transformation for hybrid
+              minTimestamp: 0 // Disable server-side temporal filter; we filter client-side with maxTimestamp
+            }).catch(err => { console.warn('Semantic search failed:', err.message); return []; })
+          : Promise.resolve([]),
+        enableGraph
+          ? searchGraphWalk(query, { limit: limit * 2, maxTimestamp })
+              .catch(err => { console.warn('Graph walk failed:', err.message); return []; })
+          : Promise.resolve([])
+      ]);
+
+      // Process Supabase text results
+      if (supabaseTextResults.length > 0) {
+        console.log(`   ✅ Supabase text search: ${supabaseTextResults.length} results`);
+        rankedLists.push(supabaseTextResults);
+      }
+
+      // Process semantic results
+      console.log(`   ✅ Semantic: ${semanticResults.length} results`);
+      if (semanticResults.length > 0) {
+        semanticAvailable = true;
+      }
+
+      // Normalize semantic results to have message_id
+      // Apply client-side maxTimestamp filter (exclude recent messages)
+      const normalizedSemanticResults = semanticResults
+        .filter(r => {
+          if (maxTimestamp > 0) {
+            const ts = r.msg_timestamp || r.timestamp || 0;
+            return ts <= maxTimestamp;
+          }
+          return true;
+        })
+        .map(r => ({
+          ...r,
+          message_id: r.message_id || r.id
+        }));
+
+      if (normalizedSemanticResults.length > 0) {
+        rankedLists.push(normalizedSemanticResults);
+      }
+
+      // Resolve HyDE document and run vector search if available
+      const hydeDoc = hydePromise ? await hydePromise : null;
+      if (hydeDoc) {
+        console.log(`   🔮 HyDE document ready, running semantic search with it...`);
+        try {
+          const hydeSemanticResults = await searchMessages(hydeDoc, {
+            limit: limit * 2,
+            threshold: semanticThreshold,
+            skipTransformation: true,
+            minTimestamp: 0
+          });
+
+          // Apply maxTimestamp filter client-side
+          const filteredHyde = hydeSemanticResults
+            .filter(r => {
+              if (maxTimestamp > 0) {
+                return (r.msg_timestamp || r.timestamp || 0) <= maxTimestamp;
+              }
+              return true;
+            })
+            .map(r => ({ ...r, message_id: r.message_id || r.id }));
+
+          if (filteredHyde.length > 0) {
+            console.log(`   ✅ HyDE search: ${filteredHyde.length} results`);
+            rankedLists.push(filteredHyde);
+          } else {
+            console.log(`   ⚠️ HyDE search: 0 results after filtering`);
+          }
+        } catch (hydeSearchErr) {
+          console.warn(`   ⚠️ HyDE search failed: ${hydeSearchErr.message}`);
         }
       }
 
-      // Run semantic vector search (Supabase, slower but powerful)
-      let semanticAvailable = false;
-      if (enableSemantic) {
-        console.log(`   🧠 Running semantic vector search...`);
-        const semanticResults = await searchMessages(query, {
-          limit: limit * 2,
-          threshold: semanticThreshold,
-          role,
-          source,
-          skipTransformation: true, // Phase 1 fix: no transformation for hybrid
-          minTimestamp: 0 // Disable server-side temporal filter; we filter client-side with maxTimestamp
-        });
-        console.log(`   ✅ Semantic: ${semanticResults.length} results`);
-
-        if (semanticResults.length > 0) {
-          semanticAvailable = true;
-        }
-
-        // Normalize semantic results to have message_id
-        // Apply client-side maxTimestamp filter (exclude recent messages)
-        const normalizedSemanticResults = semanticResults
-          .filter(r => {
-            if (maxTimestamp > 0) {
-              const ts = r.msg_timestamp || r.timestamp || 0;
-              return ts <= maxTimestamp;
-            }
-            return true;
-          })
-          .map(r => ({
-            ...r,
-            message_id: r.message_id || r.id
-          }));
-
-        rankedLists.push(normalizedSemanticResults);
+      // Add graph walk results if available
+      if (graphWalkResults && graphWalkResults.length > 0) {
+        console.log(`   ✅ Graph walk: ${graphWalkResults.length} results`);
+        rankedLists.push(graphWalkResults);
       }
 
       // Merge results using RRF
@@ -730,7 +965,8 @@ export async function searchHybrid(query, options = {}) {
       console.log(`   📊 Top result score: ${rerankedResults[0]?.rerank_score?.toFixed(4) || rerankedResults[0]?.weighted_score?.toFixed(4) || 'N/A'}\n`);
 
       // Attach metadata so callers can adapt (e.g., lower confidence threshold in BM25-only mode)
-      rerankedResults.metadata = { semanticAvailable };
+      const jinaReranked = rerankedResults.length > 0 && rerankedResults[0]?.jinaReranked === true;
+      rerankedResults.metadata = { semanticAvailable, jinaReranked };
 
       return rerankedResults;
 
@@ -751,8 +987,13 @@ export async function searchHybrid(query, options = {}) {
 
 /**
  * Rerank results using Jina Reranker API
- * Replaces broken HuggingFace BGE reranker (400 error - not supported)
- * Jina provides properly calibrated 0.0-1.0 scores for confidence filtering
+ *
+ * Features:
+ * - Circuit breaker (jinaCB) — skips instantly when Jina is consistently slow/down
+ * - Dedicated 15 s timeout (cross-encoders are slower than single-vector embeddings)
+ * - Single retry on timeout (cold-start recovery)
+ * - Batch capped at MAX_RERANK_DOCS (matches top_n)
+ * - Latency diagnostics via performance.now()
  *
  * @param {string} query - User's search query
  * @param {Array} results - Results from RRF fusion
@@ -761,94 +1002,122 @@ export async function searchHybrid(query, options = {}) {
 async function rerankResults(query, results) {
   if (results.length === 0) return results;
 
+  // Fallback helper — attaches a normalized cross_encoder_score so callers
+  // (confidence filter in background.js) still have a usable field.
+  // Min-max normalizes weighted_score to 0-1 range and marks as NOT Jina-reranked
+  // so callers can use an appropriate confidence threshold.
+  const fallback = () => {
+    const scores = results.map(r => r.weighted_score || 0);
+    const maxScore = Math.max(...scores, 0.001);
+    return results.map(r => ({
+      ...r,
+      cross_encoder_score: (r.weighted_score || 0) / maxScore,
+      jinaReranked: false
+    }));
+  };
+
+  // ── Circuit breaker gate ──────────────────────────────────────────────
+  const cbStatus = await jinaCB.isOpen();
+  if (cbStatus.open) {
+    console.warn(`   ⚡ Jina circuit breaker open, skipping reranking: ${cbStatus.reason}`);
+    return fallback();
+  }
+
   const config = await getConfig();
   const JINA_API_KEY = config.jinaKey;
 
   if (!JINA_API_KEY) {
     console.warn('   ⚠️  Jina API key not configured, skipping reranking');
-    // Return with fallback scores for confidence filter compatibility
-    return results.map(r => ({
-      ...r,
-      cross_encoder_score: r.weighted_score || 0.5 // Fallback to RRF score or neutral
-    }));
+    return fallback();
   }
 
-  try {
-    // Prepare documents for Jina reranking (max 20 for latency)
-    const documents = results.slice(0, 20).map(r => r.content || '');
+  // Prepare documents (cap at MAX_RERANK_DOCS — no point sending more than top_n)
+  const documents = results.slice(0, MAX_RERANK_DOCS).map(r => r.content || '');
+  const topN = documents.length;
 
-    console.log(`   🎯 Calling Jina Reranker (${documents.length} docs)...`);
+  // ── Retry loop (timeout-only retry for cold-start recovery) ───────────
+  let lastError = null;
 
-    const response = await fetchWithTimeout(
-      'https://api.jina.ai/v1/rerank',
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${JINA_API_KEY}`,
-          'Content-Type': 'application/json'
+  for (let attempt = 1; attempt <= MAX_JINA_ATTEMPTS; attempt++) {
+    const t0 = performance.now();
+    try {
+      console.log(`   🎯 Jina Reranker attempt ${attempt}/${MAX_JINA_ATTEMPTS} (${topN} docs, ${JINA_TIMEOUT_MS}ms timeout)...`);
+
+      const response = await fetchWithTimeout(
+        'https://api.jina.ai/v1/rerank',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${JINA_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: 'jina-reranker-v2-base-multilingual',
+            query: query,
+            documents: documents,
+            top_n: topN
+          })
         },
-        body: JSON.stringify({
-          model: 'jina-reranker-v2-base-multilingual',
-          query: query,
-          documents: documents,
-          top_n: Math.min(documents.length, 10) // Return top 10
-        })
-      },
-      API_TIMEOUT_MS
-    );
+        JINA_TIMEOUT_MS
+      );
 
-    // Handle rate limiting (429)
-    if (response.status === 429) {
-      console.warn('   ⏳ Jina rate limited, using RRF scores as fallback');
-      return results.map(r => ({
-        ...r,
-        cross_encoder_score: r.weighted_score || 0.5
-      }));
-    }
+      const latencyMs = (performance.now() - t0).toFixed(0);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`   ⚠️  Jina API error: ${response.status} - ${errorText}`);
-      return results.map(r => ({
-        ...r,
-        cross_encoder_score: r.weighted_score || 0.5
-      }));
-    }
-
-    const data = await response.json();
-
-    // Jina format: { results: [{ index, relevance_score, document: {...} }, ...] }
-    // Create a map for O(1) lookup
-    const scoreMap = new Map();
-    if (data.results && Array.isArray(data.results)) {
-      for (const item of data.results) {
-        scoreMap.set(item.index, item.relevance_score);
+      // ── HTTP error handling (no retry for non-timeout errors) ─────────
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`   ⚠️  Jina API error: ${response.status} - ${errorText} (${latencyMs}ms)`);
+        await jinaCB.recordFailure(response.status, errorText);
+        return fallback(); // Don't retry HTTP errors
       }
+
+      // ── Success ───────────────────────────────────────────────────────
+      const data = await response.json();
+
+      const scoreMap = new Map();
+      if (data.results && Array.isArray(data.results)) {
+        for (const item of data.results) {
+          scoreMap.set(item.index, item.relevance_score);
+        }
+      }
+
+      const reranked = results.map((result, idx) => {
+        const jinaScore = scoreMap.get(idx);
+        return {
+          ...result,
+          cross_encoder_score: jinaScore !== undefined ? jinaScore : 0,
+          rerank_score: jinaScore !== undefined ? jinaScore : 0,
+          jinaReranked: jinaScore !== undefined
+        };
+      });
+
+      reranked.sort((a, b) => b.cross_encoder_score - a.cross_encoder_score);
+
+      const topScore = reranked[0]?.cross_encoder_score?.toFixed(3) || 'N/A';
+      console.log(`   ✅ Jina reranked ${reranked.length} results in ${latencyMs}ms (top score: ${topScore})`);
+
+      await jinaCB.recordSuccess();
+      return reranked;
+
+    } catch (error) {
+      const latencyMs = (performance.now() - t0).toFixed(0);
+      lastError = error;
+
+      const isTimeout = error.message.includes('timed out');
+      console.warn(`   ⚠️  Jina attempt ${attempt} failed in ${latencyMs}ms: ${error.message}`);
+
+      if (isTimeout && attempt < MAX_JINA_ATTEMPTS) {
+        // Retry once on timeout (cold-start recovery)
+        console.log(`   🔄 Retrying Jina (cold-start recovery)...`);
+        continue;
+      }
+
+      // Record failure: use status 0 for timeouts (no HTTP status available)
+      await jinaCB.recordFailure(isTimeout ? 0 : 0, error.message);
+      break;
     }
-
-    // Map scores back to results, keeping original order for now
-    const reranked = results.map((result, idx) => {
-      const jinaScore = scoreMap.get(idx);
-      return {
-        ...result,
-        cross_encoder_score: jinaScore !== undefined ? jinaScore : 0,
-        rerank_score: jinaScore !== undefined ? jinaScore : 0 // Alias for backwards compat
-      };
-    });
-
-    // Sort by cross_encoder_score (higher is better)
-    reranked.sort((a, b) => b.cross_encoder_score - a.cross_encoder_score);
-
-    const topScore = reranked[0]?.cross_encoder_score?.toFixed(3) || 'N/A';
-    console.log(`   ✅ Jina reranked ${reranked.length} results (top score: ${topScore})`);
-    return reranked;
-
-  } catch (error) {
-    console.error('   ⚠️  Jina reranking failed:', error.message);
-    // Graceful degradation with RRF scores
-    return results.map(r => ({
-      ...r,
-      cross_encoder_score: r.weighted_score || 0.5
-    }));
   }
+
+  console.error(`   ⚠️  Jina reranking failed after ${MAX_JINA_ATTEMPTS} attempts: ${lastError?.message}`);
+  return fallback();
 }

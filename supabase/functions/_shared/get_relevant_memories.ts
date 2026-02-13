@@ -92,12 +92,13 @@ async function vectorSearch(
 }
 
 /**
- * Search for entities matching the query embedding
+ * Search for entities matching the query embedding, with text fallback
  */
 async function searchEntities(
     supabase: any,
     embedding: number[],
     userId: string,
+    queryText: string,
     requestId?: string
 ): Promise<{ ids: string[]; entities: any[] }> {
     const { data: entities, error } = await supabase
@@ -113,15 +114,84 @@ async function searchEntities(
             requestId,
             error: error.message
         });
+        // Fall through to text search below
+    }
+
+    const embeddingResults = entities || [];
+
+    // If embedding search found results, return them
+    if (embeddingResults.length > 0) {
+        const ids = embeddingResults.map((e: any) => e.id);
+        Logger.info(`Found ${ids.length} relevant entities via embedding`, { requestId });
+        return { ids, entities: embeddingResults };
+    }
+
+    // Fallback: text-based entity search (trigram + keyword)
+    Logger.info("Entity embedding search returned 0, falling back to text search", { requestId });
+    const { data: textEntities, error: textError } = await supabase
+        .rpc("search_entities_by_text", {
+            p_query_text: queryText,
+            p_user_id: userId,
+            p_match_count: 5
+        });
+
+    if (textError) {
+        Logger.warn("Entity text search also failed", { requestId, error: textError.message });
         return { ids: [], entities: [] };
     }
 
-    const ids = entities?.map((e: any) => e.id) || [];
+    const textResults = textEntities || [];
+    const ids = textResults.map((e: any) => e.id);
     if (ids.length > 0) {
-        Logger.info(`Found ${ids.length} relevant entities`, { requestId });
+        Logger.info(`Found ${ids.length} entities via text fallback`, { requestId });
     }
 
-    return { ids, entities: entities || [] };
+    return { ids, entities: textResults };
+}
+
+/**
+ * Detect CONCEPT/ANALOGY/THEME entities matching the query via text search.
+ * Short-circuits the embedding similarity problem: "walking analogy" maps directly
+ * to a CONCEPT/ANALOGY entity via trigram matching, bypassing vector distance.
+ */
+async function detectConceptEntities(
+    supabase: any,
+    query: string,
+    userId: string,
+    requestId?: string
+): Promise<string[]> {
+    const conceptTypes = new Set(["CONCEPT", "ANALOGY", "THEME"]);
+
+    try {
+        const { data: textEntities, error } = await supabase
+            .rpc("search_entities_by_text", {
+                p_query_text: query,
+                p_user_id: userId,
+                p_match_count: 10  // Fetch more, filter to concepts
+            });
+
+        if (error) {
+            Logger.warn("Concept detection text search failed", { requestId, error: error.message });
+            return [];
+        }
+
+        if (!textEntities || textEntities.length === 0) return [];
+
+        // Filter to CONCEPT/ANALOGY/THEME types only
+        const conceptEntities = textEntities.filter((e: any) => conceptTypes.has(e.entity_type));
+
+        if (conceptEntities.length > 0) {
+            Logger.info(`Concept detection: found ${conceptEntities.length} concept entities`, {
+                requestId,
+                concepts: conceptEntities.map((e: any) => `${e.canonical_name} (${e.entity_type})`).join(", ")
+            });
+        }
+
+        return conceptEntities.map((e: any) => e.id);
+    } catch (e) {
+        Logger.warn(`Concept detection error: ${(e as Error).message}`, { requestId });
+        return [];
+    }
 }
 
 /**
@@ -178,17 +248,52 @@ export async function getRelevantMemories(
     const rawEmbedding = (await hfClient.generateEmbeddings(query, requestId))[0];
 
     // ========================================================================
-    // STEP 2: PARALLEL - Entity search + HyDE generation
+    // STEP 2: PARALLEL - Entity search + HyDE generation + Concept detection
     // ========================================================================
-    const [entityResult, hydeResult] = await Promise.all([
-        searchEntities(supabase, rawEmbedding, userId, requestId),
+    const [entityResult, hydeResult, conceptEntityIds] = await Promise.all([
+        searchEntities(supabase, rawEmbedding, userId, query, requestId),
         useHyde && openaiApiKey
             ? generateHyDEWithFallback(query, openaiApiKey, requestId)
-            : Promise.resolve({ hydeDoc: null, usedHyde: false })
+            : Promise.resolve({ hydeDoc: null, usedHyde: false }),
+        detectConceptEntities(supabase, query, userId, requestId)
     ]);
 
-    const { ids: boostEntityIds, entities } = entityResult;
+    const { ids: embeddingEntityIds, entities } = entityResult;
     const { hydeDoc, usedHyde } = hydeResult;
+
+    // Merge concept entity IDs into boost set (deduped)
+    const boostEntityIdSet = new Set([...embeddingEntityIds, ...conceptEntityIds]);
+    const boostEntityIds = Array.from(boostEntityIdSet);
+
+    // ========================================================================
+    // STEP 2b: Graph Walk (if entities found)
+    // Traverse entity_relationships to find conceptually related chat_turns
+    // ========================================================================
+    let graphResults: Candidate[] = [];
+    if (boostEntityIds.length > 0) {
+        try {
+            const { data, error } = await supabase.rpc('graph_walk_from_entities', {
+                p_entity_ids: boostEntityIds,
+                p_user_id: userId,
+                p_max_results: topK,
+                p_max_depth: 2,
+                p_max_intermediate: 20
+            });
+            if (error) {
+                Logger.warn("Graph walk RPC failed", { requestId, error: error.message });
+            } else if (data && data.length > 0) {
+                graphResults = data.map((item: any) => ({
+                    id: item.chat_turn_id,
+                    content: item.content,
+                    gravity_score: item.relationship_strength,
+                    entity_boost: true
+                }));
+                Logger.info(`Graph walk: ${graphResults.length} results from entity traversal`, { requestId });
+            }
+        } catch (e) {
+            Logger.warn(`Graph walk error: ${(e as Error).message}`, { requestId });
+        }
+    }
 
     // ========================================================================
     // STEP 3: Adaptive Short-Circuit Check
@@ -205,10 +310,20 @@ export async function getRelevantMemories(
             topEntityConfidence: entityConfidences[0]?.confidence
         });
 
-        // Single vector search with raw query
-        const candidates = await vectorSearch(
+        // Single vector search with raw query + graph results
+        const vectorCandidates = await vectorSearch(
             supabase, rawEmbedding, userId, boostEntityIds, topK, requestId
         );
+
+        // Merge vector + graph candidates, dedup by id
+        const seen = new Set<string>();
+        const candidates: Candidate[] = [];
+        for (const c of [...vectorCandidates, ...graphResults]) {
+            if (!seen.has(c.id)) {
+                seen.add(c.id);
+                candidates.push(c);
+            }
+        }
 
         return await rerankAndFilter(query, candidates, hfClient, requestId);
     }
@@ -239,20 +354,74 @@ export async function getRelevantMemories(
     const hydeResults = searchResults[1] || [];
 
     // ========================================================================
-    // STEP 5: RRF Merge (if HyDE was used)
+    // STEP 5: RRF Merge (HyDE + Raw + Graph)
     // ========================================================================
     let candidates: Candidate[];
 
     if (hydeResults.length > 0) {
-        candidates = mergeHydeAndRawResults(hydeResults, rawResults, hydeWeight, requestId);
-        Logger.info("Merged HyDE and raw results", {
-            requestId,
-            hydeCount: hydeResults.length,
-            rawCount: rawResults.length,
-            mergedCount: candidates.length
-        });
+        if (graphResults.length > 0) {
+            // 3-way merge: reduce HyDE/raw weights to make room for graph
+            // Graph results provide conceptual connections vector search misses
+            const graphWeight = 0.2;
+            const adjustedHydeWeight = hydeWeight * (1 - graphWeight);  // 0.6 * 0.8 = 0.48
+            const adjustedRawWeight = (1 - hydeWeight) * (1 - graphWeight);  // 0.4 * 0.8 = 0.32
+
+            // Use existing RRF merge for HyDE+raw, then add graph results
+            candidates = mergeHydeAndRawResults(hydeResults, rawResults, adjustedHydeWeight / (adjustedHydeWeight + adjustedRawWeight), requestId);
+
+            // Add graph results with dedup
+            const seenIds = new Set(candidates.map(c => c.id));
+            for (const g of graphResults) {
+                if (!seenIds.has(g.id)) {
+                    seenIds.add(g.id);
+                    candidates.push({
+                        ...g,
+                        rrf_score: graphWeight * (g.gravity_score || 0.5)
+                    });
+                } else {
+                    // Boost existing candidate's score with graph signal
+                    const existing = candidates.find(c => c.id === g.id);
+                    if (existing && existing.rrf_score != null) {
+                        existing.rrf_score += graphWeight * (g.gravity_score || 0.5);
+                    }
+                }
+            }
+
+            Logger.info("3-way merge: HyDE + Raw + Graph", {
+                requestId,
+                hydeCount: hydeResults.length,
+                rawCount: rawResults.length,
+                graphCount: graphResults.length,
+                mergedCount: candidates.length
+            });
+        } else {
+            candidates = mergeHydeAndRawResults(hydeResults, rawResults, hydeWeight, requestId);
+            Logger.info("Merged HyDE and raw results", {
+                requestId,
+                hydeCount: hydeResults.length,
+                rawCount: rawResults.length,
+                mergedCount: candidates.length
+            });
+        }
     } else {
         candidates = fallbackToRawResults(rawResults, requestId);
+
+        // Even without HyDE, graph results can contribute
+        if (graphResults.length > 0) {
+            const seenIds = new Set(candidates.map(c => c.id));
+            for (const g of graphResults) {
+                if (!seenIds.has(g.id)) {
+                    seenIds.add(g.id);
+                    candidates.push(g);
+                }
+            }
+            Logger.info("Added graph results to raw fallback", {
+                requestId,
+                rawCount: rawResults.length,
+                graphCount: graphResults.length,
+                mergedCount: candidates.length
+            });
+        }
     }
 
     // ========================================================================

@@ -18,6 +18,7 @@ import { applyMMR, MMR_PRESETS } from './src/mmr.js';
 import { transformQuery, extractRecentTopics, fetchRecentTopicsFromSupabase } from './src/query-transformer.js';
 import { queueProcessor } from './src/background/queue-processor.js';
 import { buildMemoryInjection, buildEmptyInjection, buildErrorInjection } from './kyt-memory-injection-builder.js';
+import { callEdgeFunction } from './src/api-client.js';
 import { classifyContent } from './src/taxonomy-classifier.js';
 import { applyKeywordBoost } from './src/keyword-boost.js';
 import { filterByConfidence } from './src/confidence-filter.js';
@@ -1114,6 +1115,8 @@ async function getContextForInjection(userMessage, config) {
           bm25Threshold: 0.1,
           enableBM25: true,
           enableSemantic: true,
+          enableHyDE: !!apiConfig.openaiKey,
+          openaiKey: apiConfig.openaiKey,
           role: null,
           source: null,
           maxTimestamp: maxTimestamp,
@@ -1131,6 +1134,8 @@ async function getContextForInjection(userMessage, config) {
             bm25Threshold: 0.1,
             enableBM25: true,
             enableSemantic: true,
+            enableHyDE: !!apiConfig.openaiKey,
+            openaiKey: apiConfig.openaiKey,
             role: null,
             source: null,
             maxTimestamp: maxTimestamp,
@@ -2096,6 +2101,9 @@ chrome.runtime.onInstalled.addListener((details) => {
     chrome.storage.local.remove('kyt_jina_circuit_breaker', () => {
       console.log('🔌 Jina circuit breaker reset on extension update');
     });
+    chrome.storage.local.remove('kyt_hyde_circuit_breaker', () => {
+      console.log('🔌 HyDE circuit breaker reset on extension update');
+    });
 
     // Clear stale process_queue alarm (old snake_case naming)
     chrome.alarms.clear('process_queue', (wasCleared) => {
@@ -2181,7 +2189,18 @@ globalThis.KYT_DEBUG = {
   clearStorage: () => chrome.storage.local.clear().then(() => console.log('✅ Storage cleared')),
 
   // Backfill null embeddings in Supabase (for messages synced during 403/422 era)
-  backfillEmbeddings: () => backfillNullEmbeddings().then(console.log)
+  backfillEmbeddings: () => backfillNullEmbeddings().then(console.log),
+
+  // Backfill entity extraction (re-extract entities with CONCEPT/ANALOGY/THEME support)
+  backfillEntities: (force = false) => callEdgeFunction('backfill_entities', { force_reextract: force })
+    .then(result => {
+      console.log('🔗 Entity backfill result:', result);
+      return result;
+    })
+    .catch(err => {
+      console.error('❌ Entity backfill failed:', err.message);
+      return { success: false, error: err.message };
+    })
 };
 
 console.log('✅ KYT Background: Service worker ready');
@@ -2190,6 +2209,7 @@ console.log('   - KYT_DEBUG.getStats() - View storage statistics');
 console.log('   - KYT_DEBUG.getContext("test message") - Test context retrieval');
 console.log('   - KYT_DEBUG.viewStorage() - View all storage');
 console.log('   - KYT_DEBUG.backfillEmbeddings() - Backfill null embeddings in Supabase');
+console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
 console.log('   Note: chrome.runtime.sendMessage() from service worker to itself does not work');
 
 // Initialize queue processor
