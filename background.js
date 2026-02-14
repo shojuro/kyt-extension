@@ -26,6 +26,9 @@ import { detectDeflection, applyDeflectionPenalty } from './src/assistant-qualit
 import { HistoryImporter } from './src/history-import/index.js';
 import { getSession, refreshSession, isAuthenticated, getAccessToken, AUTH_SESSION_KEY } from './src/auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
+import { syncViaEdgeFunction } from './src/edge-sync.js';
+import { searchViaEdgeFunction } from './src/edge-search.js';
+import { hydeCB } from './src/hyde-search-generator.js';
 self.HistoryImporter = HistoryImporter; // Expose for debugging
 
 let activeImporter = null;
@@ -145,7 +148,6 @@ async function executeDebouncedSync() {
 
     if (mode === 'edge') {
       // Edge function path: load messages and sync via server
-      const { syncViaEdgeFunction } = await import('./src/edge-sync.js');
       const stored = await chrome.storage.local.get(['captured_messages', 'last_sync_status']);
       const messages = stored.captured_messages || [];
       const syncStatus = stored.last_sync_status || { syncedMessageIds: [] };
@@ -1007,7 +1009,6 @@ async function getContextForInjection(userMessage, config) {
 
     if (!contextConfig.disableQueryTransformation && apiAvailable) {
       // Skip transformation if HyDE CB is open (same OpenAI key — would 429 too)
-      const { hydeCB } = await import('./src/hyde-search-generator.js');
       const hydeCbStatus = await hydeCB.isOpen();
       if (hydeCbStatus.open) {
         console.log('⚡ Query transformation skipped: HyDE circuit breaker open (shared OpenAI key)');
@@ -1090,7 +1091,6 @@ async function getContextForInjection(userMessage, config) {
 
       if (routingMode === 'edge' && apiAvailable) {
         // ─── Edge function path (authenticated users) ───
-        const { searchViaEdgeFunction } = await import('./src/edge-search.js');
         contextItems = await searchViaEdgeFunction(queryToUse, {
           topK: contextConfig.maxContextItems,
         });
@@ -1769,7 +1769,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const mode = await getRoutingMode();
 
           if (mode === 'edge') {
-            const { syncViaEdgeFunction } = await import('./src/edge-sync.js');
             const stored = await chrome.storage.local.get(['captured_messages']);
             const messages = stored.captured_messages || [];
             const result = await syncViaEdgeFunction(messages);

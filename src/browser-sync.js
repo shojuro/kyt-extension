@@ -22,6 +22,7 @@ import {
 } from './embedding-circuit-breaker.js';
 import { fetchWithTimeout } from './utils/fetch.js';
 import { normalizePlatform } from './utils/normalize-platform.js';
+import { callEdgeFunction } from './api-client.js';
 
 // SYNC LOCK: Prevent race conditions when multiple syncs happen in parallel
 let syncInProgress = false;
@@ -642,7 +643,6 @@ async function triggerEntityBackfill(config) {
   }
 
   try {
-    const { callEdgeFunction } = await import('./api-client.js');
     const response = await callEdgeFunction('backfill_entities', {
       limit: 20 // Process up to 20 turns per sync cycle
     }, { timeoutMs: 15000 });
