@@ -34,16 +34,34 @@ const LOCALSTORAGE_EMERGENCY_KEY = 'kyt_emergency_localStorage_queue';
 const LOCALSTORAGE_MAX_SIZE = 50;
 
 // ===== SERVICE WORKER DISCONNECTION TRACKING =====
-// Once the SW dies mid-session, Tier 1 (sendMessage) will fail on every call.
-// Repeated failures trip the queue-manager circuit breaker → messages get dropped.
-// By tracking disconnection, we skip Tier 1 entirely and go straight to Tier 2/3.
-// Never reset to false — extension update re-injects the bridge script, starting fresh.
-let swDisconnected = false;
+// When the SW dies mid-request, Tier 1 (sendMessage) fails. Rather than permanently
+// disabling Tier 1, we use an escalating cooldown. The SW restarts via chrome.alarms
+// or the next sendMessage attempt, so we should retry after a short delay.
+// Extension update re-injects the bridge script entirely, starting fresh.
+
+let swDisconnectedUntil = 0;   // Timestamp when cooldown expires (0 = not cooling down)
+let swDisconnectCount = 0;     // Consecutive failures — drives escalation
+
+// Cooldown: 5s → 15s → 30s → 60s (capped)
+const SW_COOLDOWN_STEPS = [5000, 15000, 30000, 60000];
 
 function markDisconnected(errorMsg) {
-  if (swDisconnected) return;
-  swDisconnected = true;
-  console.warn('🔴 BRIDGE: SW disconnected — skipping Tier 1 for future requests. Trigger:', errorMsg);
+  const cooldownMs = SW_COOLDOWN_STEPS[Math.min(swDisconnectCount, SW_COOLDOWN_STEPS.length - 1)];
+  swDisconnectedUntil = Date.now() + cooldownMs;
+  swDisconnectCount++;
+  console.warn(`🔴 BRIDGE: SW disconnected — cooldown ${cooldownMs / 1000}s (attempt ${swDisconnectCount}). Trigger:`, errorMsg);
+}
+
+function isSwCoolingDown() {
+  return Date.now() < swDisconnectedUntil;
+}
+
+function resetDisconnectState() {
+  if (swDisconnectCount > 0) {
+    console.log('🟢 BRIDGE: SW reconnected — resetting disconnect state');
+  }
+  swDisconnectedUntil = 0;
+  swDisconnectCount = 0;
 }
 
 function isDisconnectionError(msg) {
@@ -73,10 +91,11 @@ async function captureMessage(messageData) {
     retryCount: 0
   };
 
-  // Tier 1: sendMessage to background (context valid, service worker alive, not disconnected)
-  if (chrome.runtime?.id && !swDisconnected) {
+  // Tier 1: sendMessage to background (context valid, service worker alive, not cooling down)
+  if (chrome.runtime?.id && !isSwCoolingDown()) {
     try {
       await chrome.runtime.sendMessage({ type: 'SAVE_MESSAGE', data: queuedMessage });
+      resetDisconnectState();
       console.log(`✅ BRIDGE: Message ${msgId} sent to background (Tier 1)`);
       return;
     } catch (e) {
@@ -183,11 +202,11 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
   const { requestId, userMessage, config } = event.detail;
   console.log('🔍 BRIDGE: Context request from MAIN world');
 
-  // Fast-fail when SW is known-dead or context invalidated.
-  // The generation guard already prevents stale-bridge races, so dispatching
-  // an error response is safe — no newer bridge will collide.
-  if (!chrome.runtime?.id || swDisconnected) {
-    console.warn('⚠️ BRIDGE: Extension context invalidated or SW disconnected - fast-failing context request');
+  // Fast-fail when extension context is truly invalidated (unloaded).
+  // For SW cooldown, we still fast-fail but with a different message —
+  // the cooldown will expire and the next request will retry Tier 1.
+  if (!chrome.runtime?.id) {
+    console.warn('⚠️ BRIDGE: Extension context invalidated - fast-failing context request');
     window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
       detail: {
         requestId: requestId,
@@ -195,7 +214,23 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
         formattedContext: null,
         items: [],
         elapsedMs: 0,
-        error: swDisconnected ? 'Service worker disconnected' : 'Extension context invalidated'
+        error: 'Extension context invalidated'
+      }
+    }));
+    return;
+  }
+
+  if (isSwCoolingDown()) {
+    const remainingSec = Math.ceil((swDisconnectedUntil - Date.now()) / 1000);
+    console.warn(`⚠️ BRIDGE: SW cooling down (${remainingSec}s remaining) - fast-failing context request`);
+    window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+      detail: {
+        requestId: requestId,
+        success: false,
+        formattedContext: null,
+        items: [],
+        elapsedMs: 0,
+        error: `Service worker cooling down (${remainingSec}s remaining)`
       }
     }));
     return;
@@ -224,6 +259,9 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
       }));
       return;
     }
+
+    // SW responded — reset disconnect cooldown
+    resetDisconnectState();
 
     // Send response back to MAIN world
     window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
