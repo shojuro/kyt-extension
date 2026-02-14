@@ -33,18 +33,26 @@ const API_MAX_RETRIES = 2; // Max retries for transient failures
 // Jina reranker settings — capped at 5s to stay within 10s injection budget
 const JINA_TIMEOUT_MS = 5000;  // 5s timeout (was 15s, exceeded injection deadline)
 const MAX_RERANK_DOCS = 10;    // Match top_n; no point sending more than we keep
-const MAX_JINA_ATTEMPTS = 1;   // Single attempt only — skip reranking if cold
+const MAX_JINA_ATTEMPTS = 2;   // One retry on timeout for cold-start recovery
 
 /**
  * Get API configuration from chrome.storage
  * @returns {Promise<Object>} Configuration object
  */
 async function getConfig() {
-  const result = await chrome.storage.local.get(['api_config']);
+  const result = await chrome.storage.local.get(['api_config', 'user_id', 'auth_session']);
   if (!result.api_config) {
     throw new Error('API configuration not found. Please set up API keys first.');
   }
-  return result.api_config;
+  const config = result.api_config;
+  // Resolve userId: prefer auth session > stored user_id > config userId
+  // The sync path writes user_id to storage — search should use the same ID
+  if (!config.userId) {
+    const authUserId = result.auth_session?.user?.id;
+    const storedUserId = result.user_id;
+    config.userId = authUserId || storedUserId || null;
+  }
+  return config;
 }
 
 /**
@@ -268,8 +276,12 @@ export async function searchMessages(query, options = {}) {
     if (role) filter.role = role;
     if (source) filter.source = source;
 
-    // Add user_id to filter (always include — sync writes with fallback UUID)
-    filter.user_id = config.userId || '00000000-0000-0000-0000-000000000000';
+    // Add user_id to filter — skip Supabase semantic search if no userId available
+    if (!config.userId) {
+      console.warn('⚠️ Semantic search skipped: no userId available (fresh install?)');
+      return [];
+    }
+    filter.user_id = config.userId;
 
     // Calculate min_timestamp if exclude_recent_seconds is provided
     // Note: exclude_recent_seconds is usually handled by caller (background.js) but we can support it here
@@ -330,7 +342,7 @@ export async function findSimilarMessages(messageId, limit = 5) {
 
     // Get the reference message with its embedding
     const response = await fetch(
-      `${config.supabaseUrl}/rest/v1/messages?message_id=eq.${messageId}&user_id=eq.${config.userId || '00000000-0000-0000-0000-000000000000'}&select=embedding,content`,
+      `${config.supabaseUrl}/rest/v1/messages?message_id=eq.${messageId}&user_id=eq.${config.userId}&select=embedding,content`,
       {
         headers: {
           'apikey': config.supabaseKey,
@@ -426,9 +438,12 @@ async function searchSupabaseText(query, options = {}) {
     // Build filter params
     let filterParams = `select=message_id,content,role,source,timestamp,conversation_id&limit=${limit}&order=timestamp.desc`;
 
-    // User ID filter (always include — sync writes with fallback UUID)
-    const userId = config.userId || '00000000-0000-0000-0000-000000000000';
-    filterParams += `&user_id=eq.${userId}`;
+    // User ID filter — skip Supabase text search if no userId
+    if (!config.userId) {
+      console.warn('⚠️ Supabase text search skipped: no userId available');
+      return [];
+    }
+    filterParams += `&user_id=eq.${config.userId}`;
     if (role) {
       filterParams += `&role=eq.${role}`;
     }
@@ -519,7 +534,11 @@ async function searchGraphWalk(query, options = {}) {
 
   try {
     const config = await getConfig();
-    const userId = config.userId || '00000000-0000-0000-0000-000000000000';
+    if (!config.userId) {
+      console.warn('⚠️ Graph walk skipped: no userId available');
+      return [];
+    }
+    const userId = config.userId;
 
     // Step 1: Find entities matching the query embedding
     const entityResponse = await fetchWithTimeout(

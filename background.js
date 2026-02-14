@@ -987,32 +987,31 @@ async function getContextForInjection(userMessage, config) {
       minDistance: config?.minDistance || 0.0,
       excludeRecentSeconds: config?.excludeRecentSeconds || 120, // CONTEXT POLLUTION FIX: Exclude last 2 minutes
       debugMode: config?.debugMode || false,
-      disableQueryTransformation: config?.disableQueryTransformation ?? apiConfig.disableQueryTransformation ?? true
+      disableQueryTransformation: config?.disableQueryTransformation ?? apiConfig.disableQueryTransformation ?? false
     };
 
-    // VALIDATION FIX: Check circuit breaker before making API call
-    if (isCircuitBreakerOpen()) {
+    // Check in-memory circuit breaker — only affects API-dependent paths
+    // BM25 keyword search is local and always available even when CB is open
+    const apiAvailable = !isCircuitBreakerOpen();
+    if (!apiAvailable) {
       const waitSeconds = Math.ceil((circuitBreakerOpenUntil - Date.now()) / 1000);
       console.warn(
-        `⚠️ Circuit breaker is OPEN - skipping context injection. ` +
+        `⚠️ Circuit breaker is OPEN — API paths disabled, BM25 still active. ` +
         `Resets in ${waitSeconds}s (${consecutiveApiFailures} failures)`
       );
-      return {
-        contextString: '',
-        contextItems: [],
-        skippedReason: 'circuit_breaker_open',
-        performance: {
-          totalMs: performance.now() - startTime,
-          circuitBreakerWaitSeconds: waitSeconds
-        }
-      };
     }
 
     // PHASE 7: Query Transformation (Dual ICP Support)
     let searchQuery = userMessage;
     let transformationMetadata = { transformed: false };
 
-    if (!contextConfig.disableQueryTransformation) {
+    if (!contextConfig.disableQueryTransformation && apiAvailable) {
+      // Skip transformation if HyDE CB is open (same OpenAI key — would 429 too)
+      const { hydeCB } = await import('./src/hyde-search-generator.js');
+      const hydeCbStatus = await hydeCB.isOpen();
+      if (hydeCbStatus.open) {
+        console.log('⚡ Query transformation skipped: HyDE circuit breaker open (shared OpenAI key)');
+      } else {
       try {
         // 3s timeout: query transformation is an enhancement, not critical path.
         // On timeout, falls through to using the original query.
@@ -1050,6 +1049,7 @@ async function getContextForInjection(userMessage, config) {
       } catch (transformError) {
         console.warn('⚠️ Query transformation failed, using original query:', transformError);
       }
+      } // end hydeCB else block
     }
 
     // VALIDATION FIX: Use searchHybrid for robust retrieval (Vector + BM25)
@@ -1088,7 +1088,7 @@ async function getContextForInjection(userMessage, config) {
       // Dual-path: edge function vs legacy client-side search
       const routingMode = await getRoutingMode();
 
-      if (routingMode === 'edge') {
+      if (routingMode === 'edge' && apiAvailable) {
         // ─── Edge function path (authenticated users) ───
         const { searchViaEdgeFunction } = await import('./src/edge-search.js');
         contextItems = await searchViaEdgeFunction(queryToUse, {
@@ -1106,6 +1106,11 @@ async function getContextForInjection(userMessage, config) {
         }
       } else {
         // ─── Legacy client-side path ───
+        // Also runs as BM25-only fallback when edge path is skipped (CB open)
+        if (routingMode === 'edge' && !apiAvailable) {
+          console.warn('⚠️ Edge path skipped: circuit breaker open. BM25-only fallback.');
+        }
+
         // Calculate maxTimestamp to exclude recent memories (Context Pollution Prevention)
         const maxTimestamp = Date.now() - (contextConfig.excludeRecentSeconds * 1000);
 
@@ -1114,8 +1119,9 @@ async function getContextForInjection(userMessage, config) {
           semanticThreshold: 0.50,
           bm25Threshold: 0.1,
           enableBM25: true,
-          enableSemantic: true,
-          enableHyDE: !!apiConfig.openaiKey,
+          enableSemantic: apiAvailable,
+          enableHyDE: apiAvailable && !!apiConfig.openaiKey,
+          enableGraph: true,
           openaiKey: apiConfig.openaiKey,
           role: null,
           source: null,
@@ -1133,8 +1139,9 @@ async function getContextForInjection(userMessage, config) {
             semanticThreshold: 0.50,
             bm25Threshold: 0.1,
             enableBM25: true,
-            enableSemantic: true,
-            enableHyDE: !!apiConfig.openaiKey,
+            enableSemantic: apiAvailable,
+            enableHyDE: apiAvailable && !!apiConfig.openaiKey,
+            enableGraph: true,
             openaiKey: apiConfig.openaiKey,
             role: null,
             source: null,
@@ -1320,8 +1327,22 @@ async function getContextForInjection(userMessage, config) {
           if (filterResult.suggestions && contextConfig.debugMode) {
             console.log(`💡 Suggestions:`, filterResult.suggestions);
           }
-          // Philosophy: No results > wrong results
-          filteredItems = [];
+          // Low-confidence tier: if highest score >= 0.15, keep top 2 items with caveat tag
+          // This surfaces partial matches with appropriate framing rather than total silence
+          if (filterResult.highestScore >= 0.15) {
+            console.log(`📋 Low-confidence tier: keeping top 2 items (highest: ${filterResult.highestScore.toFixed(3)})`);
+            filteredItems = filteredItems
+              .sort((a, b) => {
+                const scoreA = a.cross_encoder_score ?? a.weighted_score ?? 0;
+                const scoreB = b.cross_encoder_score ?? b.weighted_score ?? 0;
+                return scoreB - scoreA;
+              })
+              .slice(0, 2)
+              .map(item => ({ ...item, lowConfidence: true }));
+          } else {
+            // Below 0.15 — truly irrelevant, drop everything
+            filteredItems = [];
+          }
         } else {
           // no_results status
           console.log(`ℹ️ Confidence filter: No results to filter`);
@@ -1595,13 +1616,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             debugMode: result.kytDebugMode || false
           };
 
-          // 12s overall timeout — leaves 3s margin before the 15s MAIN world timeout
+          // 20s overall timeout — leaves 5s margin before the 25s MAIN world timeout
           // in inject.js / content_test.js. Rejects on timeout so the catch below handles it.
           const contextData = await Promise.race([
             getContextForInjection(message.userMessage, config),
             new Promise((_, reject) => setTimeout(() => {
-              reject(new Error('getContextForInjection timed out after 12000ms'));
-            }, 12000))
+              reject(new Error('getContextForInjection timed out after 20000ms'));
+            }, 20000))
           ]);
 
           const latencyMs = Math.round(performance.now() - injectionStart);

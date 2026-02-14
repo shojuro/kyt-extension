@@ -1,5 +1,7 @@
 // popup.js - K.Y.T. Memory Extension Status Dashboard
 
+const AUTH_SESSION_KEY = 'auth_session';
+
 // DOM elements
 const fetchStatus = document.getElementById('fetchStatus');
 const wsStatus = document.getElementById('wsStatus');
@@ -28,6 +30,11 @@ const pendingCount = document.getElementById('pendingCount');
 const lastSyncTime = document.getElementById('lastSyncTime');
 const forceSyncBtn = document.getElementById('forceSyncBtn');
 const syncResult = document.getElementById('syncResult');
+const authLoggedIn = document.getElementById('authLoggedIn');
+const authLoggedOut = document.getElementById('authLoggedOut');
+const userEmailEl = document.getElementById('userEmail');
+const signInBtn = document.getElementById('signInBtn');
+const signOutBtnEl = document.getElementById('signOutBtn');
 
 // Tier descriptions for display
 const TIER_INFO = {
@@ -131,14 +138,48 @@ async function loadStats() {
 }
 
 /**
+ * Load and display auth status in the Account section
+ */
+async function loadAuthStatus() {
+  try {
+    const result = await chrome.storage.local.get([AUTH_SESSION_KEY]);
+    const session = result[AUTH_SESSION_KEY];
+
+    if (session?.access_token && session.expires_at > Math.floor(Date.now() / 1000)) {
+      // Authenticated
+      authLoggedIn.classList.remove('hidden');
+      authLoggedIn.style.display = 'flex';
+      authLoggedOut.style.display = 'none';
+      userEmailEl.textContent = session.user?.email || 'Authenticated';
+    } else {
+      // Not authenticated
+      authLoggedIn.classList.add('hidden');
+      authLoggedIn.style.display = 'none';
+      authLoggedOut.style.display = 'block';
+    }
+  } catch (error) {
+    console.error('Error loading auth status:', error);
+  }
+}
+
+/**
  * Load and display configuration status
  */
 async function loadConfig() {
   try {
-    const result = await chrome.storage.local.get(['api_config']);
+    const result = await chrome.storage.local.get(['api_config', AUTH_SESSION_KEY]);
     const config = result.api_config;
+    const session = result[AUTH_SESSION_KEY];
+    const isAuthed = session?.access_token && session.expires_at > Math.floor(Date.now() / 1000);
 
-    if (!config) {
+    if (isAuthed) {
+      // Authenticated mode — keys are handled server-side
+      apiStatus.textContent = '✅ Authenticated';
+      apiStatus.style.color = '#155724';
+      hfKeyStatus.textContent = '✅ Server-side';
+      hfKeyStatus.style.color = '#155724';
+      hfKeyStatus.style.fontWeight = '';
+    } else if (!config) {
       apiStatus.textContent = '❌ Not Configured';
       apiStatus.style.color = '#721c24';
       hfKeyStatus.textContent = '❌ Not Configured';
@@ -146,28 +187,27 @@ async function loadConfig() {
       transformStatus.textContent = '⚠️ Unknown';
       transformStatus.style.color = '#856404';
       return;
-    }
-
-    // Check API keys (Supabase + OpenAI)
-    const hasKeys = config.supabaseUrl && config.supabaseKey && config.openaiKey;
-    apiStatus.textContent = hasKeys ? '✅ Configured' : '⚠️ Incomplete';
-    apiStatus.style.color = hasKeys ? '#155724' : '#856404';
-
-    // Check HuggingFace key (REQUIRED for sync - Qwen3 embeddings)
-    const hasHfKey = !!config.huggingfaceKey;
-    if (hasHfKey) {
-      hfKeyStatus.textContent = '✅ Configured';
-      hfKeyStatus.style.color = '#155724';
     } else {
-      hfKeyStatus.textContent = '❌ Missing (Required for sync!)';
-      hfKeyStatus.style.color = '#721c24';
-      hfKeyStatus.style.fontWeight = '700';
+      // Legacy mode — check individual keys
+      const hasKeys = config.supabaseUrl && config.supabaseKey && config.openaiKey;
+      apiStatus.textContent = hasKeys ? '✅ Configured' : '⚠️ Incomplete';
+      apiStatus.style.color = hasKeys ? '#155724' : '#856404';
+
+      const hasHfKey = !!config.huggingfaceKey;
+      if (hasHfKey) {
+        hfKeyStatus.textContent = '✅ Configured';
+        hfKeyStatus.style.color = '#155724';
+      } else {
+        hfKeyStatus.textContent = '❌ Missing (Required for sync!)';
+        hfKeyStatus.style.color = '#721c24';
+        hfKeyStatus.style.fontWeight = '700';
+      }
     }
 
-    // Check query transformation
-    const transformDisabled = config.disableQueryTransformation;
-    transformStatus.textContent = transformDisabled ? '✅ Disabled (Phase 1)' : '⚠️ Enabled';
-    transformStatus.style.color = transformDisabled ? '#155724' : '#856404';
+    // Check query transformation (applies to both modes)
+    const transformDisabled = config?.disableQueryTransformation ?? false;
+    transformStatus.textContent = transformDisabled ? '⚠️ Disabled' : '✅ Enabled';
+    transformStatus.style.color = transformDisabled ? '#856404' : '#155724';
 
   } catch (error) {
     console.error('Error loading config:', error);
@@ -333,20 +373,34 @@ async function handleUpgrade() {
   upgradeBtn.textContent = '⏳ Loading...';
 
   try {
-    const result = await chrome.storage.local.get(['user_id', 'api_config']);
-    const userId = result.user_id;
+    const result = await chrome.storage.local.get(['user_id', 'api_config', AUTH_SESSION_KEY]);
+    const session = result[AUTH_SESSION_KEY];
     const config = result.api_config;
 
-    if (!userId || !config?.supabaseUrl || !config?.supabaseKey) {
-      throw new Error('Please configure API keys first');
+    // Determine auth method: JWT session or legacy keys
+    let supabaseUrl, bearerToken, userId;
+
+    if (session?.access_token) {
+      // Authenticated mode
+      const SUPABASE_URL = 'https://svrcvfzlwhnixzuxaccf.supabase.co';
+      supabaseUrl = SUPABASE_URL;
+      bearerToken = session.access_token;
+      userId = session.user?.id;
+    } else if (config?.supabaseUrl && config?.supabaseKey) {
+      // Legacy mode
+      supabaseUrl = config.supabaseUrl;
+      bearerToken = config.supabaseKey;
+      userId = result.user_id || config.userId;
+    } else {
+      throw new Error('Please sign in or configure API keys first');
     }
 
     // Call create-checkout Edge Function
-    const response = await fetch(`${config.supabaseUrl}/functions/v1/create-checkout`, {
+    const response = await fetch(`${supabaseUrl}/functions/v1/create-checkout`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.supabaseKey}`,
+        'Authorization': `Bearer ${bearerToken}`,
       },
       body: JSON.stringify({
         userId: userId,
@@ -360,8 +414,6 @@ async function handleUpgrade() {
     }
 
     const { url } = await response.json();
-
-    // Open checkout in new tab
     chrome.tabs.create({ url });
 
   } catch (error) {
@@ -381,20 +433,30 @@ async function handleManageBilling() {
   manageBillingBtn.textContent = '⏳ Loading...';
 
   try {
-    const result = await chrome.storage.local.get(['user_id', 'api_config']);
-    const userId = result.user_id;
+    const result = await chrome.storage.local.get(['user_id', 'api_config', AUTH_SESSION_KEY]);
+    const session = result[AUTH_SESSION_KEY];
     const config = result.api_config;
 
-    if (!userId || !config?.supabaseUrl || !config?.supabaseKey) {
-      throw new Error('Please configure API keys first');
+    let supabaseUrl, bearerToken, userId;
+
+    if (session?.access_token) {
+      const SUPABASE_URL = 'https://svrcvfzlwhnixzuxaccf.supabase.co';
+      supabaseUrl = SUPABASE_URL;
+      bearerToken = session.access_token;
+      userId = session.user?.id;
+    } else if (config?.supabaseUrl && config?.supabaseKey) {
+      supabaseUrl = config.supabaseUrl;
+      bearerToken = config.supabaseKey;
+      userId = result.user_id || config.userId;
+    } else {
+      throw new Error('Please sign in or configure API keys first');
     }
 
-    // Call billing-portal Edge Function
-    const response = await fetch(`${config.supabaseUrl}/functions/v1/billing-portal`, {
+    const response = await fetch(`${supabaseUrl}/functions/v1/billing-portal`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.supabaseKey}`,
+        'Authorization': `Bearer ${bearerToken}`,
       },
       body: JSON.stringify({
         userId: userId,
@@ -407,8 +469,6 @@ async function handleManageBilling() {
     }
 
     const { url } = await response.json();
-
-    // Open billing portal in new tab
     chrome.tabs.create({ url });
 
   } catch (error) {
@@ -522,6 +582,52 @@ async function forceResync() {
   }
 }
 
+// DOM elements — Retrieval Health
+const embeddingCBStatus = document.getElementById('embeddingCBStatus');
+const hydeCBStatus = document.getElementById('hydeCBStatus');
+const jinaCBStatus = document.getElementById('jinaCBStatus');
+
+/**
+ * Load and display circuit breaker status for retrieval health
+ */
+async function loadCircuitBreakerStatus() {
+  const CB_KEYS = [
+    { key: 'kyt_embedding_circuit_breaker', el: embeddingCBStatus, label: 'Embeddings' },
+    { key: 'kyt_hyde_circuit_breaker', el: hydeCBStatus, label: 'HyDE' },
+    { key: 'kyt_jina_circuit_breaker', el: jinaCBStatus, label: 'Jina' },
+  ];
+
+  try {
+    const keys = CB_KEYS.map(cb => cb.key);
+    const result = await chrome.storage.local.get(keys);
+
+    for (const cb of CB_KEYS) {
+      const state = result[cb.key];
+      if (!state || !state.isOpen) {
+        cb.el.textContent = '🟢 OK';
+        cb.el.style.color = '#155724';
+      } else {
+        const elapsed = Date.now() - state.openedAt;
+        const remaining = Math.max(0, state.cooldownMs - elapsed);
+        if (remaining <= 0) {
+          // Cooldown expired — show as probing
+          cb.el.textContent = '🟡 Probing';
+          cb.el.style.color = '#856404';
+        } else {
+          const remainingSec = Math.ceil(remaining / 1000);
+          const display = remainingSec >= 60
+            ? `${Math.ceil(remainingSec / 60)}m`
+            : `${remainingSec}s`;
+          cb.el.textContent = `🔴 OPEN (${display})`;
+          cb.el.style.color = '#721c24';
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error loading CB status:', error);
+  }
+}
+
 // Event listeners
 forceSyncBtn.addEventListener('click', forceResync);
 upgradeBtn.addEventListener('click', handleUpgrade);
@@ -531,6 +637,16 @@ testCaptureBtn.addEventListener('click', testCapture);
 rescanBtn.addEventListener('click', rescanMessages);
 setupBtn.addEventListener('click', openSetup);
 importBtn.addEventListener('click', openImport);
+
+// Auth buttons
+signInBtn.addEventListener('click', () => {
+  chrome.runtime.openOptionsPage();
+});
+signOutBtnEl.addEventListener('click', async () => {
+  await chrome.storage.local.remove(AUTH_SESSION_KEY);
+  loadAuthStatus();
+  loadConfig();
+});
 
 /**
  * Check if this is first install and redirect to import onboarding
@@ -553,16 +669,19 @@ async function checkFirstInstallRedirect() {
 checkFirstInstallRedirect().then(redirecting => {
   if (!redirecting) {
     // Only load normal UI if not redirecting
+    loadAuthStatus();
     loadStats();
     loadConfig();
     loadDebugMode();
     loadSubscription();
     loadSyncStatus();
+    loadCircuitBreakerStatus();
 
     // Refresh stats every 5 seconds
     setInterval(() => {
       loadStats();
       loadSyncStatus();
+      loadCircuitBreakerStatus();
     }, 5000);
   }
 });

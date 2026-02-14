@@ -20,39 +20,14 @@ import {
   recordEmbeddingSuccess,
   recordEmbeddingFailure
 } from './embedding-circuit-breaker.js';
+import { fetchWithTimeout } from './utils/fetch.js';
+import { normalizePlatform } from './utils/normalize-platform.js';
 
 // SYNC LOCK: Prevent race conditions when multiple syncs happen in parallel
 let syncInProgress = false;
 
 // API timeout settings (prevent Chrome message channel timeout)
 const SYNC_API_TIMEOUT_MS = 30000; // 30 seconds for sync (batch operations need more time)
-
-/**
- * Fetch with timeout to prevent hung operations during sync
- * @param {string} url - URL to fetch
- * @param {Object} options - Fetch options
- * @param {number} timeoutMs - Timeout in milliseconds
- * @returns {Promise<Response>} - Fetch response or throws on timeout
- */
-async function fetchWithTimeout(url, options, timeoutMs = SYNC_API_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    return response;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    if (error.name === 'AbortError') {
-      throw new Error(`API request timed out after ${timeoutMs}ms`);
-    }
-    throw error;
-  }
-}
 
 /**
  * Get API configuration from chrome.storage
@@ -442,7 +417,7 @@ export async function syncMessages(messagesToSync) {
 
     // Log platform distribution for diagnostics
     const platformCounts = messagesToSync.reduce((acc, m) => {
-      const platform = m.platform || 'unknown';
+      const platform = normalizePlatform(m.platform);
       acc[platform] = (acc[platform] || 0) + 1;
       return acc;
     }, {});
@@ -461,7 +436,7 @@ export async function syncMessages(messagesToSync) {
       console.log(`📊 SYNC DEBUG [${idx}]:`, {
         messageId: msg.messageId?.substring(0, 20) || 'no-id',
         role: msg.role || 'MISSING',
-        platform: msg.platform || 'unknown',
+        platform: normalizePlatform(msg.platform),
         content_preview: msg.content?.substring(0, 30) + '...'
       });
     });
@@ -475,7 +450,7 @@ export async function syncMessages(messagesToSync) {
       timestamp: msg.timestamp || msg.capturedAt,
       message_id: msg.messageId,
       embedding: embeddings[idx],
-      source: msg.platform || 'chatgpt', // Use actual platform or default to chatgpt
+      source: normalizePlatform(msg.platform),
       user_id: config.userId || '00000000-0000-0000-0000-000000000000', // Add user_id
       synced_from_extension: new Date().toISOString()
     }));
@@ -552,7 +527,7 @@ export async function syncMessages(messagesToSync) {
       for (const chunk of turnChunks) {
         let questions = [];
         try {
-          const hydeResult = await generateHypotheticalQuestions(chunk, config.openaiKey, 3);
+          const hydeResult = await generateHypotheticalQuestions(chunk, config.openaiKey, 5);
           questions = hydeResult.success ? hydeResult.questions : [];
         } catch (hydeError) {
           console.warn('⚠️ HyDE generation failed for chunk (skipping questions):', hydeError.message);
@@ -627,6 +602,12 @@ export async function syncMessages(messagesToSync) {
     const chunkCount = turnChunks.length;
     console.log(`✅ Sync complete: ${messagesToSync.length} messages + ${chunkCount} turn chunks (embeddings: ${embeddingsAvailable})`);
 
+    // Entity backfill: trigger server-side entity extraction for synced turn IDs
+    // Fire-and-forget — don't block the sync result. Only for authenticated users.
+    triggerEntityBackfill(config).catch(err =>
+      console.warn('⚠️ Entity backfill trigger failed (non-fatal):', err.message)
+    );
+
     return {
       success: true,
       synced: messagesToSync.length,
@@ -642,6 +623,42 @@ export async function syncMessages(messagesToSync) {
       synced: 0,
       error: error.message
     };
+  }
+}
+
+/**
+ * Trigger entity extraction backfill for turns without entities.
+ * Calls the backfill_entities edge function if authenticated.
+ * Fire-and-forget: errors are logged but don't affect sync result.
+ *
+ * @param {Object} config - API config with supabaseUrl, supabaseKey
+ */
+async function triggerEntityBackfill(config) {
+  // Only trigger for authenticated users (edge function requires auth)
+  const storageResult = await chrome.storage.local.get(['auth_session']);
+  const session = storageResult.auth_session;
+  if (!session?.access_token) {
+    return; // Legacy mode — entity extraction happens via save_chat_turn edge function
+  }
+
+  try {
+    const { callEdgeFunction } = await import('./api-client.js');
+    const response = await callEdgeFunction('backfill_entities', {
+      limit: 20 // Process up to 20 turns per sync cycle
+    }, { timeoutMs: 15000 });
+
+    if (response.success) {
+      const count = response.processed || 0;
+      if (count > 0) {
+        console.log(`🔗 Entity backfill: ${count} turns processed`);
+      }
+    }
+  } catch (err) {
+    // Graceful: if the edge function doesn't exist yet, just skip
+    if (err.message?.includes('404') || err.message?.includes('not found')) {
+      return; // Edge function not deployed yet
+    }
+    throw err;
   }
 }
 
@@ -702,8 +719,13 @@ export async function backfillNullEmbeddings(options = {}) {
     while (hasMore) {
       // Query messages with null embeddings
       let filterParams = `embedding=is.null&select=message_id,content&limit=${batchSize}&offset=${offset}&order=timestamp.desc`;
-      // Always include user_id filter (sync writes with fallback UUID)
-      const userId = config.userId || '00000000-0000-0000-0000-000000000000';
+      // Resolve userId: prefer auth session > stored user_id > config userId
+      const storageResult = await chrome.storage.local.get(['user_id', 'auth_session']);
+      const userId = storageResult.auth_session?.user?.id || storageResult.user_id || config.userId;
+      if (!userId) {
+        console.warn('⚠️ Backfill skipped: no userId available');
+        return { success: false, error: 'No userId available', backfilled: 0 };
+      }
       filterParams += `&user_id=eq.${userId}`;
 
       const queryResponse = await fetchWithTimeout(

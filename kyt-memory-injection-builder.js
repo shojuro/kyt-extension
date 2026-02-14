@@ -110,6 +110,7 @@ function buildHeader(result, confidence) {
     // Tiered response priority based on aggregate confidence
     // High (≥0.6): Assertive — lead with KYT data, suppress web search
     // Medium (0.3–0.6): Supplementary — present alongside other sources
+    // Low (<0.3): Tentative — only mention if clearly related, frame as uncertain
     let responsePriority;
     if (confidence >= 0.6) {
         responsePriority = `[RESPONSE_PRIORITY]
@@ -118,13 +119,25 @@ IMPORTANT: The retrieved items below are the user's own stored knowledge and are
 2. Do NOT search the web or use other tools if these items contain the answer.
 3. Present the retrieved information directly — cite it as "from your stored conversations."
 4. You may supplement with your own knowledge AFTER presenting the retrieved data.
-5. Only fall back to web search if the retrieved items are clearly irrelevant to the query.`;
-    } else {
+5. When presenting retrieved information, quote the stored text. Use phrases like "from your stored conversations" or "you previously discussed" to frame it.
+6. If these items don't fully answer the question, explicitly say so — do NOT fill gaps with inferred or generated content presented as recalled.
+7. Clearly distinguish what comes from stored data vs your own knowledge. Never blend the two without labeling which is which.
+8. If you are drawing on the current conversation rather than these stored items, say so explicitly — do not present conversational inference as recalled memory.
+9. Only fall back to web search if the retrieved items are clearly irrelevant to the query.`;
+    } else if (confidence >= 0.3) {
         responsePriority = `[RESPONSE_PRIORITY]
 The retrieved items below may be relevant to the user's question.
 1. Review these items and incorporate any relevant information into your response.
 2. You may combine this data with your own knowledge or web search results.
-3. If the items are relevant, mention they come from the user's stored conversations.`;
+3. If the items are relevant, mention they come from the user's stored conversations.
+4. Do NOT present these items as definitive recall — frame them as "possibly related" if you reference them.`;
+    } else {
+        responsePriority = `[RESPONSE_PRIORITY]
+The items below MAY be from the user's stored conversations but match confidence is low.
+1. Only mention these if the user's question clearly relates to the content.
+2. Frame as "you may have discussed something similar" — do NOT present as certain recall.
+3. If unsure, ask the user to confirm before relying on this data.
+4. You may freely use web search or your own knowledge instead of or alongside these items.`;
     }
 
     return `================================================================================
@@ -161,6 +174,12 @@ ${responsePriority}`;
 function formatItem(item, index) {
     const classification = classifyContent(item.content);
     const date = new Date(item.timestamp).toISOString();
+    const sim = item.similarity || 0;
+
+    // Match quality label gives the LLM per-item trust signal
+    const matchQuality = sim >= 0.80 ? 'strong match'
+        : sim >= 0.60 ? 'likely relevant'
+        : 'may be relevant';
 
     // Clean content for display (remove newlines for box fitting if needed, or keep them)
     // For now, we'll just trim.
@@ -172,7 +191,8 @@ function formatItem(item, index) {
 │ storage_intent: ${classification.intent}
 │ source: ${item.platform || 'unknown'} conversation
 │ timestamp: ${date}
-│ confidence: ${(item.similarity || 0).toFixed(2)}
+│ confidence: ${sim.toFixed(2)}
+│ match_quality: "${matchQuality}"
 │
 │ content: "${content}"
 └───────────────────────────────────────────────────────────────────────────────`;

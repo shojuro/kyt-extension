@@ -102,7 +102,20 @@
     </div>
 
     <div class="section">
-      <h2>💳 Subscription</h2>
+      <h2>Account</h2>
+      <div id="authSection">
+        <div id="authLoggedIn" class="hidden" style="display:flex;align-items:center;justify-content:space-between;">
+          <span id="userEmail" style="font-size:13px;font-weight:600;word-break:break-all;"></span>
+          <button id="signOutBtn" class="btn-secondary" style="margin-left:8px;white-space:nowrap;">Sign Out</button>
+        </div>
+        <div id="authLoggedOut">
+          <button id="signInBtn" class="btn-primary" style="width:100%;">Sign In / Create Account</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Subscription</h2>
       <div class="subscription-status">
         <div class="tier-badge-container">
           <span id="tierBadge" class="tier-badge tier-free">FREE</span>
@@ -115,6 +128,24 @@
           <button id="manageBillingBtn" class="btn-manage hidden">
             ⚙️ Manage Subscription
           </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>🏥 Retrieval Health</h2>
+      <div class="status-grid">
+        <div class="status-item">
+          <span class="status-label">Embeddings:</span>
+          <span id="embeddingCBStatus" class="status-indicator">⏳ Checking...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">HyDE:</span>
+          <span id="hydeCBStatus" class="status-indicator">⏳ Checking...</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Jina Reranker:</span>
+          <span id="jinaCBStatus" class="status-indicator">⏳ Checking...</span>
         </div>
       </div>
     </div>
