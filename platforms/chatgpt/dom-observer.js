@@ -19,6 +19,13 @@
 (function () {
   'use strict';
 
+  // Duplicate injection guard (like inject.js)
+  if (window.KYT_DOM_OBSERVER_INJECTED) {
+    console.log('⚠️ KYT DOM Observer already injected, skipping duplicate');
+    return;
+  }
+  window.KYT_DOM_OBSERVER_INJECTED = true;
+
   // Configuration
   const CONFIG = {
     // Selector tiers (fallback from most stable to least) - expanded for ChatGPT UI changes

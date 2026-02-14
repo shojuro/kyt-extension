@@ -10,7 +10,12 @@
 (function () {
   'use strict';
 
-  console.log('🚀 KYT ChatGPT Content: Initializing...');
+  // Generation guard — prevents stale handlers after extension reload + re-injection.
+  // Each re-injection sets a new generation; old handlers see mismatch and bail.
+  const GENERATION = Date.now();
+  window.__kytChatGPTContentGeneration = GENERATION;
+
+  console.log('🚀 KYT ChatGPT Content: Initializing (generation ' + GENERATION + ')...');
 
   // === PAGE CONTEXT INJECTION ===
   // Inject API interception script (existing)
@@ -83,6 +88,7 @@
   // === EVENT LISTENER FOR PAGE CONTEXT MESSAGES ===
   // API-intercepted messages (existing)
   window.addEventListener('KYT_MESSAGE_CAPTURED', async function (event) {
+    if (window.__kytChatGPTContentGeneration !== GENERATION) return; // Stale handler
     const messageData = event.detail;
     console.log('📨 KYT ChatGPT Content: Received message from page context (API)');
     console.log('   Content preview:', messageData.content.substring(0, 50) + '...');
@@ -136,6 +142,7 @@
 
   // DOM-observed messages (new - mobile sync)
   window.addEventListener('KYT_DOM_MESSAGE_CAPTURED', async function (event) {
+    if (window.__kytChatGPTContentGeneration !== GENERATION) return; // Stale handler
     const messageData = event.detail;
     console.log('📱 KYT ChatGPT Content: Received message from DOM observer (Mobile Sync)');
     console.log('   Content preview:', messageData.content.substring(0, 50) + '...');
@@ -182,6 +189,7 @@
 
   // DOM observer status updates
   window.addEventListener('KYT_DOM_OBSERVER_STATUS', function (event) {
+    if (window.__kytChatGPTContentGeneration !== GENERATION) return;
     const { status, restartAttempts } = event.detail;
     console.log(`🔍 KYT DOM Observer Status: ${status} (restarts: ${restartAttempts})`);
 
@@ -200,6 +208,7 @@
   // === TEST API BRIDGE ===
   // Bridge chrome.storage.local API for test script running in page context
   window.addEventListener('KYT_TEST_STORAGE_GET', async function (event) {
+    if (window.__kytChatGPTContentGeneration !== GENERATION) return;
     const { requestId, keys } = event.detail;
 
     try {
@@ -224,6 +233,7 @@
   });
 
   window.addEventListener('KYT_TEST_STORAGE_SET', async function (event) {
+    if (window.__kytChatGPTContentGeneration !== GENERATION) return;
     const { requestId, items } = event.detail;
 
     try {
@@ -248,6 +258,7 @@
 
   // Bridge chrome.runtime.sendMessage for test script
   window.addEventListener('KYT_TEST_RUNTIME_MESSAGE', async function (event) {
+    if (window.__kytChatGPTContentGeneration !== GENERATION) return;
     const { requestId, message } = event.detail;
 
     try {
@@ -275,6 +286,7 @@
   // Page context cannot call OpenAI/Supabase directly (CSP blocks)
   // So we forward to background script which has no CSP restrictions
   window.addEventListener('KYT_CONTEXT_REQUEST', async function (event) {
+    if (window.__kytChatGPTContentGeneration !== GENERATION) return; // Stale handler
     const { requestId, userMessage, config } = event.detail;
     console.log('🔍 KYT ChatGPT Content: Context request from page context');
 
@@ -341,6 +353,7 @@
   // === DEBUG LOGGING BRIDGE ===
   // Forward logs from page context (inject.js) to background script (Service Worker console)
   window.addEventListener('KYT_DEBUG_LOG', function (event) {
+    if (window.__kytChatGPTContentGeneration !== GENERATION) return;
     const { message, data } = event.detail;
 
     // Check if extension context is valid

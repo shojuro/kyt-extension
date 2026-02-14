@@ -2110,8 +2110,26 @@ chrome.runtime.onInstalled.addListener((details) => {
       if (wasCleared) console.log('🧹 Cleared stale process_queue alarm');
     });
 
-    // Re-inject Claude bridge into open tabs (restore chrome.runtime connection)
-    // Old bridge becomes a no-op via generation guard (window.__kytBridgeGeneration)
+    // Re-inject content scripts into open tabs (restore chrome.runtime connection)
+    // Old handlers become no-ops via generation guards
+
+    // ChatGPT tabs — content.js uses __kytChatGPTContentGeneration guard
+    // inject.js + dom-observer.js have duplicate injection guards (skip if already present)
+    chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*'] }, async (tabs) => {
+      for (const tab of tabs) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ['platforms/chatgpt/content.js']
+          });
+          console.log(`🔌 Re-injected ChatGPT content script into tab ${tab.id}`);
+        } catch (e) {
+          console.warn(`⚠️ Failed to re-inject ChatGPT content into tab ${tab.id}:`, e.message);
+        }
+      }
+    });
+
+    // Claude tabs — bridge uses __kytBridgeGeneration guard
     chrome.tabs.query({ url: 'https://claude.ai/*' }, async (tabs) => {
       for (const tab of tabs) {
         try {
