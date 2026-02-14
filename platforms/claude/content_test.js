@@ -294,6 +294,18 @@ if (window.KYT_CLAUDE_INJECTED) {
   }
 
   /**
+   * Check if a context error is recoverable (extension reloaded / SW cooling down)
+   */
+  function isRecoverableContextError(errorMsg) {
+    return typeof errorMsg === 'string' && (
+      errorMsg.includes('Extension context invalidated') ||
+      errorMsg.includes('Service worker disconnected') ||
+      errorMsg.includes('Service worker cooling down') ||
+      errorMsg.includes('Service worker did not respond')
+    );
+  }
+
+  /**
    * Persistent listener for context responses
    * Lives at module level - never garbage collected
    */
@@ -302,6 +314,23 @@ if (window.KYT_CLAUDE_INJECTED) {
     const pending = pendingContextRequests.get(requestId);
 
     if (pending) {
+      // Retry once on recoverable errors — gives re-injection / cooldown time to complete
+      if (!event.detail.success && !pending.retried && isRecoverableContextError(event.detail.error)) {
+        pending.retried = true;
+        console.log('🔄 KYT Claude: Context failed (recoverable), retrying in 3s...');
+        setTimeout(() => {
+          if (!pendingContextRequests.has(requestId)) return; // Already timed out
+          window.dispatchEvent(new CustomEvent('KYT_CONTEXT_REQUEST', {
+            detail: {
+              requestId: requestId,
+              userMessage: pending.userMessage,
+              config: pending.config
+            }
+          }));
+        }, 3000);
+        return; // Don't resolve yet — wait for retry response
+      }
+
       clearTimeout(pending.timeout);
       pendingContextRequests.delete(requestId);
       inflightContextByHash.delete(pending.messageHash); // VALIDATION FIX: Cleanup dedup map
@@ -359,13 +388,23 @@ if (window.KYT_CLAUDE_INJECTED) {
           resolve(bodyString);
         }, 15000);
 
+        // Config for context request
+        const contextConfig = {
+          threshold: 0.5, // pgvector distance: lower = stricter, 0.5 = balanced
+          maxContextItems: 5, // Increased from 3 for more context
+          debugMode: false
+        };
+
         // Store request in Map - prevents garbage collection
+        // userMessage + config stored for retry on recoverable errors
         pendingContextRequests.set(requestId, {
           resolve: resolve,
           timeout: timeout,
           body: body,
           originalBody: bodyString,
-          messageHash: messageHash // VALIDATION FIX: Store for dedup cleanup
+          messageHash: messageHash, // VALIDATION FIX: Store for dedup cleanup
+          userMessage: body.prompt,
+          config: contextConfig
         });
 
         // Dispatch context request
@@ -373,11 +412,7 @@ if (window.KYT_CLAUDE_INJECTED) {
           detail: {
             requestId: requestId,
             userMessage: body.prompt,
-            config: {
-              threshold: 0.5, // pgvector distance: lower = stricter, 0.5 = balanced
-              maxContextItems: 5, // Increased from 3 for more context
-              debugMode: false
-            }
+            config: contextConfig
           }
         }));
       });
