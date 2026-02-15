@@ -108,8 +108,9 @@ async function captureMessage(messageData) {
   }
 
   // Tier 2: chrome.storage.local unencrypted queue (context partially valid)
-  // Guard: chrome.storage itself is undefined when extension context is fully invalidated
-  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+  // Guard: when chrome.runtime.id is gone, chrome.storage exists as an object
+  // but operations throw. Only attempt if extension context is still valid.
+  if (chrome.runtime?.id) {
     try {
       const result = await chrome.storage.local.get([UNENCRYPTED_QUEUE_KEY]);
       const queue = result[UNENCRYPTED_QUEUE_KEY] || [];

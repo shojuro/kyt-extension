@@ -2116,12 +2116,14 @@ async function reInjectContentScripts() {
 
     for (const tab of chatgptTabs) {
       try {
-        // 1. Clear MAIN world guards so inject.js + dom-observer can re-load
+        // 1. Clear inject.js guard so it can re-load with fresh fetch wrapper.
+        //    Do NOT clear KYT_DOM_OBSERVER_INJECTED — dom-observer runs in MAIN
+        //    world, doesn't need chrome APIs, and re-running it causes a full
+        //    DOM re-scan that floods the queue with hundreds of duplicate messages.
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
             window.KYT_CHATGPT_INJECTED = false;
-            window.KYT_DOM_OBSERVER_INJECTED = false;
           },
           world: 'MAIN'
         });

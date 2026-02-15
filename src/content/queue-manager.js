@@ -324,12 +324,11 @@ export class MessageQueueManager {
      * @param {Object} message - The message to persist
      */
     async persistDirectly(message) {
-        // Fast-path: if chrome.storage is completely gone, skip straight to localStorage
-        if (typeof chrome === 'undefined' || !chrome.storage?.local) {
-            this.recordStorageFailure();
+        // Fast-path: when extension context is invalid, chrome.storage object still
+        // exists but operations throw. Check chrome.runtime.id as the true signal.
+        if (!this.isContextValid()) {
             try {
                 this.persistToWebStorage(message);
-                console.log(`💾 [KYT Queue] Persisted ${message.id} to emergency localStorage (no chrome.storage)`);
             } catch (e) {
                 console.error('❌ [KYT Queue] All persistence methods failed:', e);
             }
@@ -453,8 +452,8 @@ export class MessageQueueManager {
      * @param {Object} message - The message to store
      */
     async persistUnencrypted(message) {
-        // Guard: chrome.storage may be undefined if context is fully invalidated
-        if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+        // Guard: when context is invalid, chrome.storage operations throw
+        if (!this.isContextValid()) {
             this.persistToWebStorage(message);
             return;
         }
