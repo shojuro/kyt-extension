@@ -2081,10 +2081,104 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
       break;
 
+    case 'reInjectContentScripts':
+      console.log('🔄 Retry alarm: re-injecting content scripts...');
+      reInjectContentScripts().catch(err => {
+        console.error('❌ Retry re-injection also failed:', err.message);
+      });
+      break;
+
     default:
       console.warn(`⚠️ Unknown alarm: ${alarm.name}`);
   }
 });
+
+/**
+ * Re-inject content scripts into all open ChatGPT/Claude tabs.
+ * Called on extension update and by retry alarm.
+ *
+ * For each platform:
+ * 1. Clear MAIN world duplicate-injection guard
+ * 2. Re-inject ISOLATED world script (content.js / content_bridge.js)
+ *    → gets fresh chrome.runtime, generation guard silences old handlers
+ * 3. Re-inject MAIN world script (inject.js via content.js / content_test.js)
+ *    → gets new code (retry logic), idempotent fetch wrapper prevents double-interception
+ */
+async function reInjectContentScripts() {
+  console.log('🔌 Re-injecting content scripts into open tabs...');
+
+  // ── ChatGPT tabs ──────────────────────────────────────────────────────
+  try {
+    const chatgptTabs = await chrome.tabs.query({
+      url: ['https://chatgpt.com/*', 'https://chat.openai.com/*']
+    });
+    console.log(`🔌 Found ${chatgptTabs.length} ChatGPT tab(s)`);
+
+    for (const tab of chatgptTabs) {
+      try {
+        // 1. Clear MAIN world guards so inject.js + dom-observer can re-load
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            window.KYT_CHATGPT_INJECTED = false;
+            window.KYT_DOM_OBSERVER_INJECTED = false;
+          },
+          world: 'MAIN'
+        });
+
+        // 2. Re-inject content.js (ISOLATED world) — gets valid chrome.runtime
+        //    content.js also re-injects inject.js into MAIN world (guard was cleared)
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['platforms/chatgpt/content.js']
+        });
+        console.log(`✅ Re-injected ChatGPT scripts into tab ${tab.id}`);
+      } catch (e) {
+        console.warn(`⚠️ Failed to re-inject ChatGPT tab ${tab.id}:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('❌ ChatGPT tab query failed:', e.message);
+  }
+
+  // ── Claude tabs ───────────────────────────────────────────────────────
+  try {
+    const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
+    console.log(`🔌 Found ${claudeTabs.length} Claude tab(s)`);
+
+    for (const tab of claudeTabs) {
+      try {
+        // 1. Clear MAIN world guard so content_test.js can re-load with new code
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => { window.KYT_CLAUDE_INJECTED = false; },
+          world: 'MAIN'
+        });
+
+        // 2. Re-inject content_test.js (MAIN world) — new code with retry logic
+        //    Idempotent fetch wrapper via window.__kytOriginalFetch
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['platforms/claude/content_test.js'],
+          world: 'MAIN'
+        });
+
+        // 3. Re-inject content_bridge.js (ISOLATED world) — gets valid chrome.runtime
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['platforms/claude/content_bridge.js']
+        });
+        console.log(`✅ Re-injected Claude scripts into tab ${tab.id}`);
+      } catch (e) {
+        console.warn(`⚠️ Failed to re-inject Claude tab ${tab.id}:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('❌ Claude tab query failed:', e.message);
+  }
+
+  console.log('🔌 Content script re-injection complete');
+}
 
 /**
  * Extension installation - Initialize storage
@@ -2131,37 +2225,13 @@ chrome.runtime.onInstalled.addListener((details) => {
     });
 
     // Re-inject content scripts into open tabs (restore chrome.runtime connection)
-    // Old handlers become no-ops via generation guards
-
-    // ChatGPT tabs — content.js uses __kytChatGPTContentGeneration guard
-    // inject.js + dom-observer.js have duplicate injection guards (skip if already present)
-    chrome.tabs.query({ url: ['https://chatgpt.com/*', 'https://chat.openai.com/*'] }, async (tabs) => {
-      for (const tab of tabs) {
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            files: ['platforms/chatgpt/content.js']
-          });
-          console.log(`🔌 Re-injected ChatGPT content script into tab ${tab.id}`);
-        } catch (e) {
-          console.warn(`⚠️ Failed to re-inject ChatGPT content into tab ${tab.id}:`, e.message);
-        }
-      }
-    });
-
-    // Claude tabs — bridge uses __kytBridgeGeneration guard
-    chrome.tabs.query({ url: 'https://claude.ai/*' }, async (tabs) => {
-      for (const tab of tabs) {
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            files: ['platforms/claude/content_bridge.js']
-          });
-          console.log(`🔌 Re-injected Claude bridge into tab ${tab.id}`);
-        } catch (e) {
-          console.warn(`⚠️ Failed to re-inject bridge into tab ${tab.id}:`, e.message);
-        }
-      }
+    // Uses awaited promises (not callbacks) to ensure completion before SW idles.
+    // Old ISOLATED world handlers become no-ops via generation guards.
+    // MAIN world scripts are also re-injected after clearing their guards
+    // (fetch wrappers are idempotent via window.__kytOriginalFetch).
+    reInjectContentScripts().catch(err => {
+      console.error('❌ Re-injection failed, scheduling retry:', err.message);
+      chrome.alarms.create('reInjectContentScripts', { delayInMinutes: 0.1 }); // 6s retry
     });
 
     // Backfill null embeddings (messages synced during 403/422 era)

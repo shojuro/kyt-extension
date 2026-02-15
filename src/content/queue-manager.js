@@ -16,6 +16,7 @@
 
 import { LocalQueueStorage } from '../storage/local-queue.js';
 import { deriveKey } from '../utils/crypto.js';
+import { normalizePlatform } from '../utils/normalize-platform.js';
 
 // Storage key for unencrypted fallback queue (edge case: no API key)
 const UNENCRYPTED_QUEUE_KEY = 'kyt_pending_unencrypted_queue';
@@ -39,6 +40,7 @@ export class MessageQueueManager {
         this.contextValid = true;
         this.recoveryIntervalId = null;
         this.userNotified = false; // Track if we've already notified the user
+        this.contextInvalidatedCount = 0; // Consecutive checks showing invalid context
 
         // Circuit breaker state
         this.consecutiveFailures = 0;
@@ -228,8 +230,10 @@ export class MessageQueueManager {
 
             if (wasInvalid && this.contextValid) {
                 console.log('🔄 [KYT Queue] Context restored! Retrying pending messages...');
+                this.contextInvalidatedCount = 0;
                 await this.retryPendingQueue();
             } else if (this.contextValid) {
+                this.contextInvalidatedCount = 0;
                 // Context is valid, check if there are pending messages to sync
                 const queueSize = await this.localQueue.getQueueSize();
                 const unencryptedSize = await this.getUnencryptedQueueSize();
@@ -237,6 +241,17 @@ export class MessageQueueManager {
                 if (queueSize > 0 || unencryptedSize > 0) {
                     console.log(`🔄 [KYT Queue] Found ${queueSize + unencryptedSize} pending messages, attempting sync...`);
                     await this.retryPendingQueue();
+                }
+            } else {
+                // Context is still invalid — track consecutive failures
+                this.contextInvalidatedCount++;
+                // After 6 consecutive invalid checks (30s), stop the interval.
+                // Extension reload re-injects content.js which creates a new QueueManager.
+                if (this.contextInvalidatedCount >= 6) {
+                    console.warn('🛑 [KYT Queue] Context invalid for 30s — stopping recovery interval. Refresh page to restore.');
+                    clearInterval(this.recoveryIntervalId);
+                    this.recoveryIntervalId = null;
+                    this.showContextInvalidatedNotification();
                 }
             }
         }, 5000); // Every 5 seconds (reduced from 30s for faster recovery)
@@ -275,7 +290,7 @@ export class MessageQueueManager {
             id: msgId, // Used by LocalQueueStorage
             messageId: msgId, // Used by browser-sync.js
             timestamp: Date.now(),
-            platform: messageData.platform || 'unknown',
+            platform: normalizePlatform(messageData.platform),
             content: messageData.content, // Flattened: content is now the string
             role: messageData.role,
             conversationId: messageData.conversationId,
@@ -309,6 +324,18 @@ export class MessageQueueManager {
      * @param {Object} message - The message to persist
      */
     async persistDirectly(message) {
+        // Fast-path: if chrome.storage is completely gone, skip straight to localStorage
+        if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+            this.recordStorageFailure();
+            try {
+                this.persistToWebStorage(message);
+                console.log(`💾 [KYT Queue] Persisted ${message.id} to emergency localStorage (no chrome.storage)`);
+            } catch (e) {
+                console.error('❌ [KYT Queue] All persistence methods failed:', e);
+            }
+            return;
+        }
+
         try {
             if (this.cryptoKey) {
                 // Encrypted storage
@@ -426,6 +453,11 @@ export class MessageQueueManager {
      * @param {Object} message - The message to store
      */
     async persistUnencrypted(message) {
+        // Guard: chrome.storage may be undefined if context is fully invalidated
+        if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+            this.persistToWebStorage(message);
+            return;
+        }
         try {
             const result = await chrome.storage.local.get([UNENCRYPTED_QUEUE_KEY]);
             const queue = result[UNENCRYPTED_QUEUE_KEY] || [];

@@ -656,7 +656,10 @@ const recentConversationFetches = new Map();
 const CONVERSATION_DEDUP_WINDOW = 2000; // 2 seconds
 
 // Wrap window.fetch to intercept Claude API calls
-const originalFetch = window.fetch;
+// Idempotent: always wrap the TRUE original fetch, not an already-wrapped version.
+// This makes re-injection safe after extension reload.
+if (!window.__kytOriginalFetch) window.__kytOriginalFetch = window.fetch;
+const originalFetch = window.__kytOriginalFetch;
 window.fetch = async function(...args) {
   const [url, options] = args;
 

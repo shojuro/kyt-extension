@@ -108,16 +108,19 @@ async function captureMessage(messageData) {
   }
 
   // Tier 2: chrome.storage.local unencrypted queue (context partially valid)
-  try {
-    const result = await chrome.storage.local.get([UNENCRYPTED_QUEUE_KEY]);
-    const queue = result[UNENCRYPTED_QUEUE_KEY] || [];
-    queue.push({ ...queuedMessage, emergencyBackup: true });
-    await chrome.storage.local.set({ [UNENCRYPTED_QUEUE_KEY]: queue });
-    console.log(`💾 BRIDGE: Message ${msgId} saved to chrome.storage (Tier 2)`);
-    return;
-  } catch (e) {
-    console.warn(`⚠️ BRIDGE: Tier 2 chrome.storage failed: ${e.message}`);
-    // Fall through to Tier 3
+  // Guard: chrome.storage itself is undefined when extension context is fully invalidated
+  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+    try {
+      const result = await chrome.storage.local.get([UNENCRYPTED_QUEUE_KEY]);
+      const queue = result[UNENCRYPTED_QUEUE_KEY] || [];
+      queue.push({ ...queuedMessage, emergencyBackup: true });
+      await chrome.storage.local.set({ [UNENCRYPTED_QUEUE_KEY]: queue });
+      console.log(`💾 BRIDGE: Message ${msgId} saved to chrome.storage (Tier 2)`);
+      return;
+    } catch (e) {
+      console.warn(`⚠️ BRIDGE: Tier 2 chrome.storage failed: ${e.message}`);
+      // Fall through to Tier 3
+    }
   }
 
   // Tier 3: window.localStorage emergency queue (context fully invalid)

@@ -410,7 +410,10 @@
   /**
    * Override fetch in page context
    */
-  const originalFetch = window.fetch;
+  // Idempotent: always wrap the TRUE original fetch, not an already-wrapped version.
+  // This makes re-injection safe after extension reload.
+  if (!window.__kytOriginalFetch) window.__kytOriginalFetch = window.fetch;
+  const originalFetch = window.__kytOriginalFetch;
 
   window.fetch = async function (...args) {
     const [resource, config] = args;
