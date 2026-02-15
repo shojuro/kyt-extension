@@ -67,7 +67,7 @@ export async function generateHypotheticalQuestions(turnChunk, apiKey, questionC
         messages: [
           {
             role: 'system',
-            content: 'You are a question generation assistant. Generate hypothetical questions a user might ask to find this conversation. Questions should be natural, diverse, and capture different aspects of the content.'
+            content: 'You are a memory recall assistant. Generate search queries, conceptual labels, and recall phrases for a conversation. Think about how someone would search for this content months later — they\'ll remember the concept or analogy, not the exact words.'
           },
           {
             role: 'user',
@@ -75,7 +75,7 @@ export async function generateHypotheticalQuestions(turnChunk, apiKey, questionC
           }
         ],
         temperature: 0.7, // Higher temperature for diverse questions
-        max_tokens: 150,  // Space for multiple questions
+        max_tokens: 250,  // Space for questions + concept labels + recall phrases
         n: 1
       })
     });
@@ -119,10 +119,10 @@ export async function generateHypotheticalQuestions(turnChunk, apiKey, questionC
  * @returns {string} Prompt for LLM
  */
 function buildHyDEPrompt(turnChunk, questionCount) {
-  let prompt = `Generate ${questionCount} hypothetical questions a user might ask to find this conversation.\n\n`;
+  let prompt = `Generate recall aids for this conversation so it can be found months later.\n\n`;
 
   // Add conversation content (truncated if too long)
-  const maxContentLength = 500;
+  const maxContentLength = 800;
   const content = turnChunk.content.length > maxContentLength
     ? turnChunk.content.substring(0, maxContentLength) + '...'
     : turnChunk.content;
@@ -134,19 +134,25 @@ function buildHyDEPrompt(turnChunk, questionCount) {
     prompt += `Topics: ${turnChunk.topics.join(', ')}\n\n`;
   }
 
-  prompt += `Instructions:
-1. Generate ${questionCount} diverse questions
-2. Questions should be natural (how users actually search)
-3. Cover different aspects: problem statement, solution, error message, concept
-4. Keep questions concise (5-15 words each)
-5. Format as numbered list (1., 2., 3., etc.)
+  prompt += `Generate exactly ${questionCount} items in 3 categories:
 
-Example:
-1. How to fix RLS policy error in Supabase?
-2. Supabase auth user isolation not working
-3. Row level security debugging tips
+Category 1 — Hypothetical search queries (${Math.max(questionCount - 2, 1)} items):
+Natural questions a user might type to find this conversation.
 
-Now generate ${questionCount} questions for the conversation above:`;
+Category 2 — Conceptual labels (1 line, comma-separated):
+Abstract concepts, principles, or themes discussed. Prefix with [CONCEPT].
+
+Category 3 — Recall phrases (1 line, comma-separated):
+Analogies, metaphors, nicknames, or shorthand someone might use to refer to this content later. Prefix with [RECALL].
+
+Example for a conversation about not erasing a child's progress when they stumble while learning to walk:
+1. How should I handle setbacks in learning?
+2. Should you restart when someone makes a mistake?
+3. Encouraging progress despite stumbles
+[CONCEPT] incremental learning, progressive mastery, preserving progress
+[RECALL] walking analogy, child taking steps, don't erase the steps
+
+Now generate for the conversation above:`;
 
   return prompt;
 }
@@ -172,12 +178,14 @@ function parseQuestions(questionsText, expectedCount) {
     let question = line
       .replace(/^\d+\.\s*/, '')   // Remove "1. "
       .replace(/^[-*•]\s*/, '')   // Remove "- " or "* " or "• "
+      .replace(/^\[CONCEPT\]\s*/i, '')  // Remove "[CONCEPT] " prefix
+      .replace(/^\[RECALL\]\s*/i, '')   // Remove "[RECALL] " prefix
       .trim();
 
     // Remove quotes if present
     question = question.replace(/^["']|["']$/g, '');
 
-    if (question.length > 0 && question.length < 200) { // Sanity check
+    if (question.length > 0 && question.length < 300) { // Sanity check (recall phrases can be longer)
       questions.push(question);
     }
 

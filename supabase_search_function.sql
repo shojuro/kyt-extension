@@ -9,11 +9,11 @@
 -- - Industry standard for semantic search with normalized vectors
 
 -- Drop function if exists (for re-running)
-DROP FUNCTION IF EXISTS match_messages_v2(vector(1536), float, int, jsonb, bigint);
+DROP FUNCTION IF EXISTS match_messages_v2(vector(4096), float, int, jsonb, bigint);
 
 -- Create vector similarity search function (v2 to avoid overload conflicts)
 CREATE OR REPLACE FUNCTION match_messages_v2(
-  query_embedding vector(1536),
+  query_embedding vector(4096),
   match_threshold float DEFAULT 0.6, -- Calibrated optimal threshold (Distance)
   match_count int DEFAULT 5,
   filter jsonb DEFAULT '{}'::jsonb,
@@ -30,7 +30,7 @@ RETURNS TABLE (
   source text,
   created_at timestamp,
   synced_from_extension timestamp,
-  embedding vector(1536),
+  embedding vector(4096),
   distance float
 )
 LANGUAGE plpgsql

@@ -10,6 +10,7 @@
 //   - topK (optional): Number of candidates to retrieve (default: 20)
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { getRelevantMemories, SearchOptions } from "../_shared/get_relevant_memories.ts";
 import { Logger } from "../_shared/utils.ts";
 
@@ -31,11 +32,32 @@ serve(async (req) => {
         const body = await req.json();
         const {
             query,
-            userId,
+            userId: bodyUserId,
             useHyde = true,     // Default: HyDE enabled
             hydeWeight = 0.6,   // Default: 60% HyDE, 40% raw
             topK = 20
         } = body;
+
+        // Extract user from JWT if present (authenticated mode)
+        let userId = bodyUserId;
+        const authHeader = req.headers.get("Authorization");
+        if (authHeader?.startsWith("Bearer ") && authHeader.length > 50) {
+            try {
+                const supabaseAdmin = createClient(
+                    Deno.env.get("SUPABASE_URL")!,
+                    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+                );
+                const { data: { user }, error } = await supabaseAdmin.auth.getUser(
+                    authHeader.slice(7),
+                );
+                if (user && !error) {
+                    userId = user.id; // Override with authenticated user ID
+                    Logger.info("JWT user extracted", { requestId, userId });
+                }
+            } catch (jwtErr) {
+                Logger.warn("JWT extraction failed, using body userId", { requestId, error: jwtErr.message });
+            }
+        }
 
         if (!query || !userId) {
             Logger.warn("Missing query or userId", { requestId, query, userId });

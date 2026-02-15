@@ -3,20 +3,20 @@ import { retryWrapper, CostMonitor } from "./utils.ts";
 
 export class HuggingFaceClient {
     private apiKey: string;
-    private static readonly EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B";
+    private static readonly EMBEDDING_MODEL = "qwen3-embedding-8b";
     private static readonly RERANK_MODEL = "BAAI/bge-reranker-v2-m3";
-    // HuggingFace Router for Nebius embeddings (works with HF API key)
-    private static readonly NEBIUS_API_URL = "https://router.huggingface.co/nebius";
-    // HuggingFace Inference API for reranking (Nebius router)
-    private static readonly HF_ROUTER_URL = "https://router.huggingface.co/nebius";
+    // HuggingFace Router for Scaleway embeddings (works with HF API key)
+    private static readonly SCALEWAY_API_URL = "https://router.huggingface.co/scaleway";
+    // HuggingFace Inference API for reranking (Scaleway router)
+    private static readonly HF_ROUTER_URL = "https://router.huggingface.co/scaleway";
 
     constructor(apiKey: string) {
         this.apiKey = apiKey;
     }
 
     async generateEmbeddings(text: string, requestId?: string): Promise<number[][]> {
-        // Use direct Nebius API for embeddings (more reliable)
-        const url = `${HuggingFaceClient.NEBIUS_API_URL}/v1/embeddings`;
+        // Use direct Scaleway API for embeddings (more reliable)
+        const url = `${HuggingFaceClient.SCALEWAY_API_URL}/v1/embeddings`;
 
         return retryWrapper(async () => {
             const response = await fetch(url, {
@@ -61,7 +61,7 @@ export class HuggingFaceClient {
     async generateEmbeddingsBatch(texts: string[], requestId?: string): Promise<number[][]> {
         if (texts.length === 0) return [];
 
-        const url = `${HuggingFaceClient.NEBIUS_API_URL}/v1/embeddings`;
+        const url = `${HuggingFaceClient.SCALEWAY_API_URL}/v1/embeddings`;
 
         return retryWrapper(async () => {
             const response = await fetch(url, {
@@ -92,7 +92,7 @@ export class HuggingFaceClient {
                 requestId
             );
 
-            // Nebius returns embeddings sorted by index, but ensure order
+            // Scaleway returns embeddings sorted by index, but ensure order
             const sortedData = data.data.sort((a: any, b: any) => a.index - b.index);
             return sortedData.map((item: any) => item.embedding);
         });

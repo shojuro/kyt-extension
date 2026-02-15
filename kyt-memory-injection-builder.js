@@ -101,18 +101,18 @@ function classifyContent(content) {
  */
 function buildHeader(result, confidence) {
     let confidenceNote = "Moderate confidence — relevant context found";
-    if (confidence > 0.85) confidenceNote = "High confidence — strong semantic match";
-    if (confidence < 0.60) confidenceNote = "Low confidence — results may be tangential";
+    if (confidence > 0.75) confidenceNote = "High confidence — strong semantic match";
+    if (confidence < 0.50) confidenceNote = "Low confidence — results may be tangential";
     if (result.items.length === 0) confidenceNote = "No relevant memories found";
 
     const transformedValue = result.queryTransformed || 'N/A';
 
     // Tiered response priority based on aggregate confidence
-    // High (≥0.6): Assertive — lead with KYT data, suppress web search
-    // Medium (0.3–0.6): Supplementary — present alongside other sources
-    // Low (<0.3): Tentative — only mention if clearly related, frame as uncertain
+    // High (≥0.5): Assertive — lead with KYT data, suppress web search
+    // Medium (0.25–0.5): Supplementary — present alongside other sources
+    // Low (<0.25): Tentative — only mention if clearly related, frame as uncertain
     let responsePriority;
-    if (confidence >= 0.6) {
+    if (confidence >= 0.5) {
         responsePriority = `[RESPONSE_PRIORITY]
 IMPORTANT: The retrieved items below are the user's own stored knowledge and are highly relevant.
 1. ALWAYS use these items to answer the user's question FIRST — do NOT skip them.
@@ -124,7 +124,7 @@ IMPORTANT: The retrieved items below are the user's own stored knowledge and are
 7. Clearly distinguish what comes from stored data vs your own knowledge. Never blend the two without labeling which is which.
 8. If you are drawing on the current conversation rather than these stored items, say so explicitly — do not present conversational inference as recalled memory.
 9. Only fall back to web search if the retrieved items are clearly irrelevant to the query.`;
-    } else if (confidence >= 0.3) {
+    } else if (confidence >= 0.25) {
         responsePriority = `[RESPONSE_PRIORITY]
 The retrieved items below may be relevant to the user's question.
 1. Review these items and incorporate any relevant information into your response.
@@ -177,8 +177,8 @@ function formatItem(item, index) {
     const sim = item.similarity || 0;
 
     // Match quality label gives the LLM per-item trust signal
-    const matchQuality = sim >= 0.80 ? 'strong match'
-        : sim >= 0.60 ? 'likely relevant'
+    const matchQuality = sim >= 0.70 ? 'strong match'
+        : sim >= 0.50 ? 'likely relevant'
         : 'may be relevant';
 
     // Clean content for display (remove newlines for box fitting if needed, or keep them)

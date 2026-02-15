@@ -463,8 +463,10 @@ async function rerankAndFilter(
     // Apply BM25 + Entity Boost
     const boosted = applyBm25Boost(query, ordered);
 
-    // Confidence filter (>= 0.70)
-    const filtered = boosted.filter((c) => c.rerank_score >= 0.7);
+    // Confidence filter (>= 0.40) — lowered from 0.70 to let client-side
+    // adaptive filter handle the final threshold decision. The client has more
+    // context (semantic availability, Jina status) for threshold selection.
+    const filtered = boosted.filter((c) => c.rerank_score >= 0.4);
 
     Logger.info("Retrieval complete", {
         requestId,

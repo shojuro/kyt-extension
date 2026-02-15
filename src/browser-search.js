@@ -52,6 +52,7 @@ async function getConfig() {
     const storedUserId = result.user_id;
     config.userId = authUserId || storedUserId || null;
   }
+  console.log(`🔑 Search config: userId=${config.userId || 'NULL'}, source=${result.auth_session?.user?.id ? 'auth' : result.user_id ? 'stored' : 'none'}`);
   return config;
 }
 
@@ -471,6 +472,10 @@ async function searchSupabaseText(query, options = {}) {
 
         const data = await response.json();
 
+        if (data.length === 0) {
+          console.log(`   🔤 No matches for "${keyword}" (userId: ${config.userId})`);
+        }
+
         for (const row of data) {
           const id = row.message_id;
           if (resultMap.has(id)) {
@@ -854,6 +859,9 @@ export async function searchHybrid(query, options = {}) {
               .catch(err => { console.warn('Graph walk failed:', err.message); return []; })
           : Promise.resolve([])
       ]);
+
+      // Per-strategy diagnostic counts
+      console.log(`📊 Search counts: BM25=${enableBM25 ? (rankedLists.length > 0 ? rankedLists[0].length : 0) : 'disabled'}, supabaseText=${supabaseTextResults.length}, semantic=${semanticResults.length}, graph=${graphWalkResults?.length || 0}`);
 
       // Process Supabase text results
       if (supabaseTextResults.length > 0) {

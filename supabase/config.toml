@@ -35,6 +35,18 @@ verify_jwt = true
 # Requires authenticated user to access billing portal
 verify_jwt = true
 
+# Memory search (hybrid HyDE + reranking pipeline)
+[functions.search_memories]
+verify_jwt = true
+
+# Batch save chat turns (up to 50 per request)
+[functions.save_chat_turn_batch]
+verify_jwt = true
+
+# Data migration (claim legacy anonymous data)
+[functions.claim_user_data]
+verify_jwt = true
+
 # History Import Function
 [functions.import_conversation_batch]
 # Service role key required for import operations

@@ -10,7 +10,7 @@ CREATE INDEX IF NOT EXISTS messages_user_id_idx ON messages(user_id);
 
 -- 2. Update match_messages_v2 to support user_id filtering
 CREATE OR REPLACE FUNCTION match_messages_v2(
-  query_embedding vector(1536),
+  query_embedding vector(4096),
   match_threshold float DEFAULT 0.6,
   match_count int DEFAULT 5,
   filter jsonb DEFAULT '{}'::jsonb,
@@ -27,7 +27,7 @@ RETURNS TABLE (
   source text,
   created_at timestamp,
   synced_from_extension timestamp,
-  embedding vector(1536),
+  embedding vector(4096),
   distance float
 )
 LANGUAGE plpgsql

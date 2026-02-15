@@ -1129,7 +1129,15 @@ async function getContextForInjection(userMessage, config) {
         });
 
         console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search`);
-        console.log(`🔍 Search pipeline result: ${contextItems.length} items, semanticAvailable: ${contextItems.metadata?.semanticAvailable}`);
+        console.log('📊 Search Strategy Breakdown:', JSON.stringify({
+          routing: routingMode,
+          query: queryToUse.substring(0, 80),
+          totalResults: contextItems.length,
+          semanticAvailable: contextItems.metadata?.semanticAvailable,
+          jinaReranked: contextItems.metadata?.jinaReranked,
+          embeddingCBOpen: isCircuitBreakerOpen(),
+          apiAvailable,
+        }));
 
         // E1: If transformed query returned 0 results, retry with original query
         if (contextItems.length === 0 && transformationMetadata.transformed) {
@@ -1205,6 +1213,49 @@ async function getContextForInjection(userMessage, config) {
         applyDeflectionPenalty(item, check.confidence);
         const after = item.cross_encoder_score ?? item.weighted_score ?? item.rrf_score ?? 'n/a';
         console.log(`🗑️ Deflection penalty: ${check.reason} | score ${before} → ${after} (ID: ${item.id || item.message_id || 'unknown'})`);
+      }
+    }
+
+    // KYT META-CONVERSATION PENALTY: Detect conversations ABOUT the extension itself.
+    // These are captured normally but are rarely what the user wants to recall.
+    // Score penalty (0.3x) rather than hard filter — meta-conversations CAN be found
+    // if the user genuinely asks about KYT (e.g. "what did I say about KYT not working?").
+    const KYT_META_PATTERNS = [
+      /\bK\.?Y\.?T\.?\b.*\b(extension|memory|capture|inject|sync|retrieval|context)\b/i,
+      /\b(extension|memory system|knowledge base)\b.*\b(working|broken|not working|paused|updated)\b/i,
+      /\bchrome\.?(runtime|storage|extension)\b/i,
+      /\bservice worker\b/i,
+      /\bKYT_(?:MESSAGE|CONTEXT|BRIDGE|DEBUG)\b/,
+    ];
+
+    // ECHO/SELF-REFERENCE PENALTY: Detect assistant responses that summarize stored data.
+    // The ORIGINAL user statement is more valuable than the AI's echo of it.
+    const ECHO_PATTERNS = [
+      /\byou (?:said|mentioned|noted|discussed|talked about|asked about|brought up)\b/i,
+      /\bfrom your (?:stored|previous|earlier) conversations?\b/i,
+      /\bKYT (?:picked it up|captured|found|retrieved|surfaced)\b/i,
+      /\bthat was captured from\b/i,
+      /\bfrom (?:a|your) (?:chatgpt|claude) conversation\b/i,
+    ];
+
+    for (const item of contextItems) {
+      const content = item.content || '';
+      const scoreKey = item.cross_encoder_score != null ? 'cross_encoder_score'
+                     : item.weighted_score != null ? 'weighted_score'
+                     : item.rrf_score != null ? 'rrf_score' : null;
+
+      // Meta-conversation penalty (0.3x)
+      if (scoreKey && item[scoreKey] != null && KYT_META_PATTERNS.some(p => p.test(content))) {
+        const before = item[scoreKey];
+        item[scoreKey] *= 0.3;
+        console.log(`🔧 Meta-conversation penalty: score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
+      }
+
+      // Echo penalty (0.4x) — only assistant messages that echo stored data
+      if (scoreKey && item[scoreKey] != null && item.role === 'assistant' && ECHO_PATTERNS.some(p => p.test(content))) {
+        const before = item[scoreKey];
+        item[scoreKey] *= 0.4;
+        console.log(`🔄 Echo penalty: assistant item echoing stored data, score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
       }
     }
 

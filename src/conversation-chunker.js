@@ -13,6 +13,8 @@
  * Output: Turn chunks ready for Supabase chat_turns table
  */
 
+import { normalizePlatform } from './utils/normalize-platform.js';
+
 /**
  * Group messages by conversation ID
  * @param {Object[]} messages - Raw messages from storage
@@ -188,7 +190,7 @@ export function messagesToTurnChunks(messages, userId) {
     if (msgs.length === 0) continue;
 
     // Get platform from first message
-    const platform = msgs[0].platform || 'chatgpt';
+    const platform = normalizePlatform(msgs[0].platform);
 
     // Pair into turns
     const turns = pairIntoTurns(msgs);
