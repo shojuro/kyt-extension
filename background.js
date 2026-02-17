@@ -993,12 +993,13 @@ async function getStorageStats() {
  * @returns {Promise<Object>} Context data with formatted string and items
  */
 /**
- * Entity-aware recency resolution.
- * When multiple items reference the same entity, boost the newest item's score
- * and penalize older items that may be contradicted.
+ * Entity-aware recency resolution — pure timestamp ordering.
+ * When multiple items reference the same entity, the newest item always wins.
+ * No negation heuristic — handles affirmation chains correctly:
+ *   "Jerry is real" → "Jerry is not real" → "Jerry is now real"
  *
- * Handles: "I like shrimp" vs "I don't like shrimp" (same entity, newer wins)
- * Handles: "Jerry is my friend" vs "Jerry is not real" (correction supersedes)
+ * For each entity group: newest gets 1.5x boost, all older get 0.6x penalty.
+ * Uses server entity data (item.entities[]) when available, falls back to regex.
  */
 function applyRecencyResolution(items) {
   if (items.length <= 1) return items;
@@ -1007,14 +1008,17 @@ function applyRecencyResolution(items) {
   const entityGroups = new Map(); // entity -> [items]
 
   for (const item of items) {
-    const entities = extractEntities(item);
+    // Prefer server-provided entity data (canonical names from GPT-4o-mini extraction)
+    const entities = (item.entities && item.entities.length > 0)
+      ? new Set(item.entities.map(e => (e.canonical_name || e).toLowerCase()))
+      : extractEntities(item);
     for (const entity of entities) {
       if (!entityGroups.has(entity)) entityGroups.set(entity, []);
       entityGroups.get(entity).push(item);
     }
   }
 
-  // For each entity with multiple items, apply recency boost
+  // For each entity with multiple items, apply pure timestamp-based resolution
   const boosted = new Set();   // items that got a recency boost
   const penalized = new Set(); // items that got a recency penalty
 
@@ -1036,30 +1040,19 @@ function applyRecencyResolution(items) {
     const newest = group[0];
     const older = group.slice(1);
 
-    // Check for contradiction signals in the newer item
-    const newestContent = (newest.content || '').toLowerCase();
-    const hasNegation = /\b(not|isn't|wasn't|aren't|don't|doesn't|didn't|never|no longer|stopped|quit|fake|test|wrong|incorrect|actually|changed|updated)\b/.test(newestContent);
+    // Pure timestamp ordering: newest always wins for any entity with multiple mentions
+    if (!boosted.has(newest) && newest[scoreKey] != null) {
+      newest[scoreKey] *= 1.5;
+      boosted.add(newest);
+      console.log(`🕐 Recency boost: "${entity}" — newest item boosted 1.5x`);
+    }
 
-    if (hasNegation && !boosted.has(newest)) {
-      // Strong recency boost — newer item likely corrects/contradicts older
-      if (newest[scoreKey] != null) {
-        newest[scoreKey] *= 1.5;
-        boosted.add(newest);
-        console.log(`🕐 Recency boost (contradiction): "${entity}" — newest item boosted 1.5x`);
-      }
-      // Penalize older items for this entity
-      for (const old of older) {
-        if (old[scoreKey] != null && !penalized.has(old)) {
-          old[scoreKey] *= 0.6;
-          penalized.add(old);
-          console.log(`🕐 Recency penalty: "${entity}" — older item penalized 0.6x`);
-        }
-      }
-    } else if (!boosted.has(newest)) {
-      // Mild recency boost — no contradiction detected, but newer is still preferred
-      if (newest[scoreKey] != null) {
-        newest[scoreKey] *= 1.15;
-        boosted.add(newest);
+    // Penalize all older items for this entity
+    for (const old of older) {
+      if (old[scoreKey] != null && !penalized.has(old)) {
+        old[scoreKey] *= 0.6;
+        penalized.add(old);
+        console.log(`🕐 Recency penalty: "${entity}" — older item penalized 0.6x`);
       }
     }
   }
@@ -1079,6 +1072,7 @@ async function getContextForInjection(userMessage, config) {
     const contextConfig = {
       threshold: config?.threshold || 0.5,
       maxContextItems: config?.maxContextItems || 3,
+      candidatePoolSize: config?.candidatePoolSize || 15, // Retrieve more candidates for recency resolution + MMR to winnow
       minDistance: config?.minDistance || 0.0,
       excludeRecentSeconds: config?.excludeRecentSeconds || 120, // CONTEXT POLLUTION FIX: Exclude last 2 minutes
       debugMode: config?.debugMode || false,
@@ -1193,15 +1187,15 @@ async function getContextForInjection(userMessage, config) {
       if (routingMode === 'edge' && apiAvailable) {
         // ─── Edge function path (authenticated users) ───
         contextItems = await searchViaEdgeFunction(queryToUse, {
-          topK: contextConfig.maxContextItems,
+          topK: contextConfig.candidatePoolSize,
         });
-        console.log(`✅ Context Retrieval (edge): Found ${contextItems.length} items`);
+        console.log(`✅ Context Retrieval (edge): Found ${contextItems.length} items (pool: ${contextConfig.candidatePoolSize}, inject cap: ${contextConfig.maxContextItems})`);
 
         // Retry with original query if transformed returned 0
         if (contextItems.length === 0 && transformationMetadata.transformed) {
           console.log('🔄 Retry (edge): retrying with original query...');
           contextItems = await searchViaEdgeFunction(userMessage, {
-            topK: contextConfig.maxContextItems,
+            topK: contextConfig.candidatePoolSize,
           });
           console.log(`🔄 Retry (edge) result: ${contextItems.length} items`);
         }
@@ -1216,7 +1210,7 @@ async function getContextForInjection(userMessage, config) {
         const maxTimestamp = Date.now() - (contextConfig.excludeRecentSeconds * 1000);
 
         contextItems = await searchHybrid(queryToUse, {
-          limit: contextConfig.maxContextItems,
+          limit: contextConfig.candidatePoolSize,
           semanticThreshold: 0.50,
           bm25Threshold: 0.1,
           enableBM25: true,
@@ -1229,7 +1223,7 @@ async function getContextForInjection(userMessage, config) {
           maxTimestamp: maxTimestamp,
         });
 
-        console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search`);
+        console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search (pool: ${contextConfig.candidatePoolSize})`);
         console.log('📊 Search Strategy Breakdown:', JSON.stringify({
           routing: routingMode,
           query: queryToUse.substring(0, 80),
@@ -1244,7 +1238,7 @@ async function getContextForInjection(userMessage, config) {
         if (contextItems.length === 0 && transformationMetadata.transformed) {
           console.log('🔄 Retry: Transformed query returned 0 results, retrying with original query...');
           contextItems = await searchHybrid(userMessage, {
-            limit: contextConfig.maxContextItems,
+            limit: contextConfig.candidatePoolSize,
             semanticThreshold: 0.50,
             bm25Threshold: 0.1,
             enableBM25: true,

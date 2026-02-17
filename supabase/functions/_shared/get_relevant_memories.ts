@@ -222,6 +222,10 @@ export async function getRelevantMemories(
         hydeWeight = 0.6
     } = options;
 
+    // Vector search retrieval pool — always fetch at least 20 candidates for reranking,
+    // even if client requests fewer items back. More candidates = better reranking quality.
+    const vectorSearchCount = Math.max(topK, 20);
+
     // Initialize clients lazily
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -275,7 +279,7 @@ export async function getRelevantMemories(
             const { data, error } = await supabase.rpc('graph_walk_from_entities', {
                 p_entity_ids: boostEntityIds,
                 p_user_id: userId,
-                p_max_results: topK,
+                p_max_results: vectorSearchCount,
                 p_max_depth: 2,
                 p_max_intermediate: 20
             });
@@ -312,7 +316,7 @@ export async function getRelevantMemories(
 
         // Single vector search with raw query + graph results
         const vectorCandidates = await vectorSearch(
-            supabase, rawEmbedding, userId, boostEntityIds, topK, requestId
+            supabase, rawEmbedding, userId, boostEntityIds, vectorSearchCount, requestId
         );
 
         // Merge vector + graph candidates, dedup by id
@@ -325,7 +329,9 @@ export async function getRelevantMemories(
             }
         }
 
-        return await rerankAndFilter(query, candidates, hfClient, requestId);
+        const shortCircuitResults = await rerankAndFilter(query, candidates, hfClient, requestId, topK);
+        await enrichWithEntities(supabase, shortCircuitResults, requestId);
+        return shortCircuitResults;
     }
 
     // ========================================================================
@@ -340,12 +346,12 @@ export async function getRelevantMemories(
 
     // Parallel vector searches
     const searchPromises: Promise<Candidate[]>[] = [
-        vectorSearch(supabase, rawEmbedding, userId, boostEntityIds, topK, requestId)
+        vectorSearch(supabase, rawEmbedding, userId, boostEntityIds, vectorSearchCount, requestId)
     ];
 
     if (hydeEmbedding) {
         searchPromises.push(
-            vectorSearch(supabase, hydeEmbedding, userId, boostEntityIds, topK, requestId)
+            vectorSearch(supabase, hydeEmbedding, userId, boostEntityIds, vectorSearchCount, requestId)
         );
     }
 
@@ -425,9 +431,146 @@ export async function getRelevantMemories(
     }
 
     // ========================================================================
+    // STEP 5b: Entity Timeline Guarantee
+    // For each entity in the results, ensure the newest chat_turn mentioning it
+    // is in the candidate pool. Prevents semantic search bias toward rich/long
+    // content from hiding short factual corrections (the "Jerry problem").
+    // ========================================================================
+    if (boostEntityIds.length > 0) {
+        try {
+            const existingTurnIds = candidates.map(c => c.id).filter(Boolean);
+            const { data: newestTurns, error: timelineError } = await supabase
+                .rpc("get_newest_turns_for_entities", {
+                    p_entity_ids: boostEntityIds,
+                    p_user_id: userId,
+                    p_exclude_turn_ids: existingTurnIds,
+                    p_max_per_entity: 1
+                });
+
+            if (timelineError) {
+                Logger.warn("Entity timeline guarantee RPC failed", {
+                    requestId,
+                    error: timelineError.message
+                });
+            } else if (newestTurns && newestTurns.length > 0) {
+                // Add newest entity mentions as candidates with entity_boost flag
+                const seenIds = new Set(candidates.map(c => c.id));
+                let injected = 0;
+                for (const turn of newestTurns) {
+                    if (!seenIds.has(turn.chat_turn_id)) {
+                        seenIds.add(turn.chat_turn_id);
+                        candidates.push({
+                            id: turn.chat_turn_id,
+                            content: turn.content,
+                            entity_boost: true,
+                            // Tag with entity data for client-side recency resolution
+                            entity_timeline: {
+                                entity_id: turn.entity_id,
+                                canonical_name: turn.canonical_name,
+                                entity_type: turn.entity_type,
+                                created_at: turn.created_at
+                            }
+                        } as any);
+                        injected++;
+                    }
+                }
+                if (injected > 0) {
+                    Logger.info(`Entity timeline: injected ${injected} newest mentions into candidate pool`, {
+                        requestId,
+                        entities: newestTurns.map((t: any) => t.canonical_name).join(", ")
+                    });
+                }
+            }
+        } catch (e) {
+            Logger.warn(`Entity timeline guarantee error: ${(e as Error).message}`, { requestId });
+        }
+    }
+
+    // ========================================================================
     // STEP 6: Rerank, BM25 Boost, Confidence Filter
     // ========================================================================
-    return await rerankAndFilter(query, candidates, hfClient, requestId);
+    const results = await rerankAndFilter(query, candidates, hfClient, requestId, topK);
+
+    // ========================================================================
+    // STEP 7: Enrich results with entity canonical names
+    // Enables client-side recency resolution to use server entity data
+    // instead of fragile regex extraction.
+    // ========================================================================
+    await enrichWithEntities(supabase, results, requestId);
+
+    return results;
+}
+
+/**
+ * Enrich results with entity canonical names from entity_mentions.
+ * Adds an `entities` array to each result for client-side recency resolution.
+ * Mutates results in-place.
+ */
+async function enrichWithEntities(
+    supabase: any,
+    results: CandidateWithScore[],
+    requestId?: string
+): Promise<void> {
+    if (results.length === 0) return;
+
+    const turnIds = results.map(r => r.id).filter(Boolean);
+    if (turnIds.length === 0) return;
+
+    try {
+        // Batch query: get all entity mentions for these chat_turns
+        const { data: mentions, error } = await supabase
+            .from("entity_mentions")
+            .select("chat_turn_id, entity_id, entities!inner(canonical_name, entity_type)")
+            .in("chat_turn_id", turnIds);
+
+        if (error) {
+            Logger.warn("Entity enrichment query failed", { requestId, error: error.message });
+            return;
+        }
+
+        if (!mentions || mentions.length === 0) return;
+
+        // Build lookup: chat_turn_id -> [{canonical_name, entity_type}]
+        const entityMap = new Map<string, Array<{canonical_name: string; entity_type: string}>>();
+        for (const m of mentions) {
+            const turnId = m.chat_turn_id;
+            if (!entityMap.has(turnId)) entityMap.set(turnId, []);
+            const entityData = m.entities;
+            if (entityData) {
+                entityMap.get(turnId)!.push({
+                    canonical_name: entityData.canonical_name,
+                    entity_type: entityData.entity_type
+                });
+            }
+        }
+
+        // Attach to results (also check entity_timeline from B1 injection)
+        let enriched = 0;
+        for (const result of results) {
+            const entities = entityMap.get(result.id) || [];
+            // Also include entity_timeline data from B1 injection if present
+            const timeline = (result as any).entity_timeline;
+            if (timeline?.canonical_name) {
+                const already = entities.some(e => e.canonical_name === timeline.canonical_name);
+                if (!already) {
+                    entities.push({
+                        canonical_name: timeline.canonical_name,
+                        entity_type: timeline.entity_type
+                    });
+                }
+            }
+            if (entities.length > 0) {
+                (result as any).entities = entities;
+                enriched++;
+            }
+        }
+
+        if (enriched > 0) {
+            Logger.info(`Entity enrichment: ${enriched}/${results.length} results tagged with entities`, { requestId });
+        }
+    } catch (e) {
+        Logger.warn(`Entity enrichment error: ${(e as Error).message}`, { requestId });
+    }
 }
 
 /**
@@ -437,7 +580,8 @@ async function rerankAndFilter(
     query: string,
     candidates: Candidate[],
     hfClient: HuggingFaceClient,
-    requestId?: string
+    requestId?: string,
+    returnCount: number = 5
 ): Promise<CandidateWithScore[]> {
     if (candidates.length === 0) {
         return [];
@@ -473,9 +617,8 @@ async function rerankAndFilter(
         candidateCount: candidates.length,
         afterRerank: ordered.length,
         afterFilter: filtered.length,
-        returning: Math.min(filtered.length, 5)
+        returning: Math.min(filtered.length, returnCount)
     });
 
-    // Return top 5
-    return filtered.slice(0, 5);
+    return filtered.slice(0, returnCount);
 }

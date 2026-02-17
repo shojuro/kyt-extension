@@ -3,55 +3,85 @@
 
 ## Current Branch: feature/history-import
 
-## ✅ Recency-Aware Contradiction Resolution (2026-02-17)
+## ✅ Entity Recency Resolution v2 — "Jerry Problem" Fix (2026-02-17)
 
-### Problem: Newer Corrections Ignored
-When user stores "Jerry is my best friend" and later stores "Jerry is not real — he was a test," searching for "Jerry" returns the older, semantically richer memory. Same for "I like shrimp" → "I don't like shrimp." The system had no mechanism to recognize that newer statements supersede older ones about the same entity.
+### Problem: 3-Step Jerry Test Failed
+User ran a cross-platform test: (1) Claude "jerry is now real" → retrieved old meta-conversation, (2) ChatGPT "Jerry is _____" → stale "not real" answer, (3) ChatGPT retry "best friend of 60+ years" → finally correct. The v1 recency resolution we shipped was live but failed the real-world test.
 
-### Root Causes
-- Gravity scoring (temporal decay) existed on edge path but was lost after Jina reranking
-- `src/gravity-scorer.js` existed but was orphaned (never imported)
-- MMR entity dedup kept highest-relevance item, not newest
-- Injection builder sorted by similarity only — no chronological ordering
-- LLM directives said nothing about preferring recent info
+### Root Cause Analysis: 5 Compounding Failures
+1. **Fatal candidate pool size** — `topK=3` sent to edge function, only 3 candidates ever reached client-side pipeline. Newest factual correction often not in pool.
+2. **Semantic richness dominance** — 300-word meta-conversation about Jerry outscored 5-word "Jerry is now real" in embedding space. 15% recency multiplier couldn't close the gap.
+3. **MMR entity dedup** — Kept only highest-scoring Jerry item, LLM never saw the contradiction.
+4. **Negation regex structural failure** — Only triggered 1.5x boost for negations ("not real"). Affirmative corrections ("is now real") only got 1.15x. Broke on 3-step chains.
+5. **Edge path timestamps were `undefined`** — `edge-search.js` mapped `item.timestamp` (doesn't exist on RPC results) instead of `item.created_at`. Recency resolution was a complete no-op on the edge path.
 
-### Layered Fix (3 files)
+### Fix: 4-Part Structural Overhaul
 
-**Layer 1: Mild recency multiplier on all search results** (`background.js`)
-- Applied immediately after search results return, before any post-processing
-- Exponential decay: 15% weight, 30-day half-life
-- `score = score * 0.85 + score * exp(-days/30) * 0.15`
-- Helps newer memories compete with semantically richer older ones during MMR
+**A1: Decouple candidate pool from injection cap** (client + server)
+- New `candidatePoolSize: 15` in contextConfig (retrieval pool) vs `maxContextItems: 3` (injection cap)
+- Server `rerankAndFilter()` uses `returnCount` param instead of hardcoded `slice(0, 5)`
+- `vectorSearchCount = Math.max(topK, 20)` ensures reranker always gets 20+ candidates
+- Both edge and legacy search paths updated
 
-**Layer 2: Entity-aware contradiction resolution** (`background.js`)
-- New `applyRecencyResolution()` function, inserted after content dedup and before MMR
-- Groups items by shared entities (via `extractEntities()` from mmr.js)
-- When newest item contains negation signals (not, isn't, don't, fake, wrong, etc.): 1.5x boost + 0.6x penalty on older items
-- Without negation: mild 1.15x recency boost on newest item per entity
-- Imported `extractEntities` from `src/mmr.js` (added `export` keyword)
+**A2: Pure timestamp ordering — drop negation heuristic** (client)
+- `applyRecencyResolution()` rewritten: newest per entity gets **1.5x**, ALL older get **0.6x**
+- No negation regex. Handles affirmation chains correctly: "is real" → "not real" → "now real"
+- Prefers server-provided entity data (`item.entities[]`) over regex `extractEntities()`
 
-**Layer 3: Recency directive + chronological sort in injection builder** (`kyt-memory-injection-builder.js`)
-- Items sorted newest-first (by timestamp) instead of by similarity
-- High-confidence tier: Rule 10 — "MOST RECENT item reflects current knowledge"
-- Medium-confidence tier: Rule 5 — "prefer the most recent one"
-- LLM sees newest item first + explicit instruction to prefer it when conflicts exist
+**B1: Entity-timeline guarantee** (server — new RPC + pipeline step)
+- New migration `20260217100000_entity_timeline_guarantee.sql`
+- RPC `get_newest_turns_for_entities(p_entity_ids, p_user_id, p_exclude_turn_ids, p_max_per_entity)`
+- After vector+RRF merge (Step 5b), queries `entity_mentions` for newest chat_turn per entity
+- If newest mention was missed by semantic search, injects it into candidate pool before reranking
+- **Deployed to Supabase and tested** — returns correct results, exclusion logic verified
+
+**B2: Pipe server entity data to client** (server + client)
+- New `enrichWithEntities()` in `get_relevant_memories.ts` — batch-queries `entity_mentions`, attaches `entities[]` array with canonical names to each result
+- `edge-search.js` maps `item.entities` through to client
+- `applyRecencyResolution` uses server entities (GPT-4o-mini extraction) instead of fragile regex
+
+**Bonus: Edge path timestamp fix** (client)
+- `edge-search.js`: `item.created_at || item.timestamp || item.start_timestamp` (was `item.timestamp || item.start_timestamp`)
+- This alone would have fixed a major part of the Jerry problem — recency resolution needs working timestamps
 
 ### Files Modified
 | File | Change | Risk |
 |------|--------|------|
-| `kyt-memory-injection-builder.js` | Chronological sort + recency directives | Low — presentation-only |
-| `background.js` | Recency multiplier + entity-aware contradiction resolution + `extractEntities` import | Medium — affects scoring |
-| `src/mmr.js` | Export `extractEntities` (add `export` keyword) | Low — no behavior change |
+| `background.js` | `candidatePoolSize: 15`, pure timestamp recency resolution, use server entities | Medium |
+| `src/edge-search.js` | Map `created_at` for timestamps, map `entities[]` | Low |
+| `supabase/functions/_shared/get_relevant_memories.ts` | `vectorSearchCount`, `returnCount`, entity timeline guarantee (Step 5b), `enrichWithEntities()` (Step 7) | Medium |
+| `supabase/functions/search_memories/index.ts` | Pipeline comment update only | None |
+| `supabase/migrations/20260217100000_entity_timeline_guarantee.sql` | New RPC `get_newest_turns_for_entities` | Low |
 
-### Pipeline Order (post-search)
-1. Mild recency multiplier (15% weight) → 2. Recursion guard → 3. Meta filter → 4. Deflection penalty → 5. Meta/Echo penalties → 6. Content dedup → 7. **Entity-aware recency resolution** → 8. MMR → 9. Keyword boost → 10. Confidence filter → 11. Injection builder (newest-first sort)
+### Server Pipeline (updated)
+1. Embed → 2. Entity search + HyDE + concept detection (parallel) → 3. Graph walk → 4. HyDE short-circuit check → 5. Dual vector search → 5a. RRF merge → **5b. Entity timeline guarantee** → 6. Rerank + BM25 + confidence filter → **7. Entity enrichment**
+
+### Client Pipeline (updated)
+1. Recency multiplier (15%) → 2. Recursion guard → 3. Meta filter → 4. Deflection/echo penalty → 5. Dedup → **6. Entity-aware recency resolution (pure timestamp, server entities)** → 7. MMR(3) → 8. Keyword boost → 9. Confidence filter → 10. Injection (newest-first)
+
+### Edge Function: search_memories v29 deployed
 
 ### Verification
 1. Reload extension from chrome://extensions
-2. Search for entity with conflicting memories (old vs new)
-3. Service worker console: `🕐 Recency multiplier applied`, `🕐 Recency boost (contradiction)`, `🕐 Recency penalty`
-4. Injected context should show items ordered newest-first
-5. LLM should reference the newer statement as authoritative
+2. Store conflicting facts: "X is A" then "X is B" then "X is A again"
+3. Service worker console: `🕐 Recency boost: "X" — newest item boosted 1.5x`
+4. Edge function logs: `Entity timeline: injected N newest mentions into candidate pool`
+5. Result should always reflect the most recent statement, regardless of affirmation/negation
+
+---
+
+## Previous: Recency-Aware Contradiction Resolution v1 (2026-02-17)
+
+### Layered Fix (3 files) — superseded by v2 above
+
+**Layer 1: Mild recency multiplier on all search results** (`background.js`)
+- Exponential decay: 15% weight, 30-day half-life — *still active in v2*
+
+**Layer 2: Entity-aware contradiction resolution** (`background.js`)
+- Negation-based heuristic — *replaced by pure timestamp ordering in v2*
+
+**Layer 3: Recency directive + chronological sort in injection builder** (`kyt-memory-injection-builder.js`)
+- Items sorted newest-first, LLM directives for recency — *still active in v2*
 
 ---
 

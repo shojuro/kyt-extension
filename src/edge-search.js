@@ -66,8 +66,8 @@ export async function searchViaEdgeFunction(query, options = {}) {
     content: item.content,
     platform: item.platform,
     source: item.source || item.platform,
-    msg_timestamp: item.timestamp || item.start_timestamp,
-    timestamp: item.timestamp || item.start_timestamp,
+    msg_timestamp: item.created_at || item.timestamp || item.start_timestamp,
+    timestamp: item.created_at || item.timestamp || item.start_timestamp,
     // Scores — edge function provides cross_encoder_score from Jina reranker
     cross_encoder_score: item.cross_encoder_score ?? item.rerank_score ?? null,
     distance: item.distance ?? null,
@@ -79,6 +79,9 @@ export async function searchViaEdgeFunction(query, options = {}) {
     entity_boost: item.entity_boost ?? false,
     traversal_depth: item.traversal_depth ?? null,
     connected_entity_text: item.connected_entity_text ?? null,
+    // Server-side entity data — canonical names from GPT-4o-mini extraction
+    // Used by client-side applyRecencyResolution instead of fragile regex
+    entities: item.entities || [],
   }));
 
   // Attach metadata so callers can determine Jina availability
