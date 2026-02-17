@@ -149,7 +149,8 @@ function isSameEntity(item1, item2) {
  * Critical for preventing similar items from dominating results (e.g., multiple mentions of "Jennifer"
  * vs "Jenn" the dog would be diversified to include both contexts).
  *
- * NEW: Entity deduplication ensures no duplicate entities in results (hard constraint)
+ * Same-entity items are handled by MMR's native diversity penalty (embedding similarity),
+ * not by hard deduplication. Complementary facts about the same entity can coexist.
  *
  * @param {Array<Object>} candidates - Search results from Supabase, each with:
  *   - distance: number (cosine distance from pgvector)
@@ -166,7 +167,6 @@ function isSameEntity(item1, item2) {
  *   - requireEmbeddings: boolean - If true, throw error if embeddings missing (default: false)
  *   - fallbackToRelevance: boolean - If true and no embeddings, return top-k by relevance (default: true)
  *   - debugMode: boolean - If true, log MMR scoring details (default: false)
- *   - enableEntityDeduplication: boolean - If true, prevent duplicate entities (default: true)
  * @returns {Array<Object>} Reranked results (up to maxResults items)
  */
 export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
@@ -174,7 +174,6 @@ export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
     requireEmbeddings = false,
     fallbackToRelevance = true,
     debugMode = false,
-    enableEntityDeduplication = true
   } = options;
 
   // Validate inputs
@@ -243,25 +242,6 @@ export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
     for (let i = 0; i < remaining.length; i++) {
       const candidate = remaining[i];
 
-      // Entity deduplication: Skip if candidate shares entity with any selected item
-      if (enableEntityDeduplication) {
-        let isDuplicate = false;
-        for (const selectedItem of selected) {
-          if (isSameEntity(candidate, selectedItem)) {
-            isDuplicate = true;
-            if (debugMode) {
-              const candidateEntities = Array.from(extractEntities(candidate)).join(', ');
-              const selectedEntities = Array.from(extractEntities(selectedItem)).join(', ');
-              console.log(`   ⏭️  Skipping duplicate entity: candidate="${candidateEntities}" matches selected="${selectedEntities}"`);
-            }
-            break;
-          }
-        }
-        if (isDuplicate) {
-          continue; // Skip this candidate
-        }
-      }
-
       // Relevance score (similarity to query)
       let relevance = similarityToRelevance(distanceToSimilarity(candidate.distance));
 
@@ -299,10 +279,10 @@ export function applyMMR(candidates, maxResults, lambda = 0.5, options = {}) {
       }
     }
 
-    // If no valid candidate found (all remaining are duplicates), stop
+    // If no valid candidate found, stop
     if (bestIndex === -1) {
       if (debugMode) {
-        console.log(`   ⚠️  No more unique entities available, stopping at ${selected.length} items`);
+        console.log(`   ⚠️  No more candidates available, stopping at ${selected.length} items`);
       }
       break;
     }

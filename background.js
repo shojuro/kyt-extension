@@ -1047,12 +1047,12 @@ function applyRecencyResolution(items) {
       console.log(`🕐 Recency boost: "${entity}" — newest item boosted 1.5x`);
     }
 
-    // Penalize all older items for this entity
+    // Penalize all older items for this entity (mild — complementary facts survive)
     for (const old of older) {
       if (old[scoreKey] != null && !penalized.has(old)) {
-        old[scoreKey] *= 0.6;
+        old[scoreKey] *= 0.8;
         penalized.add(old);
-        console.log(`🕐 Recency penalty: "${entity}" — older item penalized 0.6x`);
+        console.log(`🕐 Recency penalty: "${entity}" — older item penalized 0.8x`);
       }
     }
   }
