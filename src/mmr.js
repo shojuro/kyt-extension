@@ -90,7 +90,7 @@ function cosineSimilarity(embedding1, embedding2) {
  * @param {Object} item - Candidate item with content field
  * @returns {Set<string>} Set of entity identifiers
  */
-function extractEntities(item) {
+export function extractEntities(item) {
   const entities = new Set();
 
   // If explicit entity field exists (test data), use it

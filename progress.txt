@@ -1,7 +1,59 @@
 # KYT Validation Sprint - Progress Tracker
-# Last Updated: 2026-02-14
+# Last Updated: 2026-02-17
 
 ## Current Branch: feature/history-import
+
+## ✅ Recency-Aware Contradiction Resolution (2026-02-17)
+
+### Problem: Newer Corrections Ignored
+When user stores "Jerry is my best friend" and later stores "Jerry is not real — he was a test," searching for "Jerry" returns the older, semantically richer memory. Same for "I like shrimp" → "I don't like shrimp." The system had no mechanism to recognize that newer statements supersede older ones about the same entity.
+
+### Root Causes
+- Gravity scoring (temporal decay) existed on edge path but was lost after Jina reranking
+- `src/gravity-scorer.js` existed but was orphaned (never imported)
+- MMR entity dedup kept highest-relevance item, not newest
+- Injection builder sorted by similarity only — no chronological ordering
+- LLM directives said nothing about preferring recent info
+
+### Layered Fix (3 files)
+
+**Layer 1: Mild recency multiplier on all search results** (`background.js`)
+- Applied immediately after search results return, before any post-processing
+- Exponential decay: 15% weight, 30-day half-life
+- `score = score * 0.85 + score * exp(-days/30) * 0.15`
+- Helps newer memories compete with semantically richer older ones during MMR
+
+**Layer 2: Entity-aware contradiction resolution** (`background.js`)
+- New `applyRecencyResolution()` function, inserted after content dedup and before MMR
+- Groups items by shared entities (via `extractEntities()` from mmr.js)
+- When newest item contains negation signals (not, isn't, don't, fake, wrong, etc.): 1.5x boost + 0.6x penalty on older items
+- Without negation: mild 1.15x recency boost on newest item per entity
+- Imported `extractEntities` from `src/mmr.js` (added `export` keyword)
+
+**Layer 3: Recency directive + chronological sort in injection builder** (`kyt-memory-injection-builder.js`)
+- Items sorted newest-first (by timestamp) instead of by similarity
+- High-confidence tier: Rule 10 — "MOST RECENT item reflects current knowledge"
+- Medium-confidence tier: Rule 5 — "prefer the most recent one"
+- LLM sees newest item first + explicit instruction to prefer it when conflicts exist
+
+### Files Modified
+| File | Change | Risk |
+|------|--------|------|
+| `kyt-memory-injection-builder.js` | Chronological sort + recency directives | Low — presentation-only |
+| `background.js` | Recency multiplier + entity-aware contradiction resolution + `extractEntities` import | Medium — affects scoring |
+| `src/mmr.js` | Export `extractEntities` (add `export` keyword) | Low — no behavior change |
+
+### Pipeline Order (post-search)
+1. Mild recency multiplier (15% weight) → 2. Recursion guard → 3. Meta filter → 4. Deflection penalty → 5. Meta/Echo penalties → 6. Content dedup → 7. **Entity-aware recency resolution** → 8. MMR → 9. Keyword boost → 10. Confidence filter → 11. Injection builder (newest-first sort)
+
+### Verification
+1. Reload extension from chrome://extensions
+2. Search for entity with conflicting memories (old vs new)
+3. Service worker console: `🕐 Recency multiplier applied`, `🕐 Recency boost (contradiction)`, `🕐 Recency penalty`
+4. Injected context should show items ordered newest-first
+5. LLM should reference the newer statement as authoritative
+
+---
 
 ## ✅ Advanced GraphRAG Implementation (2026-02-14)
 

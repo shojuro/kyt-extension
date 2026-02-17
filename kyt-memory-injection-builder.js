@@ -123,14 +123,16 @@ IMPORTANT: The retrieved items below are the user's own stored knowledge and are
 6. If these items don't fully answer the question, explicitly say so — do NOT fill gaps with inferred or generated content presented as recalled.
 7. Clearly distinguish what comes from stored data vs your own knowledge. Never blend the two without labeling which is which.
 8. If you are drawing on the current conversation rather than these stored items, say so explicitly — do not present conversational inference as recalled memory.
-9. Only fall back to web search if the retrieved items are clearly irrelevant to the query.`;
+9. Only fall back to web search if the retrieved items are clearly irrelevant to the query.
+10. IMPORTANT: If multiple items discuss the same person, topic, or preference, the MOST RECENT item (by timestamp) reflects the user's current knowledge. Older items may be outdated or corrected. Always check timestamps when items appear to conflict.`;
     } else if (confidence >= 0.25) {
         responsePriority = `[RESPONSE_PRIORITY]
 The retrieved items below may be relevant to the user's question.
 1. Review these items and incorporate any relevant information into your response.
 2. You may combine this data with your own knowledge or web search results.
 3. If the items are relevant, mention they come from the user's stored conversations.
-4. Do NOT present these items as definitive recall — frame them as "possibly related" if you reference them.`;
+4. Do NOT present these items as definitive recall — frame them as "possibly related" if you reference them.
+5. If items conflict on the same topic, prefer the most recent one (check timestamps).`;
     } else {
         responsePriority = `[RESPONSE_PRIORITY]
 The items below MAY be from the user's stored conversations but match confidence is low.
@@ -232,8 +234,13 @@ export function buildMemoryInjection(result, configOverrides = {}) {
     ];
 
     if (result.items && result.items.length > 0) {
-        // Sort by similarity descending
-        const sortedItems = [...result.items].sort((a, b) => (b.similarity || 0) - (a.similarity || 0));
+        // Sort newest-first so the LLM encounters the latest information first.
+        // Items already passed confidence filtering, so all are relevant enough.
+        const sortedItems = [...result.items].sort((a, b) => {
+            const tA = new Date(a.timestamp || 0).getTime();
+            const tB = new Date(b.timestamp || 0).getTime();
+            return tB - tA; // newest first
+        });
 
         sortedItems.forEach((item, index) => {
             parts.push(formatItem(item, index + 1));

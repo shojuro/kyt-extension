@@ -14,7 +14,7 @@
 // Day 2: Import browser-compatible sync and search modules
 import { syncToSupabase, setApiConfig, backfillNullEmbeddings } from './src/browser-sync.js';
 import { searchMessages, findSimilarMessages, searchHybrid, prewarmEmbeddingModel } from './src/browser-search.js';
-import { applyMMR, MMR_PRESETS } from './src/mmr.js';
+import { applyMMR, MMR_PRESETS, extractEntities } from './src/mmr.js';
 import { transformQuery, extractRecentTopics, fetchRecentTopicsFromSupabase } from './src/query-transformer.js';
 import { queueProcessor } from './src/background/queue-processor.js';
 import { buildMemoryInjection, buildEmptyInjection, buildErrorInjection } from './kyt-memory-injection-builder.js';
@@ -566,6 +566,24 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   console.log('🔄 KYT Background: Extension installed/updated');
   console.log(`   Reason: ${details.reason}`);
 
+  // Diagnostic: verify host_permissions are actually granted by Chrome
+  chrome.permissions.getAll((perms) => {
+    const origins = perms.origins || [];
+    const required = [
+      'https://api.openai.com/*',
+      'https://router.huggingface.co/*',
+      'https://api.jina.ai/*',
+    ];
+    console.log('🔑 KYT Host permissions diagnostic:');
+    for (const origin of required) {
+      const granted = origins.includes(origin);
+      console.log(`   ${granted ? '✅' : '❌'} ${origin}`);
+    }
+    if (required.some(o => !origins.includes(o))) {
+      console.warn('⚠️ Some host_permissions not granted. Try removing and re-adding the extension.');
+    }
+  });
+
   // Sync all existing messages
   try {
     // const syncResult = await syncToSupabase();
@@ -974,6 +992,81 @@ async function getStorageStats() {
  * @param {Object} config - Context injection configuration
  * @returns {Promise<Object>} Context data with formatted string and items
  */
+/**
+ * Entity-aware recency resolution.
+ * When multiple items reference the same entity, boost the newest item's score
+ * and penalize older items that may be contradicted.
+ *
+ * Handles: "I like shrimp" vs "I don't like shrimp" (same entity, newer wins)
+ * Handles: "Jerry is my friend" vs "Jerry is not real" (correction supersedes)
+ */
+function applyRecencyResolution(items) {
+  if (items.length <= 1) return items;
+
+  // Group items by shared entities
+  const entityGroups = new Map(); // entity -> [items]
+
+  for (const item of items) {
+    const entities = extractEntities(item);
+    for (const entity of entities) {
+      if (!entityGroups.has(entity)) entityGroups.set(entity, []);
+      entityGroups.get(entity).push(item);
+    }
+  }
+
+  // For each entity with multiple items, apply recency boost
+  const boosted = new Set();   // items that got a recency boost
+  const penalized = new Set(); // items that got a recency penalty
+
+  // Determine the score key (cross_encoder_score > distance > weighted_score)
+  const scoreKey = items[0]?.cross_encoder_score != null ? 'cross_encoder_score'
+      : items[0]?.distance != null ? 'distance'
+      : 'weighted_score';
+
+  for (const [entity, group] of entityGroups) {
+    if (group.length < 2) continue;
+
+    // Sort by timestamp descending (newest first)
+    group.sort((a, b) => {
+      const tA = new Date(a.msg_timestamp || a.timestamp || 0).getTime();
+      const tB = new Date(b.msg_timestamp || b.timestamp || 0).getTime();
+      return tB - tA;
+    });
+
+    const newest = group[0];
+    const older = group.slice(1);
+
+    // Check for contradiction signals in the newer item
+    const newestContent = (newest.content || '').toLowerCase();
+    const hasNegation = /\b(not|isn't|wasn't|aren't|don't|doesn't|didn't|never|no longer|stopped|quit|fake|test|wrong|incorrect|actually|changed|updated)\b/.test(newestContent);
+
+    if (hasNegation && !boosted.has(newest)) {
+      // Strong recency boost — newer item likely corrects/contradicts older
+      if (newest[scoreKey] != null) {
+        newest[scoreKey] *= 1.5;
+        boosted.add(newest);
+        console.log(`🕐 Recency boost (contradiction): "${entity}" — newest item boosted 1.5x`);
+      }
+      // Penalize older items for this entity
+      for (const old of older) {
+        if (old[scoreKey] != null && !penalized.has(old)) {
+          old[scoreKey] *= 0.6;
+          penalized.add(old);
+          console.log(`🕐 Recency penalty: "${entity}" — older item penalized 0.6x`);
+        }
+      }
+    } else if (!boosted.has(newest)) {
+      // Mild recency boost — no contradiction detected, but newer is still preferred
+      if (newest[scoreKey] != null) {
+        newest[scoreKey] *= 1.15;
+        boosted.add(newest);
+      }
+    }
+  }
+
+  return items;
+}
+
 async function getContextForInjection(userMessage, config) {
   const startTime = performance.now();
   console.log(`🔍 getContextForInjection() called with query: "${userMessage.substring(0, 80)}${userMessage.length > 80 ? '...' : ''}"`);
@@ -1003,11 +1096,17 @@ async function getContextForInjection(userMessage, config) {
       );
     }
 
+    // Resolve routing mode early — edge mode handles query expansion server-side
+    // so we skip client-side OpenAI calls that would CORS-fail from the SW.
+    const routingMode = await getRoutingMode();
+
     // PHASE 7: Query Transformation (Dual ICP Support)
     let searchQuery = userMessage;
     let transformationMetadata = { transformed: false };
 
-    if (!contextConfig.disableQueryTransformation && apiAvailable) {
+    // Skip client-side transformation in edge mode: the search_memories edge
+    // function already runs HyDE + dual embedding + reranking server-side.
+    if (!contextConfig.disableQueryTransformation && apiAvailable && routingMode !== 'edge') {
       // Skip transformation if HyDE CB is open (same OpenAI key — would 429 too)
       const hydeCbStatus = await hydeCB.isOpen();
       if (hydeCbStatus.open) {
@@ -1051,6 +1150,8 @@ async function getContextForInjection(userMessage, config) {
         console.warn('⚠️ Query transformation failed, using original query:', transformError);
       }
       } // end hydeCB else block
+    } else if (routingMode === 'edge') {
+      console.log('⚡ Query transformation skipped: edge mode (server-side HyDE handles expansion)');
     }
 
     // VALIDATION FIX: Use searchHybrid for robust retrieval (Vector + BM25)
@@ -1087,7 +1188,7 @@ async function getContextForInjection(userMessage, config) {
       console.log(`🔍 Context Retrieval: Using query "${queryToUse}"`);
 
       // Dual-path: edge function vs legacy client-side search
-      const routingMode = await getRoutingMode();
+      // (routingMode already resolved above, before query transformation)
 
       if (routingMode === 'edge' && apiAvailable) {
         // ─── Edge function path (authenticated users) ───
@@ -1163,6 +1264,26 @@ async function getContextForInjection(userMessage, config) {
       console.error('❌ Context Retrieval failed:', searchError);
       // Fallback to empty context
       contextItems = [];
+    }
+
+    // Apply mild recency boost to help newer memories compete with semantically richer older ones
+    // Uses simple exponential decay: boost = 1.0 for today, ~0.95 at 7 days, ~0.90 at 14 days
+    if (contextItems.length > 1) {
+      const HALF_LIFE_DAYS = 30;
+      const now = Date.now();
+      const scoreKey = contextItems[0]?.cross_encoder_score != null ? 'cross_encoder_score'
+          : contextItems[0]?.distance != null ? 'distance'
+          : 'weighted_score';
+
+      for (const item of contextItems) {
+        if (item[scoreKey] == null) continue;
+        const itemTime = new Date(item.msg_timestamp || item.timestamp || 0).getTime();
+        const daysSince = Math.max(0, (now - itemTime) / 86400000);
+        const recencyMultiplier = Math.exp(-daysSince / HALF_LIFE_DAYS);
+        // Blend: 85% original score + 15% recency-adjusted score
+        item[scoreKey] = item[scoreKey] * 0.85 + item[scoreKey] * recencyMultiplier * 0.15;
+      }
+      console.log(`🕐 Recency multiplier applied to ${contextItems.length} results (half-life: ${HALF_LIFE_DAYS}d)`);
     }
 
     // RECURSION GUARD: Filter out items that contain K.Y.T. protocol headers or artifacts
@@ -1278,6 +1399,9 @@ async function getContextForInjection(userMessage, config) {
       uniqueContent.add(normalized);
       return true;
     });
+
+    // Entity-aware recency resolution: boost newer items, penalize contradicted older ones
+    filteredItems = applyRecencyResolution(filteredItems);
 
     // Apply MMR (Maximal Marginal Relevance) reranking for precision and diversity
     if (filteredItems.length > 1) {

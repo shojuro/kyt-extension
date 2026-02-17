@@ -34,7 +34,10 @@
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
     "https://claude.ai/*",
-    "https://svrcvfzlwhnixzuxaccf.supabase.co/*"
+    "https://svrcvfzlwhnixzuxaccf.supabase.co/*",
+    "https://api.openai.com/*",
+    "https://router.huggingface.co/*",
+    "https://api.jina.ai/*"
   ],
   "content_scripts": [
     {
