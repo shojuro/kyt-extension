@@ -445,6 +445,8 @@ async function searchSupabaseText(query, options = {}) {
       return [];
     }
     filterParams += `&user_id=eq.${config.userId}`;
+    // P1 fix: exclude questions from text search results
+    filterParams += '&or=(is_question.eq.false,is_question.is.null)';
     if (role) {
       filterParams += `&role=eq.${role}`;
     }
@@ -776,6 +778,8 @@ export async function searchHybrid(query, options = {}) {
     if (maxTimestamp > 0) {
       localMessages = localMessages.filter(m => (m.timestamp || m.capturedAt || 0) <= maxTimestamp);
     }
+    // P1 fix: exclude questions from local BM25 search
+    localMessages = localMessages.filter(m => !m.is_question);
 
       const rankedLists = [];
 

@@ -59,6 +59,12 @@
  */
 function classifyContent(content) {
     const lower = content.toLowerCase();
+    const trimmed = content.trim();
+
+    // Question guard — questions are not preferences/instructions (P2 fix)
+    if (trimmed.endsWith('?') || /^(what|who|where|when|why|how|which|is|are|do|does|did|can|could|would|tell me|remind me)\b/i.test(trimmed)) {
+        return { type: 'conversation_excerpt', subtype: 'question_answer', intent: 'auto_captured' };
+    }
 
     // Credentials
     if (lower.includes('password') || lower.includes('api key') || lower.includes('token') || lower.includes('secret')) {

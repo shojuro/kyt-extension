@@ -1,7 +1,33 @@
 # KYT Validation Sprint - Progress Tracker
-# Last Updated: 2026-02-17
+# Last Updated: 2026-02-19
 
 ## Current Branch: feature/history-import
+
+## 🔧 Phase 1: Preference Retrieval Fix — IN PROGRESS (2026-02-19)
+
+### Problem: "Favorite Car" Test Failed (0/4 incognito instances)
+User stored "My favorite car is Lamborghini" but 0/4 incognito ChatGPT instances retrieved the correct answer. Root cause: 5 compounding retrieval failures polluting the pipeline.
+
+### Fixes Applied (P1, P2, P3, P7)
+1. **Supabase migration** — `is_question` BOOLEAN + `deflection` FLOAT columns. `match_messages_v2` RPC excludes `is_question=true`. [x] DONE
+2. **Retroactive cleanup migration** — 395 questions tagged, 8 deflections scored (0.85). [x] DONE
+3. **Question detection in saveMessage()** — `detectIsQuestion()` in `background.js` line ~50. [x] DONE
+4. **Question guard in classifyContent()** — Early return in `src/taxonomy-classifier.js` + `kyt-memory-injection-builder.js`. [x] DONE
+5. **Deflection storage filter** — Drop deflections >= 0.70 before Supabase upsert in `src/browser-sync.js`. [x] DONE
+6. **is_question filter in search** — PostgREST filter in `searchSupabaseText()` + local filter in `searchHybrid()`. [x] DONE
+
+### Files To Modify
+| File | Change |
+|------|--------|
+| `supabase/migrations/20260218000000_question_deflection_columns.sql` | NEW: schema + RPC update |
+| `supabase/migrations/20260218000001_retroactive_question_deflection_cleanup.sql` | NEW: data cleanup |
+| `background.js` | Add `detectIsQuestion()` + call in `saveMessage()` |
+| `src/taxonomy-classifier.js` | Question guard in `classifyContent()` |
+| `kyt-memory-injection-builder.js` | Same question guard |
+| `src/browser-sync.js` | Deflection filter + new fields in upsert |
+| `src/browser-search.js` | `is_question` filter in 2 search paths |
+
+---
 
 ## ✅ Entity Recency Resolution v2 — "Jerry Problem" Fix (2026-02-17)
 

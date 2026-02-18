@@ -442,8 +442,30 @@ export async function syncMessages(messagesToSync) {
       });
     });
 
+    // P3 fix: Filter out high-confidence deflections before sync
+    const deflectionFiltered = messagesToSync.filter(msg => {
+      if (msg.deflection >= 0.70) {
+        console.log(`🗑️ Sync filter: dropping high-confidence deflection (${msg.deflection.toFixed(2)}): "${msg.content?.substring(0, 40)}..."`);
+        return false;
+      }
+      return true;
+    });
+
+    if (deflectionFiltered.length < messagesToSync.length) {
+      console.log(`🗑️ Sync filter: dropped ${messagesToSync.length - deflectionFiltered.length} deflection(s), ${deflectionFiltered.length} remaining`);
+      // Regenerate embeddings for filtered set
+      const filteredTexts = deflectionFiltered.map(m => m.content);
+      try {
+        embeddings = await generateEmbeddings(filteredTexts, config.openaiKey);
+        embeddingsAvailable = true;
+      } catch (embeddingError) {
+        console.warn(`⚠️ Embeddings unavailable after deflection filter: ${embeddingError.message}`);
+        embeddings = new Array(filteredTexts.length).fill(null);
+      }
+    }
+
     // Prepare data for Supabase
-    const messagesWithEmbeddings = messagesToSync.map((msg, idx) => ({
+    const messagesWithEmbeddings = deflectionFiltered.map((msg, idx) => ({
       content: msg.content,
       role: msg.role || 'user', // Default to 'user' (DB constraint: user|assistant|system)
       conversation_id: msg.conversationId || null,
@@ -453,7 +475,9 @@ export async function syncMessages(messagesToSync) {
       embedding: embeddings[idx],
       source: normalizePlatform(msg.platform),
       user_id: config.userId || '00000000-0000-0000-0000-000000000000', // Add user_id
-      synced_from_extension: new Date().toISOString()
+      synced_from_extension: new Date().toISOString(),
+      is_question: msg.is_question || false,
+      deflection: msg.deflection || null
     }));
 
     // Insert to Supabase (UPSERT for idempotency)
@@ -510,14 +534,14 @@ export async function syncMessages(messagesToSync) {
       successCount += batch.length;
     }
 
-    console.log(`✅ Messages synced to 'messages' table: ${messagesToSync.length}`);
+    console.log(`✅ Messages synced to 'messages' table: ${deflectionFiltered.length}`);
 
     // PHASE 5: Sync to chat_turns table (conversation-turn chunks)
     // Use userId from config or default to temp ID
     const userId = config.userId || '00000000-0000-0000-0000-000000000000';
 
     console.log('📦 Creating conversation-turn chunks...');
-    const turnChunks = messagesToTurnChunks(messagesToSync, userId);
+    const turnChunks = messagesToTurnChunks(deflectionFiltered, userId);
 
     if (turnChunks.length > 0) {
       // PHASE 8: HyDE Preprocessing - Generate hypothetical questions
@@ -594,14 +618,14 @@ export async function syncMessages(messagesToSync) {
       last_successful_sync_time: syncTimestamp,
       last_sync_status: {
         lastSyncTime: syncTimestamp,
-        syncedCount: messagesToSync.length,
+        syncedCount: deflectionFiltered.length,
         // Keep minimal status for UI/debugging, but NOT used for sync decisions
-        lastSyncedMessageIds: messagesToSync.slice(-10).map(m => m.messageId) // Only last 10 for debugging
+        lastSyncedMessageIds: deflectionFiltered.slice(-10).map(m => m.messageId) // Only last 10 for debugging
       }
     });
 
     const chunkCount = turnChunks.length;
-    console.log(`✅ Sync complete: ${messagesToSync.length} messages + ${chunkCount} turn chunks (embeddings: ${embeddingsAvailable})`);
+    console.log(`✅ Sync complete: ${deflectionFiltered.length} messages + ${chunkCount} turn chunks (embeddings: ${embeddingsAvailable})`);
 
     // Entity backfill: trigger server-side entity extraction for synced turn IDs
     // Fire-and-forget — don't block the sync result. Only for authenticated users.
@@ -611,10 +635,10 @@ export async function syncMessages(messagesToSync) {
 
     return {
       success: true,
-      synced: messagesToSync.length,
+      synced: deflectionFiltered.length,
       chunks: chunkCount,
       embeddingsGenerated: embeddingsAvailable,
-      message: `Successfully synced ${messagesToSync.length} messages + ${chunkCount} turn chunks`
+      message: `Successfully synced ${deflectionFiltered.length} messages + ${chunkCount} turn chunks`
     };
 
   } catch (error) {

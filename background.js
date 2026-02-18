@@ -46,6 +46,19 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
+// ===== QUESTION DETECTION =====
+// Heuristic: identifies user messages that are questions (P1 fix).
+// Questions are tagged is_question=true and excluded from retrieval.
+const INTERROGATIVE_RE = /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember)\b/i;
+
+function detectIsQuestion(content, role) {
+  if (role !== 'user') return false;
+  const trimmed = (content || '').trim();
+  if (trimmed.endsWith('?')) return true;
+  if (INTERROGATIVE_RE.test(trimmed)) return true;
+  return false;
+}
+
 // ===== INJECTION HEALTH STATS =====
 const INJECTION_STATS_KEY = 'kyt_injection_stats';
 
@@ -743,6 +756,9 @@ async function saveMessage(messageData) {
     // Detect assistant deflections/echoes (Layer 1: capture-time tagging)
     const deflectionCheck = detectDeflection(messageData.content, messageData.role);
 
+    // Detect user questions (P1: exclude from retrieval)
+    const isQuestion = detectIsQuestion(messageData.content, messageData.role);
+
     // Add new message with content hash
     const newMessage = {
       ...messageData,
@@ -750,7 +766,8 @@ async function saveMessage(messageData) {
       capturedAt: Date.now(),
       messageId: messageData.messageId || generateMessageId(),
       timestamp: timestamp,
-      ...(deflectionCheck.isDeflection ? { deflection: deflectionCheck.confidence } : {})
+      ...(deflectionCheck.isDeflection ? { deflection: deflectionCheck.confidence } : {}),
+      ...(isQuestion ? { is_question: true } : {})
     };
 
     messages.push(newMessage);
