@@ -23,7 +23,7 @@ export function classifyContent(content) {
     const trimmed = content.trim();
 
     // Question guard — questions are not preferences/instructions (P2 fix)
-    if (trimmed.endsWith('?') || /^(what|who|where|when|why|how|which|is|are|do|does|did|can|could|would|tell me|remind me)\b/i.test(trimmed)) {
+    if (trimmed.endsWith('?') || /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember)\b/i.test(trimmed)) {
         return { type: 'conversation_excerpt', subtype: 'question_answer', intent: 'auto_captured' };
     }
 
