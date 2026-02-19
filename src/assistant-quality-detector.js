@@ -68,6 +68,9 @@ const DEFLECTION_PATTERNS = [
   // --- Non-first-person deflections (chat_turns often have impersonal phrasing) ---
 
   // Impersonal / passive: "no answer was captured", "no preference was found"
+  // The inner group `(?:noun (?:or )?)` uses `+` to chain compound nouns
+  // ("answer or preference or record"). Keep the noun list under ~8 entries
+  // to avoid backtracking risk on long non-matching strings.
   /(?:no|zero) (?:(?:answer|preference|record|information|data) (?:or )?)+(?:was |has been |were )(?:\w+ )?(?:captured|stored|recorded|saved|found)/i,
 
   // Subject-agnostic "don't have an answer about": catches "Your stored conversations don't have..."
