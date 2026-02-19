@@ -150,6 +150,14 @@ function chunkTurns(turns, windowSize = 5, overlap = 2) {
     const content = contentParts.join('\n\n');
     const topics = extractTopics(content);
 
+    // Mark chunk as question if ALL user messages are questions AND
+    // no assistant has a substantive response (all deflections or missing)
+    const allQuestionsNoAnswers = window.every(turn => {
+      const userIsQ = turn.user?.is_question;
+      const asstIsDeflection = !turn.assistant || (turn.assistant.deflection >= 0.70);
+      return userIsQ && asstIsDeflection;
+    });
+
     chunks.push({
       turn_range: `${i + 1}-${i + window.length}`,
       content: content,
@@ -158,6 +166,7 @@ function chunkTurns(turns, windowSize = 5, overlap = 2) {
       start_timestamp: Math.min(...timestamps),
       end_timestamp: Math.max(...timestamps),
       topics: topics,
+      is_question: allQuestionsNoAnswers,
       // conversation_id, platform, user_id will be added by caller
     });
   }

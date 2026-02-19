@@ -46,6 +46,23 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
+// ===== INJECTION PREFIX STRIPPING =====
+// Strip KYT injection blocks that get captured with user messages.
+// The content script captures messages AFTER the injection block is prepended,
+// so both messages and chat_turns tables get polluted with the full injection context.
+function stripInjectionPrefix(content) {
+  if (!content) return content;
+  const separator = '\n---\n\n';
+  const sepIdx = content.lastIndexOf(separator);
+  if (sepIdx === -1) return content;
+  const prefix = content.substring(0, sepIdx);
+  if (prefix.includes('K.Y.T.') || prefix.includes('[RETRIEVAL_CONTEXT]') ||
+      prefix.includes('[SESSION_CONTEXT]') || prefix.includes('[DATA_PROVENANCE]')) {
+    return content.substring(sepIdx + separator.length).trim();
+  }
+  return content;
+}
+
 // ===== QUESTION DETECTION =====
 // Heuristic: identifies user messages that are questions (P1 fix).
 // Questions are tagged is_question=true and excluded from retrieval.
@@ -752,6 +769,9 @@ async function saveMessage(messageData) {
 
       return { saved: false, reason: 'duplicate', duplicateOf: duplicate.messageId };
     }
+
+    // Strip KYT injection prefix before any analysis (Phase 2: prevents injection pollution)
+    messageData.content = stripInjectionPrefix(messageData.content);
 
     // Detect assistant deflections/echoes (Layer 1: capture-time tagging)
     const deflectionCheck = detectDeflection(messageData.content, messageData.role);

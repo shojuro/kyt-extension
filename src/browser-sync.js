@@ -579,10 +579,11 @@ export async function syncMessages(messagesToSync) {
         turnEmbeddings = new Array(turnTexts.length).fill(null);
       }
 
-      // Prepare turn chunks with embeddings and HyDE questions
+      // Prepare turn chunks with embeddings, HyDE questions, and is_question flag
       const chunksWithEmbeddings = chunksWithHyDE.map((chunk, idx) => ({
         ...chunk,
         embedding: turnEmbeddings[idx],
+        is_question: chunk.is_question || false,
       }));
 
       // Insert to chat_turns table
