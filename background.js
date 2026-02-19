@@ -774,7 +774,24 @@ async function saveMessage(messageData) {
     messageData.content = stripInjectionPrefix(messageData.content);
 
     // Detect assistant deflections/echoes (Layer 1: capture-time tagging)
-    const deflectionCheck = detectDeflection(messageData.content, messageData.role);
+    // For combined User+Assistant messages (role='user'), extract assistant text
+    // and run detection on it. This kills the recursive capture loop (Gap D):
+    // deflection responses get tagged at capture → filtered before sync.
+    let captureDeflectionContent = messageData.content;
+    let captureDeflectionRole = messageData.role;
+    if (captureDeflectionRole !== 'assistant' && messageData.content) {
+      const asstBlocks = [];
+      const captureRe = /(?:^|\n\n)Assistant:\s*([\s\S]*?)(?=\n\nUser:|\s*$)/gi;
+      let cm;
+      while ((cm = captureRe.exec(messageData.content)) !== null) {
+        asstBlocks.push(cm[1].trim());
+      }
+      if (asstBlocks.length > 0) {
+        captureDeflectionContent = asstBlocks.join('\n');
+        captureDeflectionRole = 'assistant';
+      }
+    }
+    const deflectionCheck = detectDeflection(captureDeflectionContent, captureDeflectionRole);
 
     // Detect user questions (P1: exclude from retrieval)
     const isQuestion = detectIsQuestion(messageData.content, messageData.role);
@@ -1422,6 +1439,8 @@ async function getContextForInjection(userMessage, config) {
       /\bKYT (?:picked it up|captured|found|retrieved|surfaced)\b/i,
       /\bthat was captured from\b/i,
       /\bfrom (?:a|your) (?:chatgpt|claude) conversation\b/i,
+      /\b(?:your |the )?stored (?:data|conversations?|items?|records?|entries|knowledge)\b/i,
+      /\b(?:retrieved|stored) (?:items?|entries?) (?:are|is|were) (?:just|only)\b/i,
     ];
 
     for (const item of contextItems) {
@@ -1437,8 +1456,19 @@ async function getContextForInjection(userMessage, config) {
         console.log(`🔧 Meta-conversation penalty: score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
       }
 
-      // Echo penalty (0.4x) — only assistant messages that echo stored data
-      if (scoreKey && item[scoreKey] != null && item.role === 'assistant' && ECHO_PATTERNS.some(p => p.test(content))) {
+      // Echo penalty (0.4x) — assistant messages that echo stored data
+      // For chat_turns (role='user'), extract assistant text blocks first
+      let echoContent = content;
+      if (item.role !== 'assistant' && content) {
+        const asstBlocks = [];
+        const echoRe = /(?:^|\n\n)Assistant:\s*([\s\S]*?)(?=\n\nUser:|\s*$)/gi;
+        let echoMatch;
+        while ((echoMatch = echoRe.exec(content)) !== null) {
+          asstBlocks.push(echoMatch[1].trim());
+        }
+        if (asstBlocks.length > 0) echoContent = asstBlocks.join('\n');
+      }
+      if (scoreKey && item[scoreKey] != null && ECHO_PATTERNS.some(p => p.test(echoContent))) {
         const before = item[scoreKey];
         item[scoreKey] *= 0.4;
         console.log(`🔄 Echo penalty: assistant item echoing stored data, score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);

@@ -48,7 +48,7 @@ const DEFLECTION_PATTERNS = [
   /i'?m not sure (?:what|how|if|about) (?:you'?re|that)/i,
   /i don'?t (?:know|recall|remember) (?:what|the|any|about)/i,
   /i don'?t have (?:enough|sufficient) (?:context|information)/i,
-  /there'?s no (?:record|information|data|mention) of/i,
+  /there'?s no (?:\w+ )?(?:record|information|data|mention|answer|preference) (?:of|about|for|regarding)/i,
   /i (?:couldn'?t|could not) find (?:any|specific|that)/i,
 
   // Deferral to user
@@ -63,7 +63,23 @@ const DEFLECTION_PATTERNS = [
   /i'?m (?:sorry|afraid),? (?:but )?i (?:don'?t|can'?t|cannot)/i,
   /that(?:'s| is) (?:beyond|outside) (?:my|what i)/i,
   /i (?:have no|lack) (?:way|ability|means) to/i,
-  /as an ai,? i (?:don'?t|can'?t|cannot)/i
+  /as an ai,? i (?:don'?t|can'?t|cannot)/i,
+
+  // --- Non-first-person deflections (chat_turns often have impersonal phrasing) ---
+
+  // Impersonal / passive: "no answer was captured", "no preference was found"
+  /(?:no|zero) (?:(?:answer|preference|record|information|data) (?:or )?)+(?:was |has been |were )(?:\w+ )?(?:captured|stored|recorded|saved|found)/i,
+
+  // Subject-agnostic "don't have an answer about": catches "Your stored conversations don't have..."
+  /(?:don'?t|doesn'?t|do not|does not) have (?:a |an )?(?:direct )?(?:answer|record|information|data|preference) (?:about|for|regarding|on)/i,
+
+  // Empty retrieval: "only contains the question", "retrieved items are just..."
+  /only contains? the question/i,
+  /(?:retrieved|stored) (?:items?|entries?) (?:are|is|were) (?:just|only)/i,
+
+  // Retrieval-echo: assistant reports stored-data lookup failure
+  /stored (?:data|conversations?|items?) (?:still )?(?:don'?t|doesn'?t|do not|does not) have/i,
+  /found (?:a |the )?(?:previous |earlier )?conversation.{0,40}?but (?:unfortunately )?(?:no|without|not)/i
 ];
 
 /**
