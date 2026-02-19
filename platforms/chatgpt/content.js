@@ -37,14 +37,18 @@
     console.log('✅ KYT ChatGPT Content: dom-observer.js loaded into page context');
     this.remove();
 
-    // Sync debug mode
-    chrome.storage.local.get(['kytDebugMode'], (result) => {
-      if (result.kytDebugMode) {
-        window.dispatchEvent(new CustomEvent('KYT_DOM_COMMAND', {
-          detail: { command: 'enableDebug' }
-        }));
-      }
-    });
+    // Sync debug mode (guard: chrome.storage may be undefined after extension reload)
+    try {
+      chrome.storage?.local?.get(['kytDebugMode'], (result) => {
+        if (result?.kytDebugMode) {
+          window.dispatchEvent(new CustomEvent('KYT_DOM_COMMAND', {
+            detail: { command: 'enableDebug' }
+          }));
+        }
+      });
+    } catch (e) {
+      // Extension context invalidated — debug mode sync skipped
+    }
   };
   domObserverScript.onerror = function () {
     console.error('❌ KYT ChatGPT Content: Failed to load dom-observer.js');
