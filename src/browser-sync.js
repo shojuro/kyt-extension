@@ -584,6 +584,7 @@ export async function syncMessages(messagesToSync) {
         ...chunk,
         embedding: turnEmbeddings[idx],
         is_question: chunk.is_question || false,
+        deflection: chunk.deflection || null,
       }));
 
       // Insert to chat_turns table

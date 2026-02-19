@@ -158,6 +158,10 @@ function chunkTurns(turns, windowSize = 5, overlap = 2) {
       return userIsQ && asstIsDeflection;
     });
 
+    // Propagate max assistant deflection score for SQL-level filtering
+    const maxDeflection = Math.max(0, ...window
+      .map(t => t.assistant?.deflection || 0));
+
     chunks.push({
       turn_range: `${i + 1}-${i + window.length}`,
       content: content,
@@ -167,6 +171,7 @@ function chunkTurns(turns, windowSize = 5, overlap = 2) {
       end_timestamp: Math.max(...timestamps),
       topics: topics,
       is_question: allQuestionsNoAnswers,
+      deflection: maxDeflection > 0 ? maxDeflection : null,
       // conversation_id, platform, user_id will be added by caller
     });
   }

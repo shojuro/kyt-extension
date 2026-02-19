@@ -1368,15 +1368,39 @@ async function getContextForInjection(userMessage, config) {
 
     // DEFLECTION PENALTY (Layer 2: retrieval-time)
     // Penalize assistant deflections/echoes so they naturally fall below confidence threshold
+    // For chat_turns: role='user' (from speakers[0]), but content has "Assistant: ..." blocks.
+    // Extract assistant text and run detection on it so deflections are caught.
     for (const item of contextItems) {
-      const check = detectDeflection(item.content, item.role);
+      let deflectionContent = item.content;
+      let deflectionRole = item.role;
+      if (deflectionRole !== 'assistant' && item.content) {
+        const asstBlocks = [];
+        const re = /(?:^|\n\n)Assistant:\s*([\s\S]*?)(?=\n\nUser:|\s*$)/gi;
+        let m;
+        while ((m = re.exec(item.content)) !== null) {
+          asstBlocks.push(m[1].trim());
+        }
+        if (asstBlocks.length > 0) {
+          deflectionContent = asstBlocks.join('\n');
+          deflectionRole = 'assistant';
+        }
+      }
+
+      const check = detectDeflection(deflectionContent, deflectionRole);
       if (check.isDeflection && check.confidence > 0) {
         const before = item.cross_encoder_score ?? item.weighted_score ?? item.rrf_score ?? 'n/a';
         applyDeflectionPenalty(item, check.confidence);
         const after = item.cross_encoder_score ?? item.weighted_score ?? item.rrf_score ?? 'n/a';
         console.log(`🗑️ Deflection penalty: ${check.reason} | score ${before} → ${after} (ID: ${item.id || item.message_id || 'unknown'})`);
+        // Hard-drop high-confidence deflections (>=0.85) — these are unambiguous
+        if (check.confidence >= 0.85) {
+          item._deflectionDropped = true;
+        }
       }
     }
+
+    // Remove hard-dropped deflections (high confidence ≥ 0.85)
+    contextItems = contextItems.filter(item => !item._deflectionDropped);
 
     // KYT META-CONVERSATION PENALTY: Detect conversations ABOUT the extension itself.
     // These are captured normally but are rarely what the user wants to recall.
