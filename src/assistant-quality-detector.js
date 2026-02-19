@@ -74,11 +74,16 @@ const DEFLECTION_PATTERNS = [
   /(?:no|zero) (?:(?:answer|preference|record|information|data) (?:or )?)+(?:was |has been |were )(?:\w+ )?(?:captured|stored|recorded|saved|found)/i,
 
   // Subject-agnostic "don't have an answer about": catches "Your stored conversations don't have..."
-  /(?:don'?t|doesn'?t|do not|does not) have (?:a |an )?(?:direct )?(?:answer|record|information|data|preference) (?:about|for|regarding|on)/i,
+  /(?:don'?t|doesn'?t|do not|does not) have (?:a |an |any )?(?:direct )?(?:answer|record|information|data|preference) (?:about|for|regarding|on)/i,
 
   // Empty retrieval: "only contains the question", "retrieved items are just..."
   /only contains? the question/i,
   /(?:retrieved|stored) (?:items?|entries?) (?:are|is|were) (?:just|only)/i,
+
+  // Retrieval returned only the query itself (self-referencing search result)
+  /the only (?:item|entry|result|thing|match|record)s? (?:found|retrieved|returned|available) (?:is|are|was|were) (?:the )?(?:query|question) itself/i,
+  // Comparative deflection: "rather than an actual answer"
+  /rather than (?:an? )?(?:actual|real|stored|specific) (?:answer|response|preference|record)/i,
 
   // Retrieval-echo: assistant reports stored-data lookup failure
   /stored (?:data|conversations?|items?) (?:still )?(?:don'?t|doesn'?t|do not|does not) have/i,

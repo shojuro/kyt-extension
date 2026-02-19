@@ -1400,6 +1400,12 @@ async function getContextForInjection(userMessage, config) {
         if (asstBlocks.length > 0) {
           deflectionContent = asstBlocks.join('\n');
           deflectionRole = 'assistant';
+        } else if (deflectionRole === 'unknown') {
+          // Edge path delivers role='unknown' (server Candidate type drops speakers[]).
+          // chat_turns content IS assistant text; assume 'assistant' for detection.
+          // Safe: user questions filtered server-side (is_question RPC predicate).
+          // TODO: remove when server Candidate type preserves speakers[]
+          deflectionRole = 'assistant';
         }
       }
 
@@ -1609,6 +1615,27 @@ async function getContextForInjection(userMessage, config) {
               })
               .slice(0, 2)
               .map(item => ({ ...item, lowConfidence: true }));
+            // Deflection guard: don't rescue deflection items — they create
+            // self-reinforcing garbage loops ("what is my favorite car?" → deflection
+            // captured → deflection retrieved → new deflection → ...)
+            filteredItems = filteredItems.filter(item => {
+              let checkContent = item.content;
+              let checkRole = item.role;
+              if (checkRole !== 'assistant' && item.content) {
+                const blocks = [];
+                const rescueRe = /(?:^|\n\n)Assistant:\s*([\s\S]*?)(?=\n\nUser:|\s*$)/gi;
+                let rm;
+                while ((rm = rescueRe.exec(item.content)) !== null) blocks.push(rm[1].trim());
+                if (blocks.length > 0) { checkContent = blocks.join('\n'); checkRole = 'assistant'; }
+                else if (checkRole === 'unknown') checkRole = 'assistant';
+              }
+              const defl = detectDeflection(checkContent, checkRole);
+              if (defl.isDeflection) {
+                console.log(`🗑️ Low-confidence rescue: dropped deflection (${defl.reason})`);
+                return false;
+              }
+              return true;
+            });
           } else {
             // Below 0.15 — truly irrelevant, drop everything
             filteredItems = [];

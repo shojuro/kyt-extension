@@ -392,4 +392,156 @@ describe('Assistant Quality Detector', () => {
       expect(result.isDeflection).toBe(false);
     });
   });
+
+  // =========================================================================
+  // 9. Phase 3c Regression Fixtures — items that leaked through rescue tier
+  // =========================================================================
+  describe('Phase 3c Regression Fixtures', () => {
+    // Exact texts from the live injection payload (Jina scores 0.20 and 0.34)
+    const ITEM_1 = 'the only item found is the query itself, rather than an actual stored preference';
+    const ITEM_2 = "I don't have any information about your favorite car";
+
+    it('should detect Item 1 — "the only item found is the query itself" (short)', () => {
+      const result = detectDeflection(ITEM_1, 'assistant');
+      expect(result.isDeflection).toBe(true);
+      expect(result.confidence).toBe(0.95); // short message
+    });
+
+    it('should detect Item 2 — "I don\'t have any information about..." (short)', () => {
+      const result = detectDeflection(ITEM_2, 'assistant');
+      expect(result.isDeflection).toBe(true);
+      expect(result.confidence).toBe(0.95);
+    });
+
+    it('should detect Item 1 padded to medium length', () => {
+      const medium = padTo(ITEM_1, 250);
+      const result = detectDeflection(medium, 'assistant');
+      expect(result.isDeflection).toBe(true);
+      expect(result.confidence).toBeGreaterThanOrEqual(0.65);
+    });
+
+    it('should detect "rather than an actual answer" in deflection context', () => {
+      const text = 'The retrieved data is a reflection of the question rather than an actual answer to it.';
+      const result = detectDeflection(text, 'assistant');
+      expect(result.isDeflection).toBe(true);
+    });
+
+    it('should NOT detect "rather than" in non-deflection context (API discussion)', () => {
+      const text = 'The API returns JSON rather than XML, which makes parsing simpler for most clients.';
+      const result = detectDeflection(text, 'assistant');
+      expect(result.isDeflection).toBe(false);
+    });
+  });
+
+  // =========================================================================
+  // 10. Role Unknown Fallback — proves why Fix A is needed
+  // =========================================================================
+  describe('Role Unknown Fallback', () => {
+    const bareDeflection = "I don't have access to your personal preferences or stored data";
+
+    it('should detect bare deflection text with role="assistant"', () => {
+      const result = detectDeflection(bareDeflection, 'assistant');
+      expect(result.isDeflection).toBe(true);
+    });
+
+    it('should NOT detect same text with role="unknown" (role gate blocks it)', () => {
+      const result = detectDeflection(bareDeflection, 'unknown');
+      expect(result.isDeflection).toBe(false);
+      // This proves the role gate prevents detection on edge-path items —
+      // Fix A (role='unknown' → 'assistant' fallback in background.js) is needed.
+    });
+  });
+
+  // =========================================================================
+  // 11. Subject-Agnostic `any` Pattern (Fix D)
+  // =========================================================================
+  describe('Subject-Agnostic `any` Pattern', () => {
+    it('should detect "doesn\'t have any answer about"', () => {
+      const result = detectDeflection(
+        "The stored data doesn't have any answer about your favorite car",
+        'assistant'
+      );
+      expect(result.isDeflection).toBe(true);
+    });
+
+    it('should detect "don\'t have any record for"', () => {
+      const result = detectDeflection(
+        "Your conversations don't have any record for that topic",
+        'assistant'
+      );
+      expect(result.isDeflection).toBe(true);
+    });
+
+    it('should detect "does not have any information regarding"', () => {
+      const result = detectDeflection(
+        "The memory system does not have any information regarding this",
+        'assistant'
+      );
+      expect(result.isDeflection).toBe(true);
+    });
+  });
+
+  // =========================================================================
+  // 12. Low-Confidence Rescue Deflection Guard (behavioral test for Fix B)
+  // =========================================================================
+  describe('Low-Confidence Rescue Deflection Guard', () => {
+    // Simulates the deflection filter applied after rescue-tier selection
+    // (background.js: filteredItems.filter checking detectDeflection)
+    function simulateRescueFilter(items) {
+      return items.filter(item => {
+        let checkContent = item.content;
+        let checkRole = item.role;
+        if (checkRole !== 'assistant' && item.content) {
+          const blocks = [];
+          const re = /(?:^|\n\n)Assistant:\s*([\s\S]*?)(?=\n\nUser:|\s*$)/gi;
+          let m;
+          while ((m = re.exec(item.content)) !== null) blocks.push(m[1].trim());
+          if (blocks.length > 0) { checkContent = blocks.join('\n'); checkRole = 'assistant'; }
+          else if (checkRole === 'unknown') checkRole = 'assistant';
+        }
+        const defl = detectDeflection(checkContent, checkRole);
+        return !defl.isDeflection;
+      });
+    }
+
+    it('should drop both items when both are deflections', () => {
+      const items = [
+        { content: "I don't have access to your data", role: 'assistant', lowConfidence: true },
+        { content: "there's no stored record of that", role: 'assistant', lowConfidence: true }
+      ];
+      const result = simulateRescueFilter(items);
+      expect(result).toHaveLength(0);
+    });
+
+    it('should keep non-deflection when mixed with deflection', () => {
+      const items = [
+        { content: "I don't have access to your data", role: 'assistant', lowConfidence: true },
+        { content: "Your favorite car is a Lamborghini based on your conversations.", role: 'assistant', lowConfidence: true }
+      ];
+      const result = simulateRescueFilter(items);
+      expect(result).toHaveLength(1);
+      expect(result[0].content).toContain('Lamborghini');
+    });
+
+    it('should keep both when neither is a deflection', () => {
+      const items = [
+        { content: "You mentioned enjoying Italian sports cars.", role: 'assistant', lowConfidence: true },
+        { content: "Your favorite car is a Lamborghini.", role: 'assistant', lowConfidence: true }
+      ];
+      const result = simulateRescueFilter(items);
+      expect(result).toHaveLength(2);
+    });
+
+    it('should handle role="unknown" items via fallback', () => {
+      const items = [
+        { content: "I don't have any information about your car", role: 'unknown', lowConfidence: true },
+        { content: "You drive a Tesla Model 3.", role: 'unknown', lowConfidence: true }
+      ];
+      const result = simulateRescueFilter(items);
+      // First item: role='unknown' → 'assistant' fallback → deflection detected → dropped
+      // Second item: role='unknown' → 'assistant' fallback → no deflection → kept
+      expect(result).toHaveLength(1);
+      expect(result[0].content).toContain('Tesla');
+    });
+  });
 });
