@@ -779,7 +779,17 @@ export async function searchHybrid(query, options = {}) {
       localMessages = localMessages.filter(m => (m.timestamp || m.capturedAt || 0) <= maxTimestamp);
     }
     // P1 fix: exclude questions from local BM25 search
-    localMessages = localMessages.filter(m => !m.is_question);
+    // For messages captured before Phase 2 (no is_question field), apply runtime heuristic
+    const INTERROGATIVE_RE = /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember)\b/i;
+    localMessages = localMessages.filter(m => {
+      if (m.is_question) return false;
+      // Runtime heuristic for old messages without is_question field
+      if (m.role === 'user' && m.is_question === undefined) {
+        const trimmed = (m.content || '').trim();
+        if (trimmed.endsWith('?') || INTERROGATIVE_RE.test(trimmed)) return false;
+      }
+      return true;
+    });
 
       const rankedLists = [];
 

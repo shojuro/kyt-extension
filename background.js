@@ -1221,26 +1221,36 @@ async function getContextForInjection(userMessage, config) {
       // Dual-path: edge function vs legacy client-side search
       // (routingMode already resolved above, before query transformation)
 
-      if (routingMode === 'edge' && apiAvailable) {
+      if (routingMode === 'edge') {
         // ─── Edge function path (authenticated users) ───
-        contextItems = await searchViaEdgeFunction(queryToUse, {
-          topK: contextConfig.candidatePoolSize,
-        });
-        console.log(`✅ Context Retrieval (edge): Found ${contextItems.length} items (pool: ${contextConfig.candidatePoolSize}, inject cap: ${contextConfig.maxContextItems})`);
-
-        // Retry with original query if transformed returned 0
-        if (contextItems.length === 0 && transformationMetadata.transformed) {
-          console.log('🔄 Retry (edge): retrying with original query...');
-          contextItems = await searchViaEdgeFunction(userMessage, {
+        // The edge function has its own server-side API keys and embeddings.
+        // It does NOT depend on client-side apiAvailable / circuit breaker state.
+        try {
+          contextItems = await searchViaEdgeFunction(queryToUse, {
             topK: contextConfig.candidatePoolSize,
           });
-          console.log(`🔄 Retry (edge) result: ${contextItems.length} items`);
+          console.log(`✅ Context Retrieval (edge): Found ${contextItems.length} items (pool: ${contextConfig.candidatePoolSize}, inject cap: ${contextConfig.maxContextItems})`);
+
+          // Retry with original query if transformed returned 0
+          if (contextItems.length === 0 && transformationMetadata.transformed) {
+            console.log('🔄 Retry (edge): retrying with original query...');
+            contextItems = await searchViaEdgeFunction(userMessage, {
+              topK: contextConfig.candidatePoolSize,
+            });
+            console.log(`🔄 Retry (edge) result: ${contextItems.length} items`);
+          }
+        } catch (edgeError) {
+          console.warn(`⚠️ Edge function search failed, falling back to legacy: ${edgeError.message}`);
+          // Fall through to legacy path below
+          contextItems = [];
         }
-      } else {
+      }
+
+      if (routingMode !== 'edge' || contextItems.length === 0) {
         // ─── Legacy client-side path ───
-        // Also runs as BM25-only fallback when edge path is skipped (CB open)
-        if (routingMode === 'edge' && !apiAvailable) {
-          console.warn('⚠️ Edge path skipped: circuit breaker open. BM25-only fallback.');
+        // Also used as fallback when edge function fails
+        if (routingMode === 'edge') {
+          console.warn('⚠️ Edge path returned 0 results or failed — legacy fallback.');
         }
 
         // Calculate maxTimestamp to exclude recent memories (Context Pollution Prevention)
