@@ -25,6 +25,12 @@ export interface ExtractedEntity {
   context_category: string;    // "fitness", "family", "work", "general"
 }
 
+export interface ExtractedPreference {
+    category: string;
+    value: string;
+    sentiment: 'positive' | 'negative' | 'neutral';
+}
+
 export interface EntityExtractionData {
   content: string;              // Conversation content to extract from
   speakers: string[];           // Participants in conversation
@@ -73,6 +79,39 @@ Relationship vocabulary:
 Use "unknown" for organizations, projects, locations unless specific relationship indicated.
 For CONCEPT/ANALOGY/THEME types, use "discussed" as default relationship.
 
+PREFERENCE EXTRACTION (in the same response):
+Also extract user preferences — things the user states they like, love, prefer, dislike, hate, want, enjoy, find amazing, can't stand, always use, or have switched to. Include strong evaluative statements ("X is amazing", "nothing beats X") and behavioral signals ("I always use X", "I switched to X").
+
+Rules:
+- ONLY extract from USER statements, never from assistant responses
+- ONLY extract when the user STATES a preference — NOT when they ASK about one
+- Normalize categories to common singular nouns: "car" not "vehicle/automobile"
+- Sentiment: "positive" for likes/loves/favorites, "negative" for dislikes/hates, "neutral" otherwise
+
+EXPLICIT preference examples:
+"My favorite car is Lamborghini"               → {category: "car", value: "Lamborghini", sentiment: "positive"}
+"I love sushi"                                  → {category: "food", value: "sushi", sentiment: "positive"}
+"Python is my go-to language"                   → {category: "programming_language", value: "Python", sentiment: "positive"}
+"I hate cold weather"                           → {category: "weather", value: "cold weather", sentiment: "negative"}
+"I prefer Neovim over VS Code"                  → {category: "editor", value: "Neovim", sentiment: "positive"}
+
+EVALUATIVE preference examples (strong opinions = preferences):
+"The Lamborghini FenoMeno is amazing. I want it." → {category: "car", value: "Lamborghini FenoMeno", sentiment: "positive"}
+"Nothing beats a good steak"                    → {category: "food", value: "steak", sentiment: "positive"}
+
+BEHAVIORAL preference examples (habitual use = preferences):
+"I always use Docker for deployment"            → {category: "deployment_tool", value: "Docker", sentiment: "positive"}
+"I switched from VS Code to Cursor"             → {category: "editor", value: "Cursor", sentiment: "positive"}
+
+EXPERIENTIAL preference examples (strong reactions = preferences):
+"I really enjoyed raging rapids as a kid"       → {category: "activity", value: "raging rapids", sentiment: "positive"}
+"I can't stand meetings without agendas"        → {category: "work_practice", value: "meetings without agendas", sentiment: "negative"}
+
+DO NOT extract preferences from questions:
+"What is my favorite car?"              → NO preference extraction (this is a question)
+"Do I like Ferraris?"                   → NO preference extraction (this is a question)
+"Tell me about my food preferences"     → NO preference extraction (this is a question)
+
 Return ONLY valid JSON (no markdown):
 {
   "entities": [
@@ -97,6 +136,13 @@ Return ONLY valid JSON (no markdown):
       "relationship": "illustrates",
       "context_category": "parenting"
     }
+  ],
+  "preferences": [
+    {
+      "category": "car",
+      "value": "Lamborghini",
+      "sentiment": "positive"
+    }
   ]
 }`;
 
@@ -110,12 +156,12 @@ function buildExtractionPrompt(data: EntityExtractionData): string {
     ? `SPEAKERS: ${speakers.join(', ')}\n\n`
     : '';
 
-  return `Extract entities from this conversation:
+  return `Extract entities and user preferences from this conversation:
 
 ${speakersInfo}CONTENT:
 ${content}
 
-Return entities with their relationship to the user.`;
+Return entities with their relationship to the user, and any user preferences detected.`;
 }
 
 /**
@@ -126,7 +172,7 @@ Return entities with their relationship to the user.`;
 export async function extractEntities(
   data: EntityExtractionData,
   openaiApiKey: string
-): Promise<ExtractedEntity[]> {
+): Promise<{ entities: ExtractedEntity[], preferences: ExtractedPreference[] }> {
   // Input validation
   if (!data.content || data.content.trim().length === 0) {
     throw new Error('Content cannot be empty');
@@ -157,7 +203,7 @@ export async function extractEntities(
         { role: 'user', content: prompt }
       ],
       temperature: 0.2,          // Low temperature for consistent extraction
-      max_tokens: 700,           // Sufficient for entity + concept lists
+      max_tokens: 900,           // Sufficient for entity + concept + preference lists
       response_format: { type: 'json_object' }  // Force JSON output
     })
   });
@@ -170,18 +216,18 @@ export async function extractEntities(
 
   const result: OpenAIResponse = await response.json();
 
-  // Parse entity extraction results
+  // Parse entity + preference extraction results
   try {
     const content = result.choices[0]?.message?.content;
     if (!content) {
-      return [];  // No entities extracted
+      return { entities: [], preferences: [] };
     }
 
     const parsed = JSON.parse(content);
-    const entities = Array.isArray(parsed.entities) ? parsed.entities : [];
+    const rawEntities = Array.isArray(parsed.entities) ? parsed.entities : [];
 
     // Validate and normalize entities
-    return entities.map((entity: any) => ({
+    const entities: ExtractedEntity[] = rawEntities.map((entity: any) => ({
       entity_text: entity.entity_text || '',
       normalized_name: entity.normalized_name || normalizeEntityName(entity.entity_text),
       entity_type: validateEntityType(entity.entity_type),
@@ -189,10 +235,23 @@ export async function extractEntities(
       context_category: entity.context_category || 'general'
     }));
 
+    // Validate and normalize preferences
+    const rawPreferences = Array.isArray(parsed.preferences) ? parsed.preferences : [];
+    const validSentiments = new Set(['positive', 'negative', 'neutral']);
+    const preferences: ExtractedPreference[] = rawPreferences
+      .filter((p: any) => p.category && p.value)  // Require both fields
+      .map((p: any) => ({
+        category: String(p.category).toLowerCase().trim(),
+        value: String(p.value).trim(),
+        sentiment: validSentiments.has(p.sentiment) ? p.sentiment : 'positive'
+      }));
+
+    return { entities, preferences };
+
   } catch (error) {
-    // JSON parse error - return empty array instead of failing
+    // JSON parse error - return empty arrays instead of failing
     console.warn('Entity extraction JSON parse failed:', error);
-    return [];
+    return { entities: [], preferences: [] };
   }
 }
 
@@ -405,6 +464,58 @@ export async function saveEntitiesWithMentions(
       }
     }
   }
+}
+
+/**
+ * Save extracted preferences to the user_preferences table.
+ * Upserts on (user_id, category, value) — updates sentiment and source on conflict.
+ *
+ * @param preferences - Array of extracted preferences from extractEntities()
+ * @param chatTurnId - UUID of the source chat turn
+ * @param userId - UUID of the user
+ * @param supabase - Supabase client
+ * @returns Number of preferences saved
+ */
+export async function savePreferences(
+    preferences: ExtractedPreference[],
+    chatTurnId: string,
+    userId: string,
+    supabase: any
+): Promise<number> {
+    if (preferences.length === 0) return 0;
+
+    let saved = 0;
+    for (const pref of preferences) {
+        try {
+            const { error } = await supabase
+                .from('user_preferences')
+                .upsert(
+                    {
+                        user_id: userId,
+                        category: pref.category,
+                        value: pref.value,
+                        sentiment: pref.sentiment,
+                        confidence: 0.8,
+                        source_turn_id: chatTurnId,
+                        updated_at: new Date().toISOString()
+                    },
+                    { onConflict: 'user_id,category,value' }
+                );
+
+            if (error) {
+                console.warn(`Failed to save preference ${pref.category}=${pref.value}: ${error.message}`);
+            } else {
+                saved++;
+            }
+        } catch (err) {
+            console.warn(`Error saving preference: ${(err as Error).message}`);
+        }
+    }
+
+    if (saved > 0) {
+        console.log(`Saved ${saved}/${preferences.length} preferences for turn ${chatTurnId}`);
+    }
+    return saved;
 }
 
 /**

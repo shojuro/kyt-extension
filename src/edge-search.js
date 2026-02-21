@@ -82,6 +82,8 @@ export async function searchViaEdgeFunction(query, options = {}) {
     // Server-side entity data — canonical names from GPT-4o-mini extraction
     // Used by client-side applyRecencyResolution instead of fragile regex
     entities: item.entities || [],
+    // Preference query router match flag
+    preference_match: item.preference_match ?? false,
   }));
 
   // Attach metadata so callers can determine Jina availability

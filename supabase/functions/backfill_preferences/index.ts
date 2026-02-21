@@ -1,11 +1,12 @@
 /**
- * Edge Function: backfill_entities
+ * Edge Function: backfill_preferences
  *
- * Re-processes existing chat_turns with the updated entity extractor
- * (CONCEPT/ANALOGY/THEME support). Mirrors the backfill_embeddings pattern.
+ * Re-processes existing chat_turns to extract user preferences into the
+ * user_preferences table. Follows the backfill_entities pattern exactly.
  *
- * Queries chat_turns where entities_extracted = false, runs entity extraction
- * + saveEntitiesWithMentions per row, then marks entities_extracted = true.
+ * Queries chat_turns where preferences_extracted IS NULL or FALSE,
+ * runs extractEntities() (which now returns preferences too),
+ * saves preferences, and marks preferences_extracted = true.
  *
  * Configuration:
  * - BATCH_SIZE: 5 (GPT-4o-mini per row)
@@ -15,19 +16,16 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { extractEntities, saveEntitiesWithMentions, savePreferences } from "../_shared/entity-extractor.ts";
-import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
+import { extractEntities, savePreferences } from "../_shared/entity-extractor.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const openaiApiKey = Deno.env.get("OPENAI_API_KEY")!;
-const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY")!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
-const hfClient = new HuggingFaceClient(hfApiKey);
 
 const BATCH_SIZE = 5;
-const MAX_ROWS = 100;
+const MAX_ROWS = 50;
 const BATCH_DELAY_MS = 2000;
 
 const corsHeaders = {
@@ -41,41 +39,31 @@ serve(async (req) => {
   }
 
   try {
-    console.log("Starting backfill_entities...");
+    console.log("Starting backfill_preferences...");
 
-    // Parse optional body params
-    let forceReextract = false;
-    try {
-      const body = await req.json();
-      forceReextract = body?.force_reextract === true;
-    } catch {
-      // No body or invalid JSON — use defaults
+    // Resolve actual auth user — chat_turns may have fallback UUIDs (00000000-...)
+    // that don't exist in auth.users, causing FK violations on user_preferences
+    const { data: authUsers } = await supabase.auth.admin.listUsers({ perPage: 1 });
+    const authUserId = authUsers?.users?.[0]?.id;
+    if (!authUserId) {
+      throw new Error("No auth users found — cannot save preferences without valid user_id");
     }
+    console.log(`Resolved auth user: ${authUserId}`);
 
     let totalProcessed = 0;
-    let totalEntitiesCreated = 0;
+    let totalPreferencesCreated = 0;
     let errors = 0;
 
-    // Process in batches
     const maxBatches = Math.ceil(MAX_ROWS / BATCH_SIZE);
 
     for (let batch = 0; batch < maxBatches; batch++) {
-      // Query chat_turns needing entity extraction
-      let query = supabase
+      // Query chat_turns needing preference extraction
+      const { data: rows, error: fetchError } = await supabase
         .from("chat_turns")
-        .select("id, content, speakers, conversation_id, user_id")
+        .select("id, content, speakers, user_id")
+        .or("preferences_extracted.is.null,preferences_extracted.eq.false")
         .order("id")
         .limit(BATCH_SIZE);
-
-      if (forceReextract) {
-        // Re-extract all (for updating entity types after schema changes)
-        query = query.or("entities_extracted.is.null,entities_extracted.eq.false");
-      } else {
-        // Only process rows that haven't been extracted yet
-        query = query.or("entities_extracted.is.null,entities_extracted.eq.false");
-      }
-
-      const { data: rows, error: fetchError } = await query;
 
       if (fetchError) {
         console.error("Fetch error:", fetchError.message);
@@ -89,21 +77,20 @@ serve(async (req) => {
 
       console.log(`Batch ${batch + 1}: processing ${rows.length} chat_turns`);
 
-      // Process each row
       for (const row of rows) {
         try {
           if (!row.content || !row.user_id) {
             // Mark as extracted to skip in future runs
             await supabase
               .from("chat_turns")
-              .update({ entities_extracted: true })
+              .update({ preferences_extracted: true })
               .eq("id", row.id);
             totalProcessed++;
             continue;
           }
 
           // Extract entities + preferences using GPT-4o-mini
-          const { entities, preferences } = await extractEntities(
+          const { preferences } = await extractEntities(
             {
               content: row.content,
               speakers: row.speakers || ["User", "Assistant"],
@@ -111,32 +98,20 @@ serve(async (req) => {
             openaiApiKey
           );
 
-          // Save entities + mentions + relationships
-          if (entities.length > 0) {
-            await saveEntitiesWithMentions(
-              entities,
-              row.id,
-              row.conversation_id || row.id,
-              row.user_id,
-              supabase,
-              hfClient
-            );
-            totalEntitiesCreated += entities.length;
-          }
-
-          // Save preferences
+          // Save preferences (use auth user_id to satisfy FK constraint)
           if (preferences.length > 0) {
-            await savePreferences(preferences, row.id, row.user_id, supabase);
+            const saved = await savePreferences(preferences, row.id, authUserId, supabase);
+            totalPreferencesCreated += saved;
           }
 
-          // Mark as extracted (both entities and preferences)
+          // Mark as extracted
           await supabase
             .from("chat_turns")
-            .update({ entities_extracted: true, preferences_extracted: true })
+            .update({ preferences_extracted: true })
             .eq("id", row.id);
 
           totalProcessed++;
-          console.log(`  Row ${row.id}: ${entities.length} entities, ${preferences.length} preferences extracted`);
+          console.log(`  Row ${row.id}: ${preferences.length} preferences extracted`);
         } catch (rowErr) {
           errors++;
           console.error(`  Row ${row.id} failed: ${(rowErr as Error).message}`);
@@ -148,7 +123,6 @@ serve(async (req) => {
       if (batch < maxBatches - 1 && rows.length === BATCH_SIZE) {
         await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
       } else if (rows.length < BATCH_SIZE) {
-        // Last batch was partial — no more rows
         break;
       }
     }
@@ -157,12 +131,12 @@ serve(async (req) => {
     const { count: remaining } = await supabase
       .from("chat_turns")
       .select("id", { count: "exact", head: true })
-      .or("entities_extracted.is.null,entities_extracted.eq.false");
+      .or("preferences_extracted.is.null,preferences_extracted.eq.false");
 
     const result = {
       success: true,
       processed: totalProcessed,
-      entities_created: totalEntitiesCreated,
+      preferences_created: totalPreferencesCreated,
       errors,
       remaining: remaining || 0,
     };

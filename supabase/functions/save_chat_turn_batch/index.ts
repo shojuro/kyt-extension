@@ -1,7 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
-import { extractEntities, saveEntitiesWithMentions } from '../_shared/entity-extractor.ts';
+import { extractEntities, saveEntitiesWithMentions, savePreferences } from '../_shared/entity-extractor.ts';
 import { classifyMemory } from '../_shared/memory-classifier.ts';
 
 const MAX_BATCH_SIZE = 50;
@@ -169,8 +169,10 @@ serve(async (req) => {
                 if (error) throw error;
 
                 if (data && data.length > 0) {
-                    // Save extracted entities (missing from batch path — fix)
-                    const extractedEntities = entities.status === 'fulfilled' ? entities.value : [];
+                    // Save extracted entities + preferences
+                    const extractionResult = entities.status === 'fulfilled' ? entities.value : { entities: [], preferences: [] };
+                    const extractedEntities = extractionResult.entities;
+                    const extractedPreferences = extractionResult.preferences;
                     if (extractedEntities.length > 0 && turn.user_id) {
                         try {
                             await saveEntitiesWithMentions(
@@ -188,6 +190,18 @@ serve(async (req) => {
                                 .eq('id', data[0].id);
                         } catch (e) {
                             console.warn(`Entity save failed for turn ${data[0].id}: ${(e as Error).message}`);
+                        }
+                    }
+
+                    // Save preferences
+                    if (extractedPreferences.length > 0 && turn.user_id) {
+                        try {
+                            await savePreferences(extractedPreferences, data[0].id, turn.user_id, supabase);
+                            await supabase.from('chat_turns')
+                                .update({ preferences_extracted: true })
+                                .eq('id', data[0].id);
+                        } catch (e) {
+                            console.warn(`Preference save failed for turn ${data[0].id}: ${(e as Error).message}`);
                         }
                     }
 

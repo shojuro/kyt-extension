@@ -149,6 +149,109 @@ async function searchEntities(
     return { ids, entities: textResults };
 }
 
+// ==========================================================================
+// PREFERENCE QUERY ROUTER
+// Regex classifier that detects preference queries and short-circuits the
+// vector pipeline. 0ms cost — runs before any embedding generation.
+// ==========================================================================
+
+/**
+ * Detect if a query is asking about user preferences.
+ * Returns the extracted category string (e.g. "car", "food") or null.
+ *
+ * Patterns:
+ *   1. "what is/are/was my favorite/preferred/go-to X"
+ *   2. "what X do/did I like/prefer/love/enjoy/use"
+ *   3. "tell/remind me (about) my favorite/preferred X"
+ *   4. "do/did I like/prefer/love/enjoy X" (value-based lookup)
+ *   5. "which X is/was my favorite/preferred/go-to"
+ *   6. "what kind of X do/did I like/prefer/enjoy"
+ */
+function detectPreferenceQuery(query: string): string | null {
+    const q = query.toLowerCase().trim();
+
+    const patterns: RegExp[] = [
+        // Pattern 1: "what is my favorite car"
+        /(?:what|what's)\s+(?:is|are|was|were)\s+my\s+(?:favorite|favourite|preferred|go-to)\s+(.+?)(?:\?|$)/,
+        // Pattern 2: "what car do I like"
+        /what\s+(.+?)\s+(?:do|did|does|would)\s+I\s+(?:like|prefer|love|enjoy|use)(?:\?|$)/,
+        // Pattern 3: "tell me my favorite car" / "remind me about my preferred food"
+        /(?:tell|remind)\s+me\s+(?:about\s+)?my\s+(?:favorite|favourite|preferred|go-to)\s+(.+?)(?:\?|$)/,
+        // Pattern 4: "do I like Python" (value-based)
+        /(?:do|did|does)\s+I\s+(?:like|prefer|love|enjoy)\s+(.+?)(?:\?|$)/,
+        // Pattern 5: "which car is my favorite"
+        /which\s+(.+?)\s+(?:is|are|was|were)\s+my\s+(?:favorite|favourite|preferred|go-to)(?:\?|$)/,
+        // Pattern 6: "what kind of food do I like"
+        /what\s+(?:kind|type|sort)\s+of\s+(.+?)\s+(?:do|did|does|would)\s+I\s+(?:like|prefer|love|enjoy)(?:\?|$)/,
+    ];
+
+    for (const pattern of patterns) {
+        const match = q.match(pattern);
+        if (match && match[1]) {
+            // Clean up the extracted category
+            const category = match[1]
+                .replace(/[?.!,]/g, '')
+                .trim();
+            if (category.length > 0 && category.length < 50) {
+                return category;
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Look up user preferences and convert to CandidateWithScore format.
+ * Synthesizes content from preference fields — the table is the source of truth.
+ */
+async function lookupPreferencesAsCandidates(
+    supabase: any,
+    userId: string,
+    category: string,
+    requestId?: string
+): Promise<CandidateWithScore[]> {
+    const { data, error } = await supabase
+        .rpc("lookup_user_preferences", {
+            p_user_id: userId,
+            p_category: category,
+            p_limit: 10
+        });
+
+    if (error) {
+        Logger.warn("Preference lookup RPC failed", { requestId, error: error.message });
+        return [];
+    }
+
+    if (!data || data.length === 0) return [];
+
+    Logger.info(`Preference router: ${data.length} preferences found for "${category}"`, { requestId });
+
+    return data.map((pref: any) => {
+        // Synthesize content from structured preference data
+        const sentimentLabel = pref.sentiment === 'positive' ? 'favorite'
+            : pref.sentiment === 'negative' ? 'disliked'
+            : '';
+        const dateStr = pref.updated_at
+            ? new Date(pref.updated_at).toLocaleDateString()
+            : 'unknown date';
+
+        let content = `User's ${sentimentLabel} ${pref.category}: ${pref.value}. Recorded: ${dateStr}.`;
+
+        // Enrich with source content if available
+        if (pref.source_content) {
+            content += `\n\nOriginal context: ${pref.source_content}`;
+        }
+
+        return {
+            id: pref.source_turn_id || pref.id,
+            content,
+            rerank_score: pref.confidence * 0.9,  // 0.8 * 0.9 = 0.72 (above 0.40 threshold)
+            preference_match: true,
+        } as CandidateWithScore;
+    });
+}
+
 /**
  * Detect CONCEPT/ANALOGY/THEME entities matching the query via text search.
  * Short-circuits the embedding similarity problem: "walking analogy" maps directly
@@ -238,6 +341,21 @@ export async function getRelevantMemories(
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
     const hfClient = new HuggingFaceClient(hfApiKey);
+
+    // ========================================================================
+    // STEP 0: Preference Query Router (0ms regex, before any embedding)
+    // Short-circuits the entire vector pipeline for "what is my favorite X?"
+    // ========================================================================
+    const prefCategory = detectPreferenceQuery(query);
+    if (prefCategory) {
+        Logger.info(`Preference router activated: category="${prefCategory}"`, { requestId });
+        const prefResults = await lookupPreferencesAsCandidates(supabase, userId, prefCategory, requestId);
+        if (prefResults.length > 0) {
+            Logger.info(`Preference router: returning ${prefResults.length} results (short-circuit)`, { requestId });
+            return prefResults;
+        }
+        Logger.info("Preference router: no preferences found, falling through to vector pipeline", { requestId });
+    }
 
     Logger.info("Starting memory retrieval", {
         requestId,
