@@ -35,11 +35,35 @@ const SYNC_API_TIMEOUT_MS = 30000; // 30 seconds for sync (batch operations need
  * @returns {Promise<Object>} Configuration object
  */
 async function getConfig() {
-  const result = await chrome.storage.local.get(['api_config']);
+  const result = await chrome.storage.local.get(['api_config', 'user_id', 'auth_session']);
   if (!result.api_config) {
     throw new Error('API configuration not found. Please set up API keys first.');
   }
-  return result.api_config;
+  const config = result.api_config;
+  // Resolve userId: prefer auth session > stored user_id > config userId
+  if (!config.userId) {
+    const authUserId = result.auth_session?.user?.id;
+    const storedUserId = result.user_id;
+    config.userId = authUserId || storedUserId || null;
+  }
+  // Use JWT access token for REST API auth when available
+  // TODO(auth): implement token refresh. Until then, the hardcoded user RLS
+  // policy in 20260221200000 is the actual auth path for chat_turns.
+  config.accessToken = result.auth_session?.access_token || null;
+  return config;
+}
+
+/**
+ * Build auth headers for Supabase REST calls.
+ * Uses JWT access_token when available (enables auth.uid() RLS policies),
+ * falls back to anon key (relies on hardcoded-user RLS policy).
+ */
+function getAuthHeaders(config) {
+  return {
+    'Content-Type': 'application/json',
+    'apikey': config.supabaseKey,
+    'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`,
+  };
 }
 
 /**
@@ -242,10 +266,7 @@ async function queryExistingIdsSingle(messageIds, config) {
   const response = await fetchWithTimeout(
     `${config.supabaseUrl}/rest/v1/messages?message_id=in.(${quotedIds})&select=message_id`,
     {
-      headers: {
-        'apikey': config.supabaseKey,
-        'Authorization': `Bearer ${config.supabaseKey}`
-      }
+      headers: getAuthHeaders(config)
     },
     10000 // 10 second timeout for this check
   );
@@ -278,10 +299,7 @@ async function queryExistingIdsChunked(messageIds, config, chunkSize = 50) {
       const response = await fetchWithTimeout(
         `${config.supabaseUrl}/rest/v1/messages?message_id=in.(${quotedIds})&select=message_id`,
         {
-          headers: {
-            'apikey': config.supabaseKey,
-            'Authorization': `Bearer ${config.supabaseKey}`
-          }
+          headers: getAuthHeaders(config)
         },
         10000 // 10 second timeout per chunk
       );
@@ -509,9 +527,7 @@ export async function syncMessages(messagesToSync) {
       const response = await fetch(`${config.supabaseUrl}/rest/v1/messages?on_conflict=message_id`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'apikey': config.supabaseKey,
-          'Authorization': `Bearer ${config.supabaseKey}`,
+          ...getAuthHeaders(config),
           'Prefer': 'resolution=merge-duplicates,return=representation'  // Add return=representation to see what was inserted
         },
         body: JSON.stringify(batch)
@@ -585,6 +601,8 @@ export async function syncMessages(messagesToSync) {
         embedding: turnEmbeddings[idx],
         is_question: chunk.is_question || false,
         deflection: chunk.deflection || null,
+        entities_extracted: false,
+        preferences_extracted: false,
       }));
 
       // Insert to chat_turns table
@@ -593,9 +611,7 @@ export async function syncMessages(messagesToSync) {
         {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            'apikey': config.supabaseKey,
-            'Authorization': `Bearer ${config.supabaseKey}`,
+            ...getAuthHeaders(config),
             'Prefer': 'resolution=ignore-duplicates,return=minimal'
           },
           body: JSON.stringify(chunksWithEmbeddings)
@@ -631,9 +647,12 @@ export async function syncMessages(messagesToSync) {
 
     // Entity backfill: trigger server-side entity extraction for synced turn IDs
     // Fire-and-forget — don't block the sync result. Only for authenticated users.
-    triggerEntityBackfill(config).catch(err =>
-      console.warn('⚠️ Entity backfill trigger failed (non-fatal):', err.message)
-    );
+    // 2s delay so Postgres commits the REST-inserted rows before backfill queries them.
+    setTimeout(() => {
+      triggerEntityBackfill(config).catch(err =>
+        console.warn('⚠️ Entity backfill trigger failed (non-fatal):', err.message)
+      );
+    }, 2000);
 
     return {
       success: true,
@@ -675,9 +694,10 @@ async function triggerEntityBackfill(config) {
 
     if (response.success) {
       const count = response.processed || 0;
-      if (count > 0) {
-        console.log(`🔗 Entity backfill: ${count} turns processed`);
-      }
+      const remaining = response.remaining || 0;
+      console.log(`🔗 Entity backfill: ${count} processed, ${response.entities_created || 0} entities, ${remaining} remaining`);
+    } else {
+      console.warn('⚠️ Entity backfill returned error:', response.error || 'unknown');
     }
   } catch (err) {
     // Graceful: if the edge function doesn't exist yet, just skip
@@ -757,10 +777,7 @@ export async function backfillNullEmbeddings(options = {}) {
       const queryResponse = await fetchWithTimeout(
         `${config.supabaseUrl}/rest/v1/messages?${filterParams}`,
         {
-          headers: {
-            'apikey': config.supabaseKey,
-            'Authorization': `Bearer ${config.supabaseKey}`
-          }
+          headers: getAuthHeaders(config)
         },
         15000
       );
@@ -805,9 +822,7 @@ export async function backfillNullEmbeddings(options = {}) {
             {
               method: 'PATCH',
               headers: {
-                'Content-Type': 'application/json',
-                'apikey': config.supabaseKey,
-                'Authorization': `Bearer ${config.supabaseKey}`,
+                ...getAuthHeaders(config),
                 'Prefer': 'return=minimal'
               },
               body: JSON.stringify({ embedding: embeddings[i] })

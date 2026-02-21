@@ -45,19 +45,24 @@ serve(async (req) => {
 
     // Parse optional body params
     let forceReextract = false;
+    let requestedLimit = MAX_ROWS;
     try {
       const body = await req.json();
       forceReextract = body?.force_reextract === true;
+      if (body?.limit && typeof body.limit === 'number' && body.limit > 0) {
+        requestedLimit = Math.min(body.limit, MAX_ROWS);
+      }
     } catch {
       // No body or invalid JSON — use defaults
     }
 
+    const effectiveMaxRows = requestedLimit;
     let totalProcessed = 0;
     let totalEntitiesCreated = 0;
     let errors = 0;
 
     // Process in batches
-    const maxBatches = Math.ceil(MAX_ROWS / BATCH_SIZE);
+    const maxBatches = Math.ceil(effectiveMaxRows / BATCH_SIZE);
 
     for (let batch = 0; batch < maxBatches; batch++) {
       // Query chat_turns needing entity extraction
@@ -67,13 +72,14 @@ serve(async (req) => {
         .order("id")
         .limit(BATCH_SIZE);
 
-      if (forceReextract) {
-        // Re-extract all (for updating entity types after schema changes)
-        query = query.or("entities_extracted.is.null,entities_extracted.eq.false");
-      } else {
-        // Only process rows that haven't been extracted yet
-        query = query.or("entities_extracted.is.null,entities_extracted.eq.false");
+      if (!forceReextract) {
+        // Only process rows that haven't been extracted yet (entities OR preferences)
+        query = query.or(
+          "entities_extracted.is.null,entities_extracted.eq.false," +
+          "preferences_extracted.is.null,preferences_extracted.eq.false"
+        );
       }
+      // When forceReextract=true, no filter — re-processes all rows
 
       const { data: rows, error: fetchError } = await query;
 
@@ -96,7 +102,7 @@ serve(async (req) => {
             // Mark as extracted to skip in future runs
             await supabase
               .from("chat_turns")
-              .update({ entities_extracted: true })
+              .update({ entities_extracted: true, preferences_extracted: true })
               .eq("id", row.id);
             totalProcessed++;
             continue;
@@ -157,7 +163,10 @@ serve(async (req) => {
     const { count: remaining } = await supabase
       .from("chat_turns")
       .select("id", { count: "exact", head: true })
-      .or("entities_extracted.is.null,entities_extracted.eq.false");
+      .or(
+        "entities_extracted.is.null,entities_extracted.eq.false," +
+        "preferences_extracted.is.null,preferences_extracted.eq.false"
+      );
 
     const result = {
       success: true,
