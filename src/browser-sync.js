@@ -645,14 +645,13 @@ export async function syncMessages(messagesToSync) {
     const chunkCount = turnChunks.length;
     console.log(`✅ Sync complete: ${deflectionFiltered.length} messages + ${chunkCount} turn chunks (embeddings: ${embeddingsAvailable})`);
 
-    // Entity backfill: trigger server-side entity extraction for synced turn IDs
-    // Fire-and-forget — don't block the sync result. Only for authenticated users.
-    // 2s delay so Postgres commits the REST-inserted rows before backfill queries them.
-    setTimeout(() => {
-      triggerEntityBackfill(config).catch(err =>
-        console.warn('⚠️ Entity backfill trigger failed (non-fatal):', err.message)
-      );
-    }, 2000);
+    // Entity backfill: trigger server-side entity extraction for synced turn IDs.
+    // Fire-and-forget — don't block the sync result.
+    // No delay needed: PostgREST commits before responding, so data is available.
+    // No setTimeout: unreliable in MV3 (SW may terminate before timer fires).
+    triggerEntityBackfill(config).catch(err =>
+      console.warn('⚠️ Entity backfill trigger failed (non-fatal):', err.message)
+    );
 
     return {
       success: true,
@@ -674,19 +673,14 @@ export async function syncMessages(messagesToSync) {
 
 /**
  * Trigger entity extraction backfill for turns without entities.
- * Calls the backfill_entities edge function if authenticated.
+ * Calls the backfill_entities edge function via callEdgeFunction(),
+ * which handles auth internally (JWT → anon key fallback).
  * Fire-and-forget: errors are logged but don't affect sync result.
  *
  * @param {Object} config - API config with supabaseUrl, supabaseKey
  */
 async function triggerEntityBackfill(config) {
-  // Only trigger for authenticated users (edge function requires auth)
-  const storageResult = await chrome.storage.local.get(['auth_session']);
-  const session = storageResult.auth_session;
-  if (!session?.access_token) {
-    return; // Legacy mode — entity extraction happens via save_chat_turn edge function
-  }
-
+  console.log('🔗 Triggering entity backfill...');
   try {
     const response = await callEdgeFunction('backfill_entities', {
       limit: 20 // Process up to 20 turns per sync cycle
