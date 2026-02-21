@@ -51,16 +51,16 @@ function withTimeout(promise, ms, label) {
 // The content script captures messages AFTER the injection block is prepended,
 // so both messages and chat_turns tables get polluted with the full injection context.
 function stripInjectionPrefix(content) {
-  if (!content) return content;
+  if (!content) return { content, hadInjection: false };
   const separator = '\n---\n\n';
   const sepIdx = content.lastIndexOf(separator);
-  if (sepIdx === -1) return content;
+  if (sepIdx === -1) return { content, hadInjection: false };
   const prefix = content.substring(0, sepIdx);
   if (prefix.includes('K.Y.T.') || prefix.includes('[RETRIEVAL_CONTEXT]') ||
       prefix.includes('[SESSION_CONTEXT]') || prefix.includes('[DATA_PROVENANCE]')) {
-    return content.substring(sepIdx + separator.length).trim();
+    return { content: content.substring(sepIdx + separator.length).trim(), hadInjection: true };
   }
-  return content;
+  return { content, hadInjection: false };
 }
 
 // ===== QUESTION DETECTION =====
@@ -536,7 +536,7 @@ async function getApiConfig() {
   }
 
   console.log('📥 Loading API config from storage');
-  const result = await chrome.storage.local.get(['api_config', AUTH_SESSION_KEY]);
+  const result = await chrome.storage.local.get(['api_config', AUTH_SESSION_KEY, 'user_id']);
 
   // Prefer auth session for authenticated users
   const session = result[AUTH_SESSION_KEY];
@@ -545,7 +545,7 @@ async function getApiConfig() {
       supabaseUrl: SUPABASE_URL,
       supabaseKey: SUPABASE_ANON_KEY,
       accessToken: session.access_token,
-      userId: session.user?.id,
+      userId: session.user?.id || result.user_id,
       authMode: 'jwt',
       // Legacy fields — not needed for edge mode, but some code paths read them
       openaiKey: result.api_config?.openaiKey || null,
@@ -563,6 +563,10 @@ async function getApiConfig() {
   }
 
   cachedApiConfig = result.api_config;
+  // Resolve userId: prefer config > stored user_id (survives session expiry)
+  if (!cachedApiConfig.userId) {
+    cachedApiConfig.userId = result.user_id || null;
+  }
   configLoadTime = Date.now();
   return cachedApiConfig;
 }
@@ -582,6 +586,143 @@ async function getRoutingMode() {
     return 'legacy';
   }
   return 'unconfigured';
+}
+
+// ==========================================================================
+// STEP 0: Client-side Preference Router
+// Regex classifier that detects preference queries and short-circuits the
+// vector pipeline. 0ms cost — runs before any embedding generation.
+// Ported from supabase/functions/_shared/get_relevant_memories.ts
+// ==========================================================================
+
+/**
+ * Detect if a query is asking about user preferences.
+ * Returns the extracted category string (e.g. "car", "food") or null.
+ *
+ * Patterns:
+ *   1. "what is/are/was my favorite/preferred/go-to X"
+ *   2. "what X do/did I like/prefer/love/enjoy/use"
+ *   3. "tell/remind me (about) my favorite/preferred X"
+ *   4. "do/did I like/prefer/love/enjoy X" (value-based lookup)
+ *   5. "which X is/was my favorite/preferred/go-to"
+ *   6. "what kind of X do/did I like/prefer/enjoy"
+ */
+function detectPreferenceQuery(query) {
+  const q = query.toLowerCase().trim()
+    .replace(/what's/g, 'what is');  // Normalize contraction: "what's my" → "what is my"
+
+  const patterns = [
+    // Pattern 1: "what is my favorite car"
+    /(?:what)\s+(?:is|are|was|were)\s+my\s+(?:favorite|favourite|preferred|go-to)\s+(.+?)(?:\?|$)/,
+    // Pattern 6: "what kind of food do I like" (must precede Pattern 2 — more specific)
+    /what\s+(?:kind|type|sort)\s+of\s+(.+?)\s+(?:do|did|does|would)\s+i\s+(?:like|prefer|love|enjoy)(?:\?|$)/,
+    // Pattern 2: "what car do I like"
+    /what\s+(.+?)\s+(?:do|did|does|would)\s+i\s+(?:like|prefer|love|enjoy|use)(?:\?|$)/,
+    // Pattern 3: "tell me my favorite car" / "remind me about my preferred food"
+    /(?:tell|remind)\s+me\s+(?:about\s+)?my\s+(?:favorite|favourite|preferred|go-to)\s+(.+?)(?:\?|$)/,
+    // Pattern 4: "do I like Python" (value-based)
+    /(?:do|did|does)\s+i\s+(?:like|prefer|love|enjoy)\s+(.+?)(?:\?|$)/,
+    // Pattern 5: "which car is my favorite"
+    /which\s+(.+?)\s+(?:is|are|was|were)\s+my\s+(?:favorite|favourite|preferred|go-to)(?:\?|$)/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = q.match(pattern);
+    if (match && match[1]) {
+      // Clean up the extracted category
+      const category = match[1]
+        .replace(/[?.!,]/g, '')
+        .trim();
+      if (category.length > 0 && category.length < 50) {
+        return category;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Look up user preferences via Supabase REST RPC.
+ * Auth: tries JWT first (may still be valid for Supabase REST even when
+ * expired per extension's session check), falls back to anon key.
+ * TODO: Multi-user: use JWT auth exclusively once token refresh is implemented
+ *
+ * @param {string} category - Preference category to look up
+ * @param {object} apiConfig - From getApiConfig()
+ * @returns {Array} Raw preference rows from the RPC
+ */
+async function lookupPreferencesViaREST(category, apiConfig) {
+  // Resolve userId: apiConfig.userId (from JWT session) or fallback from storage
+  let userId = apiConfig.userId;
+  if (!userId) {
+    const stored = await chrome.storage.local.get([AUTH_SESSION_KEY, 'user_id']);
+    userId = stored[AUTH_SESSION_KEY]?.user?.id || stored.user_id || null;
+  }
+  if (!userId) {
+    console.warn('⚠️ Preference router: no userId available, skipping lookup');
+    return [];
+  }
+
+  // Build auth header: prefer JWT, fall back to anon key
+  const authToken = apiConfig.accessToken || SUPABASE_ANON_KEY;
+  const headers = {
+    'Content-Type': 'application/json',
+    'apikey': SUPABASE_ANON_KEY,
+    'Authorization': `Bearer ${authToken}`,
+  };
+
+  const url = `${SUPABASE_URL}/rest/v1/rpc/lookup_user_preferences`;
+  const body = JSON.stringify({
+    p_user_id: userId,
+    p_category: category,
+    p_limit: 3,  // Cap at 3 — dedup concern: 7 car rows floods injection, 3 suffices
+  });
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers,
+    body,
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    console.warn(`⚠️ Preference lookup RPC failed: ${response.status} ${errText}`);
+    return [];
+  }
+
+  const data = await response.json();
+  return data || [];
+}
+
+/**
+ * Convert preference RPC rows to the injection item format expected by
+ * buildMemoryInjection(). Mirrors the edge function's candidate synthesis.
+ *
+ * @param {Array} prefRows - Rows from lookup_user_preferences RPC
+ * @returns {Array} Items shaped for the retrieval result
+ */
+function synthesizePreferenceItems(prefRows) {
+  return prefRows.map(pref => {
+    const sentimentLabel = pref.sentiment === 'positive' ? 'favorite'
+      : pref.sentiment === 'negative' ? 'disliked'
+      : '';
+    const dateStr = pref.updated_at
+      ? new Date(pref.updated_at).toLocaleDateString()
+      : 'unknown date';
+
+    const content = `User's ${sentimentLabel} ${pref.category}: ${pref.value}. Recorded: ${dateStr}.`;
+
+    return {
+      id: pref.source_turn_id || pref.id,
+      content,
+      platform: 'kyt',
+      timestamp: pref.updated_at || pref.created_at || new Date().toISOString(),
+      similarity: (pref.confidence || 0.8) * 0.9, // 0.8 * 0.9 = 0.72 (above 0.40 threshold)
+      source_type: 'user_preference',
+      preference_match: true,
+    };
+  });
 }
 
 // Clear cache before service worker suspends
@@ -771,7 +912,9 @@ async function saveMessage(messageData) {
     }
 
     // Strip KYT injection prefix before any analysis (Phase 2: prevents injection pollution)
-    messageData.content = stripInjectionPrefix(messageData.content);
+    const injectionResult = stripInjectionPrefix(messageData.content);
+    messageData.content = injectionResult.content;
+    const hadInjection = injectionResult.hadInjection;
 
     // Detect assistant deflections/echoes (Layer 1: capture-time tagging)
     // For combined User+Assistant messages (role='user'), extract assistant text
@@ -804,7 +947,8 @@ async function saveMessage(messageData) {
       messageId: messageData.messageId || generateMessageId(),
       timestamp: timestamp,
       ...(deflectionCheck.isDeflection ? { deflection: deflectionCheck.confidence } : {}),
-      ...(isQuestion ? { is_question: true } : {})
+      ...(isQuestion ? { is_question: true } : {}),
+      ...(hadInjection ? { is_injection: true } : {})
     };
 
     messages.push(newMessage);
@@ -1132,6 +1276,56 @@ async function getContextForInjection(userMessage, config) {
       debugMode: config?.debugMode || false,
       disableQueryTransformation: config?.disableQueryTransformation ?? apiConfig.disableQueryTransformation ?? false
     };
+
+    // ========================================================================
+    // STEP 0: Preference Query Router (0ms regex, before any embedding)
+    // Short-circuits the entire vector pipeline for "what is my favorite X?"
+    // Path-independent — works whether queries go edge or legacy.
+    // ========================================================================
+    try {
+      const prefCategory = detectPreferenceQuery(userMessage);
+      if (prefCategory) {
+        console.log(`🎯 Preference router activated: category="${prefCategory}"`);
+        const prefRows = await lookupPreferencesViaREST(prefCategory, apiConfig);
+        if (prefRows.length > 0) {
+          const prefItems = synthesizePreferenceItems(prefRows);
+          console.log(`✅ Preference router: ${prefItems.length} preferences found — short-circuiting vector pipeline`);
+
+          const elapsedTime = performance.now() - startTime;
+
+          const retrievalResult = {
+            state: 'FOUND',
+            items: prefItems.map(item => ({
+              id: item.id,
+              content: item.content,
+              platform: item.platform,
+              timestamp: item.timestamp,
+              similarity: item.similarity,
+              source_type: item.source_type,
+            })),
+            latencyMs: elapsedTime,
+            queryType: 'PREFERENCE',
+            queryOriginal: userMessage,
+            queryTransformed: null,
+          };
+
+          const formattedContext = buildMemoryInjection(retrievalResult, {
+            debugMode: contextConfig.debugMode || false,
+          });
+
+          return {
+            success: true,
+            items: prefItems,
+            formattedContext,
+            elapsedMs: elapsedTime,
+            transformation: { transformed: false },
+          };
+        }
+        console.log('ℹ️ Preference router: no preferences found, falling through to vector pipeline');
+      }
+    } catch (prefError) {
+      console.warn('⚠️ Preference router failed (non-fatal), falling through:', prefError.message);
+    }
 
     // Check in-memory circuit breaker — only affects API-dependent paths
     // BM25 keyword search is local and always available even when CB is open
@@ -2516,6 +2710,23 @@ chrome.runtime.onInstalled.addListener((details) => {
     });
     chrome.storage.local.remove('kyt_hyde_circuit_breaker', () => {
       console.log('🔌 HyDE circuit breaker reset on extension update');
+    });
+
+    // One-time userId backfill: extract from existing session (even if expired)
+    // so all read paths (search, preferences, backfill) have userId immediately
+    chrome.storage.local.get([AUTH_SESSION_KEY, 'user_id'], (stored) => {
+      if (!stored.user_id) {
+        const sessionUserId = stored[AUTH_SESSION_KEY]?.user?.id;
+        if (sessionUserId) {
+          chrome.storage.local.set({ user_id: sessionUserId }, () => {
+            console.log(`🔑 Persisted user_id from existing session: ${sessionUserId}`);
+          });
+        } else {
+          console.warn('⚠️ No user_id in session — user must sign in again');
+        }
+      } else {
+        console.log(`🔑 user_id already persisted: ${stored.user_id}`);
+      }
     });
 
     // Clear stale process_queue alarm (old snake_case naming)

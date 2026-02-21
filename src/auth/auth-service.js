@@ -47,7 +47,10 @@ async function storeSession(data) {
       email: data.user?.email,
     },
   };
-  await chrome.storage.local.set({ [AUTH_SESSION_KEY]: session });
+  await chrome.storage.local.set({
+    [AUTH_SESSION_KEY]: session,
+    user_id: data.user?.id,  // Persist independently — survives session expiry
+  });
   return session;
 }
 

@@ -85,7 +85,8 @@ serve(async (req) => {
                     start_timestamp: timestamp,
                     end_timestamp: timestamp,
                     last_accessed: new Date().toISOString(),
-                    access_count: 0
+                    access_count: 0,
+                    is_injection: turn.is_injection || false
                 };
             });
 
@@ -131,9 +132,16 @@ serve(async (req) => {
                 const [embedding] = await hfClient.generateEmbeddings(turn.content);
 
                 // 2. Parallel: Classify + Extract entities
+                // Skip extraction for injection-polluted turns and assistant-only turns
+                const skipExtraction = turn.is_injection || (turn.role === 'assistant');
+                if (skipExtraction) {
+                    console.log(`Skipping extraction: role=${turn.role}, is_injection=${turn.is_injection}`);
+                }
                 const [classification, entities] = await Promise.allSettled([
                     classifyMemory({ content: turn.content }, openaiKey),
-                    extractEntities({ content: turn.content, speakers: [] }, openaiKey)
+                    skipExtraction
+                        ? Promise.resolve({ entities: [], preferences: [] })
+                        : extractEntities({ content: turn.content, speakers: [turn.role || 'user'] }, openaiKey)
                 ]);
 
                 const gravity = classification.status === 'fulfilled'
@@ -159,7 +167,8 @@ serve(async (req) => {
                         start_timestamp: timestamp,
                         end_timestamp: timestamp,
                         last_accessed: new Date().toISOString(),
-                        access_count: 0
+                        access_count: 0,
+                        is_injection: turn.is_injection || false
                     }, {
                         onConflict: 'user_id,conversation_id,platform,start_timestamp',
                         ignoreDuplicates: true

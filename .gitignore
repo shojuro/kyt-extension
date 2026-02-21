@@ -30,6 +30,7 @@ debug.log
 error.log
 validation/*.log
 debug_*.txt
+debug-sessions/
 
 # ============================================
 # CHROME EXTENSION ARTIFACTS

@@ -147,10 +147,96 @@ Return ONLY valid JSON (no markdown):
 }`;
 
 /**
- * Build extraction prompt from conversation data
+ * Strip assistant content from multi-turn chunks.
+ * Prevents the extractor from pulling preferences from assistant echoes
+ * (e.g. "your favorite car is Lamborghini" in an assistant response).
+ *
+ * Format produced by conversation-chunker.js:
+ *   "User: {msg}\n\nAssistant: {msg}\n\nUser: {msg}"
+ *
+ * For single-role turns (from save_chat_turn_batch), content has no
+ * "Assistant:" prefix, so this function is a no-op (correct behavior).
  */
+
+/**
+ * Strip K.Y.T. injection blocks from user content.
+ * Injection blocks contain retrieved items from the user's knowledge base
+ * that were prepended to the user's actual message. The LLM falsely extracts
+ * preferences from these echo items (e.g. "your favorite car is red Lamborghinis").
+ *
+ * Two formats exist:
+ *  1. Full: "==== K.Y.T. — User's Personal Knowledge Base ==== ... [End of Knowledge Base Context] ==== --- actual message"
+ *  2. Compact: "K.Y.T. — User's Personal Knowledge Base [RESPONSE_PRIORITY] ... --- actual message"
+ *
+ * Both end with a "---" separator before the actual user message.
+ * If no K.Y.T. marker is found, returns content unchanged.
+ */
+function stripInjectionBlocks(content: string): string {
+  // Fast path: no injection block present
+  if (!content.includes('K.Y.T.')) return content;
+
+  // Split on lines, find K.Y.T. block boundaries and strip them
+  const lines = content.split('\n');
+  const kept: string[] = [];
+  let inInjectionBlock = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Detect start of injection block
+    if (!inInjectionBlock && /K\.Y\.T\.\s*(?:—|[-–])\s*User/i.test(line)) {
+      inInjectionBlock = true;
+      // Also skip preceding === separator lines
+      while (kept.length > 0 && /^=+$/.test(kept[kept.length - 1].trim())) {
+        kept.pop();
+      }
+      continue;
+    }
+
+    // Detect end of injection block: a line that is just "---"
+    if (inInjectionBlock && /^-{3,}\s*$/.test(line)) {
+      inInjectionBlock = false;
+      continue;
+    }
+
+    if (!inInjectionBlock) {
+      kept.push(line);
+    }
+  }
+
+  const result = kept.join('\n').trim();
+  // If stripping removed everything (edge case), return original
+  return result.length > 0 ? result : content;
+}
+
+function stripAssistantContent(content: string): string {
+  const lines = content.split('\n');
+  const kept: string[] = [];
+  let inAssistantBlock = false;
+
+  for (const line of lines) {
+    if (/^Assistant\s*:/i.test(line)) {
+      inAssistantBlock = true;
+      continue;
+    }
+    if (/^User\s*:/i.test(line)) {
+      inAssistantBlock = false;
+    }
+    if (!inAssistantBlock) {
+      kept.push(line);
+    }
+  }
+
+  return kept.join('\n').trim();
+}
+
 function buildExtractionPrompt(data: EntityExtractionData): string {
   const { content, speakers } = data;
+
+  // Strip assistant blocks, then K.Y.T. injection blocks from user content.
+  // Prevents false preference extraction from assistant echoes and
+  // retrieved-item context that contains previously-stored preferences.
+  const cleaned = stripInjectionBlocks(stripAssistantContent(content));
 
   const speakersInfo = speakers.length > 0
     ? `SPEAKERS: ${speakers.join(', ')}\n\n`
@@ -159,7 +245,7 @@ function buildExtractionPrompt(data: EntityExtractionData): string {
   return `Extract entities and user preferences from this conversation:
 
 ${speakersInfo}CONTENT:
-${content}
+${cleaned}
 
 Return entities with their relationship to the user, and any user preferences detected.`;
 }
@@ -242,7 +328,7 @@ export async function extractEntities(
       .filter((p: any) => p.category && p.value)  // Require both fields
       .map((p: any) => ({
         category: String(p.category).toLowerCase().trim(),
-        value: String(p.value).trim(),
+        value: String(p.value).toLowerCase().trim().replace(/[.,!?;:]+$/, ''),
         sentiment: validSentiments.has(p.sentiment) ? p.sentiment : 'positive'
       }));
 
@@ -487,6 +573,12 @@ export async function savePreferences(
     let saved = 0;
     for (const pref of preferences) {
         try {
+            // ignoreDuplicates: true → ON CONFLICT DO NOTHING.
+            // If (user_id, category, value) already exists, skip entirely —
+            // don't touch updated_at. This preserves temporal ordering so that
+            // DISTINCT ON (category, sentiment) ORDER BY updated_at DESC
+            // in lookup_user_preferences returns the genuinely newest preference,
+            // not a backfill-refreshed old one.
             const { error } = await supabase
                 .from('user_preferences')
                 .upsert(
@@ -499,7 +591,7 @@ export async function savePreferences(
                         source_turn_id: chatTurnId,
                         updated_at: new Date().toISOString()
                     },
-                    { onConflict: 'user_id,category,value' }
+                    { onConflict: 'user_id,category,value', ignoreDuplicates: true }
                 );
 
             if (error) {

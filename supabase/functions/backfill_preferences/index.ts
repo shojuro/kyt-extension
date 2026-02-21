@@ -41,14 +41,30 @@ serve(async (req) => {
   try {
     console.log("Starting backfill_preferences...");
 
-    // Resolve actual auth user — chat_turns may have fallback UUIDs (00000000-...)
-    // that don't exist in auth.users, causing FK violations on user_preferences
-    const { data: authUsers } = await supabase.auth.admin.listUsers({ perPage: 1 });
-    const authUserId = authUsers?.users?.[0]?.id;
+    // Resolve auth user_id consistently with live save_chat_turn path.
+    // Priority: user_id already used by existing preferences > auth.admin.listUsers().
+    // This prevents the listUsers() ordering bug where Supabase returns the
+    // newest user first, which may differ from the extension's authenticated user.
+    let authUserId: string | undefined;
+
+    const { data: existingPref } = await supabase
+      .from("user_preferences")
+      .select("user_id")
+      .limit(1)
+      .single();
+
+    if (existingPref?.user_id) {
+      authUserId = existingPref.user_id;
+      console.log(`Resolved auth user from existing preferences: ${authUserId}`);
+    } else {
+      const { data: authUsers } = await supabase.auth.admin.listUsers({ perPage: 1 });
+      authUserId = authUsers?.users?.[0]?.id;
+      console.log(`Resolved auth user from auth.admin: ${authUserId}`);
+    }
+
     if (!authUserId) {
       throw new Error("No auth users found — cannot save preferences without valid user_id");
     }
-    console.log(`Resolved auth user: ${authUserId}`);
 
     let totalProcessed = 0;
     let totalPreferencesCreated = 0;
@@ -62,6 +78,8 @@ serve(async (req) => {
         .from("chat_turns")
         .select("id, content, speakers, user_id")
         .or("preferences_extracted.is.null,preferences_extracted.eq.false")
+        .or("is_injection.is.null,is_injection.eq.false")
+        .not("speakers", "eq", "{assistant}")
         .order("id")
         .limit(BATCH_SIZE);
 

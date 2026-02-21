@@ -168,21 +168,22 @@ async function searchEntities(
  *   6. "what kind of X do/did I like/prefer/enjoy"
  */
 function detectPreferenceQuery(query: string): string | null {
-    const q = query.toLowerCase().trim();
+    const q = query.toLowerCase().trim()
+        .replace(/what's/g, 'what is');
 
     const patterns: RegExp[] = [
         // Pattern 1: "what is my favorite car"
-        /(?:what|what's)\s+(?:is|are|was|were)\s+my\s+(?:favorite|favourite|preferred|go-to)\s+(.+?)(?:\?|$)/,
-        // Pattern 2: "what car do I like"
-        /what\s+(.+?)\s+(?:do|did|does|would)\s+I\s+(?:like|prefer|love|enjoy|use)(?:\?|$)/,
+        /(?:what)\s+(?:is|are|was|were)\s+my\s+(?:favorite|favourite|preferred|go-to)\s+(.+?)(?:\?|$)/,
+        // Pattern 6: "what kind of food do i like" — BEFORE Pattern 2 (more specific)
+        /what\s+(?:kind|type|sort)\s+of\s+(.+?)\s+(?:do|did|does|would)\s+i\s+(?:like|prefer|love|enjoy)(?:\?|$)/,
+        // Pattern 2: "what car do i like"
+        /what\s+(.+?)\s+(?:do|did|does|would)\s+i\s+(?:like|prefer|love|enjoy|use)(?:\?|$)/,
         // Pattern 3: "tell me my favorite car" / "remind me about my preferred food"
         /(?:tell|remind)\s+me\s+(?:about\s+)?my\s+(?:favorite|favourite|preferred|go-to)\s+(.+?)(?:\?|$)/,
-        // Pattern 4: "do I like Python" (value-based)
-        /(?:do|did|does)\s+I\s+(?:like|prefer|love|enjoy)\s+(.+?)(?:\?|$)/,
+        // Pattern 4: "do i like Python" (value-based)
+        /(?:do|did|does)\s+i\s+(?:like|prefer|love|enjoy)\s+(.+?)(?:\?|$)/,
         // Pattern 5: "which car is my favorite"
         /which\s+(.+?)\s+(?:is|are|was|were)\s+my\s+(?:favorite|favourite|preferred|go-to)(?:\?|$)/,
-        // Pattern 6: "what kind of food do I like"
-        /what\s+(?:kind|type|sort)\s+of\s+(.+?)\s+(?:do|did|does|would)\s+I\s+(?:like|prefer|love|enjoy)(?:\?|$)/,
     ];
 
     for (const pattern of patterns) {
@@ -236,12 +237,7 @@ async function lookupPreferencesAsCandidates(
             ? new Date(pref.updated_at).toLocaleDateString()
             : 'unknown date';
 
-        let content = `User's ${sentimentLabel} ${pref.category}: ${pref.value}. Recorded: ${dateStr}.`;
-
-        // Enrich with source content if available
-        if (pref.source_content) {
-            content += `\n\nOriginal context: ${pref.source_content}`;
-        }
+        const content = `User's ${sentimentLabel} ${pref.category}: ${pref.value}. Recorded: ${dateStr}.`;
 
         return {
             id: pref.source_turn_id || pref.id,

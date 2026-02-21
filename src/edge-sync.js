@@ -50,6 +50,7 @@ export async function syncViaEdgeFunction(messages, options = {}) {
       platform: msg.platform || msg.source || 'chatgpt',
       conversation_id: msg.conversationId || msg.conversation_id || null,
       timestamp: msg.timestamp || msg.capturedAt || Date.now(),
+      is_injection: msg.is_injection || false,
     }));
 
     try {
