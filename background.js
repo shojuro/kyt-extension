@@ -679,20 +679,25 @@ async function lookupPreferencesViaREST(category, apiConfig) {
     p_limit: 3,  // Cap at 3 — dedup concern: 7 car rows floods injection, 3 suffices
   });
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body,
-  });
+  try {
+    const response = await withTimeout(
+      fetch(url, { method: 'POST', headers, body }),
+      10000,  // 10s — RPC is a simple DB query, should be fast
+      'preference-lookup'
+    );
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => '');
-    console.warn(`⚠️ Preference lookup RPC failed: ${response.status} ${errText}`);
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      console.warn(`⚠️ Preference lookup RPC failed: ${response.status} ${errText}`);
+      return [];
+    }
+
+    const data = await response.json();
+    return data || [];
+  } catch (err) {
+    console.warn(`⚠️ Preference lookup failed: ${err.message}`);
     return [];
   }
-
-  const data = await response.json();
-  return data || [];
 }
 
 /**

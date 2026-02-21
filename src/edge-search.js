@@ -18,7 +18,7 @@ import { callEdgeFunction } from './api-client.js';
  * @param {number} [options.topK=5] - Number of results to return
  * @param {boolean} [options.useHyde=true] - Enable HyDE query expansion
  * @param {number} [options.hydeWeight=0.6] - HyDE weight in RRF merge
- * @param {number} [options.timeoutMs=25000] - Request timeout
+ * @param {number} [options.timeoutMs=30000] - Request timeout
  * @returns {Promise<Array>} Array of search result objects
  */
 export async function searchViaEdgeFunction(query, options = {}) {
@@ -26,7 +26,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
     topK = 5,
     useHyde = true,
     hydeWeight = 0.6,
-    timeoutMs = 25000,
+    timeoutMs = 30000,
   } = options;
 
   if (!query || query.trim().length === 0) {
