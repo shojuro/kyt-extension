@@ -69,7 +69,7 @@ serve(async (req) => {
       let query = supabase
         .from("chat_turns")
         .select("id, content, speakers, conversation_id, user_id")
-        .order("id")
+        .order("created_at", { ascending: false })
         .limit(BATCH_SIZE);
 
       if (!forceReextract) {
