@@ -78,7 +78,7 @@ async function vectorSearch(
     const { data, error } = await supabase
         .rpc("match_messages_with_gravity", {
             query_embedding: embedding,
-            match_threshold: 0.7,
+            match_threshold: 0.5,
             match_count: topK,
             exclude_recent_seconds: 0,
             p_user_id: userId,

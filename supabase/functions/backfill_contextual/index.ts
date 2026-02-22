@@ -30,8 +30,8 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const hfClient = new HuggingFaceClient(hfApiKey);
 
 const BATCH_SIZE = 5;
-const MAX_ROWS = 100;
-const BATCH_DELAY_MS = 2000;
+const MAX_ROWS = 15;  // ~10s per row (fetch + GPT-4o-mini + re-embed), 150s Supabase limit
+const BATCH_DELAY_MS = 500;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
