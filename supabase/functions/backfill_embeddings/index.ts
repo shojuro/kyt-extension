@@ -40,7 +40,7 @@ serve(async (req) => {
             // As we update them, they leave the queue.
             const { data: rows, error: fetchError } = await supabase
                 .from("chat_turns")
-                .select("id, content")
+                .select("id, content, contextual_content")
                 .is("embedding", null)
                 .order("id") // Deterministic order
                 .limit(BATCH_SIZE);
@@ -59,7 +59,12 @@ serve(async (req) => {
             for (const row of rows) {
                 if (!row.content) continue;
                 try {
-                    const embedding = await hfClient.generateEmbeddings(row.content);
+                    // Use contextual_content if available (from backfill_contextual),
+                    // otherwise fall back to raw content.
+                    // ASYMMETRIC EMBEDDING: stored chunks get context prefix,
+                    // query embeddings stay raw. DO NOT "fix" this.
+                    const contentToEmbed = row.contextual_content || row.content;
+                    const embedding = await hfClient.generateEmbeddings(contentToEmbed);
                     updates.push({
                         id: row.id,
                         embedding: embedding[0]

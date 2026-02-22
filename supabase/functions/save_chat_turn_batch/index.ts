@@ -3,6 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
 import { extractEntities, saveEntitiesWithMentions, savePreferences } from '../_shared/entity-extractor.ts';
 import { classifyMemory } from '../_shared/memory-classifier.ts';
+import { generateChunkContext } from '../_shared/context-generator.ts';
 
 const MAX_BATCH_SIZE = 50;
 
@@ -128,48 +129,70 @@ serve(async (req) => {
 
         for (const turn of turns) {
             try {
-                // 1. Generate embedding
-                const [embedding] = await hfClient.generateEmbeddings(turn.content);
-
-                // 2. Parallel: Classify + Extract entities
+                // 1. Parallel: Classify + Extract entities + Generate context
                 // Skip extraction for injection-polluted turns and assistant-only turns
                 const skipExtraction = turn.is_injection || (turn.role === 'assistant');
                 if (skipExtraction) {
                     console.log(`Skipping extraction: role=${turn.role}, is_injection=${turn.is_injection}`);
                 }
-                const [classification, entities] = await Promise.allSettled([
+                const [classification, entities, contextResult] = await Promise.allSettled([
                     classifyMemory({ content: turn.content }, openaiKey),
                     skipExtraction
                         ? Promise.resolve({ entities: [], preferences: [] })
-                        : extractEntities({ content: turn.content, speakers: [turn.role || 'user'] }, openaiKey)
+                        : extractEntities({ content: turn.content, speakers: [turn.role || 'user'] }, openaiKey),
+                    // Context generation — no surrounding chunks in inline path (single-turn batch)
+                    generateChunkContext({
+                        chunkContent: turn.content,
+                        platform: normalizePlatform(turn.platform),
+                        conversationId: turn.conversation_id,
+                        timestamp: turn.timestamp ? new Date(turn.timestamp).toISOString() : undefined,
+                    }, openaiKey)
                 ]);
 
                 const gravity = classification.status === 'fulfilled'
                     ? classification.value
                     : { impact_score: 0, intimacy_level: 0 };
 
-                // 3. Save to database with ON CONFLICT handling for deduplication
+                // Determine what to embed: contextual content if available, else raw
+                // ASYMMETRIC EMBEDDING: stored chunks get context prefix,
+                // query embeddings stay raw. DO NOT "fix" this.
+                const ctxResult = contextResult.status === 'fulfilled' ? contextResult.value : null;
+                const contentToEmbed = ctxResult?.contextualContent || turn.content;
+                const [embedding] = await hfClient.generateEmbeddings(contentToEmbed);
+
+                // 2. Save to database with ON CONFLICT handling for deduplication
                 const timestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : Date.now();
+
+                const upsertData: Record<string, any> = {
+                    user_id: turn.user_id,
+                    conversation_id: turn.conversation_id,
+                    platform: normalizePlatform(turn.platform),
+                    content: turn.content,
+                    embedding,
+                    impact_score: gravity.impact_score,
+                    intimacy_level: gravity.intimacy_level,
+                    turn_range: '1-1',
+                    speakers: [turn.role || 'user'],
+                    turn_count: 1,
+                    start_timestamp: timestamp,
+                    end_timestamp: timestamp,
+                    last_accessed: new Date().toISOString(),
+                    access_count: 0,
+                    is_injection: turn.is_injection || false,
+                };
+
+                // Add contextual retrieval fields if context was generated
+                if (ctxResult) {
+                    upsertData.contextual_content = ctxResult.contextualContent;
+                    upsertData.context_generated = true;
+                    upsertData.context_generated_at = new Date().toISOString();
+                } else {
+                    upsertData.context_generated = false;
+                }
 
                 const { data, error } = await supabase
                     .from('chat_turns')
-                    .upsert({
-                        user_id: turn.user_id,
-                        conversation_id: turn.conversation_id,
-                        platform: normalizePlatform(turn.platform),
-                        content: turn.content,
-                        embedding,
-                        impact_score: gravity.impact_score,
-                        intimacy_level: gravity.intimacy_level,
-                        turn_range: '1-1',
-                        speakers: [turn.role || 'user'],
-                        turn_count: 1,
-                        start_timestamp: timestamp,
-                        end_timestamp: timestamp,
-                        last_accessed: new Date().toISOString(),
-                        access_count: 0,
-                        is_injection: turn.is_injection || false
-                    }, {
+                    .upsert(upsertData, {
                         onConflict: 'user_id,conversation_id,platform,start_timestamp',
                         ignoreDuplicates: true
                     })

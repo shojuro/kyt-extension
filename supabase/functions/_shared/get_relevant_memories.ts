@@ -19,6 +19,7 @@ import { mergeHydeAndRawResults, fallbackToRawResults } from "./rrf.ts";
 type Candidate = {
     id: string;
     content: string;
+    contextual_content?: string;  // Contextual retrieval: LLM-generated context prefix + raw content
     gravity_score?: number;
     entity_boost?: boolean;
     rrf_score?: number;  // Added by RRF merge
@@ -37,7 +38,8 @@ function applyBm25Boost(query: string, items: CandidateWithScore[]): CandidateWi
     if (terms.length === 0) return items;
 
     const bm25Scores = items.map((item) => {
-        const txt = item.content.toLowerCase();
+        // Use contextual_content for BM25 boost — richer text includes topic keywords
+        const txt = ((item as any).contextual_content || item.content).toLowerCase();
         let score = 0;
         for (const term of terms) {
             const matches = txt.match(new RegExp(`\\b${term}\\b`, "g")) ?? [];
@@ -403,6 +405,7 @@ export async function getRelevantMemories(
                 graphResults = data.map((item: any) => ({
                     id: item.chat_turn_id,
                     content: item.content,
+                    contextual_content: item.contextual_content || undefined,
                     gravity_score: item.relationship_strength,
                     entity_boost: true
                 }));
@@ -576,6 +579,7 @@ export async function getRelevantMemories(
                         candidates.push({
                             id: turn.chat_turn_id,
                             content: turn.content,
+                            contextual_content: turn.contextual_content || undefined,
                             entity_boost: true,
                             // Tag with entity data for client-side recency resolution
                             entity_timeline: {
@@ -701,7 +705,9 @@ async function rerankAndFilter(
         return [];
     }
 
-    const docs = candidates.map((c) => c.content);
+    // Use contextual_content for reranking when available — richer text
+    // gives the cross-encoder more signal for relevance scoring
+    const docs = candidates.map((c) => (c as any).contextual_content || c.content);
 
     // Rerank with graceful fallback
     let ordered: CandidateWithScore[];

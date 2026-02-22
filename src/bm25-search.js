@@ -126,8 +126,9 @@ export function searchBM25(query, messages, options = {}) {
   }
   
   // Build corpus (tokenize and calculate TF for all documents)
+  // Use contextual_content when available — includes topic keywords from context prefix
   const corpus = messages.map(msg => {
-    const tokens = tokenize(msg.content);
+    const tokens = tokenize(msg.contextual_content || msg.content);
     const tf = calculateTermFrequency(tokens);
     
     return {

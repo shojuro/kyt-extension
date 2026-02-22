@@ -84,6 +84,9 @@ export async function searchViaEdgeFunction(query, options = {}) {
     entities: item.entities || [],
     // Preference query router match flag
     preference_match: item.preference_match ?? false,
+    // Contextual retrieval: LLM-generated context prefix + raw content
+    // Used by client-side BM25 for richer keyword matching
+    contextual_content: item.contextual_content || null,
   }));
 
   // Attach metadata so callers can determine Jina availability
