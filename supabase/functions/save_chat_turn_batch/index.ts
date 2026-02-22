@@ -67,6 +67,15 @@ serve(async (req) => {
             }
         }
 
+        // Question detection heuristic — duplicated from background.js INTERROGATIVE_RE
+        // (edge functions can't import from extension code)
+        const INTERROGATIVE_RE = /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember)\b/i;
+        function detectIsQuestion(turn: any): boolean {
+            if (turn.role !== 'user') return false;
+            const text = (turn.content || '').trim();
+            return text.endsWith('?') || INTERROGATIVE_RE.test(text);
+        }
+
         // FAST PATH: When skipping AI processing, do a single batch upsert
         // This is ~10x faster than sequential writes
         if (skip_ai_processing) {
@@ -87,7 +96,8 @@ serve(async (req) => {
                     end_timestamp: timestamp,
                     last_accessed: new Date().toISOString(),
                     access_count: 0,
-                    is_injection: turn.is_injection || false
+                    is_injection: turn.is_injection || false,
+                    is_question: detectIsQuestion(turn),
                 };
             });
 
@@ -129,6 +139,47 @@ serve(async (req) => {
 
         for (const turn of turns) {
             try {
+                const isQuestion = detectIsQuestion(turn);
+
+                // Questions are filtered from retrieval — skip expensive AI processing
+                // Still save to DB with is_question=true for completeness
+                if (isQuestion) {
+                    const timestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : Date.now();
+                    const { data, error } = await supabase
+                        .from('chat_turns')
+                        .upsert({
+                            user_id: turn.user_id,
+                            conversation_id: turn.conversation_id,
+                            platform: normalizePlatform(turn.platform),
+                            content: turn.content,
+                            embedding: null,
+                            impact_score: 0,
+                            intimacy_level: 0,
+                            turn_range: '1-1',
+                            speakers: [turn.role || 'user'],
+                            turn_count: 1,
+                            start_timestamp: timestamp,
+                            end_timestamp: timestamp,
+                            last_accessed: new Date().toISOString(),
+                            access_count: 0,
+                            is_injection: turn.is_injection || false,
+                            is_question: true,
+                            context_generated: true, // Skip backfill too
+                        }, {
+                            onConflict: 'user_id,conversation_id,platform,start_timestamp',
+                            ignoreDuplicates: true
+                        })
+                        .select('id');
+
+                    if (error) throw error;
+                    if (data && data.length > 0) {
+                        results.push({ id: data[0].id, success: true, duplicate: false });
+                    } else {
+                        results.push({ success: true, duplicate: true });
+                    }
+                    continue;
+                }
+
                 // 1. Parallel: Classify + Extract entities + Generate context
                 // Skip extraction for injection-polluted turns and assistant-only turns
                 const skipExtraction = turn.is_injection || (turn.role === 'assistant');
@@ -179,6 +230,7 @@ serve(async (req) => {
                     last_accessed: new Date().toISOString(),
                     access_count: 0,
                     is_injection: turn.is_injection || false,
+                    is_question: false, // Already verified above (questions short-circuit)
                 };
 
                 // Add contextual retrieval fields if context was generated

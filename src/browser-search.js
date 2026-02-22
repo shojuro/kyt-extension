@@ -447,6 +447,8 @@ async function searchSupabaseText(query, options = {}) {
     filterParams += `&user_id=eq.${config.userId}`;
     // P1 fix: exclude questions from text search results
     filterParams += '&or=(is_question.eq.false,is_question.is.null)';
+    // P3 fix: exclude deflection responses from text search results
+    filterParams += '&or=(deflection.lt.0.70,deflection.is.null)';
     if (role) {
       filterParams += `&role=eq.${role}`;
     }

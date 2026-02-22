@@ -68,7 +68,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
     source: item.source || item.platform,
     msg_timestamp: item.created_at || item.timestamp || item.start_timestamp,
     timestamp: item.created_at || item.timestamp || item.start_timestamp,
-    // Scores — edge function provides cross_encoder_score from Jina reranker
+    // Scores — edge function provides cross_encoder_score from BGE reranker (server) or Jina (browser fallback)
     cross_encoder_score: item.cross_encoder_score ?? item.rerank_score ?? null,
     distance: item.distance ?? null,
     weighted_score: item.weighted_score ?? item.rrf_score ?? null,

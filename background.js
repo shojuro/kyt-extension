@@ -2557,6 +2557,26 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
       break;
 
+    case 'backfillContextual':
+      try {
+        console.log('⏰ Contextual backfill alarm fired');
+        const ctxResult = await callEdgeFunction('backfill_contextual', { limit: 15 });
+        if (ctxResult.context_generated > 0) {
+          console.log(`✅ Contextual backfill: ${ctxResult.context_generated} turns contextualized`);
+          // If there may be more, schedule another run
+          if (ctxResult.processed >= 15) {
+            chrome.alarms.create('backfillContextual', { delayInMinutes: 5 });
+          }
+        } else {
+          console.log('✅ Contextual backfill: no rows remaining');
+        }
+      } catch (error) {
+        console.error('❌ Contextual backfill alarm error:', error.message);
+        // Retry in 10 minutes
+        chrome.alarms.create('backfillContextual', { delayInMinutes: 10 });
+      }
+      break;
+
     case 'prewarmEmbedding':
       try {
         await prewarmEmbeddingModel();
@@ -2768,6 +2788,10 @@ chrome.runtime.onInstalled.addListener((details) => {
       } catch (err) {
         console.error('❌ Update backfill error:', err.message);
       }
+
+      // Schedule contextual backfill after embeddings settle
+      chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
+      console.log('⏰ Contextual backfill alarm set (2 minutes post-update)');
     }, 3000);
 
     // Migration: Set Phase 1 default for existing users
@@ -2823,7 +2847,12 @@ globalThis.KYT_DEBUG = {
     .catch(err => {
       console.error('❌ Entity backfill failed:', err.message);
       return { success: false, error: err.message };
-    })
+    }),
+
+  // Backfill contextual retrieval (generate context summaries + re-embed)
+  backfillContextual: (limit = 15) => callEdgeFunction('backfill_contextual', { limit })
+    .then(result => { console.log('📝 Contextual backfill result:', result); return result; })
+    .catch(err => { console.error('❌ Contextual backfill failed:', err.message); return { success: false, error: err.message }; }),
 };
 
 console.log('✅ KYT Background: Service worker ready');
@@ -2833,6 +2862,7 @@ console.log('   - KYT_DEBUG.getContext("test message") - Test context retrieval'
 console.log('   - KYT_DEBUG.viewStorage() - View all storage');
 console.log('   - KYT_DEBUG.backfillEmbeddings() - Backfill null embeddings in Supabase');
 console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
+console.log('   - KYT_DEBUG.backfillContextual() - Generate context summaries + re-embed');
 console.log('   Note: chrome.runtime.sendMessage() from service worker to itself does not work');
 
 // Initialize queue processor

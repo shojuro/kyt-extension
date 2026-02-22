@@ -113,6 +113,27 @@ serve(async (req) => {
   try {
     console.log("Starting backfill_contextual...");
 
+    // Pre-pass: mark questions and deflections as already contextualized so they
+    // don't clog future backfill batches (context enrichment would make questions
+    // MORE findable — opposite of intent).
+    const { data: markedRows, error: markError } = await supabase
+      .from("chat_turns")
+      .update({
+        context_generated: true,
+        context_generated_at: new Date().toISOString(),
+      })
+      .or("is_question.eq.true,deflection.gte.0.70")
+      .or("context_generated.is.null,context_generated.eq.false")
+      .select("id");
+
+    if (markError) {
+      console.warn("Pre-pass mark error (non-fatal):", markError.message);
+    } else if (markedRows && markedRows.length > 0) {
+      console.log(
+        `Pre-pass: marked ${markedRows.length} question/deflection rows as context_generated`
+      );
+    }
+
     // Parse optional body params
     let requestedLimit = MAX_ROWS;
     try {
@@ -140,6 +161,10 @@ serve(async (req) => {
           "id, content, conversation_id, user_id, platform, start_timestamp"
         )
         .or("context_generated.is.null,context_generated.eq.false")
+        // Skip questions and deflections — context enrichment would make them more
+        // findable (opposite of intent). Defense-in-depth: pre-pass already marks them.
+        .or("is_question.is.null,is_question.eq.false")
+        .or("deflection.is.null,deflection.lt.0.70")
         .order("created_at", { ascending: false }) // Newest first
         .limit(BATCH_SIZE);
 
@@ -265,11 +290,13 @@ serve(async (req) => {
       }
     }
 
-    // Count remaining
+    // Count remaining (excluding questions/deflections which are intentionally skipped)
     const { count: remaining } = await supabase
       .from("chat_turns")
       .select("id", { count: "exact", head: true })
-      .or("context_generated.is.null,context_generated.eq.false");
+      .or("context_generated.is.null,context_generated.eq.false")
+      .or("is_question.is.null,is_question.eq.false")
+      .or("deflection.is.null,deflection.lt.0.70");
 
     const result = {
       success: true,

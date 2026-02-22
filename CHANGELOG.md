@@ -144,7 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - messages: 1,341 rows @ 4096d (complete)
 - chat_turns: 3,384 rows @ 4096d (complete)
 - Search latency: ~48ms (sequential scan, no index needed at current scale)
-- Note: 4096d exceeds pgvector HNSW/IVFFlat limits (max 2000d)
+- Note: 4096d exceeds pgvector HNSW/IVFFlat limits (max 2000d for vector type, even on pgvector 0.8.0)
 
 **New Dependencies**:
 - HuggingFace API key required for embedding generation
