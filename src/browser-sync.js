@@ -24,6 +24,16 @@ import { fetchWithTimeout } from './utils/fetch.js';
 import { normalizePlatform } from './utils/normalize-platform.js';
 import { callEdgeFunction } from './api-client.js';
 
+// Matryoshka truncation: Qwen3-Embedding-8B at 1024d for HNSW indexing
+// (pgvector 0.8.0 caps HNSW at 2000d; 4096d forced sequential scan)
+const EMBEDDING_DIMS = 1024;
+function truncateAndNormalize(embedding, dims) {
+  const truncated = embedding.slice(0, dims);
+  const norm = Math.sqrt(truncated.reduce((sum, val) => sum + val * val, 0));
+  if (norm === 0) return truncated;
+  return truncated.map(val => val / norm);
+}
+
 // SYNC LOCK: Prevent race conditions when multiple syncs happen in parallel
 let syncInProgress = false;
 
@@ -127,12 +137,12 @@ function batchByTokens(texts, maxTokensPerBatch = 8000) {
 
 /**
  * Generate embeddings using Qwen3-Embedding-8B via HuggingFace Inference Providers
- * Produces 4096-dimensional embeddings (matches database schema)
+ * Produces 1024-dimensional embeddings (Matryoshka-truncated from 4096 for HNSW indexing)
  * Routes through HuggingFace's router to Scaleway backend (OpenAI-compatible format)
  *
  * @param {string[]} texts - Array of message content strings
  * @param {string} _apiKey - Unused (kept for backward compatibility)
- * @returns {Promise<number[][]>} Array of 4096-dimensional embeddings
+ * @returns {Promise<number[][]>} Array of 1024-dimensional embeddings
  * @throws {Error} If circuit breaker is open or API fails
  */
 async function generateEmbeddings(texts, _apiKey) {
@@ -220,7 +230,9 @@ async function generateEmbeddings(texts, _apiKey) {
         // Retry succeeded
         await recordEmbeddingSuccess();
         const retryData = await retryResponse.json();
-        const retryEmbeddings = retryData.data.map(item => item.embedding);
+        const retryEmbeddings = retryData.data.map(item =>
+          truncateAndNormalize(item.embedding, EMBEDDING_DIMS)
+        );
         allEmbeddings.push(...retryEmbeddings);
         continue;
       }
@@ -232,7 +244,9 @@ async function generateEmbeddings(texts, _apiKey) {
 
     // OpenAI-compatible format: { data: [{ embedding: [...] }, ...] }
     if (responseData.data && Array.isArray(responseData.data)) {
-      const embeddings = responseData.data.map(item => item.embedding);
+      const embeddings = responseData.data.map(item =>
+        truncateAndNormalize(item.embedding, EMBEDDING_DIMS)
+      );
       allEmbeddings.push(...embeddings);
     } else {
       throw new Error('Unexpected embedding response format from HuggingFace');

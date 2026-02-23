@@ -22,6 +22,15 @@ import {
 import { fetchWithTimeout } from './utils/fetch.js';
 import { generateHyDEDocument, hydeCB } from './hyde-search-generator.js';
 
+// Matryoshka truncation: Qwen3-Embedding-8B at 1024d for HNSW indexing
+const EMBEDDING_DIMS = 1024;
+function truncateAndNormalize(embedding, dims) {
+  const truncated = embedding.slice(0, dims);
+  const norm = Math.sqrt(truncated.reduce((sum, val) => sum + val * val, 0));
+  if (norm === 0) return truncated;
+  return truncated.map(val => val / norm);
+}
+
 // Initialize expander
 const queryExpander = new QueryExpander();
 
@@ -61,7 +70,7 @@ async function getConfig() {
  * Uses timeout and retry logic to prevent Chrome message channel timeout
  * @param {string} query - Search query text
  * @param {string} _apiKey - Unused (kept for backward compatibility)
- * @returns {Promise<number[]|null>} 4096-dimensional embedding vector, or null on failure
+ * @returns {Promise<number[]|null>} 1024-dimensional embedding vector (Matryoshka-truncated), or null on failure
  */
 async function generateQueryEmbedding(query, _apiKey) {
   // Check shared circuit breaker FIRST — skip instantly if open
@@ -135,17 +144,17 @@ async function generateQueryEmbedding(query, _apiKey) {
       // OpenAI-compatible format: { data: [{ embedding: [...4096 floats...] }] }
       if (responseData.data && Array.isArray(responseData.data) && responseData.data[0]?.embedding) {
         await recordEmbeddingSuccess();
-        return responseData.data[0].embedding;
+        return truncateAndNormalize(responseData.data[0].embedding, EMBEDDING_DIMS);
       }
 
       // Fallback: handle legacy format if present
       if (Array.isArray(responseData) && Array.isArray(responseData[0])) {
         await recordEmbeddingSuccess();
-        return responseData[0];
+        return truncateAndNormalize(responseData[0], EMBEDDING_DIMS);
       }
       if (Array.isArray(responseData)) {
         await recordEmbeddingSuccess();
-        return responseData;
+        return truncateAndNormalize(responseData, EMBEDDING_DIMS);
       }
 
       throw new Error('Unexpected embedding response format from Scaleway');

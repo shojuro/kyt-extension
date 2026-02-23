@@ -10,6 +10,22 @@ export class HuggingFaceClient {
     // HuggingFace Inference API for reranking (Scaleway router)
     private static readonly HF_ROUTER_URL = "https://router.huggingface.co/scaleway";
 
+    // Matryoshka truncation target: 1024d enables HNSW indexing (pgvector 0.8.0 caps at 2000d)
+    private static readonly TARGET_DIMS = 1024;
+
+    /**
+     * Matryoshka truncation + L2 normalization.
+     * Qwen3-Embedding-8B natively supports MRL — the first N dimensions of
+     * the full 4096-dim vector form a valid lower-dimensional embedding.
+     * Re-normalizing after truncation is required for cosine similarity.
+     */
+    private static truncateAndNormalize(embedding: number[], dims: number): number[] {
+        const truncated = embedding.slice(0, dims);
+        const norm = Math.sqrt(truncated.reduce((sum, val) => sum + val * val, 0));
+        if (norm === 0) return truncated;
+        return truncated.map(val => val / norm);
+    }
+
     constructor(apiKey: string) {
         this.apiKey = apiKey;
     }
@@ -47,7 +63,9 @@ export class HuggingFaceClient {
                 requestId
             );
 
-            return data.data.map((item: any) => item.embedding);
+            return data.data.map((item: any) =>
+                HuggingFaceClient.truncateAndNormalize(item.embedding, HuggingFaceClient.TARGET_DIMS)
+            );
         });
     }
 
@@ -56,7 +74,7 @@ export class HuggingFaceClient {
      *
      * @param texts - Array of texts to embed (max 50 recommended)
      * @param requestId - Request ID for tracing
-     * @returns Array of embedding arrays (4096 dimensions each)
+     * @returns Array of embedding arrays (1024 dimensions each, Matryoshka-truncated from 4096)
      */
     async generateEmbeddingsBatch(texts: string[], requestId?: string): Promise<number[][]> {
         if (texts.length === 0) return [];
@@ -94,7 +112,9 @@ export class HuggingFaceClient {
 
             // Scaleway returns embeddings sorted by index, but ensure order
             const sortedData = data.data.sort((a: any, b: any) => a.index - b.index);
-            return sortedData.map((item: any) => item.embedding);
+            return sortedData.map((item: any) =>
+                HuggingFaceClient.truncateAndNormalize(item.embedding, HuggingFaceClient.TARGET_DIMS)
+            );
         });
     }
 

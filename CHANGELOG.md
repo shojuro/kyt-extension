@@ -140,11 +140,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dry-run mode for safe testing
 - Environment variables: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `HUGGINGFACE_API_KEY`
 
-**Backfill Status** (2025-12-03):
-- messages: 1,341 rows @ 4096d (complete)
-- chat_turns: 3,384 rows @ 4096d (complete)
-- Search latency: ~48ms (sequential scan, no index needed at current scale)
-- Note: 4096d exceeds pgvector HNSW/IVFFlat limits (max 2000d for vector type, even on pgvector 0.8.0)
+**Backfill Status** (2025-12-03 → updated 2026-02-24):
+- Embedding dimensions reduced from 4096 to 1024 via Matryoshka truncation (Qwen3-Embedding-8B MRL)
+- HNSW indexes now active on chat_turns and entities (m=16, ef_construction=64)
+- All rows require re-embedding at 1024d after migration (backfill via `backfill_embeddings`)
+- Quality loss: ~3-5% MTEB — invisible behind 6-layer retrieval pipeline
 
 **New Dependencies**:
 - HuggingFace API key required for embedding generation

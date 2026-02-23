@@ -1,10 +1,9 @@
 -- Migration: match_messages_with_gravity default threshold fix
 -- Purpose: Update DEFAULT threshold from 0.7 to 0.5
 --
--- Note on indexes: HNSW/IVFFlat indexes cannot be created on vector(4096) columns
--- (pgvector 0.8.0 caps at 2000 dims for vector type, 4000 for halfvec).
--- Sequential scan remains the only option at 4096d. Statement timeouts in the
--- next migration (20260223100001) provide the safety net for slow seq scans.
+-- Note on indexes: This migration used vector(4096) which exceeded pgvector HNSW limits.
+-- Resolved in 20260224000000_reduce_embedding_dims_1024.sql: columns reduced to
+-- vector(1024) via Matryoshka truncation, HNSW indexes now active.
 --
 -- No stale entities index exists to drop (confirmed via pg_indexes query).
 
