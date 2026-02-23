@@ -105,9 +105,69 @@ serve(async (req) => {
             }
         }
 
+        // ============================================================
+        // Phase 2: Backfill entity embeddings (same run)
+        // Entity embedding content matches saveEntitiesWithMentions format:
+        // "entity_text (entity_type, relationship)"
+        // ============================================================
+        let entitiesProcessed = 0;
+        console.log("Checking entities for null embeddings...");
+
+        for (let i = 0; i < MAX_BATCHES; i++) {
+            const { data: entityRows, error: entityFetchError } = await supabase
+                .from("entities")
+                .select("id, entity_text, entity_type, relationship")
+                .is("embedding", null)
+                .order("id")
+                .limit(BATCH_SIZE);
+
+            if (entityFetchError) {
+                console.error("Entity fetch error:", entityFetchError);
+                break; // Don't fail the whole run for entity errors
+            }
+
+            if (!entityRows || entityRows.length === 0) {
+                console.log("No more entities to process.");
+                break;
+            }
+
+            console.log(`Processing entity batch ${i + 1}: ${entityRows.length} rows`);
+
+            const entityUpdates = [];
+            for (const entity of entityRows) {
+                if (!entity.entity_text) continue;
+                try {
+                    // Match the embedding content format from saveEntitiesWithMentions
+                    const contentToEmbed = `${entity.entity_text} (${entity.entity_type}, ${entity.relationship})`;
+                    const embedding = await hfClient.generateEmbeddings(contentToEmbed);
+                    entityUpdates.push({
+                        id: entity.id,
+                        embedding: embedding[0]
+                    });
+                } catch (e) {
+                    console.error(`Failed to generate embedding for entity ${entity.id}:`, e);
+                }
+            }
+
+            if (entityUpdates.length > 0) {
+                await Promise.all(entityUpdates.map(u =>
+                    supabase.from("entities").update({ embedding: u.embedding }).eq("id", u.id)
+                ));
+            }
+
+            entitiesProcessed += entityRows.length;
+
+            if (i < MAX_BATCHES - 1) {
+                await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
+            }
+        }
+
+        console.log(`Backfill complete: ${totalProcessedInRun} chat_turns, ${entitiesProcessed} entities`);
+
         return new Response(JSON.stringify({
             success: true,
             processed: totalProcessedInRun,
+            entities_processed: entitiesProcessed,
             lastId: lastProcessedId
         }), { headers: { "Content-Type": "application/json" } });
 
