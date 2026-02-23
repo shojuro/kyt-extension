@@ -982,6 +982,14 @@ export async function searchHybrid(query, options = {}) {
           weightedScore *= (1 + weights.semanticWeight);
         }
 
+        // Boost graph walk items (entity traversal / entity timeline guarantee).
+        // These carry graph_score (legacy path) or entity_boost (edge path) but
+        // lack bm25_score and distance, so they get 0% boost otherwise.
+        // Guard: only boost if item doesn't already have distance (avoid double-boost).
+        if ((item.entity_boost === true || item.graph_score !== undefined) && item.distance === undefined) {
+          weightedScore *= (1 + weights.semanticWeight);
+        }
+
         return {
           ...item,
           weighted_score: weightedScore,
@@ -1137,11 +1145,35 @@ async function rerankResults(query, results) {
         const jinaScore = scoreMap.get(idx);
         return {
           ...result,
-          cross_encoder_score: jinaScore !== undefined ? jinaScore : 0,
-          rerank_score: jinaScore !== undefined ? jinaScore : 0,
+          cross_encoder_score: jinaScore !== undefined ? jinaScore : null,
+          rerank_score: jinaScore !== undefined ? jinaScore : null,
           jinaReranked: jinaScore !== undefined
         };
       });
+
+      // Scale non-Jina items into the bottom of the Jina score range.
+      // Items beyond MAX_RERANK_DOCS weren't sent to Jina — give them a
+      // proportional score rather than 0 (which kills them in confidence filter).
+      const jinaScored = reranked.filter(r => r.jinaReranked);
+      const unscored = reranked.filter(r => !r.jinaReranked);
+      if (jinaScored.length > 0 && unscored.length > 0) {
+        const jinaMin = Math.min(...jinaScored.map(r => r.cross_encoder_score));
+        const wScores = unscored.map(r => r.weighted_score || 0);
+        const wMax = Math.max(...wScores, 0.001);
+        for (const r of unscored) {
+          // Scale to bottom of Jina range — inherently lower-ranked but not zero.
+          // Floor at 0.10 so entity-graph items have a real survival chance.
+          const scaled = ((r.weighted_score || 0) / wMax) * Math.max(jinaMin * 0.8, 0.10);
+          r.cross_encoder_score = scaled;
+          r.rerank_score = scaled;
+        }
+      } else if (unscored.length > 0) {
+        // No Jina scores at all — preserve weighted_score as-is
+        for (const r of unscored) {
+          r.cross_encoder_score = r.weighted_score || 0;
+          r.rerank_score = r.weighted_score || 0;
+        }
+      }
 
       reranked.sort((a, b) => b.cross_encoder_score - a.cross_encoder_score);
 

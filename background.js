@@ -1657,10 +1657,15 @@ async function getContextForInjection(userMessage, config) {
     // Score penalty (0.3x) rather than hard filter — meta-conversations CAN be found
     // if the user genuinely asks about KYT (e.g. "what did I say about KYT not working?").
     const KYT_META_PATTERNS = [
-      /\bK\.?Y\.?T\.?\b.*\b(extension|memory|capture|inject|sync|retrieval|context)\b/i,
-      /\b(extension|memory system|knowledge base)\b.*\b(working|broken|not working|paused|updated)\b/i,
-      /\bchrome\.?(runtime|storage|extension)\b/i,
-      /\bservice worker\b/i,
+      // KYT + extension/plugin + operational status (broken, error, debug) — genuinely meta
+      /\bK\.?Y\.?T\.?\b.*\b(extension|plugin|add-?on)\b.*\b(working|broken|not working|crash|error|bug|fix|debug)\b/i,
+      // System operational status — negative operational verbs only (removed "working"/"updated" — too ambiguous)
+      /\b(extension|memory system|knowledge base)\b.*\b(broken|not working|crash|paused|down|error)\b/i,
+      // Chrome internals + debugging context (architectural discussions should NOT be penalized)
+      /\bchrome\.?(runtime|storage|extension)\b.*\b(error|bug|crash|fail|broken|terminat|restart|debug)\b/i,
+      // Service worker + debugging context
+      /\bservice worker\b.*\b(terminat|restart|error|log|crash|fail)\b/i,
+      // Code constants (always meta)
       /\bKYT_(?:MESSAGE|CONTEXT|BRIDGE|DEBUG)\b/,
     ];
 
@@ -1830,9 +1835,9 @@ async function getContextForInjection(userMessage, config) {
           if (filterResult.suggestions && contextConfig.debugMode) {
             console.log(`💡 Suggestions:`, filterResult.suggestions);
           }
-          // Low-confidence tier: if highest score >= 0.15, keep top 2 items with caveat tag
+          // Low-confidence tier: if highest score >= 0.10, keep top 2 items with caveat tag
           // This surfaces partial matches with appropriate framing rather than total silence
-          if (filterResult.highestScore >= 0.15) {
+          if (filterResult.highestScore >= 0.10) {
             console.log(`📋 Low-confidence tier: keeping top 2 items (highest: ${filterResult.highestScore.toFixed(3)})`);
             filteredItems = filteredItems
               .sort((a, b) => {
