@@ -90,6 +90,31 @@ function cosineSimilarity(embedding1, embedding2) {
  * @param {Object} item - Candidate item with content field
  * @returns {Set<string>} Set of entity identifiers
  */
+// Words that frequently appear capitalized at sentence boundaries but are not entities.
+// Filters false positives like Recency boost: "the", "based", "if", etc.
+const ENTITY_STOP_WORDS = new Set([
+  // Articles & determiners
+  'the', 'a', 'an', 'this', 'that', 'these', 'those', 'some', 'any', 'each', 'every',
+  'all', 'both', 'few', 'many', 'much', 'most', 'other', 'another', 'such', 'no',
+  // Pronouns
+  'i', 'me', 'my', 'we', 'us', 'our', 'you', 'your', 'he', 'him', 'his', 'she', 'her',
+  'it', 'its', 'they', 'them', 'their', 'who', 'whom', 'which', 'what', 'where', 'when',
+  'how', 'why', 'one', 'ones',
+  // Conjunctions & prepositions
+  'and', 'or', 'but', 'nor', 'for', 'yet', 'so', 'if', 'then', 'than', 'as', 'of', 'in',
+  'on', 'at', 'to', 'by', 'with', 'from', 'into', 'about', 'after', 'before', 'between',
+  'through', 'during', 'without', 'within', 'along', 'against', 'under', 'over', 'above',
+  // Common sentence-starters & transition words
+  'however', 'therefore', 'furthermore', 'moreover', 'additionally', 'also', 'although',
+  'because', 'since', 'while', 'whereas', 'meanwhile', 'instead', 'otherwise', 'thus',
+  'hence', 'still', 'rather', 'indeed', 'perhaps', 'maybe', 'certainly', 'definitely',
+  'basically', 'essentially', 'generally', 'typically', 'usually', 'often', 'sometimes',
+  'actually', 'really', 'simply', 'just', 'only', 'even', 'already', 'here', 'there',
+  // Discourse markers frequently capitalized
+  'based', 'given', 'note', 'please', 'sure', 'yes', 'no', 'well', 'now', 'first',
+  'second', 'third', 'next', 'finally', 'overall', 'currently', 'recently', 'today',
+]);
+
 export function extractEntities(item) {
   const entities = new Set();
 
@@ -113,8 +138,10 @@ export function extractEntities(item) {
       .toLowerCase()
       .trim();
 
-    if (normalized.length > 0) {
-      entities.add(normalized);
+    // Filter out stop words that get capitalized at sentence boundaries
+    const words = normalized.split(/\s+/).filter(w => !ENTITY_STOP_WORDS.has(w));
+    if (words.length > 0) {
+      entities.add(words.join(' '));
     }
   });
 

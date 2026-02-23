@@ -1716,7 +1716,7 @@ async function getContextForInjection(userMessage, config) {
         console.log(`🔧 Meta-conversation penalty: score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
       }
 
-      // Echo penalty (0.4x) — assistant messages that echo stored data
+      // Echo penalty (0.7x) — assistant messages that echo stored data
       // For chat_turns (role='user'), extract assistant text blocks first
       let echoContent = content;
       if (item.role !== 'assistant' && content) {
@@ -1730,7 +1730,7 @@ async function getContextForInjection(userMessage, config) {
       }
       if (scoreKey && item[scoreKey] != null && ECHO_PATTERNS.some(p => p.test(echoContent))) {
         const before = item[scoreKey];
-        item[scoreKey] *= 0.4;
+        item[scoreKey] *= 0.7;
         console.log(`🔄 Echo penalty: assistant item echoing stored data, score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
       }
     }
@@ -2167,13 +2167,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             debugMode: result.kytDebugMode || false
           };
 
-          // 20s overall timeout — leaves 5s margin before the 25s MAIN world timeout
-          // in inject.js / content_test.js. Rejects on timeout so the catch below handles it.
+          // 25s overall timeout — Jina cold-start can take ~7.5s (5s timeout + 2.5s retry),
+          // so 20s was too tight. 25s leaves headroom while staying under the 30s MAIN world timeout.
           const contextData = await Promise.race([
             getContextForInjection(message.userMessage, config),
             new Promise((_, reject) => setTimeout(() => {
-              reject(new Error('getContextForInjection timed out after 20000ms'));
-            }, 20000))
+              reject(new Error('getContextForInjection timed out after 25000ms'));
+            }, 25000))
           ]);
 
           const latencyMs = Math.round(performance.now() - injectionStart);
