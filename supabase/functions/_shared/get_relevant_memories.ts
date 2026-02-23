@@ -32,6 +32,29 @@ export interface SearchOptions {
     hydeWeight?: number;  // Default: 0.6
 }
 
+/**
+ * Filter self-referential results — retrieved content that echoes the query
+ * provides no new information and causes circular retrieval.
+ * Targets short content (<80 chars) with >70% word overlap with the query.
+ */
+function filterQueryEchoes(query: string, candidates: Candidate[]): Candidate[] {
+    const queryNorm = query.toLowerCase().replace(/[^\w\s]/g, '').trim();
+    const queryWords = new Set(queryNorm.split(/\s+/).filter(w => w.length > 2));
+    if (queryWords.size === 0) return candidates;
+
+    return candidates.filter(c => {
+        const contentNorm = (c.content || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
+        // Only filter very short content that's likely just a user prompt
+        if (contentNorm.length < 80) {
+            const contentWords = new Set(contentNorm.split(/\s+/).filter(w => w.length > 2));
+            const overlap = [...queryWords].filter(w => contentWords.has(w)).length;
+            const overlapRatio = overlap / Math.max(queryWords.size, 1);
+            if (overlapRatio > 0.7) return false; // >70% word overlap with query = echo
+        }
+        return true;
+    });
+}
+
 /** Simple BM25-style keyword boost (max 30% of score) */
 function applyBm25Boost(query: string, items: CandidateWithScore[]): CandidateWithScore[] {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -446,7 +469,8 @@ export async function getRelevantMemories(
             }
         }
 
-        const shortCircuitResults = await rerankAndFilter(query, candidates, hfClient, requestId, topK);
+        const scFiltered = filterQueryEchoes(query, candidates);
+        const shortCircuitResults = await rerankAndFilter(query, scFiltered, hfClient, requestId, topK);
         await enrichWithEntities(supabase, shortCircuitResults, requestId);
         return shortCircuitResults;
     }
@@ -605,9 +629,18 @@ export async function getRelevantMemories(
     }
 
     // ========================================================================
+    // STEP 5c: Filter self-referential query echoes
+    // Short content that just repeats the search query provides no new info
+    // ========================================================================
+    const echoFiltered = filterQueryEchoes(query, candidates);
+    if (echoFiltered.length < candidates.length) {
+        Logger.info(`Query echo filter: removed ${candidates.length - echoFiltered.length} echo candidates`, { requestId });
+    }
+
+    // ========================================================================
     // STEP 6: Rerank, BM25 Boost, Confidence Filter
     // ========================================================================
-    const results = await rerankAndFilter(query, candidates, hfClient, requestId, topK);
+    const results = await rerankAndFilter(query, echoFiltered, hfClient, requestId, topK);
 
     // ========================================================================
     // STEP 7: Enrich results with entity canonical names

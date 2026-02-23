@@ -66,13 +66,17 @@ function stripInjectionPrefix(content) {
 // ===== QUESTION DETECTION =====
 // Heuristic: identifies user messages that are questions (P1 fix).
 // Questions are tagged is_question=true and excluded from retrieval.
-const INTERROGATIVE_RE = /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember)\b/i;
+// Expanded: imperative request patterns (list/show/find/etc.) + short-content heuristic
+// Keep in sync with save_chat_turn_batch/index.ts INTERROGATIVE_RE
+const INTERROGATIVE_RE = /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember|list|name|give|show|find|get|provide|suggest|recommend|describe|explain|identify|compare|summarize|rank|top (?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))\b/i;
 
 function detectIsQuestion(content, role) {
   if (role !== 'user') return false;
   const trimmed = (content || '').trim();
   if (trimmed.endsWith('?')) return true;
   if (INTERROGATIVE_RE.test(trimmed)) return true;
+  // Short user prompts without assertions are likely requests/questions
+  if (trimmed.length < 60 && !trimmed.includes('.') && !trimmed.includes('!')) return true;
   return false;
 }
 
@@ -1541,6 +1545,30 @@ async function getContextForInjection(userMessage, config) {
         item[scoreKey] = item[scoreKey] * 0.85 + item[scoreKey] * recencyMultiplier * 0.15;
       }
       console.log(`🕐 Recency multiplier applied to ${contextItems.length} results (half-life: ${HALF_LIFE_DAYS}d)`);
+    }
+
+    // QUERY ECHO FILTER: Remove results that just repeat the search query
+    // Short content (<80 chars) with >70% word overlap = user's own question echoed back
+    {
+      const qWords = new Set(userMessage.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(w => w.length > 2));
+      if (qWords.size > 0) {
+        const beforeCount = contextItems.length;
+        contextItems = contextItems.filter(item => {
+          const content = (item.content || '').toLowerCase().replace(/[^\w\s]/g, '');
+          if (content.length < 80) {
+            const cWords = new Set(content.split(/\s+/).filter(w => w.length > 2));
+            const overlap = [...qWords].filter(w => cWords.has(w)).length;
+            if (overlap / Math.max(qWords.size, 1) > 0.7) {
+              console.log(`🔇 Query echo filter: dropped "${(item.content || '').substring(0, 60)}..." (${overlap}/${qWords.size} word overlap)`);
+              return false;
+            }
+          }
+          return true;
+        });
+        if (contextItems.length < beforeCount) {
+          console.log(`🔇 Query echo filter: removed ${beforeCount - contextItems.length} echo(es)`);
+        }
+      }
     }
 
     // RECURSION GUARD: Filter out items that contain K.Y.T. protocol headers or artifacts

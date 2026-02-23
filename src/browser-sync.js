@@ -599,20 +599,37 @@ export async function syncMessages(messagesToSync) {
 
       console.log(`✅ HyDE preprocessing complete for ${chunksWithHyDE.length} chunks`);
 
-      // Generate embeddings for turn chunks (graceful degradation: null if unavailable)
-      const turnTexts = chunksWithHyDE.map(chunk => chunk.content);
+      // Skip embedding for content-poor chunks (short user-only prompts)
+      // These are preserved for history but won't pollute vector search
+      const embeddableChunks = [];
+      const skipEmbeddingIndexes = new Set();
+      for (let i = 0; i < chunksWithHyDE.length; i++) {
+        const content = (chunksWithHyDE[i].content || '').trim();
+        if (content.length < 100 && !content.includes('Assistant:')) {
+          console.log(`⏭️ Skipping embedding for short user-only chunk: "${content.substring(0, 60)}..."`);
+          skipEmbeddingIndexes.add(i);
+        } else {
+          embeddableChunks.push(chunksWithHyDE[i]);
+        }
+      }
+
+      // Generate embeddings only for content-rich chunks (graceful degradation: null if unavailable)
+      const turnTexts = embeddableChunks.map(chunk => chunk.content);
       let turnEmbeddings;
       try {
-        turnEmbeddings = await generateEmbeddings(turnTexts, config.openaiKey);
+        turnEmbeddings = turnTexts.length > 0
+          ? await generateEmbeddings(turnTexts, config.openaiKey)
+          : [];
       } catch (turnEmbedError) {
         console.warn(`⚠️ Turn embeddings unavailable, syncing without: ${turnEmbedError.message}`);
         turnEmbeddings = new Array(turnTexts.length).fill(null);
       }
 
-      // Prepare turn chunks with embeddings, HyDE questions, and is_question flag
+      // Reassemble: embeddable chunks get their embeddings, skipped chunks get null
+      let embIdx = 0;
       const chunksWithEmbeddings = chunksWithHyDE.map((chunk, idx) => ({
         ...chunk,
-        embedding: turnEmbeddings[idx],
+        embedding: skipEmbeddingIndexes.has(idx) ? null : (turnEmbeddings[embIdx++] || null),
         is_question: chunk.is_question || false,
         deflection: chunk.deflection || null,
         entities_extracted: false,

@@ -69,11 +69,25 @@ serve(async (req) => {
 
         // Question detection heuristic — duplicated from background.js INTERROGATIVE_RE
         // (edge functions can't import from extension code)
-        const INTERROGATIVE_RE = /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember)\b/i;
+        // Expanded: imperative request patterns (list/show/find/etc.) + short-content heuristic
+        const INTERROGATIVE_RE = /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember|list|name|give|show|find|get|provide|suggest|recommend|describe|explain|identify|compare|summarize|rank|top (?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))\b/i;
         function detectIsQuestion(turn: any): boolean {
             if (turn.role !== 'user') return false;
             const text = (turn.content || '').trim();
-            return text.endsWith('?') || INTERROGATIVE_RE.test(text);
+            if (text.endsWith('?')) return true;
+            if (INTERROGATIVE_RE.test(text)) return true;
+            // Short user prompts without assertions are likely requests/questions
+            if (text.length < 60 && !text.includes('.') && !text.includes('!')) return true;
+            return false;
+        }
+
+        // Deflection detection — assistant responses that dodge/deflect rather than answer
+        const DEFLECTION_RE = /(?:I don'?t (?:have|think|recall|remember|see|know)|I'?m not (?:sure|aware|certain)|I can'?t (?:find|recall|remember|see)|no (?:specific|particular|clear).{0,30}(?:record|memory|data|information)|not (?:aware|certain) (?:of|about|whether))/i;
+        function detectDeflection(turn: any): number | null {
+            if (turn.role !== 'assistant') return null;
+            const text = (turn.content || '').trim();
+            if (DEFLECTION_RE.test(text)) return 0.80;
+            return null;
         }
 
         // FAST PATH: When skipping AI processing, do a single batch upsert
@@ -98,6 +112,7 @@ serve(async (req) => {
                     access_count: 0,
                     is_injection: turn.is_injection || false,
                     is_question: detectIsQuestion(turn),
+                    deflection: detectDeflection(turn),
                 };
             });
 
@@ -164,6 +179,7 @@ serve(async (req) => {
                             access_count: 0,
                             is_injection: turn.is_injection || false,
                             is_question: true,
+                            deflection: null, // Questions can't be deflections
                             context_generated: true, // Skip backfill too
                         }, {
                             onConflict: 'user_id,conversation_id,platform,start_timestamp',
@@ -231,6 +247,7 @@ serve(async (req) => {
                     access_count: 0,
                     is_injection: turn.is_injection || false,
                     is_question: false, // Already verified above (questions short-circuit)
+                    deflection: detectDeflection(turn),
                 };
 
                 // Add contextual retrieval fields if context was generated
