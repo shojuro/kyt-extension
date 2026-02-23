@@ -1550,13 +1550,24 @@ async function getContextForInjection(userMessage, config) {
     // QUERY ECHO FILTER: Remove results that just repeat the search query
     // Short content (<80 chars) with >70% word overlap = user's own question echoed back
     {
-      const qWords = new Set(userMessage.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(w => w.length > 2));
+      const ECHO_STOP = new Set([
+        'the','and','for','with','from','that','this','have','has','what','when',
+        'where','which','who','how','why','are','was','were','been','being','can',
+        'could','should','would','will','not','but','about','into','than','then',
+        'them','they','your','you','our','its','his','her','their','does','did',
+        'top','best','most','need','needs','want','use','like','just','also',
+        'some','any','all','each','every','tell','know','think','make','take',
+      ]);
+      const qWords = new Set(
+        userMessage.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/)
+          .filter(w => w.length > 2 && !ECHO_STOP.has(w))
+      );
       if (qWords.size > 0) {
         const beforeCount = contextItems.length;
         contextItems = contextItems.filter(item => {
           const content = (item.content || '').toLowerCase().replace(/[^\w\s]/g, '');
           if (content.length < 80) {
-            const cWords = new Set(content.split(/\s+/).filter(w => w.length > 2));
+            const cWords = new Set(content.split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w)));
             const overlap = [...qWords].filter(w => cWords.has(w)).length;
             if (overlap / Math.max(qWords.size, 1) > 0.7) {
               console.log(`🔇 Query echo filter: dropped "${(item.content || '').substring(0, 60)}..." (${overlap}/${qWords.size} word overlap)`);
@@ -1681,14 +1692,25 @@ async function getContextForInjection(userMessage, config) {
       /\b(?:retrieved|stored) (?:items?|entries?) (?:are|is|were) (?:just|only)\b/i,
     ];
 
+    // Skip meta-penalty when the user's query is genuinely about KYT/extension
+    const KYT_QUERY_PATTERNS = [
+      /\bK\.?Y\.?T\.?\b/i,
+      /\b(extension|chrome extension)\b.*\b(model|support|need|use|feature|work)/i,
+      /\bservice worker\b/i,
+    ];
+    const queryIsAboutKYT = KYT_QUERY_PATTERNS.some(p => p.test(userMessage));
+    if (queryIsAboutKYT) {
+      console.log('🔧 Meta-conversation penalty SKIPPED: query is about KYT/extension');
+    }
+
     for (const item of contextItems) {
       const content = item.content || '';
       const scoreKey = item.cross_encoder_score != null ? 'cross_encoder_score'
                      : item.weighted_score != null ? 'weighted_score'
                      : item.rrf_score != null ? 'rrf_score' : null;
 
-      // Meta-conversation penalty (0.3x)
-      if (scoreKey && item[scoreKey] != null && KYT_META_PATTERNS.some(p => p.test(content))) {
+      // Meta-conversation penalty (0.3x) — skipped when query is about KYT
+      if (!queryIsAboutKYT && scoreKey && item[scoreKey] != null && KYT_META_PATTERNS.some(p => p.test(content))) {
         const before = item[scoreKey];
         item[scoreKey] *= 0.3;
         console.log(`🔧 Meta-conversation penalty: score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);

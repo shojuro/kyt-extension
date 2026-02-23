@@ -11,7 +11,7 @@
 import { OpenAIClient } from "./openai-client.ts";
 import { Logger } from "./utils.ts";
 
-const HYDE_SYSTEM_PROMPT = `You are generating a hypothetical conversation that might exist in a user's chat history.
+const HYDE_SYSTEM_PROMPT = `You are generating a hypothetical conversation that might exist in a user's ChatGPT or Claude chat history, captured by K.Y.T. (Know Your Thoughts), a personal conversation memory extension.
 
 Given the user's search query, generate a realistic conversation snippet (2-3 turns) that would contain the answer they're looking for.
 
@@ -26,7 +26,8 @@ Rules:
 2. Include specific details that would help retrieval
 3. Match how real people talk about topics in chat
 4. 100-200 words total
-5. Do NOT include any preamble - start directly with "User:"`;
+5. Do NOT include any preamble - start directly with "User:"
+6. Stay grounded in what a real conversation would contain — do not invent product names, model numbers, or technical specs that weren't in the query`;
 
 /**
  * Generate a hypothetical document for a query
@@ -72,6 +73,26 @@ Generate a hypothetical conversation that would answer this query:`;
                 preview: hydeDoc?.substring(0, 100)
             });
             return null;
+        }
+
+        // Drift gate: discard if HyDE lost all original query terms
+        const DRIFT_STOP = new Set(['the','a','an','is','are','was','were','in','on','at','to','for',
+            'of','and','or','but','with','about','what','how','why','when','where','which','who',
+            'my','your','this','that','do','does','did','can','could','should','would','will',
+            'not','just','also','some','any','all','top','best','most','need','needs','want','tell']);
+        const queryTerms = query.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/)
+            .filter((w: string) => w.length > 2 && !DRIFT_STOP.has(w));
+        if (queryTerms.length > 0) {
+            const hydeLower = hydeDoc.toLowerCase();
+            const hasAnyTerm = queryTerms.some((t: string) => hydeLower.includes(t));
+            if (!hasAnyTerm) {
+                Logger.warn("HyDE drift gate: no query terms found in output, discarding", {
+                    requestId,
+                    queryTerms,
+                    preview: hydeDoc.substring(0, 100)
+                });
+                return null;
+            }
         }
 
         Logger.info("HyDE document generated", {

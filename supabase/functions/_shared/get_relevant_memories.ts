@@ -38,15 +38,23 @@ export interface SearchOptions {
  * Targets short content (<80 chars) with >70% word overlap with the query.
  */
 function filterQueryEchoes(query: string, candidates: Candidate[]): Candidate[] {
+    const ECHO_STOP = new Set([
+        'the','and','for','with','from','that','this','have','has','what','when',
+        'where','which','who','how','why','are','was','were','been','being','can',
+        'could','should','would','will','not','but','about','into','than','then',
+        'them','they','your','you','our','its','his','her','their','does','did',
+        'top','best','most','need','needs','want','use','like','just','also',
+        'some','any','all','each','every','tell','know','think','make','take',
+    ]);
     const queryNorm = query.toLowerCase().replace(/[^\w\s]/g, '').trim();
-    const queryWords = new Set(queryNorm.split(/\s+/).filter(w => w.length > 2));
+    const queryWords = new Set(queryNorm.split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w)));
     if (queryWords.size === 0) return candidates;
 
     return candidates.filter(c => {
         const contentNorm = (c.content || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
         // Only filter very short content that's likely just a user prompt
         if (contentNorm.length < 80) {
-            const contentWords = new Set(contentNorm.split(/\s+/).filter(w => w.length > 2));
+            const contentWords = new Set(contentNorm.split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w)));
             const overlap = [...queryWords].filter(w => contentWords.has(w)).length;
             const overlapRatio = overlap / Math.max(queryWords.size, 1);
             if (overlapRatio > 0.7) return false; // >70% word overlap with query = echo
