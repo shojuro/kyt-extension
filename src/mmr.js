@@ -113,6 +113,21 @@ const ENTITY_STOP_WORDS = new Set([
   // Discourse markers frequently capitalized
   'based', 'given', 'note', 'please', 'sure', 'yes', 'no', 'well', 'now', 'first',
   'second', 'third', 'next', 'finally', 'overall', 'currently', 'recently', 'today',
+  // Common verbs that get capitalized at sentence boundaries
+  'want', 'try', 'let', 'run', 'add', 'know', 'pick', 'have', 'has', 'had', 'need',
+  'like', 'make', 'take', 'look', 'use', 'say', 'said', 'got', 'get', 'set', 'put',
+  'keep', 'come', 'go', 'went', 'think', 'thought', 'see', 'saw', 'seem', 'call',
+  'show', 'tell', 'give', 'find', 'start', 'end', 'move', 'turn', 'read', 'done',
+  // Numbers (regex catches capitalized "Two", "Three" etc.)
+  'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  // Common nouns/adjectives that are never proper nouns
+  'item', 'none', 'top', 'right', 'thing', 'way', 'part', 'something', 'nothing',
+  'everything', 'anything', 'enough', 'several', 'being', 'quite', 'pretty',
+  'worth', 'real', 'new', 'old', 'good', 'bad', 'same', 'different', 'last',
+  // Contraction fragments (e.g. "Don't" → regex extracts "Don" → lowercased "don")
+  'don', 'isn', 'didn', 'wasn', 'hasn', 'aren', 'won', 'couldn', 'wouldn', 'shouldn',
+  // Informal discourse
+  'yeah', 'okay', 'hey', 'thanks', 'sorry',
 ]);
 
 export function extractEntities(item) {

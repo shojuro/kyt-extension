@@ -1680,11 +1680,15 @@ async function getContextForInjection(userMessage, config) {
 
     // BARE QUESTION FILTER: drop items that are just user questions without an answer.
     // Semantic RPCs don't filter is_question; catch bare questions client-side.
+    // NOTE: Do NOT use detectIsQuestion here — its short-content heuristic (<60 chars)
+    // false-positives on contextual content strings like "LLM platform support starting
+    // with ChatGPT" which are short statements, not questions. Only drop items that
+    // explicitly end with ? or start with an interrogative/imperative word.
     contextItems = contextItems.filter(item => {
       const content = (item.content || '').trim();
       // Only filter short items without assistant response blocks
       if (content.length < 120 && !/\bAssistant:/i.test(content)) {
-        if (detectIsQuestion(content, 'user')) {
+        if (content.endsWith('?') || INTERROGATIVE_RE.test(content)) {
           console.log(`🔍 Bare question filter: dropped "${content.substring(0, 60)}..." (ID: ${item.id || item.message_id || 'unknown'})`);
           return false;
         }
