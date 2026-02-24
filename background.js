@@ -619,24 +619,28 @@ function detectPreferenceQuery(query) {
     // Pattern 1: "what is my favorite car"
     /(?:what)\s+(?:is|are|was|were)\s+my\s+(?:favorite|favourite|preferred|go-to)\s+(.+?)(?:\?|$)/,
     // Pattern 6: "what kind of food do I like" (must precede Pattern 2 — more specific)
-    /what\s+(?:kind|type|sort)\s+of\s+(.+?)\s+(?:do|did|does|would)\s+i\s+(?:like|prefer|love|enjoy)(?:\?|$)/,
-    // Pattern 2: "what car do I like"
-    /what\s+(.+?)\s+(?:do|did|does|would)\s+i\s+(?:like|prefer|love|enjoy|use)(?:\?|$)/,
+    // End anchor: \b not (?:\?|$) — allows "...like and why?" continuations
+    /what\s+(?:kind|type|sort)\s+of\s+(.+?)\s+(?:do|did|does|would)\s+i\s+(?:like|prefer|love|enjoy)\b/,
+    // Pattern 2: "what car do I like" / "what cars do I love and why"
+    // End anchor: \b not (?:\?|$) — allows "...love and what do they say..." continuations
+    /what\s+(.+?)\s+(?:do|did|does|would)\s+i\s+(?:like|prefer|love|enjoy|use)\b/,
     // Pattern 3: "tell me my favorite car" / "remind me about my preferred food"
     /(?:tell|remind)\s+me\s+(?:about\s+)?my\s+(?:favorite|favourite|preferred|go-to)\s+(.+?)(?:\?|$)/,
     // Pattern 4: "do I like Python" (value-based)
     /(?:do|did|does)\s+i\s+(?:like|prefer|love|enjoy)\s+(.+?)(?:\?|$)/,
-    // Pattern 5: "which car is my favorite"
-    /which\s+(.+?)\s+(?:is|are|was|were)\s+my\s+(?:favorite|favourite|preferred|go-to)(?:\?|$)/,
+    // Pattern 5: "which car is my favorite" / "which car is my favorite and why"
+    // End anchor: \b not (?:\?|$) — allows "...favorite and why?" continuations
+    /which\s+(.+?)\s+(?:is|are|was|were)\s+my\s+(?:favorite|favourite|preferred|go-to)\b/,
   ];
 
   for (const pattern of patterns) {
     const match = q.match(pattern);
     if (match && match[1]) {
       // Clean up the extracted category: strip punctuation + trailing filler phrases
+      // (?:^|\s+) — handles both "cars and why" (mid-string) and "and what do they say" (start)
       const category = match[1]
         .replace(/[?.!,]/g, '')
-        .replace(/\s+(?:and|or)\s+(?:why|how|when|where|who|what|which|how much|how many).*$/i, '')
+        .replace(/(?:^|\s+)(?:and|or)\s+(?:why|how|when|where|who|what|which|how much|how many).*$/i, '')
         .trim();
       if (category.length > 0 && category.length < 50) {
         return category;
