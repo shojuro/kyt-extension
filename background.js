@@ -1279,7 +1279,7 @@ async function getContextForInjection(userMessage, config) {
     const contextConfig = {
       threshold: config?.threshold || 0.5,
       maxContextItems: config?.maxContextItems || 3,
-      candidatePoolSize: config?.candidatePoolSize || 15, // Retrieve more candidates for recency resolution + MMR to winnow
+      candidatePoolSize: config?.candidatePoolSize || 25, // Retrieve more candidates — headroom for echo/deflection filters before MMR
       minDistance: config?.minDistance || 0.0,
       excludeRecentSeconds: config?.excludeRecentSeconds || 120, // CONTEXT POLLUTION FIX: Exclude last 2 minutes
       debugMode: config?.debugMode || false,
