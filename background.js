@@ -633,9 +633,10 @@ function detectPreferenceQuery(query) {
   for (const pattern of patterns) {
     const match = q.match(pattern);
     if (match && match[1]) {
-      // Clean up the extracted category
+      // Clean up the extracted category: strip punctuation + trailing filler phrases
       const category = match[1]
         .replace(/[?.!,]/g, '')
+        .replace(/\s+(?:and|or)\s+(?:why|how|when|where|who|what|which|how much|how many).*$/i, '')
         .trim();
       if (category.length > 0 && category.length < 50) {
         return category;
@@ -1289,48 +1290,58 @@ async function getContextForInjection(userMessage, config) {
     // ========================================================================
     // STEP 0: Preference Query Router (0ms regex, before any embedding)
     // Short-circuits the entire vector pipeline for "what is my favorite X?"
+    // If query has trailing qualifiers ("and why", "and how"), preference items
+    // are saved but vector pipeline also runs to provide supporting context.
     // Path-independent — works whether queries go edge or legacy.
     // ========================================================================
+    let prefItems = null;  // populated if preference router finds results
+    const queryHasQualifier = /\b(?:and|or)\s+(?:why|how|when|where|who|what)\b/i.test(userMessage);
     try {
       const prefCategory = detectPreferenceQuery(userMessage);
       if (prefCategory) {
-        console.log(`🎯 Preference router activated: category="${prefCategory}"`);
+        console.log(`🎯 Preference router activated: category="${prefCategory}"${queryHasQualifier ? ' (has qualifier — will also run vector pipeline)' : ''}`);
         const prefRows = await lookupPreferencesViaREST(prefCategory, apiConfig);
         if (prefRows.length > 0) {
-          const prefItems = synthesizePreferenceItems(prefRows);
-          console.log(`✅ Preference router: ${prefItems.length} preferences found — short-circuiting vector pipeline`);
+          prefItems = synthesizePreferenceItems(prefRows);
 
-          const elapsedTime = performance.now() - startTime;
+          // Short-circuit only if no trailing qualifier — pure "what is my favorite X?"
+          if (!queryHasQualifier) {
+            console.log(`✅ Preference router: ${prefItems.length} preferences found — short-circuiting vector pipeline`);
 
-          const retrievalResult = {
-            state: 'FOUND',
-            items: prefItems.map(item => ({
-              id: item.id,
-              content: item.content,
-              platform: item.platform,
-              timestamp: item.timestamp,
-              similarity: item.similarity,
-              source_type: item.source_type,
-            })),
-            latencyMs: elapsedTime,
-            queryType: 'PREFERENCE',
-            queryOriginal: userMessage,
-            queryTransformed: null,
-          };
+            const elapsedTime = performance.now() - startTime;
 
-          const formattedContext = buildMemoryInjection(retrievalResult, {
-            debugMode: contextConfig.debugMode || false,
-          });
+            const retrievalResult = {
+              state: 'FOUND',
+              items: prefItems.map(item => ({
+                id: item.id,
+                content: item.content,
+                platform: item.platform,
+                timestamp: item.timestamp,
+                similarity: item.similarity,
+                source_type: item.source_type,
+              })),
+              latencyMs: elapsedTime,
+              queryType: 'PREFERENCE',
+              queryOriginal: userMessage,
+              queryTransformed: null,
+            };
 
-          return {
-            success: true,
-            items: prefItems,
-            formattedContext,
-            elapsedMs: elapsedTime,
-            transformation: { transformed: false },
-          };
+            const formattedContext = buildMemoryInjection(retrievalResult, {
+              debugMode: contextConfig.debugMode || false,
+            });
+
+            return {
+              success: true,
+              items: prefItems,
+              formattedContext,
+              elapsedMs: elapsedTime,
+              transformation: { transformed: false },
+            };
+          }
+          console.log(`ℹ️ Preference router: ${prefItems.length} preferences found — continuing to vector pipeline for "${userMessage.match(/\b(?:and|or)\s+(?:why|how|when|where|who|what)\b.*/i)?.[0] || 'qualifier'}" context`);
+        } else {
+          console.log('ℹ️ Preference router: no preferences found, falling through to vector pipeline');
         }
-        console.log('ℹ️ Preference router: no preferences found, falling through to vector pipeline');
       }
     } catch (prefError) {
       console.warn('⚠️ Preference router failed (non-fatal), falling through:', prefError.message);
@@ -1919,6 +1930,29 @@ async function getContextForInjection(userMessage, config) {
         // Graceful degradation: Keep keyword-boosted results if filter fails
         // filteredItems unchanged
       }
+    }
+
+    // === PREFERENCE + VECTOR MERGE ===
+    // If preference router found results but didn't short-circuit (qualifier query),
+    // prepend preference items so the direct answer leads, with vector context following.
+    if (prefItems && prefItems.length > 0 && queryHasQualifier) {
+      const prefIds = new Set(prefItems.map(p => p.id));
+      // Deduplicate: remove any vector results that share an ID with preference items
+      filteredItems = filteredItems.filter(item => !prefIds.has(item.message_id || item.id));
+      // Prepend preference items (formatted to match filteredItems shape)
+      const prefAsVector = prefItems.map(p => ({
+        id: p.id,
+        content: p.content,
+        platform: p.platform,
+        timestamp: p.timestamp,
+        msg_timestamp: p.timestamp,
+        cross_encoder_score: p.similarity,
+        source: p.source_type,
+        source_type: p.source_type,
+        preference_match: true,
+      }));
+      filteredItems = [...prefAsVector, ...filteredItems];
+      console.log(`🔀 Preference+Vector merge: ${prefItems.length} pref + ${filteredItems.length - prefItems.length} vector = ${filteredItems.length} total`);
     }
 
     // === MEMORY INJECTION PROTOCOL v1.0 ===
