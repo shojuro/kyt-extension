@@ -95,6 +95,14 @@ const DEFLECTION_PATTERNS = [
   /don'?t have (?:your|the|a) (?:\w+ )*(?:answer|list|response|details?)\b/i,
   /(?:not|without) (?:the|an?) (?:actual|full|complete|specific) (?:answer|list|response|details?|data)/i,
   /(?:gaps?|blanks?) with (?:guesses?|inferred|generated|fabricated)/i,
+
+  // Meta-retrieval failure: system/tool reported it came up empty
+  // "didn't surface" / "didn't return" / "didn't find" / "didn't include" / "didn't pull up"
+  /(?:didn'?t|did not) (?:surface|return|find|include|pull up|produce|retrieve)\b/i,
+  // "isn't in what K.Y.T. returned" / "wasn't in the stored data" / "not in what was retrieved"
+  /(?:isn'?t|is not|wasn'?t|was not) in (?:what )?.{0,40}?(?:returned|surfaced|retrieved|found|stored)\b/i,
+  // "K.Y.T. didn't surface that" / "the extension didn't capture" — subject-agnostic tool-failure
+  /\b(?:K\.?Y\.?T\.?|the (?:extension|system|tool|memory))\b.{0,30}?(?:didn'?t|did not|couldn'?t|could not) (?:surface|capture|find|retrieve|return|include|pull up)\b/i,
 ];
 
 /**

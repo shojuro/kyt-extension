@@ -1744,16 +1744,28 @@ async function getContextForInjection(userMessage, config) {
       // Echo penalty (0.7x) — assistant messages that echo stored data
       // For chat_turns (role='user'), extract assistant text blocks first
       let echoContent = content;
-      if (item.role !== 'assistant' && content) {
+      let echoIsAssistant = item.role === 'assistant';
+      if (!echoIsAssistant && content) {
         const asstBlocks = [];
         const echoRe = /(?:^|\n\n)Assistant:\s*([\s\S]*?)(?=\n\nUser:|\s*$)/gi;
         let echoMatch;
         while ((echoMatch = echoRe.exec(content)) !== null) {
           asstBlocks.push(echoMatch[1].trim());
         }
-        if (asstBlocks.length > 0) echoContent = asstBlocks.join('\n');
+        if (asstBlocks.length > 0) {
+          echoContent = asstBlocks.join('\n');
+          echoIsAssistant = true;
+        } else if (item.role === 'unknown') {
+          // Edge path: role='unknown', content IS assistant text (no "Assistant:" prefix).
+          // Same fallback as deflection penalty — assume assistant for echo detection.
+          echoIsAssistant = true;
+        }
       }
-      if (scoreKey && item[scoreKey] != null && ECHO_PATTERNS.some(p => p.test(echoContent))) {
+      if (!scoreKey || item[scoreKey] == null) {
+        if (ECHO_PATTERNS.some(p => p.test(echoContent))) {
+          console.warn(`⚠️ Echo penalty SKIPPED: no score key available for item (role=${item.role}, id=${item.id || item.message_id || 'unknown'}). Pattern matched but cannot apply penalty.`);
+        }
+      } else if (echoIsAssistant && ECHO_PATTERNS.some(p => p.test(echoContent))) {
         const before = item[scoreKey];
         item[scoreKey] *= 0.7;
         console.log(`🔄 Echo penalty: assistant item echoing stored data, score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
@@ -1939,18 +1951,32 @@ async function getContextForInjection(userMessage, config) {
       const prefIds = new Set(prefItems.map(p => p.id));
       // Deduplicate: remove any vector results that share an ID with preference items
       filteredItems = filteredItems.filter(item => !prefIds.has(item.message_id || item.id));
+      // Score floor: preference items should rank at or above the best vector item.
+      // Without this, a vector item that survived penalties could outrank the direct answer.
+      const highestVectorScore = filteredItems.reduce((max, item) => {
+        const s = item.cross_encoder_score ?? item.weighted_score ?? item.rrf_score ?? 0;
+        return s > max ? s : max;
+      }, 0);
+
       // Prepend preference items (formatted to match filteredItems shape)
-      const prefAsVector = prefItems.map(p => ({
-        id: p.id,
-        content: p.content,
-        platform: p.platform,
-        timestamp: p.timestamp,
-        msg_timestamp: p.timestamp,
-        cross_encoder_score: p.similarity,
-        source: p.source_type,
-        source_type: p.source_type,
-        preference_match: true,
-      }));
+      const prefAsVector = prefItems.map(p => {
+        const baseScore = p.similarity;
+        const floorScore = Math.max(baseScore, highestVectorScore + 0.01);
+        if (floorScore > baseScore) {
+          console.log(`📌 Preference score floor: ${baseScore.toFixed(3)} → ${floorScore.toFixed(3)} (vector max was ${highestVectorScore.toFixed(3)})`);
+        }
+        return {
+          id: p.id,
+          content: p.content,
+          platform: p.platform,
+          timestamp: p.timestamp,
+          msg_timestamp: p.timestamp,
+          cross_encoder_score: floorScore,
+          source: p.source_type,
+          source_type: p.source_type,
+          preference_match: true,
+        };
+      });
       filteredItems = [...prefAsVector, ...filteredItems];
       console.log(`🔀 Preference+Vector merge: ${prefItems.length} pref + ${filteredItems.length - prefItems.length} vector = ${filteredItems.length} total`);
     }
