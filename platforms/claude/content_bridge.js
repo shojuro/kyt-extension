@@ -240,17 +240,18 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
     return;
   }
 
+  // Port-based GET_CONTEXT: no "return true" on background side → no
+  // "message channel closed" error in chrome://extensions on SW death.
   try {
-    // Forward to background script (no CSP restrictions there!)
-    const response = await chrome.runtime.sendMessage({
-      type: 'GET_CONTEXT',
-      userMessage: userMessage,
-      config: config
-    });
+    const port = chrome.runtime.connect({ name: 'kyt-context' });
+    let responded = false;
 
-    // Null guard: Chrome can resolve sendMessage with undefined when the channel closes
-    if (!response) {
-      markDisconnected('sendMessage resolved with undefined response');
+    // Slightly longer than background's 25s internal timeout
+    const timeoutId = setTimeout(() => {
+      if (responded) return;
+      responded = true;
+      try { port.disconnect(); } catch (_) {}
+      console.warn('⚠️ BRIDGE: Context request timed out (26s)');
       window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
         detail: {
           requestId: requestId,
@@ -258,35 +259,59 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
           formattedContext: null,
           items: [],
           elapsedMs: 0,
-          error: 'Service worker did not respond'
+          error: 'Context request timed out'
         }
       }));
-      return;
-    }
+    }, 26000);
 
-    // SW responded — reset disconnect cooldown
-    resetDisconnectState();
+    port.onMessage.addListener((response) => {
+      if (responded) return;
+      responded = true;
+      clearTimeout(timeoutId);
+      resetDisconnectState();
+      try { port.disconnect(); } catch (_) {}
 
-    // Send response back to MAIN world
-    window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
-      detail: {
-        requestId: requestId,
-        success: response.success,
-        formattedContext: response.formattedContext,
-        items: response.items,
-        elapsedMs: response.elapsedMs,
-        error: response.error
+      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+        detail: {
+          requestId: requestId,
+          success: response.success,
+          formattedContext: response.formattedContext,
+          items: response.items,
+          elapsedMs: response.elapsedMs,
+          error: response.error
+        }
+      }));
+      console.log('✅ BRIDGE: Context response sent to MAIN world (port)');
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (responded) return;
+      responded = true;
+      clearTimeout(timeoutId);
+      const err = chrome.runtime.lastError?.message || 'Port disconnected';
+      if (isDisconnectionError(err) || err === 'Port disconnected') {
+        markDisconnected(err);
       }
-    }));
+      console.warn('⚠️ BRIDGE: Context port disconnected:', err);
+      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+        detail: {
+          requestId: requestId,
+          success: false,
+          formattedContext: null,
+          items: [],
+          elapsedMs: 0,
+          error: err
+        }
+      }));
+    });
 
-    console.log('✅ BRIDGE: Context response sent to MAIN world');
+    port.postMessage({ requestId, userMessage, config });
   } catch (error) {
+    // connect() itself can throw if context is invalidated
     if (isDisconnectionError(error.message)) {
       markDisconnected(error.message);
     }
-    console.error('❌ BRIDGE: Failed to get context:', error);
-
-    // Send error response
+    console.error('❌ BRIDGE: Failed to open context port:', error);
     window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
       detail: {
         requestId: requestId,

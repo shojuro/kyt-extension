@@ -196,7 +196,8 @@ export class MessageQueueManager {
      * Loads API key to derive encryption key
      * Starts recovery interval for context restoration
      */
-    async initialize() {
+    async initialize(generation) {
+        this.generation = generation;  // Store for recovery interval generation check
         try {
             const result = await chrome.storage.local.get(['api_config']);
             if (result.api_config && result.api_config.openaiKey) {
@@ -224,6 +225,17 @@ export class MessageQueueManager {
         }
 
         this.recoveryIntervalId = setInterval(async () => {
+            // If a newer content script has taken over, die silently.
+            // On extension reload, reInjectContentScripts re-injects content.js
+            // which sets a new window.__kytChatGPTContentGeneration. The old
+            // queue-manager sees the mismatch and stops — no 30s wait, no toast.
+            if (this.generation && window.__kytChatGPTContentGeneration !== this.generation) {
+                console.log('🔵 [KYT Queue] Newer content script detected — stopping old recovery interval');
+                clearInterval(this.recoveryIntervalId);
+                this.recoveryIntervalId = null;
+                return;
+            }
+
             // Check if context was invalid but is now restored
             const wasInvalid = !this.contextValid;
             this.contextValid = this.isContextValid();

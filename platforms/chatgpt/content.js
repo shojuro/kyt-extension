@@ -82,7 +82,7 @@
       const src = chrome.runtime.getURL('src/content/queue-manager.js');
       const module = await import(src);
       queueManager = module.queueManager;
-      await queueManager.initialize();
+      await queueManager.initialize(GENERATION);
       console.log('✅ KYT ChatGPT Content: Queue Manager initialized');
     } catch (e) {
       console.error('❌ KYT ChatGPT Content: Failed to load Queue Manager', e);
@@ -282,36 +282,72 @@
       return;
     }
 
+    // Port-based GET_CONTEXT: avoids "message channel closed" error in
+    // chrome://extensions when SW dies mid-request (e.g. on extension reload).
     try {
-      // Forward to background script (no CSP restrictions there!)
-      const response = await chrome.runtime.sendMessage({
-        type: 'GET_CONTEXT',
-        userMessage: userMessage,
-        config: config
+      const port = chrome.runtime.connect({ name: 'kyt-context' });
+      let responded = false;
+
+      const timeoutId = setTimeout(() => {
+        if (responded) return;
+        responded = true;
+        try { port.disconnect(); } catch (_) {}
+        console.warn('⚠️ KYT ChatGPT Content: Context request timed out (26s)');
+        window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+          detail: {
+            requestId: requestId,
+            success: false,
+            formattedContext: null,
+            items: [],
+            error: 'Context request timed out'
+          }
+        }));
+      }, 26000);
+
+      port.onMessage.addListener((response) => {
+        if (responded) return;
+        responded = true;
+        clearTimeout(timeoutId);
+        try { port.disconnect(); } catch (_) {}
+
+        window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+          detail: {
+            requestId: requestId,
+            success: response.success,
+            formattedContext: response.formattedContext,
+            items: response.items,
+            elapsedMs: response.elapsedMs,
+            error: response.error
+          }
+        }));
+        console.log('✅ KYT ChatGPT Content: Context response sent to page context (port)');
       });
 
-      // Send response back to page context
-      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
-        detail: {
-          requestId: requestId,
-          success: response.success,
-          formattedContext: response.formattedContext,
-          items: response.items,
-          elapsedMs: response.elapsedMs,
-          error: response.error
-        }
-      }));
+      port.onDisconnect.addListener(() => {
+        if (responded) return;
+        responded = true;
+        clearTimeout(timeoutId);
+        const err = chrome.runtime.lastError?.message || 'Port disconnected';
+        console.warn('⚠️ KYT ChatGPT Content: Context port disconnected:', err);
+        window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+          detail: {
+            requestId: requestId,
+            success: false,
+            formattedContext: null,
+            items: [],
+            error: err
+          }
+        }));
+      });
 
-      console.log('✅ KYT ChatGPT Content: Context response sent to page context');
+      port.postMessage({ requestId, userMessage, config });
     } catch (error) {
-      // Better error handling for context invalidation
       if (error.message && error.message.includes('Extension context invalidated')) {
         console.warn('⚠️ KYT ChatGPT Content: Extension was reloaded - please refresh page');
       } else {
-        console.error('❌ KYT ChatGPT Content: Failed to get context:', error);
+        console.error('❌ KYT ChatGPT Content: Failed to open context port:', error);
       }
 
-      // Send error response
       window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
         detail: {
           requestId: requestId,

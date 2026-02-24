@@ -1252,7 +1252,18 @@ function applyRecencyResolution(items) {
     const newest = group[0];
     const older = group.slice(1);
 
-    // Pure timestamp ordering: newest always wins for any entity with multiple mentions
+    // Confidence gate: if the highest-scoring older item significantly outscores
+    // the newest, skip recency resolution for this entity. This prevents a
+    // low-confidence assistant "revision" (e.g., 0.54) from overtaking a
+    // high-confidence match (e.g., 0.93) via a small timestamp advantage.
+    const newestScore = newest[scoreKey] ?? 0;
+    const bestOlderScore = Math.max(...older.map(o => o[scoreKey] ?? 0));
+    if (bestOlderScore - newestScore > 0.2) {
+      console.log(`🕐 Recency SKIPPED: "${entity}" — oldest scores higher (${bestOlderScore.toFixed(3)} vs ${newestScore.toFixed(3)}, gap ${(bestOlderScore - newestScore).toFixed(3)})`);
+      continue;
+    }
+
+    // Timestamp ordering: newest wins for any entity with multiple mentions
     if (!boosted.has(newest) && newest[scoreKey] != null) {
       newest[scoreKey] *= 1.5;
       boosted.add(newest);
@@ -2002,6 +2013,7 @@ async function getContextForInjection(userMessage, config) {
         items: filteredItems.map(item => ({
           id: item.message_id || item.id,
           content: item.content,
+          role: item.role || 'unknown',  // user | assistant | unknown — surfaces in injection as "speaker"
           platform: item.source === 'cli' ? 'terminal' : (item.platform || 'chatgpt'),
           timestamp: new Date(item.msg_timestamp || item.timestamp).toISOString(),
           similarity: item.cross_encoder_score != null
@@ -2066,6 +2078,55 @@ async function getContextForInjection(userMessage, config) {
     };
   }
 }
+
+/**
+ * Port-based handler for GET_CONTEXT requests.
+ * Using chrome.runtime.connect() instead of sendMessage+return true avoids
+ * the "message channel closed" error in chrome://extensions when the SW dies
+ * mid-request (e.g. on extension reload). Port disconnection is handled via
+ * onDisconnect — clean, no Chrome-level error entry.
+ */
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'kyt-context') return;
+
+  port.onMessage.addListener(async (msg) => {
+    const injectionStart = performance.now();
+    try {
+      if (!msg.userMessage || typeof msg.userMessage !== 'string') {
+        port.postMessage({ requestId: msg.requestId, success: false, error: 'Missing userMessage' });
+        return;
+      }
+      console.log('🔍 KYT Background: Context request (port) for:', msg.userMessage.substring(0, 50) + '...');
+      updateInjectionStats({ attempt: true }).catch(() => {});
+
+      const result = await chrome.storage.local.get(['kytDebugMode']);
+      const config = { ...msg.config, debugMode: result.kytDebugMode || false };
+
+      const contextData = await Promise.race([
+        getContextForInjection(msg.userMessage, config),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('getContextForInjection timed out after 25000ms')), 25000))
+      ]);
+
+      const latencyMs = Math.round(performance.now() - injectionStart);
+      const itemCount = contextData.items?.length || 0;
+      console.log('✅ Context retrieved (port):', itemCount, 'items');
+
+      if (itemCount > 0) {
+        updateInjectionStats({ success: true, itemCount, latencyMs, result: true }).catch(() => {});
+      } else {
+        updateInjectionStats({ empty: true, latencyMs, result: true }).catch(() => {});
+      }
+
+      port.postMessage({ requestId: msg.requestId, ...contextData });
+    } catch (error) {
+      const latencyMs = Math.round(performance.now() - injectionStart);
+      const isTimeout = error.message?.includes('timed out');
+      console.error('❌ Context retrieval error (port):', error);
+      updateInjectionStats({ error: !isTimeout, timeout: isTimeout, latencyMs, result: true, errorMsg: error.message }).catch(() => {});
+      port.postMessage({ requestId: msg.requestId, success: false, error: error.message });
+    }
+  });
+});
 
 /**
  * Message listener - Handle messages from content script
