@@ -1663,6 +1663,20 @@ async function getContextForInjection(userMessage, config) {
     // Remove hard-dropped deflections (high confidence ≥ 0.85)
     contextItems = contextItems.filter(item => !item._deflectionDropped);
 
+    // BARE QUESTION FILTER: drop items that are just user questions without an answer.
+    // Semantic RPCs don't filter is_question; catch bare questions client-side.
+    contextItems = contextItems.filter(item => {
+      const content = (item.content || '').trim();
+      // Only filter short items without assistant response blocks
+      if (content.length < 120 && !/\bAssistant:/i.test(content)) {
+        if (detectIsQuestion(content, 'user')) {
+          console.log(`🔍 Bare question filter: dropped "${content.substring(0, 60)}..." (ID: ${item.id || item.message_id || 'unknown'})`);
+          return false;
+        }
+      }
+      return true;
+    });
+
     // KYT META-CONVERSATION PENALTY: Detect conversations ABOUT the extension itself.
     // These are captured normally but are rarely what the user wants to recall.
     // Score penalty (0.3x) rather than hard filter — meta-conversations CAN be found

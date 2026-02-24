@@ -87,7 +87,14 @@ const DEFLECTION_PATTERNS = [
 
   // Retrieval-echo: assistant reports stored-data lookup failure
   /stored (?:data|conversations?|items?) (?:still )?(?:don'?t|doesn'?t|do not|does not) have/i,
-  /found (?:a |the )?(?:previous |earlier )?conversation.{0,40}?but (?:unfortunately )?(?:no|without|not)/i
+  /found (?:a |the )?(?:previous |earlier )?conversation.{0,40}?but (?:unfortunately )?(?:no|without|not)/i,
+
+  // Meta-retrieval failure: assistant reports the retrieval came up short
+  /(?:stored|retrieved) (?:\w+ )*(?:only|just) (?:captures?|contains?|shows?|includes?)/i,
+  /(?:details?|answer|list|information|data) (?:wasn'?t|weren'?t|(?:was|were) not) (?:fully )?(?:captured|stored|recorded|saved|included)/i,
+  /don'?t have (?:your|the|a) (?:\w+ )*(?:answer|list|response|details?)\b/i,
+  /(?:not|without) (?:the|an?) (?:actual|full|complete|specific) (?:answer|list|response|details?|data)/i,
+  /(?:gaps?|blanks?) with (?:guesses?|inferred|generated|fabricated)/i,
 ];
 
 /**

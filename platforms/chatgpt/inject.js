@@ -362,16 +362,16 @@
       const requestId = `ctx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
       return new Promise((resolve) => {
-        // 25s MAIN world timeout — leaves 5s margin after 20s background timeout
+        // 30s MAIN world timeout — leaves 5s margin after 25s background timeout
         const timeout = setTimeout(() => {
           pendingContextRequests.delete(requestId);
-          console.error('⏱️ KYT ChatGPT: Context timeout after 25s', {
+          console.error('⏱️ KYT ChatGPT: Context timeout after 30s', {
             requestId: requestId,
             userMessage: userContent.substring(0, 50),
             pendingRequests: pendingContextRequests.size
           });
           resolve(bodyString);
-        }, 25000);
+        }, 30000);
 
         // Config for context request
         const contextConfig = {
