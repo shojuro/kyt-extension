@@ -715,7 +715,7 @@ async function triggerEntityBackfill(config) {
   try {
     const response = await callEdgeFunction('backfill_entities', {
       limit: 20 // Process up to 20 turns per sync cycle
-    }, { timeoutMs: 15000 });
+    }, { timeoutMs: 30000 });
 
     if (response.success) {
       const count = response.processed || 0;
