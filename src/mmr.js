@@ -125,6 +125,8 @@ const ENTITY_STOP_WORDS = new Set([
   'show', 'tell', 'give', 'find', 'start', 'end', 'move', 'turn', 'read', 'done',
   'did', 'does', 'do', 'been', 'were', 'was', 'am', 'are', 'is',
   'test', 'check', 'build', 'work', 'help', 'mean', 'meant', 'sent', 'left',
+  'download', 'upload', 'install', 'remove', 'create', 'delete',
+  'handle', 'manage', 'connect', 'provide', 'support', 'require',
   'could', 'would', 'should', 'might', 'must', 'shall', 'will', 'may', 'can',
   // Numbers (regex catches capitalized "Two", "Three" etc.)
   'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
@@ -134,6 +136,13 @@ const ENTITY_STOP_WORDS = new Set([
   'worth', 'real', 'new', 'old', 'good', 'bad', 'same', 'different', 'last', 'users',
   'character', 'point', 'type', 'kind', 'sort', 'case', 'step', 'version', 'level',
   'issue', 'problem', 'question', 'answer', 'example', 'result', 'reason', 'number',
+  'user', 'data', 'rate', 'conflict', 'technology', 'transaction',
+  'request', 'response', 'message', 'value', 'error', 'warning',
+  'process', 'system', 'service', 'resource', 'method', 'function',
+  'access', 'update', 'status', 'format', 'content', 'context',
+  'session', 'display', 'feature', 'option', 'setting', 'action',
+  'output', 'input', 'source', 'target', 'object', 'model',
+  'design', 'pattern', 'practice', 'approach', 'solution', 'change',
   // Adjectives & short modifiers that appear as false entities
   'wrong', 'short', 'fair', 'long', 'full', 'high', 'low', 'big', 'small',
   'hard', 'easy', 'free', 'open', 'close', 'best', 'worst', 'less', 'more',

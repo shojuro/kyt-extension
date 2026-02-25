@@ -1786,8 +1786,12 @@ async function getContextForInjection(userMessage, config) {
         }
       } else if (echoIsAssistant && ECHO_PATTERNS.some(p => p.test(echoContent))) {
         const before = item[scoreKey];
-        item[scoreKey] *= 0.7;
-        console.log(`🔄 Echo penalty: assistant item echoing stored data, score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
+        const echoLen = echoContent.length;
+        const echoPenalty = echoLen < 300 ? 0.50    // Short echo — likely garbage summary
+                          : echoLen < 800 ? 0.70    // Medium — moderate penalty
+                          : 0.90;                   // Long substantive response — minimal penalty
+        item[scoreKey] *= echoPenalty;
+        console.log(`🔄 Echo penalty (${echoLen < 300 ? 'short' : echoLen < 800 ? 'medium' : 'long'}): assistant item echoing stored data, score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (${echoLen} chars, ${echoPenalty}x) (ID: ${item.id || item.message_id || 'unknown'})`);
       }
     }
 
