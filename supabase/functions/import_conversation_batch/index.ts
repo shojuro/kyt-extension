@@ -69,6 +69,37 @@ function filterTo90Days(messages: RawMessage[]): RawMessage[] {
 }
 
 // =============================================================================
+// Question / Deflection Detection (copied from save_chat_turn_batch)
+// =============================================================================
+
+const INTERROGATIVE_RE = /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember|list|name|give|show|find|get|provide|suggest|recommend|describe|explain|identify|compare|summarize|rank|top (?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))\b/i;
+
+const DEFLECTION_RE = /(?:I don'?t (?:have|think|recall|remember|see|know)|I'?m not (?:really |entirely |exactly )?sure (?:really |entirely |exactly )?(?:what|how|if|about|which|when|where|why)|I can'?t (?:find|recall|remember|see)|no (?:specific|particular|clear).{0,30}(?:record|memory|data|information)|not (?:aware|certain) (?:of|about|whether)|could you (?:give|provide|share)|can you (?:give|provide|share))/i;
+
+/**
+ * Detect if a chunk is a user question (for single-speaker user chunks).
+ * Returns true if the content looks like a question/request.
+ */
+function detectIsQuestion(content: string): boolean {
+  const text = (content || '').trim();
+  if (text.endsWith('?')) return true;
+  if (INTERROGATIVE_RE.test(text)) return true;
+  // Short content without assertions → likely a request/question
+  if (text.length < 60 && !text.includes('.') && !text.includes('!')) return true;
+  return false;
+}
+
+/**
+ * Detect if a chunk is an assistant deflection (for single-speaker assistant chunks).
+ * Returns 0.80 confidence if deflection detected, null otherwise.
+ */
+function detectDeflection(content: string): number | null {
+  const text = (content || '').trim();
+  if (DEFLECTION_RE.test(text)) return 0.80;
+  return null;
+}
+
+// =============================================================================
 // Progress Tracking (Auto-Resume Support)
 // =============================================================================
 
@@ -476,6 +507,15 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
             hypothetical_questions: chunk.hyde_questions,
             last_accessed: new Date().toISOString(),
             access_count: 0,
+            content_type: 'imported',
+            entities_extracted: false,
+            // Classification: only for single-speaker chunks
+            ...(chunk.speakers?.length === 1 && chunk.speakers[0] === 'user'
+              ? { is_question: detectIsQuestion(chunk.content) }
+              : {}),
+            ...(chunk.speakers?.length === 1 && chunk.speakers[0] === 'assistant'
+              ? { deflection: detectDeflection(chunk.content) }
+              : {}),
           }));
 
           try {
@@ -502,6 +542,58 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
             percent: Math.round(progress),
             message: `Inserted batch ${i + 1}/${dbBatches.length}`
           });
+        }
+
+        // Stage 7b: Upsert conversations table
+        sendEvent({ stage: 'conversations', percent: 96, message: 'Updating conversations table...' });
+        try {
+          const convMap = new Map<string, { count: number; minTs: number; maxTs: number; platform: string }>();
+          for (const chunk of processedChunks) {
+            const cid = chunk.conversation_id;
+            if (!cid) continue;
+            const existing = convMap.get(cid);
+            const startTs = chunk.start_timestamp || 0;
+            const endTs = chunk.end_timestamp || startTs;
+            if (existing) {
+              existing.count += chunk.turn_count || 1;
+              existing.minTs = Math.min(existing.minTs, startTs);
+              existing.maxTs = Math.max(existing.maxTs, endTs);
+            } else {
+              convMap.set(cid, {
+                count: chunk.turn_count || 1,
+                platform: chunk.platform || platform,
+                minTs: startTs,
+                maxTs: endTs,
+              });
+            }
+          }
+
+          if (convMap.size > 0) {
+            const convRecords = Array.from(convMap.entries()).map(([cid, info]) => ({
+              external_id: cid,
+              user_id,
+              platform: info.platform,
+              turn_count: info.count,
+              first_message_at: info.minTs > 0 ? new Date(info.minTs).toISOString() : null,
+              last_message_at: info.maxTs > 0 ? new Date(info.maxTs).toISOString() : null,
+              is_imported: true,
+            }));
+
+            const { error: convError } = await supabase
+              .from('conversations')
+              .upsert(convRecords, {
+                onConflict: 'user_id,external_id,platform',
+                ignoreDuplicates: false, // Update counts on re-import
+              });
+
+            if (convError) {
+              console.warn(`[import-sse] Conversations upsert error:`, convError.message);
+            } else {
+              console.log(`[import-sse] Upserted ${convRecords.length} conversation records`);
+            }
+          }
+        } catch (convErr) {
+          console.warn(`[import-sse] Conversations upsert failed:`, (convErr as Error).message);
         }
 
         // Stage 8: Complete
@@ -811,6 +903,15 @@ Deno.serve(async (req) => {
         hypothetical_questions: chunk.hyde_questions,
         last_accessed: new Date().toISOString(),
         access_count: 0,
+        content_type: 'imported',
+        entities_extracted: false,
+        // Classification: only for single-speaker chunks
+        ...(chunk.speakers?.length === 1 && chunk.speakers[0] === 'user'
+          ? { is_question: detectIsQuestion(chunk.content) }
+          : {}),
+        ...(chunk.speakers?.length === 1 && chunk.speakers[0] === 'assistant'
+          ? { deflection: detectDeflection(chunk.content) }
+          : {}),
       }));
 
       try {
@@ -852,6 +953,59 @@ Deno.serve(async (req) => {
           }
         });
       }
+    }
+
+    // ==========================================================================
+    // Step 4b: Upsert conversations table
+    // ==========================================================================
+    try {
+      const convMap = new Map<string, { count: number; minTs: number; maxTs: number; platform: string }>();
+      for (const chunk of processedChunks.slice(0, chunksProcessed)) {
+        const cid = chunk.conversation_id;
+        if (!cid) continue;
+        const existing = convMap.get(cid);
+        const startTs = chunk.start_timestamp || 0;
+        const endTs = chunk.end_timestamp || startTs;
+        if (existing) {
+          existing.count += chunk.turn_count || 1;
+          existing.minTs = Math.min(existing.minTs, startTs);
+          existing.maxTs = Math.max(existing.maxTs, endTs);
+        } else {
+          convMap.set(cid, {
+            count: chunk.turn_count || 1,
+            platform: chunk.platform || platform,
+            minTs: startTs,
+            maxTs: endTs,
+          });
+        }
+      }
+
+      if (convMap.size > 0) {
+        const convRecords = Array.from(convMap.entries()).map(([cid, info]) => ({
+          external_id: cid,
+          user_id,
+          platform: info.platform,
+          turn_count: info.count,
+          first_message_at: info.minTs > 0 ? new Date(info.minTs).toISOString() : null,
+          last_message_at: info.maxTs > 0 ? new Date(info.maxTs).toISOString() : null,
+          is_imported: true,
+        }));
+
+        const { error: convError } = await supabase
+          .from('conversations')
+          .upsert(convRecords, {
+            onConflict: 'user_id,external_id,platform',
+            ignoreDuplicates: false, // Update counts on re-import
+          });
+
+        if (convError) {
+          console.warn(`[import] Conversations upsert error:`, convError.message);
+        } else {
+          console.log(`[import] Upserted ${convRecords.length} conversation records`);
+        }
+      }
+    } catch (convErr) {
+      console.warn(`[import] Conversations upsert failed:`, (convErr as Error).message);
     }
 
     // Determine if this is a partial response (either timed out OR more chunks remain)

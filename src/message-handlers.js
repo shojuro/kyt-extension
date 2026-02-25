@@ -464,6 +464,10 @@ export function registerMessageHandler(deps) {
             ).then(result => {
               sendResponse({ success: true, result });
               activeImporterRef.current = null;
+              // Trigger post-import backfill chain
+              chrome.alarms.create('backfillContextual', { delayInMinutes: 1 });
+              chrome.alarms.create('postImportBackfill', { delayInMinutes: 3 });
+              console.log('⏰ Post-import backfill alarms scheduled (contextual: 1min, orchestrator: 3min)');
             }).catch(error => {
               sendResponse({ success: false, error: error.message });
               activeImporterRef.current = null;
@@ -506,16 +510,21 @@ export function registerMessageHandler(deps) {
             for (let i = 0; i < messages.length; i += batchSize) {
               const batch = messages.slice(i, i + batchSize);
               try {
-                const result = await importer.saveBatch(batch);
-                savedCount += result.saved || 0;
-                skippedCount += result.skipped || 0;
-                console.log(`   Batch ${Math.floor(i / batchSize) + 1}: ${result.saved} saved, ${result.skipped} skipped`);
+                await importer.processBatch(batch);
+                savedCount += batch.length;
+                console.log(`   Batch ${Math.floor(i / batchSize) + 1}: ${batch.length} processed`);
               } catch (batchError) {
                 console.error(`   Batch ${Math.floor(i / batchSize) + 1} error:`, batchError);
               }
             }
 
             console.log(`✅ ZIP import complete: ${savedCount} saved, ${skippedCount} skipped`);
+
+            // Trigger post-import backfill chain
+            chrome.alarms.create('backfillContextual', { delayInMinutes: 1 });
+            chrome.alarms.create('postImportBackfill', { delayInMinutes: 3 });
+            console.log('⏰ Post-import backfill alarms scheduled (contextual: 1min, orchestrator: 3min)');
+
             sendResponse({
               success: true,
               saved: savedCount,
@@ -525,6 +534,28 @@ export function registerMessageHandler(deps) {
 
           } catch (error) {
             console.error('❌ PROCESS_IMPORTED_MESSAGES failed:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
+      case 'BACKFILL_STATUS':
+        (async () => {
+          try {
+            const allAlarms = await chrome.alarms.getAll();
+            const backfillAlarms = allAlarms.filter(a =>
+              ['backfillContextual', 'backfillEntities', 'postImportBackfill', 'backfillEmbeddings'].includes(a.name)
+            );
+            sendResponse({
+              success: true,
+              active: backfillAlarms.length > 0,
+              alarms: backfillAlarms.map(a => ({
+                name: a.name,
+                scheduledTime: a.scheduledTime,
+                periodInMinutes: a.periodInMinutes || null,
+              })),
+            });
+          } catch (error) {
             sendResponse({ success: false, error: error.message });
           }
         })();

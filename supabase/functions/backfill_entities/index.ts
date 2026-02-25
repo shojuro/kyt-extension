@@ -28,7 +28,9 @@ const hfClient = new HuggingFaceClient(hfApiKey);
 
 const BATCH_SIZE = 5;
 const MAX_ROWS = 100;
+const MAX_ROWS_CAP = 200; // Absolute cap for max_rows param
 const BATCH_DELAY_MS = 2000;
+const FAST_BATCH_DELAY_MS = 200;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -46,17 +48,32 @@ serve(async (req) => {
     // Parse optional body params
     let forceReextract = false;
     let requestedLimit = MAX_ROWS;
+    let fastMode = false;
+    let filterUserId: string | null = null;
+    let contentTypeFilter: string | null = null;
     try {
       const body = await req.json();
       forceReextract = body?.force_reextract === true;
+      fastMode = body?.fast_mode === true;
       if (body?.limit && typeof body.limit === 'number' && body.limit > 0) {
-        requestedLimit = Math.min(body.limit, MAX_ROWS);
+        requestedLimit = Math.min(body.limit, MAX_ROWS_CAP);
+      }
+      if (body?.max_rows && typeof body.max_rows === 'number' && body.max_rows > 0) {
+        requestedLimit = Math.min(body.max_rows, MAX_ROWS_CAP);
+      }
+      if (body?.user_id && typeof body.user_id === 'string') {
+        filterUserId = body.user_id;
+      }
+      if (body?.content_type_filter && typeof body.content_type_filter === 'string') {
+        contentTypeFilter = body.content_type_filter;
       }
     } catch {
       // No body or invalid JSON — use defaults
     }
 
     const effectiveMaxRows = requestedLimit;
+    const effectiveDelay = fastMode ? FAST_BATCH_DELAY_MS : BATCH_DELAY_MS;
+    console.log(`  Options: fast_mode=${fastMode}, user_id=${filterUserId?.substring(0, 8) || 'all'}, content_type=${contentTypeFilter || 'all'}, max_rows=${effectiveMaxRows}`);
     let totalProcessed = 0;
     let totalEntitiesCreated = 0;
     let errors = 0;
@@ -68,7 +85,7 @@ serve(async (req) => {
       // Query chat_turns needing entity extraction
       let query = supabase
         .from("chat_turns")
-        .select("id, content, speakers, conversation_id, user_id")
+        .select("id, content, speakers, conversation_id, user_id, is_question, deflection")
         .order("created_at", { ascending: false })
         .limit(BATCH_SIZE);
 
@@ -80,6 +97,14 @@ serve(async (req) => {
         );
       }
       // When forceReextract=true, no filter — re-processes all rows
+
+      // Apply optional filters
+      if (filterUserId) {
+        query = query.eq("user_id", filterUserId);
+      }
+      if (contentTypeFilter) {
+        query = query.eq("content_type", contentTypeFilter);
+      }
 
       const { data: rows, error: fetchError } = await query;
 
@@ -105,6 +130,17 @@ serve(async (req) => {
               .update({ entities_extracted: true, preferences_extracted: true })
               .eq("id", row.id);
             totalProcessed++;
+            continue;
+          }
+
+          // Skip questions and deflections — no useful entities to extract
+          if (row.is_question === true || (row.deflection != null && row.deflection >= 0.70)) {
+            await supabase
+              .from("chat_turns")
+              .update({ entities_extracted: true, preferences_extracted: true })
+              .eq("id", row.id);
+            totalProcessed++;
+            console.log(`  Row ${row.id}: skipped (${row.is_question ? 'question' : 'deflection'})`);
             continue;
           }
 
@@ -152,21 +188,28 @@ serve(async (req) => {
 
       // Rate limit delay between batches
       if (batch < maxBatches - 1 && rows.length === BATCH_SIZE) {
-        await new Promise((r) => setTimeout(r, BATCH_DELAY_MS));
+        await new Promise((r) => setTimeout(r, effectiveDelay));
       } else if (rows.length < BATCH_SIZE) {
         // Last batch was partial — no more rows
         break;
       }
     }
 
-    // Count remaining
-    const { count: remaining } = await supabase
+    // Count remaining (with matching filters)
+    let remainingQuery = supabase
       .from("chat_turns")
       .select("id", { count: "exact", head: true })
       .or(
         "entities_extracted.is.null,entities_extracted.eq.false," +
         "preferences_extracted.is.null,preferences_extracted.eq.false"
       );
+    if (filterUserId) {
+      remainingQuery = remainingQuery.eq("user_id", filterUserId);
+    }
+    if (contentTypeFilter) {
+      remainingQuery = remainingQuery.eq("content_type", contentTypeFilter);
+    }
+    const { count: remaining } = await remainingQuery;
 
     const result = {
       success: true,
