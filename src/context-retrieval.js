@@ -323,6 +323,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
       candidatePoolSize: config?.candidatePoolSize || 25, // Retrieve more candidates — headroom for echo/deflection filters before MMR
       minDistance: config?.minDistance || 0.0,
       excludeRecentSeconds: config?.excludeRecentSeconds || 120, // CONTEXT POLLUTION FIX: Exclude last 2 minutes
+      confidenceThreshold: config?.confidenceThreshold || null, // Intent classifier override (PASSIVE → 0.60)
       debugMode: config?.debugMode || false,
       disableQueryTransformation: config?.disableQueryTransformation ?? apiConfig.disableQueryTransformation ?? false
     };
