@@ -17,3 +17,9 @@
 UPDATE chat_turns SET deflection = 0.80
 WHERE deflection IS NULL
   AND content ~* 'I''?m not (?:really |entirely |exactly )?sure (?:really |entirely |exactly )?(?:what|how|if|about|which|when|where|why)';
+
+-- Step 2: Backfill "Could/Can you give me [more] context/information/details"
+-- Deferral pattern missing "give me" in the original regex (only had clarify/elaborate/etc.)
+UPDATE chat_turns SET deflection = 0.80
+WHERE deflection IS NULL
+  AND content ~* '(?:could|can) you (?:please )?(?:give me|give us) (?:a bit )?(?:more|some|additional) (?:context|information|details)';

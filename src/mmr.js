@@ -119,6 +119,7 @@ const ENTITY_STOP_WORDS = new Set([
   'keep', 'come', 'go', 'went', 'think', 'thought', 'see', 'saw', 'seem', 'call',
   'show', 'tell', 'give', 'find', 'start', 'end', 'move', 'turn', 'read', 'done',
   'did', 'does', 'do', 'been', 'were', 'was', 'am', 'are', 'is',
+  'could', 'would', 'should', 'might', 'must', 'shall', 'will', 'may', 'can',
   // Numbers (regex catches capitalized "Two", "Three" etc.)
   'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
   // Common nouns/adjectives that are never proper nouns

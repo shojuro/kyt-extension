@@ -52,8 +52,8 @@ const DEFLECTION_PATTERNS = [
   /i (?:couldn'?t|could not) find (?:any|specific|that)/i,
 
   // Deferral to user
-  /could you (?:please )?(?:clarify|elaborate|explain|provide|share|tell me)/i,
-  /can you (?:please )?(?:clarify|elaborate|explain|provide|share|tell me)/i,
+  /could you (?:please )?(?:clarify|elaborate|explain|provide|share|tell me|give me)/i,
+  /can you (?:please )?(?:clarify|elaborate|explain|provide|share|tell me|give me)/i,
   /(?:would|could) you (?:mind|like to) (?:providing|sharing|telling)/i,
   /what (?:do you mean|exactly|specifically) (?:by|about|when)/i,
   /i(?:'d| would) need (?:more|additional|further) (?:context|information|details)/i,

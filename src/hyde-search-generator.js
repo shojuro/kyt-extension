@@ -57,7 +57,7 @@ export async function generateHyDEDocument(query, openaiKey) {
           model: 'gpt-4o-mini',
           messages: [
             { role: 'system', content: HYDE_SYSTEM_PROMPT },
-            { role: 'user', content: `Search query: "${query}"\n\nGenerate a hypothetical conversation that this query might be trying to find:` }
+            { role: 'user', content: `Search query: "${query}"\n\nIMPORTANT: The user's stored conversations are about software development, AI products, startups, and personal knowledge management. Interpret ambiguous terms in this context (e.g., "shipping" means releasing software, not mailing packages; "models" means AI/LLM models, not fashion models).\n\nGenerate a hypothetical conversation that this query might be trying to find:` }
           ],
           temperature: 0.7,
           max_tokens: 300
