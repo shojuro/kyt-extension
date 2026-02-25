@@ -104,6 +104,7 @@ const ENTITY_STOP_WORDS = new Set([
   'and', 'or', 'but', 'nor', 'not', 'for', 'yet', 'so', 'if', 'then', 'than', 'as', 'of', 'in',
   'on', 'at', 'to', 'by', 'with', 'from', 'into', 'about', 'after', 'before', 'between',
   'through', 'during', 'without', 'within', 'along', 'against', 'under', 'over', 'above',
+  'whether', 'unless', 'until', 'once', 'per', 'via', 'versus', 'despite',
   // Common sentence-starters & transition words
   'however', 'therefore', 'furthermore', 'moreover', 'additionally', 'also', 'although',
   'because', 'since', 'while', 'whereas', 'meanwhile', 'instead', 'otherwise', 'thus',
@@ -113,12 +114,17 @@ const ENTITY_STOP_WORDS = new Set([
   // Discourse markers frequently capitalized
   'based', 'given', 'note', 'please', 'sure', 'yes', 'no', 'well', 'now', 'first',
   'second', 'third', 'next', 'finally', 'overall', 'currently', 'recently', 'today',
+  'pre', 'post', 'non', 'mid', 'sub', 'multi', 'semi', 'anti',
+  // Month/day abbreviations (never entities)
+  'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
+  'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun',
   // Common verbs that get capitalized at sentence boundaries
   'want', 'try', 'let', 'run', 'add', 'know', 'pick', 'have', 'has', 'had', 'need',
   'like', 'make', 'take', 'look', 'use', 'say', 'said', 'got', 'get', 'set', 'put',
-  'keep', 'come', 'go', 'went', 'think', 'thought', 'see', 'saw', 'seem', 'call',
+  'keep', 'come', 'go', 'went', 'going', 'think', 'thought', 'see', 'saw', 'seem', 'call',
   'show', 'tell', 'give', 'find', 'start', 'end', 'move', 'turn', 'read', 'done',
   'did', 'does', 'do', 'been', 'were', 'was', 'am', 'are', 'is',
+  'test', 'check', 'build', 'work', 'help', 'mean', 'meant', 'sent', 'left',
   'could', 'would', 'should', 'might', 'must', 'shall', 'will', 'may', 'can',
   // Numbers (regex catches capitalized "Two", "Three" etc.)
   'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
@@ -126,10 +132,14 @@ const ENTITY_STOP_WORDS = new Set([
   'item', 'none', 'top', 'right', 'thing', 'way', 'part', 'something', 'nothing',
   'everything', 'anything', 'enough', 'several', 'being', 'quite', 'pretty',
   'worth', 'real', 'new', 'old', 'good', 'bad', 'same', 'different', 'last', 'users',
+  'character', 'point', 'type', 'kind', 'sort', 'case', 'step', 'version', 'level',
+  'issue', 'problem', 'question', 'answer', 'example', 'result', 'reason', 'number',
   // Adjectives & short modifiers that appear as false entities
   'wrong', 'short', 'fair', 'long', 'full', 'high', 'low', 'big', 'small',
   'hard', 'easy', 'free', 'open', 'close', 'best', 'worst', 'less', 'more',
   'back', 'own', 'able', 'likely', 'possible', 'available', 'important',
+  'great', 'core', 'main', 'key', 'major', 'minor', 'true', 'false',
+  'single', 'double', 'whole', 'entire', 'exact', 'specific', 'general',
   // Contraction fragments (e.g. "Don't" → regex extracts "Don" → lowercased "don")
   'don', 'isn', 'didn', 'wasn', 'hasn', 'aren', 'won', 'couldn', 'wouldn', 'shouldn',
   // Informal discourse
