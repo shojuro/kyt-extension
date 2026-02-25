@@ -1265,7 +1265,7 @@ function applyRecencyResolution(items) {
 
     // Timestamp ordering: newest wins for any entity with multiple mentions
     if (!boosted.has(newest) && newest[scoreKey] != null) {
-      newest[scoreKey] *= 1.5;
+      newest[scoreKey] = Math.min(1.0, newest[scoreKey] * 1.5);
       boosted.add(newest);
       console.log(`🕐 Recency boost: "${entity}" — newest item boosted 1.5x`);
     }
@@ -3051,6 +3051,44 @@ globalThis.KYT_DEBUG = {
   backfillContextual: (limit = 15) => callEdgeFunction('backfill_contextual', { limit })
     .then(result => { console.log('📝 Contextual backfill result:', result); return result; })
     .catch(err => { console.error('❌ Contextual backfill failed:', err.message); return { success: false, error: err.message }; }),
+
+  // Exclude a conversation from search results (reversible)
+  excludeConversation: async (conversationId) => {
+    const config = await getConfig();
+    const headers = getAuthHeaders(config);
+    const r1 = await fetch(
+      `${config.supabaseUrl}/rest/v1/chat_turns?conversation_id=eq.${encodeURIComponent(conversationId)}&user_id=eq.${config.userId}`,
+      { method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+        body: JSON.stringify({ exclude_from_search: true }) }
+    );
+    const r2 = await fetch(
+      `${config.supabaseUrl}/rest/v1/messages?conversation_id=eq.${encodeURIComponent(conversationId)}&user_id=eq.${config.userId}`,
+      { method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+        body: JSON.stringify({ exclude_from_search: true }) }
+    );
+    const d1 = await r1.json(), d2 = await r2.json();
+    console.log(`🚫 Excluded conversation ${conversationId}: ${d1.length} chat_turns, ${d2.length} messages`);
+    return { chat_turns: d1.length, messages: d2.length };
+  },
+
+  // Un-exclude a conversation (undo)
+  includeConversation: async (conversationId) => {
+    const config = await getConfig();
+    const headers = getAuthHeaders(config);
+    const r1 = await fetch(
+      `${config.supabaseUrl}/rest/v1/chat_turns?conversation_id=eq.${encodeURIComponent(conversationId)}&user_id=eq.${config.userId}`,
+      { method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+        body: JSON.stringify({ exclude_from_search: false }) }
+    );
+    const r2 = await fetch(
+      `${config.supabaseUrl}/rest/v1/messages?conversation_id=eq.${encodeURIComponent(conversationId)}&user_id=eq.${config.userId}`,
+      { method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+        body: JSON.stringify({ exclude_from_search: false }) }
+    );
+    const d1 = await r1.json(), d2 = await r2.json();
+    console.log(`✅ Re-included conversation ${conversationId}: ${d1.length} chat_turns, ${d2.length} messages`);
+    return { chat_turns: d1.length, messages: d2.length };
+  },
 };
 
 console.log('✅ KYT Background: Service worker ready');
@@ -3061,6 +3099,8 @@ console.log('   - KYT_DEBUG.viewStorage() - View all storage');
 console.log('   - KYT_DEBUG.backfillEmbeddings() - Backfill null embeddings in Supabase');
 console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
 console.log('   - KYT_DEBUG.backfillContextual() - Generate context summaries + re-embed');
+console.log('   - KYT_DEBUG.excludeConversation(id) - Hide a conversation from search (reversible)');
+console.log('   - KYT_DEBUG.includeConversation(id) - Un-hide a conversation from search');
 console.log('   Note: chrome.runtime.sendMessage() from service worker to itself does not work');
 
 // Initialize queue processor

@@ -458,6 +458,8 @@ async function searchSupabaseText(query, options = {}) {
     filterParams += '&or=(is_question.eq.false,is_question.is.null)';
     // P3 fix: exclude deflection responses from text search results
     filterParams += '&or=(deflection.lt.0.70,deflection.is.null)';
+    // Exclude rows marked as test/pollution data
+    filterParams += '&or=(exclude_from_search.eq.false,exclude_from_search.is.null)';
     if (role) {
       filterParams += `&role=eq.${role}`;
     }

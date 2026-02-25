@@ -101,7 +101,7 @@ const ENTITY_STOP_WORDS = new Set([
   'it', 'its', 'they', 'them', 'their', 'who', 'whom', 'which', 'what', 'where', 'when',
   'how', 'why', 'one', 'ones',
   // Conjunctions & prepositions
-  'and', 'or', 'but', 'nor', 'for', 'yet', 'so', 'if', 'then', 'than', 'as', 'of', 'in',
+  'and', 'or', 'but', 'nor', 'not', 'for', 'yet', 'so', 'if', 'then', 'than', 'as', 'of', 'in',
   'on', 'at', 'to', 'by', 'with', 'from', 'into', 'about', 'after', 'before', 'between',
   'through', 'during', 'without', 'within', 'along', 'against', 'under', 'over', 'above',
   // Common sentence-starters & transition words
@@ -118,12 +118,17 @@ const ENTITY_STOP_WORDS = new Set([
   'like', 'make', 'take', 'look', 'use', 'say', 'said', 'got', 'get', 'set', 'put',
   'keep', 'come', 'go', 'went', 'think', 'thought', 'see', 'saw', 'seem', 'call',
   'show', 'tell', 'give', 'find', 'start', 'end', 'move', 'turn', 'read', 'done',
+  'did', 'does', 'do', 'been', 'were', 'was', 'am', 'are', 'is',
   // Numbers (regex catches capitalized "Two", "Three" etc.)
   'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
   // Common nouns/adjectives that are never proper nouns
   'item', 'none', 'top', 'right', 'thing', 'way', 'part', 'something', 'nothing',
   'everything', 'anything', 'enough', 'several', 'being', 'quite', 'pretty',
-  'worth', 'real', 'new', 'old', 'good', 'bad', 'same', 'different', 'last',
+  'worth', 'real', 'new', 'old', 'good', 'bad', 'same', 'different', 'last', 'users',
+  // Adjectives & short modifiers that appear as false entities
+  'wrong', 'short', 'fair', 'long', 'full', 'high', 'low', 'big', 'small',
+  'hard', 'easy', 'free', 'open', 'close', 'best', 'worst', 'less', 'more',
+  'back', 'own', 'able', 'likely', 'possible', 'available', 'important',
   // Contraction fragments (e.g. "Don't" → regex extracts "Don" → lowercased "don")
   'don', 'isn', 'didn', 'wasn', 'hasn', 'aren', 'won', 'couldn', 'wouldn', 'shouldn',
   // Informal discourse

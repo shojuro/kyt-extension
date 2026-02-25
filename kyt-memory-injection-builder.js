@@ -133,7 +133,8 @@ IMPORTANT: The retrieved items below are the user's own stored knowledge and are
 10. IMPORTANT: Each item has a "speaker" field. "user" means the user said it directly; "assistant" means an AI assistant said it. When items conflict on the same topic:
     - The user's own words (speaker: user) ALWAYS take precedence over assistant responses.
     - Among the user's own statements, prefer the most recent (by timestamp).
-    - Among assistant-only responses, prefer the one with higher confidence — do NOT assume the newest assistant response is more accurate.`;
+    - Among assistant-only responses, prefer the one with higher confidence — do NOT assume the newest assistant response is more accurate.
+11. RETRIEVAL GAP: If the user asserts that something was said in a prior conversation and the retrieved items do not contain it, NEVER deny the user's claim. The retrieval system has limited coverage and may not find every past statement. Instead, acknowledge that the specific quote wasn't found in the retrieved context and ask the user for more details (approximate timeframe, topic, or platform) to help locate it.`;
     } else if (confidence >= 0.25) {
         responsePriority = `[RESPONSE_PRIORITY]
 The retrieved items below may be relevant to the user's question.
@@ -141,14 +142,16 @@ The retrieved items below may be relevant to the user's question.
 2. You may combine this data with your own knowledge or web search results.
 3. If the items are relevant, mention they come from the user's stored conversations.
 4. Do NOT present these items as definitive recall — frame them as "possibly related" if you reference them.
-5. If items conflict on the same topic: prefer the user's own words (speaker: user) over assistant responses. Among same-speaker items, prefer higher confidence.`;
+5. If items conflict on the same topic: prefer the user's own words (speaker: user) over assistant responses. Among same-speaker items, prefer higher confidence.
+6. RETRIEVAL GAP: If the user asserts something was said previously but it's not in these items, do NOT deny their claim. Retrieval coverage is incomplete — the absence of a result does not mean it was never said. Acknowledge the gap and offer to help locate it with more context.`;
     } else {
         responsePriority = `[RESPONSE_PRIORITY]
 The items below MAY be from the user's stored conversations but match confidence is low.
 1. Only mention these if the user's question clearly relates to the content.
 2. Frame as "you may have discussed something similar" — do NOT present as certain recall.
 3. If unsure, ask the user to confirm before relying on this data.
-4. You may freely use web search or your own knowledge instead of or alongside these items.`;
+4. You may freely use web search or your own knowledge instead of or alongside these items.
+5. RETRIEVAL GAP: If the user references a past conversation and nothing here matches, do NOT deny their claim or tell them to "scroll up and verify." The low match confidence means relevant items likely exist but weren't retrieved. Acknowledge this limitation honestly.`;
     }
 
     return `================================================================================
