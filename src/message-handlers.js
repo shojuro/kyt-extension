@@ -11,6 +11,7 @@ import { searchMessages, findSimilarMessages } from './browser-search.js';
 import { syncViaEdgeFunction } from './edge-sync.js';
 import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { HistoryImporter } from './history-import/index.js';
+import { classifyIntent, PASSIVE_CONFIDENCE_THRESHOLD } from './intent-classifier.js';
 
 // ===== INJECTION HEALTH STATS =====
 const INJECTION_STATS_KEY = 'kyt_injection_stats';
@@ -80,10 +81,27 @@ export function registerPortHandler(getContextForInjection) {
           return;
         }
         console.log('🔍 KYT Background: Context request (port) for:', msg.userMessage.substring(0, 50) + '...');
+
+        // Intent classification gate — skip retrieval for directives/filler
+        const classification = classifyIntent(msg.userMessage);
+        console.log(`🎯 Intent: ${classification.intent} (${classification.reason}) for: "${msg.userMessage.substring(0, 80)}${msg.userMessage.length > 80 ? '...' : ''}"`);
+
+        if (classification.intent === 'SKIP') {
+          console.log(`⏭️ Skipping injection: ${classification.reason}`);
+          port.postMessage({ requestId: msg.requestId, success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason });
+          return;
+        }
+
         updateInjectionStats({ attempt: true }).catch(() => {});
 
         const result = await chrome.storage.local.get(['kytDebugMode']);
         const config = { ...msg.config, debugMode: result.kytDebugMode || false };
+
+        // PASSIVE intent: raise confidence threshold to filter low-quality matches
+        if (classification.intent === 'PASSIVE') {
+          config.confidenceThreshold = PASSIVE_CONFIDENCE_THRESHOLD;
+          console.log(`📊 Passive query — confidence threshold raised to ${PASSIVE_CONFIDENCE_THRESHOLD}`);
+        }
 
         const contextData = await Promise.race([
           getContextForInjection(msg.userMessage, config),
@@ -283,6 +301,17 @@ export function registerMessageHandler(deps) {
               return;
             }
             console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
+
+            // Intent classification gate — skip retrieval for directives/filler
+            const classification = classifyIntent(message.userMessage);
+            console.log(`🎯 Intent: ${classification.intent} (${classification.reason}) for: "${message.userMessage.substring(0, 80)}${message.userMessage.length > 80 ? '...' : ''}"`);
+
+            if (classification.intent === 'SKIP') {
+              console.log(`⏭️ Skipping injection: ${classification.reason}`);
+              sendResponse({ success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason });
+              return;
+            }
+
             updateInjectionStats({ attempt: true }).catch(() => {});
 
             const result = await chrome.storage.local.get(['kytDebugMode']);
@@ -290,6 +319,12 @@ export function registerMessageHandler(deps) {
               ...message.config,
               debugMode: result.kytDebugMode || false
             };
+
+            // PASSIVE intent: raise confidence threshold to filter low-quality matches
+            if (classification.intent === 'PASSIVE') {
+              config.confidenceThreshold = PASSIVE_CONFIDENCE_THRESHOLD;
+              console.log(`📊 Passive query — confidence threshold raised to ${PASSIVE_CONFIDENCE_THRESHOLD}`);
+            }
 
             const contextData = await Promise.race([
               getContextForInjection(message.userMessage, config),
