@@ -45,7 +45,7 @@ const DEFLECTION_PATTERNS = [
   /i'?m (?:not able|unable) to (?:access|retrieve|find|provide)/i,
 
   // Uncertainty / deflection
-  /i'?m not sure (?:what|how|if|about) (?:you'?re|that)/i,
+  /i'?m not (?:really |entirely |exactly )?sure (?:really |entirely |exactly )?(?:what|how|if|about|which|when|where|why)/i,
   /i don'?t (?:know|recall|remember) (?:what|the|any|about)/i,
   /i don'?t have (?:enough|sufficient) (?:context|information)/i,
   /there'?s no (?:\w+ )?(?:record|information|data|mention|answer|preference) (?:of|about|for|regarding)/i,
