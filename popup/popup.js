@@ -30,6 +30,7 @@ const pendingCount = document.getElementById('pendingCount');
 const lastSyncTime = document.getElementById('lastSyncTime');
 const forceSyncBtn = document.getElementById('forceSyncBtn');
 const syncResult = document.getElementById('syncResult');
+const modeRadios = document.querySelectorAll('input[name="memoryMode"]');
 const authLoggedIn = document.getElementById('authLoggedIn');
 const authLoggedOut = document.getElementById('authLoggedOut');
 const userEmailEl = document.getElementById('userEmail');
@@ -628,6 +629,24 @@ async function loadCircuitBreakerStatus() {
   }
 }
 
+/**
+ * Load and display current memory mode
+ */
+async function loadMemoryMode() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'GET_MEMORY_MODE' });
+    if (response && response.success) {
+      const radio = document.querySelector(`input[name="memoryMode"][value="${response.mode}"]`);
+      if (radio) radio.checked = true;
+    }
+  } catch (error) {
+    console.error('Error loading memory mode:', error);
+    // Default to full
+    const radio = document.querySelector('input[name="memoryMode"][value="full"]');
+    if (radio) radio.checked = true;
+  }
+}
+
 // Event listeners
 forceSyncBtn.addEventListener('click', forceResync);
 upgradeBtn.addEventListener('click', handleUpgrade);
@@ -637,6 +656,23 @@ testCaptureBtn.addEventListener('click', testCapture);
 rescanBtn.addEventListener('click', rescanMessages);
 setupBtn.addEventListener('click', openSetup);
 importBtn.addEventListener('click', openImport);
+
+// Memory mode change
+modeRadios.forEach(radio => {
+  radio.addEventListener('change', async (e) => {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'SET_MEMORY_MODE',
+        mode: e.target.value
+      });
+      if (!response?.success) {
+        console.error('Failed to set memory mode:', response?.error);
+      }
+    } catch (error) {
+      console.error('Error setting memory mode:', error);
+    }
+  });
+});
 
 // Auth buttons
 signInBtn.addEventListener('click', () => {
@@ -670,6 +706,7 @@ checkFirstInstallRedirect().then(redirecting => {
   if (!redirecting) {
     // Only load normal UI if not redirecting
     loadAuthStatus();
+    loadMemoryMode();
     loadStats();
     loadConfig();
     loadDebugMode();

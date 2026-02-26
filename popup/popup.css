@@ -458,3 +458,70 @@ body {
   font-size: 11px;
   color: #999;
 }
+
+/* Mode Selector */
+.mode-section {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.mode-selector {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.mode-option {
+  cursor: pointer;
+}
+
+.mode-option input[type="radio"] {
+  display: none;
+}
+
+.mode-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 6px;
+  border-radius: 8px;
+  border: 2px solid #e0e0e0;
+  background: #f8f9fa;
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.mode-card:hover {
+  border-color: #b0b0b0;
+}
+
+.mode-icon {
+  font-size: 20px;
+}
+
+.mode-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #333;
+}
+
+.mode-desc {
+  font-size: 10px;
+  color: #888;
+}
+
+.mode-option input[type="radio"]:checked + .mode-card.mode-full {
+  border-color: #28a745;
+  background: #d4edda;
+}
+
+.mode-option input[type="radio"]:checked + .mode-card.mode-clean-room {
+  border-color: #D4890B;
+  background: #fff3cd;
+}
+
+.mode-option input[type="radio"]:checked + .mode-card.mode-incognito {
+  border-color: #888888;
+  background: #e9ecef;
+}

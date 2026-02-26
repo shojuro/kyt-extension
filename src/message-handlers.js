@@ -12,6 +12,7 @@ import { syncViaEdgeFunction } from './edge-sync.js';
 import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { HistoryImporter } from './history-import/index.js';
 import { classifyIntent, PASSIVE_CONFIDENCE_THRESHOLD } from './intent-classifier.js';
+import { getMemoryMode, setMemoryMode } from './memory-mode.js';
 
 // ===== INJECTION HEALTH STATS =====
 const INJECTION_STATS_KEY = 'kyt_injection_stats';
@@ -81,6 +82,14 @@ export function registerPortHandler(getContextForInjection) {
           return;
         }
         console.log('🔍 KYT Background: Context request (port) for:', msg.userMessage.substring(0, 50) + '...');
+
+        // Memory mode gate — skip injection unless full mode
+        const memMode = await getMemoryMode();
+        if (memMode !== 'full') {
+          console.log(`🚫 ${memMode} mode — injection skipped`);
+          port.postMessage({ requestId: msg.requestId, success: true, items: [], formattedContext: null, modeBlocked: true, mode: memMode });
+          return;
+        }
 
         // Intent classification gate — skip retrieval for directives/filler
         const classification = classifyIntent(msg.userMessage);
@@ -173,19 +182,27 @@ export function registerMessageHandler(deps) {
         return true;
 
       case 'SAVE_MESSAGE':
-        saveMessage(message.data)
-          .then((result) => {
+        (async () => {
+          try {
+            const mode = await getMemoryMode();
+            if (mode === 'incognito') {
+              console.log('👻 Incognito mode — message not captured');
+              sendResponse({ success: true, queued: false, reason: 'incognito_mode' });
+              return;
+            }
+            console.log(`📝 Captured message (mode: ${mode})`);
+            const result = await saveMessage(message.data);
             if (result && result.saved !== false) {
               scheduleDebouncedSync();
               sendResponse({ success: true, queued: true });
             } else {
               sendResponse({ success: true, queued: false, reason: result?.reason });
             }
-          })
-          .catch(error => {
+          } catch (error) {
             console.error('❌ Save failed:', error);
             sendResponse({ success: false, error: error.message });
-          });
+          }
+        })();
         return true;
 
       case 'EXTRACTION_ERROR':
@@ -301,6 +318,14 @@ export function registerMessageHandler(deps) {
               return;
             }
             console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
+
+            // Memory mode gate — skip injection unless full mode
+            const memMode = await getMemoryMode();
+            if (memMode !== 'full') {
+              console.log(`🚫 ${memMode} mode — injection skipped`);
+              sendResponse({ success: true, items: [], formattedContext: null, modeBlocked: true, mode: memMode });
+              return;
+            }
 
             // Intent classification gate — skip retrieval for directives/filler
             const classification = classifyIntent(message.userMessage);
@@ -562,6 +587,24 @@ export function registerMessageHandler(deps) {
             console.error('❌ PROCESS_IMPORTED_MESSAGES failed:', error);
             sendResponse({ success: false, error: error.message });
           }
+        })();
+        return true;
+
+      case 'SET_MEMORY_MODE':
+        (async () => {
+          try {
+            await setMemoryMode(message.mode);
+            sendResponse({ success: true, mode: message.mode });
+          } catch (error) {
+            sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
+      case 'GET_MEMORY_MODE':
+        (async () => {
+          const mode = await getMemoryMode();
+          sendResponse({ success: true, mode });
         })();
         return true;
 
