@@ -514,7 +514,6 @@ export async function syncMessages(messagesToSync) {
       synced_from_extension: new Date().toISOString(),
       is_question: msg.is_question || false,
       deflection: msg.deflection || null,
-      profile_id: profileId,
     }));
 
     // Insert to Supabase (UPSERT for idempotency)

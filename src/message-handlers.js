@@ -12,10 +12,54 @@ import { syncViaEdgeFunction } from './edge-sync.js';
 import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { HistoryImporter } from './history-import/index.js';
 import { classifyIntent } from './intent-classifier.js';
+import { callEdgeFunction } from './api-client.js';
 import { getMemoryMode, setMemoryMode } from './memory-mode.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
+
+// ===== LAYER 2 INTENT CLASSIFICATION (LLM Judge) =====
+
+/**
+ * Escalate a PASSIVE classification to the LLM judge (Haiku 4.5) for a
+ * second opinion. Only called for PASSIVE — QUERY and SKIP bypass this.
+ *
+ * On any failure (network, timeout, missing key), falls through to PASSIVE
+ * so the retrieval pipeline is never blocked by Layer 2 unavailability.
+ *
+ * @param {string} message - The user's message
+ * @param {Object} classification - Layer 1 result from classifyIntent()
+ * @returns {Promise<Object>} Updated classification (intent may change to SKIP)
+ */
+async function escalateToLayer2(message, classification) {
+  try {
+    const result = await Promise.race([
+      callEdgeFunction('classify_intent', {
+        message,
+        scores: classification.scores,
+        reason: classification.reason,
+      }, { timeoutMs: 4000 }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Layer 2 timeout')), 4500))
+    ]);
+
+    if (result.intent === 'SKIP') {
+      console.log(`🧠 Layer 2 override: PASSIVE → SKIP (${result.reason})`);
+      return {
+        ...classification,
+        intent: 'SKIP',
+        reason: result.reason || 'llm_judge_skip',
+        confidenceThreshold: null,
+        layer: 2,
+      };
+    }
+
+    console.log(`🧠 Layer 2 confirmed: PASSIVE (${result.reason})`);
+    return { ...classification, layer: 2 };
+  } catch (err) {
+    console.warn(`⚠️ Layer 2 failed (${err.message}) — proceeding as PASSIVE`);
+    return classification;
+  }
+}
 
 // ===== GDPR DATA HELPERS =====
 
@@ -131,7 +175,7 @@ export function registerPortHandler(getContextForInjection) {
         }
 
         // Intent classification gate — skip retrieval for directives/filler
-        const classification = classifyIntent(msg.userMessage);
+        let classification = classifyIntent(msg.userMessage);
         const s = classification.scores;
         console.log(`🎯 Intent: ${classification.intent} (${classification.reason})` +
           (s ? ` [D:${s.directive.toFixed(2)} M:${s.memory.toFixed(2)} Q:${s.question.toFixed(2)} P:${s.personal.toFixed(2)} T:${s.temporal.toFixed(2)} ρ:${s.density.toFixed(2)}]` : '') +
@@ -142,6 +186,16 @@ export function registerPortHandler(getContextForInjection) {
           console.log(`⏭️ Skipping injection: ${classification.reason}`);
           port.postMessage({ requestId: msg.requestId, success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason });
           return;
+        }
+
+        // Layer 2: LLM judge for PASSIVE cases — may override to SKIP
+        if (classification.intent === 'PASSIVE') {
+          classification = await escalateToLayer2(msg.userMessage, classification);
+          if (classification.intent === 'SKIP') {
+            console.log(`⏭️ Skipping injection (Layer 2): ${classification.reason}`);
+            port.postMessage({ requestId: msg.requestId, success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason });
+            return;
+          }
         }
 
         updateInjectionStats({ attempt: true }).catch(() => {});
@@ -370,7 +424,7 @@ export function registerMessageHandler(deps) {
             }
 
             // Intent classification gate — skip retrieval for directives/filler
-            const classification = classifyIntent(message.userMessage);
+            let classification = classifyIntent(message.userMessage);
             const s = classification.scores;
             console.log(`🎯 Intent: ${classification.intent} (${classification.reason})` +
               (s ? ` [D:${s.directive.toFixed(2)} M:${s.memory.toFixed(2)} Q:${s.question.toFixed(2)} P:${s.personal.toFixed(2)} T:${s.temporal.toFixed(2)} ρ:${s.density.toFixed(2)}]` : '') +
@@ -381,6 +435,16 @@ export function registerMessageHandler(deps) {
               console.log(`⏭️ Skipping injection: ${classification.reason}`);
               sendResponse({ success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason });
               return;
+            }
+
+            // Layer 2: LLM judge for PASSIVE cases — may override to SKIP
+            if (classification.intent === 'PASSIVE') {
+              classification = await escalateToLayer2(message.userMessage, classification);
+              if (classification.intent === 'SKIP') {
+                console.log(`⏭️ Skipping injection (Layer 2): ${classification.reason}`);
+                sendResponse({ success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason });
+                return;
+              }
             }
 
             updateInjectionStats({ attempt: true }).catch(() => {});
