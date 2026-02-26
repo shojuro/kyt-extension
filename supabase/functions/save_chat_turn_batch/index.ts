@@ -113,6 +113,7 @@ serve(async (req) => {
                     is_injection: turn.is_injection || false,
                     is_question: detectIsQuestion(turn),
                     deflection: detectDeflection(turn),
+                    profile_id: turn.profile_id || turn.user_id,
                 };
             });
 
@@ -181,6 +182,7 @@ serve(async (req) => {
                             is_question: true,
                             deflection: null, // Questions can't be deflections
                             context_generated: true, // Skip backfill too
+                            profile_id: turn.profile_id || turn.user_id,
                         }, {
                             onConflict: 'user_id,conversation_id,platform,start_timestamp',
                             ignoreDuplicates: true
@@ -248,6 +250,7 @@ serve(async (req) => {
                     is_injection: turn.is_injection || false,
                     is_question: false, // Already verified above (questions short-circuit)
                     deflection: detectDeflection(turn),
+                    profile_id: turn.profile_id || turn.user_id,
                 };
 
                 // Add contextual retrieval fields if context was generated

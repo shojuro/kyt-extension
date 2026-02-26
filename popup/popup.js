@@ -30,6 +30,8 @@ const pendingCount = document.getElementById('pendingCount');
 const lastSyncTime = document.getElementById('lastSyncTime');
 const forceSyncBtn = document.getElementById('forceSyncBtn');
 const syncResult = document.getElementById('syncResult');
+const profileName = document.getElementById('profileName');
+const newProfileBtn = document.getElementById('newProfileBtn');
 const authLoggedIn = document.getElementById('authLoggedIn');
 const authLoggedOut = document.getElementById('authLoggedOut');
 const userEmailEl = document.getElementById('userEmail');
@@ -159,6 +161,21 @@ async function loadAuthStatus() {
     }
   } catch (error) {
     console.error('Error loading auth status:', error);
+  }
+}
+
+/**
+ * Load and display active profile
+ */
+async function loadProfile() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'GET_PROFILE' });
+    if (response && response.success && response.profileId) {
+      profileName.textContent = 'Default';
+      profileName.title = response.profileId;
+    }
+  } catch (error) {
+    console.error('Error loading profile:', error);
   }
 }
 
@@ -670,6 +687,7 @@ checkFirstInstallRedirect().then(redirecting => {
   if (!redirecting) {
     // Only load normal UI if not redirecting
     loadAuthStatus();
+    loadProfile();
     loadStats();
     loadConfig();
     loadDebugMode();

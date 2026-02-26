@@ -21,6 +21,7 @@ import {
 } from './embedding-circuit-breaker.js';
 import { fetchWithTimeout } from './utils/fetch.js';
 import { generateHyDEDocument, hydeCB } from './hyde-search-generator.js';
+import { getActiveProfileId } from './profile-manager.js';
 
 // Matryoshka truncation: Qwen3-Embedding-8B at 1024d for HNSW indexing
 const EMBEDDING_DIMS = 1024;
@@ -454,6 +455,11 @@ async function searchSupabaseText(query, options = {}) {
       return [];
     }
     filterParams += `&user_id=eq.${config.userId}`;
+    // Profile isolation filter (forward-compatible — MVP: profile_id = user_id)
+    const searchProfileId = await getActiveProfileId();
+    if (searchProfileId) {
+      filterParams += `&profile_id=eq.${searchProfileId}`;
+    }
     // P1 fix: exclude questions from text search results
     filterParams += '&or=(is_question.eq.false,is_question.is.null)';
     // P3 fix: exclude deflection responses from text search results

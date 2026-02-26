@@ -476,6 +476,7 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
             hypothetical_questions: chunk.hyde_questions,
             last_accessed: new Date().toISOString(),
             access_count: 0,
+            profile_id: chunk.user_id,  // MVP: profile_id = user_id
           }));
 
           try {
@@ -811,6 +812,7 @@ Deno.serve(async (req) => {
         hypothetical_questions: chunk.hyde_questions,
         last_accessed: new Date().toISOString(),
         access_count: 0,
+        profile_id: chunk.user_id,  // MVP: profile_id = user_id
       }));
 
       try {

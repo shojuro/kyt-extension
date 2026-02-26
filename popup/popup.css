@@ -446,6 +446,34 @@ body {
   transform: none;
 }
 
+/* Profile Section */
+.profile-display {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.profile-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+}
+
+.profile-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #555;
+}
+
+.profile-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #667eea;
+}
+
 /* Footer */
 .footer {
   background: #f8f9fa;

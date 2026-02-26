@@ -23,6 +23,7 @@ import {
 import { fetchWithTimeout } from './utils/fetch.js';
 import { normalizePlatform } from './utils/normalize-platform.js';
 import { callEdgeFunction } from './api-client.js';
+import { getActiveProfileId } from './profile-manager.js';
 
 // Matryoshka truncation: Qwen3-Embedding-8B at 1024d for HNSW indexing
 // (pgvector 0.8.0 caps HNSW at 2000d; 4096d forced sequential scan)
@@ -496,6 +497,9 @@ export async function syncMessages(messagesToSync) {
       }
     }
 
+    // Resolve profile ID for this sync batch
+    const profileId = await getActiveProfileId() || config.userId || '00000000-0000-0000-0000-000000000000';
+
     // Prepare data for Supabase
     const messagesWithEmbeddings = deflectionFiltered.map((msg, idx) => ({
       content: msg.content,
@@ -509,7 +513,8 @@ export async function syncMessages(messagesToSync) {
       user_id: config.userId || '00000000-0000-0000-0000-000000000000', // Add user_id
       synced_from_extension: new Date().toISOString(),
       is_question: msg.is_question || false,
-      deflection: msg.deflection || null
+      deflection: msg.deflection || null,
+      profile_id: profileId,
     }));
 
     // Insert to Supabase (UPSERT for idempotency)
@@ -634,6 +639,7 @@ export async function syncMessages(messagesToSync) {
         deflection: chunk.deflection || null,
         entities_extracted: false,
         preferences_extracted: false,
+        profile_id: profileId,
       }));
 
       // Insert to chat_turns table
