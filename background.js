@@ -734,6 +734,12 @@ chrome.runtime.onInstalled.addListener((details) => {
       console.log('✅ KYT: Storage initialized');
       console.log('   Phase 1 fix enabled: disableQueryTransformation = true');
       console.log('   First-install onboarding: login prompt + import enabled');
+
+      // Auto-open welcome flow on first install
+      chrome.tabs.create({
+        url: chrome.runtime.getURL('popup/import-modal.html?mode=first-install'),
+        active: true,
+      });
     }).catch(error => {
       console.error('❌ KYT: Failed to initialize storage:', error);
     });

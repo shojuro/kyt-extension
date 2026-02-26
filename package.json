@@ -11,6 +11,7 @@
     "lint": "eslint . --ignore-pattern node_modules/",
     "lint:fix": "eslint . --fix --ignore-pattern node_modules/",
     "build": "node scripts/build.js",
+    "build:firefox": "node build/generate-firefox-manifest.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
@@ -48,6 +49,7 @@
     "jszip": "^3.10.1",
     "playwright": "^1.56.1",
     "puppeteer": "^24.31.0",
-    "vitest": "^4.0.13"
+    "vitest": "^4.0.13",
+    "webextension-polyfill": "^0.12.0"
   }
 }

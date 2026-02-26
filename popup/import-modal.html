@@ -186,19 +186,76 @@
       gap: 8px;
       margin-top: 12px;
     }
+
+    .mode-choice {
+      transition: all 0.15s ease;
+    }
+
+    .mode-choice:hover {
+      border-color: #2563eb !important;
+    }
+
+    .mode-choice.selected {
+      border-color: #2563eb !important;
+      background-color: #eff6ff;
+    }
   </style>
 </head>
 <body>
-  <!-- Permission View (first-install only) -->
-  <div class="container hidden" id="permission-view">
-    <h1>Welcome to K.Y.T. Memory</h1>
+  <!-- Welcome View (first-install only, step 1) -->
+  <div class="container hidden" id="welcome-view">
+    <h1>Welcome to K.Y.T.</h1>
+    <p style="font-size: 15px; font-weight: 500; color: #2563eb; margin-bottom: 4px;">Keep Your Thoughts</p>
     <div class="card">
-      <p><strong>Import your chat history?</strong></p>
-      <p style="margin-top: 8px;">We can import your last 90 days of ChatGPT and Claude conversations.</p>
+      <p><strong>Your AI conversations, remembered.</strong></p>
+      <p style="margin-top: 8px;">K.Y.T. captures your ChatGPT and Claude conversations and gives your AI long-term memory across sessions.</p>
+      <ul class="feature-list" style="margin-top: 12px;">
+        <li><strong>Ask once, remembered forever</strong> — your preferences, facts, and decisions carry across conversations</li>
+        <li><strong>Search your history</strong> — find anything you've discussed, instantly</li>
+        <li><strong>You're in control</strong> — hide, delete, or export your data anytime</li>
+      </ul>
+    </div>
+    <div class="card" style="margin-top: 8px;">
+      <p style="font-weight: 600; margin-bottom: 8px;">How your data is handled:</p>
+      <ul class="feature-list" style="margin-top: 0;">
+        <li>Stored encrypted in your personal database</li>
+        <li>Never shared with third parties</li>
+        <li>Never used to train AI models</li>
+        <li>Delete everything with one click</li>
+      </ul>
+    </div>
+    <button class="btn btn-primary" id="btn-welcome-continue" style="margin-top: 12px;">Get Started</button>
+  </div>
+
+  <!-- Mode Selection View (first-install, step 2) -->
+  <div class="container hidden" id="mode-view">
+    <h1>Choose Your Mode</h1>
+    <p style="margin-bottom: 12px;">You can change this anytime from the extension popup.</p>
+    <div class="card mode-choice" id="mode-full" data-mode="full" style="cursor: pointer; margin-bottom: 8px; border: 2px solid #10b981;">
+      <p><strong>Full Mode</strong> <span style="color: #10b981; font-size: 12px;">RECOMMENDED</span></p>
+      <p style="font-size: 13px; color: #6b7280; margin-top: 4px;">Capture conversations + inject memories into your AI chats. The complete K.Y.T. experience.</p>
+    </div>
+    <div class="card mode-choice" id="mode-clean-room" data-mode="clean_room" style="cursor: pointer; margin-bottom: 8px;">
+      <p><strong>Clean Room</strong></p>
+      <p style="font-size: 13px; color: #6b7280; margin-top: 4px;">Capture conversations but don't inject memories. Good for evaluating K.Y.T. before turning on memory injection.</p>
+    </div>
+    <div class="card mode-choice" id="mode-incognito" data-mode="incognito" style="cursor: pointer; margin-bottom: 8px;">
+      <p><strong>Incognito</strong></p>
+      <p style="font-size: 13px; color: #6b7280; margin-top: 4px;">Nothing captured, nothing injected. K.Y.T. is completely paused.</p>
+    </div>
+    <button class="btn btn-primary" id="btn-mode-continue" style="margin-top: 4px;">Continue</button>
+  </div>
+
+  <!-- Permission View (first-install, step 3) -->
+  <div class="container hidden" id="permission-view">
+    <h1>Import Your History</h1>
+    <div class="card">
+      <p><strong>Bring in your last 90 days of conversations?</strong></p>
+      <p style="margin-top: 8px;">This gives K.Y.T. a head start — your AI will remember things you've already discussed.</p>
       <ul class="feature-list">
-        <li>✓ Private & secure (processed locally)</li>
-        <li>✓ Takes 2-5 minutes</li>
-        <li>✓ Skip anytime</li>
+        <li>Private & secure (processed locally)</li>
+        <li>Takes 2-5 minutes</li>
+        <li>You can always do this later</li>
       </ul>
     </div>
     <div class="button-row">

@@ -3,6 +3,8 @@ import { validateExportFile } from '../src/history-import/validation.js';
 
 // State machine
 const STATES = {
+    WELCOME: 'welcome',
+    MODE_SELECT: 'mode_select',
     PERMISSION: 'permission',
     PLATFORM_SELECT: 'platform_select',
     IMPORTING: 'importing',
@@ -27,9 +29,13 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function cacheElements() {
+    elements.welcomeView = document.getElementById('welcome-view');
+    elements.modeView = document.getElementById('mode-view');
     elements.permissionView = document.getElementById('permission-view');
     elements.mainView = document.getElementById('main-view');
     elements.fallbackView = document.getElementById('fallback-view');
+    elements.btnWelcomeContinue = document.getElementById('btn-welcome-continue');
+    elements.btnModeContinue = document.getElementById('btn-mode-continue');
     elements.btnAcceptImport = document.getElementById('btn-accept-import');
     elements.btnSkipImport = document.getElementById('btn-skip-import');
     elements.btnChatGPT = document.getElementById('btn-chatgpt');
@@ -50,7 +56,41 @@ function cacheElements() {
     elements.platformSelect = document.getElementById('platform-select');
 }
 
+let selectedMode = 'full';
+
 function setupListeners() {
+    // Welcome view → Mode selection
+    elements.btnWelcomeContinue?.addEventListener('click', () => {
+        setState(STATES.MODE_SELECT);
+    });
+
+    // Mode selection cards
+    document.querySelectorAll('.mode-choice').forEach(card => {
+        card.addEventListener('click', () => {
+            document.querySelectorAll('.mode-choice').forEach(c => {
+                c.classList.remove('selected');
+                c.style.borderColor = '#e5e7eb';
+            });
+            card.classList.add('selected');
+            card.style.borderColor = '#2563eb';
+            selectedMode = card.dataset.mode;
+        });
+    });
+
+    // Mode view → Permission/import
+    elements.btnModeContinue?.addEventListener('click', async () => {
+        // Save the selected mode
+        try {
+            await chrome.runtime.sendMessage({
+                type: 'SET_MEMORY_MODE',
+                mode: selectedMode
+            });
+        } catch (e) {
+            console.warn('Failed to set mode:', e);
+        }
+        setState(STATES.PERMISSION);
+    });
+
     // Permission view buttons
     elements.btnAcceptImport?.addEventListener('click', () => {
         setState(STATES.PLATFORM_SELECT);
@@ -198,7 +238,7 @@ async function checkFirstInstall() {
         const { show_import_onboarding } = await chrome.storage.local.get('show_import_onboarding');
 
         if (show_import_onboarding !== false) {
-            setState(STATES.PERMISSION);
+            setState(STATES.WELCOME);
             return;
         }
     }
@@ -234,6 +274,8 @@ function setState(newState) {
     currentState = newState;
 
     // Hide all views
+    elements.welcomeView?.classList.add('hidden');
+    elements.modeView?.classList.add('hidden');
     elements.permissionView?.classList.add('hidden');
     elements.mainView?.classList.add('hidden');
     elements.fallbackView?.classList.add('hidden');
@@ -244,6 +286,20 @@ function setState(newState) {
     elements.progressContainer.style.display = 'none';
 
     switch (newState) {
+        case STATES.WELCOME:
+            elements.welcomeView?.classList.remove('hidden');
+            break;
+
+        case STATES.MODE_SELECT:
+            elements.modeView?.classList.remove('hidden');
+            // Pre-select full mode card
+            const fullCard = document.getElementById('mode-full');
+            if (fullCard) {
+                fullCard.classList.add('selected');
+                fullCard.style.borderColor = '#2563eb';
+            }
+            break;
+
         case STATES.PERMISSION:
             elements.permissionView?.classList.remove('hidden');
             break;

@@ -1,0 +1,115 @@
+{
+  "manifest_version": 3,
+  "name": "KYT Memory - Multi-Platform",
+  "version": "1.2.0",
+  "description": "Capture and search conversations across ChatGPT, Claude, and more with long-term semantic memory",
+  "permissions": [
+    "storage",
+    "alarms",
+    "scripting",
+    "tabs"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ],
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icon.svg",
+      "48": "icon.svg",
+      "128": "icon.svg"
+    },
+    "default_title": "K.Y.T. Memory Extension Status"
+  },
+  "options_page": "setup.html",
+  "icons": {
+    "16": "icon.svg",
+    "48": "icon.svg",
+    "128": "icon.svg"
+  },
+  "host_permissions": [
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://svrcvfzlwhnixzuxaccf.supabase.co/*",
+    "https://api.openai.com/*",
+    "https://router.huggingface.co/*",
+    "https://api.jina.ai/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "platforms/chatgpt/content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "platforms/claude/content_test.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "platforms/claude/content_bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "platforms/chatgpt/inject.js",
+        "platforms/chatgpt/dom-observer.js"
+      ],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ]
+    },
+    {
+      "resources": [
+        "platforms/claude/inject.js"
+      ],
+      "matches": [
+        "https://claude.ai/*"
+      ]
+    },
+    {
+      "resources": [
+        "src/content/queue-manager.js",
+        "src/storage/local-queue.js",
+        "src/utils/crypto.js",
+        "src/utils/normalize-platform.js",
+        "kyt-memory-injection-builder.js"
+      ],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*"
+      ]
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "kyt-memory@kyt.app",
+      "strict_min_version": "109.0"
+    }
+  }
+}
