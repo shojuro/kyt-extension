@@ -39,6 +39,7 @@ import {
   detectIsQuestion,
 } from './src/context-retrieval.js';
 import { registerPortHandler, registerMessageHandler } from './src/message-handlers.js';
+import { getMemoryMode, updateBadge } from './src/memory-mode.js';
 
 self.HistoryImporter = HistoryImporter; // Expose for debugging
 
@@ -546,6 +547,8 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   // Set up periodic sync alarm (every 5 minutes)
   await chrome.alarms.create('periodicSync', { periodInMinutes: 5 });
   console.log('⏰ Periodic sync alarm created (5 minute interval)');
+
+  getMemoryMode().then(updateBadge);
 });
 
 // ===== LIFECYCLE: onStartup (queue processor + auth refresh) =====
@@ -554,6 +557,7 @@ chrome.runtime.onStartup.addListener(() => {
     queueProcessor.initialize();
     queueProcessor.processQueue();
     processPendingLocalQueues();
+    getMemoryMode().then(updateBadge);
   } catch (error) {
     console.error('❌ Failed to initialize queue processor on startup:', error);
     chrome.storage.local.get(['error_log'], (result) => {
@@ -713,6 +717,7 @@ async function reInjectContentScripts() {
 // ===== LIFECYCLE: onInstalled (storage init / update handlers) =====
 chrome.runtime.onInstalled.addListener((details) => {
   console.log('🔧 KYT: Extension installed/updated:', details.reason);
+  getMemoryMode().then(updateBadge);
 
   if (details.reason === 'install') {
     chrome.storage.local.set({
