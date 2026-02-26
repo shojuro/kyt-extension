@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>K.Y.T. — My Memories</title>
+  <link rel="stylesheet" href="memories.css">
+</head>
+
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>K.Y.T. — My Memories</h1>
+      <p class="subtitle">Browse and manage your stored conversations</p>
+    </div>
+
+    <div class="toolbar">
+      <div class="stats-bar">
+        <span id="totalCount">0 conversations</span>
+      </div>
+      <div class="toolbar-actions">
+        <button id="deleteAllBtn" class="btn-danger-sm">Delete All</button>
+      </div>
+    </div>
+
+    <div id="conversationList" class="conversation-list">
+      <div class="loading">Loading conversations...</div>
+    </div>
+
+    <div id="loadMoreContainer" class="load-more-container hidden">
+      <button id="loadMoreBtn" class="btn-secondary">Load More</button>
+    </div>
+
+    <div id="emptyState" class="empty-state hidden">
+      <p>No conversations stored yet.</p>
+      <p class="empty-hint">Start chatting on ChatGPT or Claude with K.Y.T. enabled to capture conversations.</p>
+    </div>
+  </div>
+
+  <!-- Delete confirmation modal -->
+  <div id="deleteModal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h3>Delete Conversation</h3>
+      <p>This will permanently delete this conversation and all its messages from K.Y.T.</p>
+      <p class="modal-title" id="deleteModalTitle"></p>
+      <div class="modal-actions">
+        <button id="deleteCancelBtn" class="btn-secondary-sm">Cancel</button>
+        <button id="deleteConfirmBtn" class="btn-danger-sm">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="memories.js"></script>
+</body>
+
+</html>

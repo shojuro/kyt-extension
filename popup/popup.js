@@ -664,6 +664,107 @@ async function loadMemoryMode() {
   }
 }
 
+// DOM elements — Your Data section
+const viewMemoriesBtn = document.getElementById('viewMemoriesBtn');
+const exportDataBtn = document.getElementById('exportDataBtn');
+const deleteAllBtn = document.getElementById('deleteAllBtn');
+const dataResult = document.getElementById('dataResult');
+
+/**
+ * Open the Memory Management page in a new tab
+ */
+function openMemories() {
+  chrome.tabs.create({ url: chrome.runtime.getURL('popup/memories.html') });
+}
+
+/**
+ * Export all user data as a JSON download
+ */
+async function handleExportData() {
+  exportDataBtn.disabled = true;
+  exportDataBtn.textContent = 'Exporting...';
+  dataResult.classList.add('hidden');
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'EXPORT_MY_DATA' });
+    if (!response?.success) throw new Error(response?.error || 'Export failed');
+
+    // Create downloadable JSON blob
+    const json = JSON.stringify(response.data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+
+    // Trigger download via a temporary link
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kyt-data-export-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    // Show counts
+    const counts = Object.entries(response.data)
+      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.length : '?'}`)
+      .join(', ');
+    dataResult.className = 'test-result success';
+    dataResult.textContent = `Export complete: ${counts}`;
+    dataResult.classList.remove('hidden');
+  } catch (error) {
+    dataResult.className = 'test-result error';
+    dataResult.textContent = `Export failed: ${error.message}`;
+    dataResult.classList.remove('hidden');
+  } finally {
+    exportDataBtn.disabled = false;
+    exportDataBtn.textContent = 'Download My Data';
+  }
+}
+
+/**
+ * Delete all user data after double confirmation
+ */
+async function handleDeleteAll() {
+  const confirmed = confirm(
+    'This will permanently delete ALL your stored conversations, preferences, and entities.\n\n' +
+    'This cannot be undone. Are you sure?'
+  );
+  if (!confirmed) return;
+
+  const doubleConfirmed = confirm(
+    'FINAL WARNING: All data will be permanently deleted from K.Y.T. servers.\n\n' +
+    'Type OK to proceed.'
+  );
+  if (!doubleConfirmed) return;
+
+  deleteAllBtn.disabled = true;
+  deleteAllBtn.textContent = 'Deleting...';
+  dataResult.classList.add('hidden');
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'DELETE_ALL_MY_DATA' });
+    if (!response?.success) throw new Error(response?.error || 'Deletion failed');
+
+    const counts = Object.entries(response.deleted)
+      .filter(([, v]) => typeof v === 'number')
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(', ');
+    dataResult.className = 'test-result success';
+    dataResult.textContent = `All data deleted. ${counts}`;
+    dataResult.classList.remove('hidden');
+
+    // Refresh stats
+    setTimeout(loadStats, 500);
+    setTimeout(loadSyncStatus, 500);
+  } catch (error) {
+    dataResult.className = 'test-result error';
+    dataResult.textContent = `Deletion failed: ${error.message}`;
+    dataResult.classList.remove('hidden');
+  } finally {
+    deleteAllBtn.disabled = false;
+    deleteAllBtn.textContent = 'Delete All My Data';
+  }
+}
+
 // Event listeners
 forceSyncBtn.addEventListener('click', forceResync);
 upgradeBtn.addEventListener('click', handleUpgrade);
@@ -673,6 +774,9 @@ testCaptureBtn.addEventListener('click', testCapture);
 rescanBtn.addEventListener('click', rescanMessages);
 setupBtn.addEventListener('click', openSetup);
 importBtn.addEventListener('click', openImport);
+viewMemoriesBtn.addEventListener('click', openMemories);
+exportDataBtn.addEventListener('click', handleExportData);
+deleteAllBtn.addEventListener('click', handleDeleteAll);
 
 // Memory mode change
 modeRadios.forEach(radio => {

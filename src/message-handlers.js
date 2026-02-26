@@ -14,6 +14,44 @@ import { HistoryImporter } from './history-import/index.js';
 import { classifyIntent, PASSIVE_CONFIDENCE_THRESHOLD } from './intent-classifier.js';
 import { getMemoryMode, setMemoryMode } from './memory-mode.js';
 import { getActiveProfileId } from './profile-manager.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
+import { AUTH_SESSION_KEY } from './auth/auth-service.js';
+
+// ===== GDPR DATA HELPERS =====
+
+/**
+ * Get auth headers for Supabase REST calls.
+ * Prefers JWT session, falls back to anon key.
+ */
+async function getAuthConfig() {
+  const result = await chrome.storage.local.get([AUTH_SESSION_KEY, 'api_config']);
+  const session = result[AUTH_SESSION_KEY];
+  const config = result.api_config;
+
+  let supabaseUrl = SUPABASE_URL;
+  let bearerToken = SUPABASE_ANON_KEY;
+  let userId = null;
+
+  if (session?.access_token && session.expires_at > Math.floor(Date.now() / 1000)) {
+    bearerToken = session.access_token;
+    userId = session.user?.id;
+  } else if (config?.supabaseUrl) {
+    supabaseUrl = config.supabaseUrl;
+    if (config.supabaseKey) bearerToken = config.supabaseKey;
+    userId = config.userId;
+  }
+
+  return {
+    supabaseUrl,
+    headers: {
+      'Authorization': `Bearer ${bearerToken}`,
+      'apikey': SUPABASE_ANON_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation',
+    },
+    userId,
+  };
+}
 
 // ===== INJECTION HEALTH STATS =====
 const INJECTION_STATS_KEY = 'kyt_injection_stats';
@@ -650,6 +688,211 @@ export function registerMessageHandler(deps) {
             const mode = await getMemoryMode();
             sendResponse({ success: true, mode });
           } catch (error) {
+            sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
+      // ===== GDPR: Data Export =====
+      case 'EXPORT_MY_DATA':
+        (async () => {
+          try {
+            const auth = await getAuthConfig();
+            if (!auth.userId) {
+              sendResponse({ success: false, error: 'Not authenticated' });
+              return;
+            }
+
+            const tables = ['chat_turns', 'entities', 'entity_mentions', 'user_preferences', 'conversations'];
+            const exported = {};
+
+            for (const table of tables) {
+              const url = `${auth.supabaseUrl}/rest/v1/${table}?user_id=eq.${auth.userId}&select=*`;
+              const resp = await fetch(url, { headers: auth.headers });
+              if (resp.ok) {
+                exported[table] = await resp.json();
+              } else {
+                exported[table] = [];
+                console.warn(`Export: failed to fetch ${table}:`, resp.status);
+              }
+            }
+
+            // Also export local storage messages
+            const local = await chrome.storage.local.get(['captured_messages']);
+            exported.local_messages = local.captured_messages || [];
+
+            sendResponse({ success: true, data: exported });
+          } catch (error) {
+            console.error('EXPORT_MY_DATA failed:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
+      // ===== GDPR: Delete All User Data =====
+      case 'DELETE_ALL_MY_DATA':
+        (async () => {
+          try {
+            const auth = await getAuthConfig();
+            if (!auth.userId) {
+              sendResponse({ success: false, error: 'Not authenticated' });
+              return;
+            }
+
+            const deleted = {};
+            // Order matters: delete children before parents (FK constraints)
+            const tables = ['entity_mentions', 'user_preferences', 'chat_turns', 'entities', 'conversations'];
+
+            for (const table of tables) {
+              const url = `${auth.supabaseUrl}/rest/v1/${table}?user_id=eq.${auth.userId}`;
+              const resp = await fetch(url, {
+                method: 'DELETE',
+                headers: auth.headers,
+              });
+              if (resp.ok) {
+                const rows = await resp.json();
+                deleted[table] = Array.isArray(rows) ? rows.length : 0;
+              } else {
+                deleted[table] = 0;
+                console.warn(`Delete: failed on ${table}:`, resp.status, await resp.text());
+              }
+            }
+
+            // Clear local storage
+            await chrome.storage.local.remove([
+              'captured_messages',
+              'last_sync_status',
+              'kyt_stats',
+              'kyt_injection_stats',
+            ]);
+            deleted.local_storage = 'cleared';
+
+            console.log('DELETE_ALL_MY_DATA result:', deleted);
+            sendResponse({ success: true, deleted });
+          } catch (error) {
+            console.error('DELETE_ALL_MY_DATA failed:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
+      // ===== Memory Management: Get Conversations =====
+      case 'GET_CONVERSATIONS':
+        (async () => {
+          try {
+            const auth = await getAuthConfig();
+            if (!auth.userId) {
+              sendResponse({ success: false, error: 'Not authenticated' });
+              return;
+            }
+
+            const offset = message.offset || 0;
+            const limit = message.limit || 50;
+            const url = `${auth.supabaseUrl}/rest/v1/conversations?user_id=eq.${auth.userId}&select=*&order=last_message_at.desc.nullslast&offset=${offset}&limit=${limit}`;
+
+            const resp = await fetch(url, {
+              headers: { ...auth.headers, 'Prefer': 'count=exact' },
+            });
+
+            if (!resp.ok) {
+              throw new Error(`Failed to fetch conversations: ${resp.status}`);
+            }
+
+            const conversations = await resp.json();
+            const totalHeader = resp.headers.get('content-range');
+            let total = conversations.length;
+            if (totalHeader) {
+              const match = totalHeader.match(/\/(\d+)/);
+              if (match) total = parseInt(match[1], 10);
+            }
+
+            sendResponse({ success: true, conversations, total });
+          } catch (error) {
+            console.error('GET_CONVERSATIONS failed:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
+      // ===== Memory Management: Delete Single Conversation =====
+      case 'DELETE_CONVERSATION':
+        (async () => {
+          try {
+            const auth = await getAuthConfig();
+            if (!auth.userId || !message.conversationId) {
+              sendResponse({ success: false, error: 'Missing userId or conversationId' });
+              return;
+            }
+
+            const convId = encodeURIComponent(message.conversationId);
+            const deleted = {};
+
+            // Delete entity_mentions for chat_turns in this conversation
+            // (no direct conversation_id FK, so delete via chat_turn_ids)
+            const turnsUrl = `${auth.supabaseUrl}/rest/v1/chat_turns?conversation_id=eq.${convId}&user_id=eq.${auth.userId}&select=id`;
+            const turnsResp = await fetch(turnsUrl, { headers: auth.headers });
+            if (turnsResp.ok) {
+              const turns = await turnsResp.json();
+              const turnIds = turns.map(t => t.id);
+              if (turnIds.length > 0) {
+                // Delete mentions for these turns in batches
+                const mentionsUrl = `${auth.supabaseUrl}/rest/v1/entity_mentions?chat_turn_id=in.(${turnIds.join(',')})&user_id=eq.${auth.userId}`;
+                const mResp = await fetch(mentionsUrl, { method: 'DELETE', headers: auth.headers });
+                deleted.entity_mentions = mResp.ok ? (await mResp.json()).length : 0;
+              }
+            }
+
+            // Delete chat_turns
+            const ctUrl = `${auth.supabaseUrl}/rest/v1/chat_turns?conversation_id=eq.${convId}&user_id=eq.${auth.userId}`;
+            const ctResp = await fetch(ctUrl, { method: 'DELETE', headers: auth.headers });
+            deleted.chat_turns = ctResp.ok ? (await ctResp.json()).length : 0;
+
+            // Delete the conversation row
+            const cUrl = `${auth.supabaseUrl}/rest/v1/conversations?external_id=eq.${convId}&user_id=eq.${auth.userId}`;
+            const cResp = await fetch(cUrl, { method: 'DELETE', headers: auth.headers });
+            deleted.conversations = cResp.ok ? (await cResp.json()).length : 0;
+
+            sendResponse({ success: true, deleted });
+          } catch (error) {
+            console.error('DELETE_CONVERSATION failed:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
+      // ===== Memory Management: Toggle Exclude from Search =====
+      case 'TOGGLE_EXCLUDE_CONVERSATION':
+        (async () => {
+          try {
+            const auth = await getAuthConfig();
+            if (!auth.userId || !message.conversationId) {
+              sendResponse({ success: false, error: 'Missing userId or conversationId' });
+              return;
+            }
+
+            const convId = encodeURIComponent(message.conversationId);
+            const exclude = !!message.exclude;
+
+            // Update chat_turns
+            const ctUrl = `${auth.supabaseUrl}/rest/v1/chat_turns?conversation_id=eq.${convId}&user_id=eq.${auth.userId}`;
+            const ctResp = await fetch(ctUrl, {
+              method: 'PATCH',
+              headers: auth.headers,
+              body: JSON.stringify({ exclude_from_search: exclude }),
+            });
+
+            // Update conversations table
+            const cUrl = `${auth.supabaseUrl}/rest/v1/conversations?external_id=eq.${convId}&user_id=eq.${auth.userId}`;
+            await fetch(cUrl, {
+              method: 'PATCH',
+              headers: auth.headers,
+              body: JSON.stringify({ exclude_from_search: exclude }),
+            });
+
+            const updated = ctResp.ok ? (await ctResp.json()).length : 0;
+            sendResponse({ success: true, updated, exclude });
+          } catch (error) {
+            console.error('TOGGLE_EXCLUDE_CONVERSATION failed:', error);
             sendResponse({ success: false, error: error.message });
           }
         })();

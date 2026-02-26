@@ -119,18 +119,55 @@ function validateClaudeExport(zip, fileSize) {
 }
 
 /**
- * Sanitize content
- * @param {string} content 
+ * Patterns used for LLM instruction injection.
+ * Neutralized at ingestion time (defense in depth — also sanitized at read time
+ * in kyt-memory-injection-builder.js).
+ */
+/** Bracket-based patterns — delimiter chars replaced */
+const INGESTION_BRACKET_PATTERNS = [
+    /\[SYSTEM\]/gi,
+    /\[INST\]/gi,
+    /\[\/INST\]/gi,
+    /<\/?system>/gi,
+    /<\/?instruction>/gi,
+    /<\|im_start\|>/g,
+    /<\|im_end\|>/g,
+    /<\|endoftext\|>/g,
+    /<\/s>/g,
+];
+
+/** Text-based patterns — full substitution (no bracket chars to replace) */
+const INGESTION_TEXT_PATTERNS = [
+    [/\n\nHuman:/g, '\n\n_Human_:'],
+    [/\n\nAssistant:/g, '\n\n_Assistant_:'],
+];
+
+/**
+ * Sanitize content for storage.
+ * Removes XSS vectors and neutralizes LLM prompt injection delimiters.
+ * @param {string} content
  * @returns {string}
  */
 export function sanitizeContent(content) {
-    return content
+    let sanitized = content
         // Remove potential XSS
         .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
         // Normalize unicode
         .normalize('NFC')
         // Remove null bytes
-        .replace(/\0/g, '')
-        // Trim whitespace
-        .trim();
+        .replace(/\0/g, '');
+
+    // Neutralize LLM instruction delimiters (bracket-based)
+    for (const pattern of INGESTION_BRACKET_PATTERNS) {
+        sanitized = sanitized.replace(pattern, (match) =>
+            match.replace(/[[\]<>|]/g, '_')
+        );
+    }
+
+    // Neutralize LLM instruction delimiters (text-based)
+    for (const [pattern, replacement] of INGESTION_TEXT_PATTERNS) {
+        sanitized = sanitized.replace(pattern, replacement);
+    }
+
+    return sanitized.trim();
 }

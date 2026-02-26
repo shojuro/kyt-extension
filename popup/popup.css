@@ -446,6 +446,29 @@ body {
   transform: none;
 }
 
+.btn-danger {
+  width: 100%;
+  padding: 10px 16px;
+  border: 2px solid #dc3545;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: transparent;
+  color: #dc3545;
+  transition: all 0.2s ease;
+}
+
+.btn-danger:hover {
+  background: #dc3545;
+  color: white;
+}
+
+.btn-danger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* Profile Section */
 .profile-display {
   display: flex;
