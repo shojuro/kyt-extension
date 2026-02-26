@@ -732,7 +732,7 @@ async function handleDeleteAll() {
 
   const doubleConfirmed = confirm(
     'FINAL WARNING: All data will be permanently deleted from K.Y.T. servers.\n\n' +
-    'Type OK to proceed.'
+    'Click OK to proceed.'
   );
   if (!doubleConfirmed) return;
 

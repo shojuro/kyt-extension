@@ -703,7 +703,7 @@ export function registerMessageHandler(deps) {
               return;
             }
 
-            const tables = ['chat_turns', 'entities', 'entity_mentions', 'user_preferences', 'conversations'];
+            const tables = ['chat_turns', 'entities', 'entity_mentions', 'user_preferences', 'conversations', 'messages', 'user_history_imports'];
             const exported = {};
 
             for (const table of tables) {
@@ -741,7 +741,16 @@ export function registerMessageHandler(deps) {
 
             const deleted = {};
             // Order matters: delete children before parents (FK constraints)
-            const tables = ['entity_mentions', 'user_preferences', 'chat_turns', 'entities', 'conversations'];
+            // Full table list for GDPR Article 17 compliance
+            const tables = [
+              'entity_mentions',
+              'user_preferences',
+              'chat_turns',
+              'entities',
+              'messages',
+              'user_history_imports',
+              'conversations',
+            ];
 
             for (const table of tables) {
               const url = `${auth.supabaseUrl}/rest/v1/${table}?user_id=eq.${auth.userId}`;
@@ -753,17 +762,22 @@ export function registerMessageHandler(deps) {
                 const rows = await resp.json();
                 deleted[table] = Array.isArray(rows) ? rows.length : 0;
               } else {
+                // Table may not exist or have no user_id column — not fatal
                 deleted[table] = 0;
-                console.warn(`Delete: failed on ${table}:`, resp.status, await resp.text());
+                console.warn(`Delete: failed on ${table}:`, resp.status);
               }
             }
 
-            // Clear local storage
+            // Clear user-associated local storage (preserve auth_session so
+            // user stays logged in to verify deletion; preserve api_config
+            // so they can re-configure if needed)
             await chrome.storage.local.remove([
               'captured_messages',
               'last_sync_status',
               'kyt_stats',
               'kyt_injection_stats',
+              'user_tier',
+              'kyt_active_profile_id',
             ]);
             deleted.local_storage = 'cleared';
 

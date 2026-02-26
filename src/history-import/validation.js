@@ -123,7 +123,8 @@ function validateClaudeExport(zip, fileSize) {
  * Neutralized at ingestion time (defense in depth — also sanitized at read time
  * in kyt-memory-injection-builder.js).
  */
-/** Bracket-based patterns — delimiter chars replaced */
+/** Bracket-based patterns — delimiter chars replaced.
+ *  Full set matching kyt-memory-injection-builder.js (defense in depth). */
 const INGESTION_BRACKET_PATTERNS = [
     /\[SYSTEM\]/gi,
     /\[INST\]/gi,
@@ -134,6 +135,14 @@ const INGESTION_BRACKET_PATTERNS = [
     /<\|im_end\|>/g,
     /<\|endoftext\|>/g,
     /<\/s>/g,
+    /={10,}/g,
+    /[┌└│]/g,
+    /\[RESPONSE_PRIORITY\]/gi,
+    /\[DATA_PROVENANCE\]/gi,
+    /\[RETRIEVAL_CONTEXT\]/gi,
+    /\[SESSION_CONTEXT\]/gi,
+    /\[Retrieved Items\]/gi,
+    /\[End of Knowledge Base/gi,
 ];
 
 /** Text-based patterns — full substitution (no bracket chars to replace) */
