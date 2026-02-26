@@ -11,7 +11,7 @@ import { searchMessages, findSimilarMessages } from './browser-search.js';
 import { syncViaEdgeFunction } from './edge-sync.js';
 import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { HistoryImporter } from './history-import/index.js';
-import { classifyIntent, PASSIVE_CONFIDENCE_THRESHOLD } from './intent-classifier.js';
+import { classifyIntent } from './intent-classifier.js';
 import { getMemoryMode, setMemoryMode } from './memory-mode.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
@@ -132,7 +132,11 @@ export function registerPortHandler(getContextForInjection) {
 
         // Intent classification gate — skip retrieval for directives/filler
         const classification = classifyIntent(msg.userMessage);
-        console.log(`🎯 Intent: ${classification.intent} (${classification.reason}) for: "${msg.userMessage.substring(0, 80)}${msg.userMessage.length > 80 ? '...' : ''}"`);
+        const s = classification.scores;
+        console.log(`🎯 Intent: ${classification.intent} (${classification.reason})` +
+          (s ? ` [D:${s.directive.toFixed(2)} M:${s.memory.toFixed(2)} Q:${s.question.toFixed(2)} P:${s.personal.toFixed(2)} T:${s.temporal.toFixed(2)} ρ:${s.density.toFixed(2)}]` : '') +
+          (classification.confidenceThreshold ? ` threshold=${classification.confidenceThreshold}` : '') +
+          ` → "${msg.userMessage.substring(0, 80)}${msg.userMessage.length > 80 ? '...' : ''}"`);
 
         if (classification.intent === 'SKIP') {
           console.log(`⏭️ Skipping injection: ${classification.reason}`);
@@ -145,10 +149,9 @@ export function registerPortHandler(getContextForInjection) {
         const result = await chrome.storage.local.get(['kytDebugMode']);
         const config = { ...msg.config, debugMode: result.kytDebugMode || false };
 
-        // PASSIVE intent: raise confidence threshold to filter low-quality matches
-        if (classification.intent === 'PASSIVE') {
-          config.confidenceThreshold = PASSIVE_CONFIDENCE_THRESHOLD;
-          console.log(`📊 Passive query — confidence threshold raised to ${PASSIVE_CONFIDENCE_THRESHOLD}`);
+        // Apply per-message confidence threshold from intent classifier
+        if (classification.confidenceThreshold) {
+          config.confidenceThreshold = classification.confidenceThreshold;
         }
 
         const contextData = await Promise.race([
@@ -368,7 +371,11 @@ export function registerMessageHandler(deps) {
 
             // Intent classification gate — skip retrieval for directives/filler
             const classification = classifyIntent(message.userMessage);
-            console.log(`🎯 Intent: ${classification.intent} (${classification.reason}) for: "${message.userMessage.substring(0, 80)}${message.userMessage.length > 80 ? '...' : ''}"`);
+            const s = classification.scores;
+            console.log(`🎯 Intent: ${classification.intent} (${classification.reason})` +
+              (s ? ` [D:${s.directive.toFixed(2)} M:${s.memory.toFixed(2)} Q:${s.question.toFixed(2)} P:${s.personal.toFixed(2)} T:${s.temporal.toFixed(2)} ρ:${s.density.toFixed(2)}]` : '') +
+              (classification.confidenceThreshold ? ` threshold=${classification.confidenceThreshold}` : '') +
+              ` → "${message.userMessage.substring(0, 80)}${message.userMessage.length > 80 ? '...' : ''}"`);
 
             if (classification.intent === 'SKIP') {
               console.log(`⏭️ Skipping injection: ${classification.reason}`);
@@ -384,10 +391,9 @@ export function registerMessageHandler(deps) {
               debugMode: result.kytDebugMode || false
             };
 
-            // PASSIVE intent: raise confidence threshold to filter low-quality matches
-            if (classification.intent === 'PASSIVE') {
-              config.confidenceThreshold = PASSIVE_CONFIDENCE_THRESHOLD;
-              console.log(`📊 Passive query — confidence threshold raised to ${PASSIVE_CONFIDENCE_THRESHOLD}`);
+            // Apply per-message confidence threshold from intent classifier
+            if (classification.confidenceThreshold) {
+              config.confidenceThreshold = classification.confidenceThreshold;
             }
 
             const contextData = await Promise.race([

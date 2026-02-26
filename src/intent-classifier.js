@@ -1,166 +1,386 @@
 /**
- * Intent Classifier Module
- * Lightweight regex + heuristic classifier that gates memory retrieval.
- * No LLM calls. No API requests. Pure client-side pattern matching.
+ * Intent Classifier v2 — Scored Heuristic System
+ *
+ * Replaces v1 (pure regex binary matching) with multi-signal scoring.
+ * Each message is scored on 6 dimensions; composite score determines
+ * classification AND per-message confidence threshold.
  *
  * Returns one of three intents:
  *   SKIP    — no injection, pipeline does not fire
- *   QUERY   — full pipeline at default confidence threshold (0.40)
- *   PASSIVE — full pipeline at raised confidence threshold (0.60)
+ *   QUERY   — full pipeline at variable threshold (0.40–0.65)
+ *   PASSIVE — full pipeline at raised threshold (0.60)
  *
  * IMPORTANT: This gates RETRIEVAL only. Message capture, chunking, sync,
  * entity extraction, preference extraction all continue regardless.
+ *
+ * Performance: ~60 regex evaluations worst case = ~0.06ms. Pure function.
  */
 
 // ── Minimum length for retrieval intent ────────────────────
-const MIN_QUERY_LENGTH = 12;
+const MIN_QUERY_LENGTH = 8;
 
-// ── PASSIVE confidence threshold override ──────────────────
-export const PASSIVE_CONFIDENCE_THRESHOLD = 0.60;
+// ===== SIGNAL SCORING FUNCTIONS =====
 
-// ── Optional trailing filler allowed after directive core ──
-// Matches: "for me", "for us", "please", "if you can", "would you", "will you"
-const TRAILING_FILLER = /(\s+(for\s+(me|us)|please|if\s+you\s+(can|could|would|don't\s+mind)|would\s+you|will\s+you|can\s+you|could\s+you))*/.source;
+// S1: Directive Strength (0.0 – 1.0)
+// How much does this message instruct the AI to DO something?
 
-// ── Category 1a: Directives (instructions TO the AI) ──────
-const DIRECTIVE_PATTERNS = [
-  // Single-word/short directives
-  /^(thoughts|continue|go\s*on|proceed|next|agreed|exactly|correct|yes|no|yep|nope|sure|ok|okay|right|thanks|thank\s*you|perfect|great|good|nice|cool|awesome|interesting|fascinating|hmm+|huh|wow|lol|ha+|true|false|noted|understood|got\s*it|makes\s*sense|fair\s*enough|absolutely|definitely|indeed|precisely)\s*[.!?]*$/i,
+/** @type {RegExp} Pure directives — near-certain when the whole message is just this */
+const PURE_DIRECTIVES = /^(thoughts|continue|go\s*on|proceed|next|agreed|exactly|correct|yes|no|yep|nope|sure|ok|okay|right|thanks|thank\s*you|perfect|great|good|nice|cool|awesome|interesting|fascinating|noted|understood|got\s*it|makes\s*sense|fair\s*enough|absolutely|definitely|indeed|precisely|true|false|sounds?\s*good|looks?\s*good|that\s*works?|let'?s\s*(do\s*(it|that|this)|go|move\s*on|proceed|continue|start))\s*[.!?]*$/i;
 
-  // Action directives (with optional trailing filler like "for me", "please")
-  new RegExp(
-    '^(break\\s*(this|it)\\s*down|review\\s*(this|it|that)|analyze\\s*(this|it|that)|' +
-    'summarize\\s*(this|it|that)|explain\\s*(this|it|that)|elaborate|' +
-    'expand\\s*on\\s*(this|that)|rewrite\\s*(this|it|that)|simplify\\s*(this|it|that)|' +
-    'translate\\s*(this|it|that)|proofread\\s*(this|it|that)|format\\s*(this|it|that)|' +
-    'your\\s*take|what\\s*do\\s*you\\s*think|how\\s*does\\s*that\\s*(sound|look)|' +
-    'any\\s*feedback|sounds?\\s*good|looks?\\s*good|that\\s*works?|' +
-    "let'?s\\s*(do\\s*(it|that|this)|go|move\\s*on|proceed|continue|start))" +
-    TRAILING_FILLER + '\\s*[.!?]*$', 'i'
-  ),
-
-  // Continuation signals
-  /^(and\??|so\??|also|then\??|plus|more|another|what\s*else|anything\s*else|go\s*ahead|keep\s*going|carry\s*on|moving\s*on|what'?s\s*next)\s*[.!?]*$/i,
-
-  // Emotional/reactive responses (including "Ha! Well played" style compounds)
-  /^(haha|lmao|omg|oh\s*wow|oh\s*no|oh\s*man|oh\s*god|damn|dang|yikes|whoa|geez|sheesh|ugh|meh|sigh|nah|naw|ha!?\s*(well\s*played|nice|good(\s*one)?|right|okay|sure|true|fair)?)\s*[.!?]*$/i,
-
-  // Compound directives: "Perfect, let's do it" / "Great, move on" / "Ok, go ahead"
-  /^(perfect|great|good|nice|cool|awesome|ok|okay|right|sure|agreed|exactly|sounds?\s*good|looks?\s*good|correct|true|fair\s*enough)[,.]?\s*(let'?s\s*)?(do\s*(it|that|this)|go(\s*ahead)?|move\s*on|proceed|continue|start|go\s*on|keep\s*going|carry\s*on)\s*[.!?]*$/i,
+const DIRECTIVE_STRONG = [
+  /^(break|review|analyze|summarize|explain|elaborate|expand|rewrite|simplify|translate|proofread|format|fix|check|evaluate|compare|list|outline)\s*(this|it|that|these|those|them|the\s)/i,
+  /^(can\s+you|could\s+you|please|help\s+me|I\s+need\s+you\s+to|go\s+ahead\s+and|let'?s)\s/i,
+  /^(what\s+do\s+you\s+think|your\s+(take|thoughts|opinion|assessment)|how\s+does\s+(this|that)\s+(sound|look))\s*\??$/i,
+  /^(and\??|so\??|also|then\??|plus|more|another|what\s*else|anything\s*else|go\s*ahead|keep\s*going|carry\s*on|moving\s*on)\s*[.!?]*$/i,
 ];
 
-// ── Category 1c: Announcements (user telling AI what's coming) ──
-const ANNOUNCEMENT_PATTERNS = [
-  /^(here'?s|here\s+is|i'?m\s+(going\s+to|gonna|about\s+to)|let\s+me\s+(share|show|paste|give|send)|(i'?ll|i\s+will)\s+(share|show|paste|send|provide|give))\b/i,
-  /^(this\s+is\s+(the|a|my)|below\s+is|following\s+is|see\s+below|attached|pasting|copying)\b/i,
+const DIRECTIVE_MODERATE = [
+  /^(let'?s|I\s+want\s+to|we\s+should|we\s+need\s+to|time\s+to|ready\s+to)\s/i,
+  /^(now\s+(let'?s|I('ll|\s+will)|we)|after\s+that|next\s+up|moving\s+on\s+to)/i,
+  /^(here'?s|here\s+is|see\s+below|take\s+a\s+look|check\s+this)/i,
+  /^(this\s+is\s+(the|a|my)|below\s+is|following\s+is|attached|pasting|copying)\b/i,
   /^(fyi|for\s+(your\s+)?(reference|info|information|context)|just\s+so\s+you\s+know|heads\s+up)\b/i,
+  // Announcement of incoming content (user is providing, not requesting)
+  /^(then\s+)?I('ll|\s+will)\s+(share|show|paste|send|give|provide|post)\b/i,
+  /^(i'?m\s+(going\s+to|gonna|about\s+to)\s+(share|show|paste|send|give|provide))\b/i,
+  /^(let\s+me\s+(share|show|paste|send|give|provide))\b/i,
 ];
 
-// ── Category 2: Explicit memory/personal queries ───────────
-const EXPLICIT_QUERY_PATTERNS = [
-  // Direct memory queries
+/** @type {RegExp} Contextual confirmation/selection patterns */
+const CONTEXTUAL_RESPONSE = /^(exactly\s*that|not\s+(quite|exactly|really)|the\s+(first|second|third|last|other)\s+one|option\s+[a-d1-4]|both|neither|all\s+of\s+(them|the\s+above)|that'?s?\s+(it|right|correct)|bingo|nailed\s+it|close\s+enough|not\s+what\s+I\s+meant)/i;
+
+/** @type {RegExp} Emotional/reactive one-liners */
+const EMOTIONAL_RESPONSE = /^(haha|lmao|omg|oh\s*wow|oh\s*no|oh\s*man|oh\s*god|damn|dang|yikes|whoa|geez|sheesh|ugh|meh|sigh|nah|naw|lol|ha+|hmm+|huh|wow)\s*[.!?]*$/i;
+
+/** @type {RegExp} Compound directives: "Perfect, let's do it" */
+const COMPOUND_DIRECTIVE = /^(perfect|great|good|nice|cool|awesome|ok|okay|right|sure|agreed|exactly|sounds?\s*good|looks?\s*good|correct|true|fair\s*enough)[,.]?\s*(let'?s\s*)?(do\s*(it|that|this)|go(\s*ahead)?|move\s*on|proceed|continue|start|go\s*on|keep\s*going|carry\s*on)\s*[.!?]*$/i;
+
+/**
+ * @param {string} message - Trimmed, lowercased message
+ * @param {number} len - Message length
+ * @returns {number} 0.0–1.0
+ */
+export function scoreDirective(message, len) {
+  const lower = message;
+  let score = 0;
+
+  // Pure directives (short messages only)
+  if (PURE_DIRECTIVES.test(lower) && len < 80) return 1.0;
+
+  // Emotional/reactive responses
+  if (EMOTIONAL_RESPONSE.test(lower)) return 1.0;
+
+  // Compound directives: "Perfect, let's do it"
+  if (COMPOUND_DIRECTIVE.test(lower) && len < 120) return 1.0;
+
+  // Contextual confirmation/selection
+  if (CONTEXTUAL_RESPONSE.test(lower) && len < 100) {
+    score = Math.max(score, 0.9);
+  }
+
+  // Strong directive signals
+  for (const p of DIRECTIVE_STRONG) {
+    if (p.test(lower)) { score = Math.max(score, 0.8); break; }
+  }
+
+  // Moderate directive signals
+  for (const p of DIRECTIVE_MODERATE) {
+    if (p.test(lower)) { score = Math.max(score, 0.7); break; }
+  }
+
+  // Weak: imperative verb at start (including continuation verbs)
+  if (/^(make|create|build|write|draft|design|generate|produce|continue|proceed|resume)\s/i.test(lower)) {
+    score = Math.max(score, 0.4);
+  }
+
+  // Short messages with no question mark lean directive
+  if (len < 60 && !lower.includes('?') && score > 0) {
+    score = Math.min(score + 0.15, 1.0);
+  }
+
+  return score;
+}
+
+
+// S2: Memory Reference Strength (0.0 – 1.0)
+// How much does this message reference past knowledge or personal data?
+
+const MEMORY_STRONG = [
   /\b(what\s+(is|are|was|were)\s+my)\b/i,
   /\b(what\s+did\s+(I|we)\s+(say|discuss|decide|talk\s+about|agree|mention))\b/i,
   /\b(remind\s+me|do\s+you\s+(remember|recall|know))\b/i,
   /\b(my\s+favorite|my\s+preference|I\s+(like|love|hate|prefer|dislike))\b/i,
   /\b(we\s+(talked|discussed|decided|agreed|mentioned))\b/i,
-  /\b(last\s+time\s+(we|I)|previous(ly)?|earlier\s+(we|I|today|this\s+week))\b/i,
   /\b(from\s+(our|my)\s+(conversation|chat|discussion|session))\b/i,
-  /\b(what\s+(do\s+you|did\s+you)\s+know\s+about\s+me)\b/i,
+  /\b(what\s+(do|did)\s+you\s+know\s+about\s+me)\b/i,
   /\b(based\s+on\s+what\s+(you\s+know|we'?ve\s+discussed))\b/i,
-
-  // Decision/conclusion references (past discussion implied)
-  /\b(what\s+was\s+(the|our)\s+(final\s+)?(decision|conclusion|verdict|consensus|plan|takeaway|outcome))\b/i,
-
-  // Personal fact queries
   /\b(where\s+do\s+I\s+(live|work|study))\b/i,
+  /\b(what('?s|\s+is)\s+my\s+(name|job|role|car|dog|cat|favorite))\b/i,
   /\b(who\s+(is|are)\s+my\s+)\b/i,
-  /\b(what('?s|\s+is)\s+my\s+(name|job|role|car|dog|cat))\b/i,
+  /\b(what\s+was\s+(the|our)\s+(final\s+)?(decision|conclusion|verdict|consensus|plan|takeaway|outcome))\b/i,
   /\b(how\s+(old\s+am\s+I|long\s+have\s+I))\b/i,
   /\b(when\s+did\s+(I|we)\s+)\b/i,
 ];
 
+const MEMORY_MODERATE = [
+  /\b(earlier|previously|before|last\s+time|the\s+other\s+day)\b/i,
+  /\b(we\s+defined|we\s+established|we\s+set\s+up|we\s+designed)\b/i,
+  /\b(that\s+(thing|concept|idea|approach|plan)\s+we)\b/i,
+  /\b(as\s+(I|we)\s+(said|mentioned|noted|discussed))\b/i,
+  /\b(you\s+(said|told|suggested|recommended|mentioned))\b/i,
+  /\b(remember\s+(when|that|how))\b/i,
+];
+
 /**
- * Detect document analysis requests: long pasted content + short directive tail.
- * The pasted content IS the context — memory injection is noise.
- *
- * @param {string} message - Trimmed message text
- * @returns {boolean}
+ * @param {string} message - Trimmed, lowercased message
+ * @returns {number} 0.0–1.0
  */
-function isDocumentAnalysis(message) {
-  const lines = message.trim().split('\n');
-  if (lines.length < 5) return false;
+export function scoreMemoryReference(message) {
+  const lower = message;
+  let score = 0;
 
-  // Check if the LAST non-empty line is a directive tail
-  const nonEmptyLines = lines.filter(l => l.trim().length > 0);
-  const lastLine = nonEmptyLines[nonEmptyLines.length - 1]?.trim() || '';
-  const directiveTail = /^(review|analyze|summarize|thoughts|what\s*do\s*you\s*think|feedback|check\s*this|fix\s*this|improve\s*this|edit\s*this|your\s*take|break\s*(this|it)\s*down|any\s*(thoughts|feedback|issues|concerns|suggestions))\s*[.!?]*$/i;
-  if (directiveTail.test(lastLine) && lastLine.length < 200) return true;
+  for (const p of MEMORY_STRONG) {
+    if (p.test(lower)) { score = Math.max(score, 0.9); break; }
+  }
 
-  // Code blocks or structured data with substantial length
-  const hasCodeBlock = /```[\s\S]{100,}?```/.test(message);
-  const hasStructuredData = /^[\s]*[\[{][\s\S]{200,}[\]}]\s*$/m.test(message);
-  if ((hasCodeBlock || hasStructuredData) && message.length > 500) return true;
+  for (const p of MEMORY_MODERATE) {
+    if (p.test(lower)) { score = Math.max(score, 0.6); break; }
+  }
 
-  return false;
+  // Weak: possessives suggesting personal context
+  if (/\bmy\s+(project|code|app|site|team|company|plan|strategy|budget)\b/i.test(lower)) {
+    score = Math.max(score, 0.35);
+  }
+
+  // Weak: definite articles suggesting shared knowledge
+  if (/\bthe\s+(bug|issue|plan|strategy|approach|design|architecture)\b/i.test(lower)) {
+    score = Math.max(score, 0.2);
+  }
+
+  return score;
+}
+
+
+// S3: Content Density (0.0 – 1.0)
+// Is there enough substance for a meaningful retrieval query?
+
+/**
+ * @param {string} message - Trimmed message (original case)
+ * @returns {number} 0.0–1.0
+ */
+export function scoreContentDensity(message) {
+  const trimmed = message;
+  const len = trimmed.length;
+
+  if (len < 12) return 0.0;
+  if (len < 25) return 0.15;
+
+  // Long multi-line content — likely pasted document
+  const lines = trimmed.split('\n');
+  if (lines.length > 10) {
+    const lastLines = lines.slice(-3).join(' ').trim();
+    if (lastLines.length < 200) return 0.1;
+  }
+
+  // Code blocks reduce retrieval density
+  if (/```[\s\S]{100,}```/.test(trimmed)) return 0.1;
+
+  // Word count sweet spot — checked BEFORE char-length fallback
+  // so "How should I structure the onboarding flow?" (45 chars, 8 words)
+  // gets 0.7 instead of 0.3
+  const words = trimmed.split(/\s+/).length;
+  if (words >= 5 && words <= 30) return 0.7;
+  if (words > 30 && words <= 60) return 0.5;
+  if (words > 60) return 0.3;
+
+  // Short messages with few words (25-49 chars, <5 words)
+  if (len < 50) return 0.3;
+
+  return 0.4;
+}
+
+
+// S4: Question Structure (0.0 – 1.0)
+// Does this message have question syntax?
+
+/**
+ * @param {string} message - Trimmed, lowercased message
+ * @returns {number} 0.0–1.0
+ */
+export function scoreQuestionStructure(message) {
+  const lower = message;
+  let score = 0;
+
+  if (lower.includes('?')) score = Math.max(score, 0.6);
+
+  if (/^(what|who|where|when|why|how|which|is|are|was|were|did|do|does|can|could|would|will|should|have|has)\s/i.test(lower)) {
+    score = Math.max(score, 0.7);
+  }
+
+  if (/^(tell\s+me|show\s+me|give\s+me|find\s+me|list|name)\s/i.test(lower)) {
+    score = Math.max(score, 0.5);
+  }
+
+  return score;
+}
+
+
+// S5: Personal Reference (0.0 – 1.0)
+// Does this message reference the user's identity or history?
+
+/**
+ * @param {string} message - Trimmed, lowercased message
+ * @returns {number} 0.0–1.0
+ */
+export function scorePersonalReference(message) {
+  const lower = message;
+  let score = 0;
+
+  const myCount = (lower.match(/\bmy\b/g) || []).length;
+  if (myCount >= 2) score = Math.max(score, 0.6);
+  else if (myCount === 1) score = Math.max(score, 0.3);
+
+  if (/\bI\s+(said|told|mentioned|wrote|created|built|designed|chose|decided|started|finished)\b/i.test(lower)) {
+    score = Math.max(score, 0.5);
+  }
+
+  if (/\bwe\s+(had|made|built|discussed|decided|agreed|defined|established)\b/i.test(lower)) {
+    score = Math.max(score, 0.5);
+  }
+
+  return score;
+}
+
+
+// S6: Temporal Reference (0.0 – 1.0)
+// Does this message reference a specific time or past event?
+
+/**
+ * @param {string} message - Trimmed, lowercased message
+ * @returns {number} 0.0–1.0
+ */
+export function scoreTemporalReference(message) {
+  const lower = message;
+  let score = 0;
+
+  if (/\b(yesterday|last\s+(week|month|time|session)|earlier\s+today|this\s+morning|the\s+other\s+day)\b/i.test(lower)) {
+    score = Math.max(score, 0.7);
+  }
+
+  if (/\b(earlier|previously|before|ago|back\s+when|at\s+some\s+point|once)\b/i.test(lower)) {
+    score = Math.max(score, 0.4);
+  }
+
+  if (/\bremember\s+(when|that\s+time)\b/i.test(lower)) {
+    score = Math.max(score, 0.8);
+  }
+
+  return score;
+}
+
+
+// ===== COMPOSITE CLASSIFICATION =====
+
+/**
+ * Internal result constructor.
+ * @param {'SKIP'|'QUERY'|'PASSIVE'} intent
+ * @param {number|null} confidenceThreshold
+ * @param {string} reason
+ * @param {Object|null} scores
+ */
+function result(intent, confidenceThreshold, reason, scores = null) {
+  return { intent, confidenceThreshold, reason, scores };
 }
 
 /**
  * Classifies user message intent for memory retrieval gating.
- * Pure regex + heuristics. No LLM calls. Synchronous. <1ms.
+ * Uses scored heuristics across 6 signal dimensions.
  *
  * @param {string} message - Raw user message text
- * @returns {{ intent: 'SKIP'|'QUERY'|'PASSIVE', reason: string }}
+ * @returns {{
+ *   intent: 'SKIP'|'QUERY'|'PASSIVE',
+ *   confidenceThreshold: number|null,
+ *   reason: string,
+ *   scores: {directive:number, memory:number, density:number,
+ *            question:number, personal:number, temporal:number}|null
+ * }}
  */
 export function classifyIntent(message) {
   if (!message || typeof message !== 'string') {
-    return { intent: 'SKIP', reason: 'empty_or_invalid' };
+    return result('SKIP', null, 'empty_or_invalid');
   }
 
   const trimmed = message.trim();
 
-  // ── SKIP checks ──────────────────────────────────────────
-
-  // 1. Too short to carry retrieval intent
+  // Hard gate: too short to carry retrieval value
   if (trimmed.length < MIN_QUERY_LENGTH) {
-    return { intent: 'SKIP', reason: 'too_short' };
+    return result('SKIP', null, 'too_short');
   }
 
-  // 2. Directive pattern match (only on short-ish messages)
-  //    Don't classify 500-word messages as directives just because
-  //    they start with "review this"
-  if (trimmed.length < 200) {
-    for (const pattern of DIRECTIVE_PATTERNS) {
-      if (pattern.test(trimmed)) {
-        return { intent: 'SKIP', reason: 'directive' };
-      }
-    }
+  // Score all signals
+  const lower = trimmed.toLowerCase();
+  const len = trimmed.length;
+
+  const scores = {
+    directive:  scoreDirective(lower, len),
+    memory:     scoreMemoryReference(lower),
+    density:    scoreContentDensity(trimmed),
+    question:   scoreQuestionStructure(lower),
+    personal:   scorePersonalReference(lower),
+    temporal:   scoreTemporalReference(lower),
+  };
+
+  // ── Classification logic ─────────────────────────────────
+
+  // SKIP: Strong directive with no memory/personal signal
+  if (scores.directive >= 0.7 && scores.memory < 0.3 && scores.personal < 0.3) {
+    return result('SKIP', null, 'directive', scores);
   }
 
-  // 3. Announcement pattern match (check first sentence only)
-  //    No total length cap — "Here's the plan..." + 2000 words is still an announcement
-  //    Strip leading connectors (then/so/ok/well/now/anyway/alright) before testing
-  const firstSentence = trimmed.split(/[.!?\n]/)[0] || '';
-  const strippedFirst = firstSentence.replace(/^(then|so|ok|okay|well|now|anyway|alright|also|and|but)\s+/i, '');
-  for (const pattern of ANNOUNCEMENT_PATTERNS) {
-    if (pattern.test(strippedFirst)) {
-      return { intent: 'SKIP', reason: 'announcement' };
-    }
+  // SKIP: Very low density (pasted code, document analysis) without memory signal
+  if (scores.density <= 0.15 && scores.memory < 0.5) {
+    return result('SKIP', null, 'low_density', scores);
   }
 
-  // 4. Document analysis (long content + short directive tail)
-  if (isDocumentAnalysis(trimmed)) {
-    return { intent: 'SKIP', reason: 'document_analysis' };
+  // QUERY: Strong explicit memory request
+  if (scores.memory >= 0.7) {
+    return result('QUERY', 0.40, 'explicit_memory_query', scores);
   }
 
-  // ── QUERY checks ─────────────────────────────────────────
-
-  for (const pattern of EXPLICIT_QUERY_PATTERNS) {
-    if (pattern.test(trimmed)) {
-      return { intent: 'QUERY', reason: 'explicit_memory_query' };
-    }
+  // QUERY: Strong personal + temporal reference
+  // "that car I mentioned last week"
+  if (scores.personal >= 0.4 && scores.temporal >= 0.5) {
+    return result('QUERY', 0.45, 'personal_temporal_reference', scores);
   }
 
-  // ── DEFAULT: PASSIVE ─────────────────────────────────────
-  return { intent: 'PASSIVE', reason: 'default' };
+  // QUERY: Question structure + personal reference
+  // "What did I say about the architecture?"
+  if (scores.question >= 0.5 && scores.personal >= 0.4) {
+    return result('QUERY', 0.45, 'personal_question', scores);
+  }
+
+  // MIXED: Both directive AND memory signals present
+  // "Let's spec out the 3 levels we defined earlier"
+  if (scores.directive >= 0.4 && scores.memory >= 0.3) {
+    return result('QUERY', 0.65, 'mixed_directive_memory', scores);
+  }
+
+  // MIXED: Directive + temporal (might reference past work)
+  // "Continue where we left off yesterday"
+  if (scores.directive >= 0.4 && scores.temporal >= 0.4) {
+    return result('QUERY', 0.60, 'mixed_directive_temporal', scores);
+  }
+
+  // PASSIVE: Has question structure + sufficient density
+  if (scores.question >= 0.5 && scores.density >= 0.4) {
+    return result('PASSIVE', 0.60, 'generic_question', scores);
+  }
+
+  // PASSIVE: Moderate density, no strong signals either way
+  if (scores.density >= 0.4) {
+    return result('PASSIVE', 0.60, 'default_substantive', scores);
+  }
+
+  // SKIP: Nothing scored high enough to justify pipeline
+  return result('SKIP', null, 'no_signal', scores);
 }
