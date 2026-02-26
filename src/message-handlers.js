@@ -675,6 +675,22 @@ export function registerMessageHandler(deps) {
         (async () => {
           try {
             await setMemoryMode(message.mode);
+            // Best-effort sync to Supabase profiles table
+            // NOTE: profiles.memory_mode CHECK constraint uses different values
+            // (standard/journal/research/minimal) than client modes (full/clean_room/incognito).
+            // Sync onboarding_completed only until schema is aligned via migration.
+            try {
+              const auth = await getAuthConfig();
+              if (auth.userId) {
+                await fetch(`${auth.supabaseUrl}/rest/v1/profiles?id=eq.${auth.userId}`, {
+                  method: 'PATCH',
+                  headers: auth.headers,
+                  body: JSON.stringify({ onboarding_completed: true }),
+                });
+              }
+            } catch (syncErr) {
+              console.warn('Failed to sync mode to profiles:', syncErr.message);
+            }
             sendResponse({ success: true, mode: message.mode });
           } catch (error) {
             sendResponse({ success: false, error: error.message });

@@ -19,6 +19,11 @@ import {
   detectIsQuestion,
   stripInjectionPrefix,
   INTERROGATIVE_RE,
+  ECHO_STOP,
+  KYT_META_PATTERNS,
+  KYT_QUERY_PATTERNS,
+  echoOverlapRatio,
+  echoMultiplier,
 } from '../../src/context-retrieval.js';
 import { filterByConfidence } from '../../src/confidence-filter.js';
 import { applyKeywordBoost } from '../../src/keyword-boost.js';
@@ -184,25 +189,20 @@ describe('Demo Query: "testing plan"', () => {
     expect(result.isDeflection).toBe(false);
   });
 
+  it('should apply deflection penalty to reduce score', () => {
+    const item = mockItem({ cross_encoder_score: 0.65, weighted_score: 0.60 });
+    applyDeflectionPenalty(item, 0.80);
+    // Penalty should reduce scores
+    expect(item.cross_encoder_score).toBeLessThan(0.65);
+    expect(item.weighted_score).toBeLessThan(0.60);
+  });
+
   it('should filter short echo items that parrot the query', () => {
-    // Simulate the echo filter logic from background.js
-    const ECHO_STOP = new Set(['the', 'and', 'for', 'with', 'from', 'was', 'our', 'what']);
-    function getContentWords(text) {
-      return text.toLowerCase().replace(/[?.!,]/g, '').split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w));
-    }
-    function overlapRatio(queryWords, contentWords) {
-      const contentSet = new Set(contentWords);
-      const matching = queryWords.filter(w => contentSet.has(w));
-      return contentWords.length > 0 ? matching.length / contentWords.length : 0;
-    }
-
-    const queryWords = getContentWords(QUERY);
-    const echoContent = 'What was the testing plan?';
-    const contentWords = getContentWords(echoContent);
-    const overlap = overlapRatio(queryWords, contentWords);
-
-    // "testing plan" is 2/2 content words → 100% overlap → should be echoed
-    expect(overlap).toBeGreaterThan(0.70);
+    // Uses echoOverlapRatio from source (not re-implemented inline)
+    const overlap = echoOverlapRatio(QUERY, 'What was the testing plan?');
+    // Query content words: "testing", "plan", "project" (3 words)
+    // Content content words: "testing", "plan" (2 words) → overlap = 2/3 ≈ 0.667
+    expect(overlap).toBeGreaterThan(0.60);
   });
 
   it('should pass results through confidence filter in expected ranges', () => {
@@ -351,24 +351,13 @@ describe('Demo Query: "platform priority"', () => {
   });
 
   it('should match KYT_QUERY_PATTERNS (meta-penalty skip)', () => {
-    // Same regex from background.js
-    const KYT_QUERY_PATTERNS = [
-      /\bkyt\b/i,
-      /\b(?:extension|plugin)\b.*\b(?:model|support|feature|bug|error|issue)/i,
-      /\bservice\s*worker\b/i,
-    ];
-
+    // Imported from source — no inline re-implementation
     const isKytQuery = KYT_QUERY_PATTERNS.some(p => p.test(QUERY));
-    expect(isKytQuery).toBe(true); // matches \bkyt\b
+    expect(isKytQuery).toBe(true); // matches \bK.Y.T.\b
   });
 
   it('should NOT apply meta-conversation penalty to KYT query results', () => {
-    // Simulates the meta-penalty logic from background.js
-    const KYT_QUERY_PATTERNS = [/\bkyt\b/i];
-    const KYT_META_PATTERNS = [
-      /\bkyt\b.*\b(?:broken|error|debug|crash|memory|capture)\b/i,
-    ];
-
+    // Uses imported KYT_QUERY_PATTERNS and KYT_META_PATTERNS from source
     const isKytQuery = KYT_QUERY_PATTERNS.some(p => p.test(QUERY));
     const results = [
       mockItem({
@@ -381,7 +370,7 @@ describe('Demo Query: "platform priority"', () => {
     for (const item of results) {
       const isMeta = KYT_META_PATTERNS.some(p => p.test(item.content));
       if (isMeta && !isKytQuery) {
-        item.cross_encoder_score *= 0.3; // penalty
+        item.cross_encoder_score *= 0.3;
       }
     }
 
@@ -390,13 +379,10 @@ describe('Demo Query: "platform priority"', () => {
   });
 
   it('should APPLY meta-conversation penalty for non-KYT queries about KYT', () => {
-    // Non-KYT query that happens to return KYT-related results
-    const nonKytQuery = 'how do I fix a Chrome extension service worker';
-    const KYT_QUERY_PATTERNS = [/\bkyt\b/i];
-    const KYT_META_PATTERNS = [
-      /\bkyt\b.*\b(?:broken|error|debug|crash|memory|capture)\b/i,
-    ];
-
+    // Uses imported patterns from source
+    // Query mentions KYT internals but doesn't match KYT_QUERY_PATTERNS
+    // (no "KYT" literal, no "extension"+"work/model/support", no "service worker")
+    const nonKytQuery = 'why does my background script keep crashing';
     const isKytQuery = KYT_QUERY_PATTERNS.some(p => p.test(nonKytQuery));
     expect(isKytQuery).toBe(false);
 
@@ -549,12 +535,7 @@ What is the weather today?`;
 // 7. Cross-cutting: Echo Penalty Length Scaling
 // ==========================================================================
 describe('Echo Penalty Length Scaling', () => {
-  /** Simulates the length-scaled echo penalty from background.js */
-  function echoMultiplier(contentLength) {
-    if (contentLength < 300) return 0.50;
-    if (contentLength <= 800) return 0.70;
-    return 0.90;
-  }
+  // echoMultiplier imported from source (no inline re-implementation)
 
   it('should apply harsh penalty for short echoes (<300 chars)', () => {
     const score = 0.65;

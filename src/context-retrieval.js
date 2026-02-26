@@ -23,6 +23,64 @@ import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
 import { getActiveProfileId } from './profile-manager.js';
 
+// ===== MODULE-LEVEL CONSTANTS (extracted for testability) =====
+
+// Stop words excluded from echo overlap calculation
+export const ECHO_STOP = new Set([
+  'the','and','for','with','from','that','this','have','has','what','when',
+  'where','which','who','how','why','are','was','were','been','being','can',
+  'could','should','would','will','not','but','about','into','than','then',
+  'them','they','your','you','our','its','his','her','their','does','did',
+  'top','best','most','need','needs','want','use','like','just','also',
+  'some','any','all','each','every','tell','know','think','make','take',
+]);
+
+// Meta-conversation patterns: penalize KYT/extension operational chatter
+export const KYT_META_PATTERNS = [
+  /\bK\.?Y\.?T\.?\b.*\b(extension|plugin|add-?on)\b.*\b(working|broken|not working|crash|error|bug|fix|debug)\b/i,
+  /\b(extension|memory system|knowledge base)\b.*\b(broken|not working|crash|paused|down|error)\b/i,
+  /\bchrome\.?(runtime|storage|extension)\b.*\b(error|bug|crash|fail|broken|terminat|restart|debug)\b/i,
+  /\bservice worker\b.*\b(terminat|restart|error|log|crash|fail)\b/i,
+  /\bKYT_(?:MESSAGE|CONTEXT|BRIDGE|DEBUG)\b/,
+];
+
+// Skip meta-penalty when the user's query is genuinely about KYT/extension
+export const KYT_QUERY_PATTERNS = [
+  /\bK\.?Y\.?T\.?\b/i,
+  /\b(extension|chrome extension)\b.*\b(model|support|need|use|feature|work)/i,
+  /\bservice worker\b/i,
+];
+
+/**
+ * Calculate word overlap ratio between query and content.
+ * Used by echo filter to detect query parroting.
+ * @param {string} query
+ * @param {string} content
+ * @returns {number} Overlap ratio (0-1)
+ */
+export function echoOverlapRatio(query, content) {
+  const getWords = (text) =>
+    text.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/)
+      .filter(w => w.length > 2 && !ECHO_STOP.has(w));
+  const qWords = new Set(getWords(query));
+  if (qWords.size === 0) return 0;
+  const cWords = new Set(getWords(content));
+  const overlap = [...qWords].filter(w => cWords.has(w)).length;
+  return overlap / qWords.size;
+}
+
+/**
+ * Length-scaled echo penalty multiplier.
+ * Short echoes (<300 chars) get harsh penalty; long substantive responses get gentle.
+ * @param {number} contentLength
+ * @returns {number} Multiplier (0.50, 0.70, or 0.90)
+ */
+export function echoMultiplier(contentLength) {
+  if (contentLength < 300) return 0.50;
+  if (contentLength <= 800) return 0.70;
+  return 0.90;
+}
+
 // ===== DEFENSIVE TIMEOUT HELPER =====
 // Races a promise against a timeout. On timeout, resolves with undefined
 // instead of rejecting — callers treat undefined as "stage skipped".
@@ -578,15 +636,8 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
     }
 
     // QUERY ECHO FILTER: Remove results that just repeat the search query
+    // Uses module-level ECHO_STOP set (exported for testing)
     {
-      const ECHO_STOP = new Set([
-        'the','and','for','with','from','that','this','have','has','what','when',
-        'where','which','who','how','why','are','was','were','been','being','can',
-        'could','should','would','will','not','but','about','into','than','then',
-        'them','they','your','you','our','its','his','her','their','does','did',
-        'top','best','most','need','needs','want','use','like','just','also',
-        'some','any','all','each','every','tell','know','think','make','take',
-      ]);
       const qWords = new Set(
         userMessage.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/)
           .filter(w => w.length > 2 && !ECHO_STOP.has(w))
@@ -685,14 +736,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
     });
 
     // KYT META-CONVERSATION PENALTY
-    const KYT_META_PATTERNS = [
-      /\bK\.?Y\.?T\.?\b.*\b(extension|plugin|add-?on)\b.*\b(working|broken|not working|crash|error|bug|fix|debug)\b/i,
-      /\b(extension|memory system|knowledge base)\b.*\b(broken|not working|crash|paused|down|error)\b/i,
-      /\bchrome\.?(runtime|storage|extension)\b.*\b(error|bug|crash|fail|broken|terminat|restart|debug)\b/i,
-      /\bservice worker\b.*\b(terminat|restart|error|log|crash|fail)\b/i,
-      /\bKYT_(?:MESSAGE|CONTEXT|BRIDGE|DEBUG)\b/,
-    ];
-
+    // Uses module-level KYT_META_PATTERNS and KYT_QUERY_PATTERNS (exported for testing)
     const ECHO_PATTERNS = [
       /\byou (?:said|mentioned|noted|discussed|talked about|asked about|brought up)\b/i,
       /\bfrom your (?:stored|previous|earlier) conversations?\b/i,
@@ -703,12 +747,6 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
       /\b(?:retrieved|stored) (?:items?|entries?) (?:are|is|were) (?:just|only)\b/i,
     ];
 
-    // Skip meta-penalty when the user's query is genuinely about KYT/extension
-    const KYT_QUERY_PATTERNS = [
-      /\bK\.?Y\.?T\.?\b/i,
-      /\b(extension|chrome extension)\b.*\b(model|support|need|use|feature|work)/i,
-      /\bservice worker\b/i,
-    ];
     const queryIsAboutKYT = KYT_QUERY_PATTERNS.some(p => p.test(userMessage));
     if (queryIsAboutKYT) {
       console.log('🔧 Meta-conversation penalty SKIPPED: query is about KYT/extension');
