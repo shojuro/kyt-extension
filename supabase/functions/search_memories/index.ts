@@ -33,6 +33,7 @@ serve(async (req) => {
         const {
             query,
             userId: bodyUserId,
+            profileId: bodyProfileId,
             useHyde = true,     // Default: HyDE enabled
             hydeWeight = 0.6,   // Default: 60% HyDE, 40% raw
             topK = 20
@@ -89,7 +90,9 @@ serve(async (req) => {
         // 4. Dual vector search (parallel)
         // 5. RRF merge
         // 6. Rerank → BM25 → Entity boost → Confidence filter → Top-5
-        const results = await getRelevantMemories(query, userId, options, requestId);
+        // MVP: profileId = userId (1:1). Future: pass to RPC calls for multi-profile isolation.
+        const profileId = bodyProfileId || userId;
+        const results = await getRelevantMemories(query, userId, options, requestId, profileId);
 
         Logger.info("Search completed", {
             requestId,

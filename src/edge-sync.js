@@ -51,6 +51,7 @@ export async function syncViaEdgeFunction(messages, options = {}) {
       conversation_id: msg.conversationId || msg.conversation_id || null,
       timestamp: msg.timestamp || msg.capturedAt || Date.now(),
       is_injection: msg.is_injection || false,
+      profile_id: userId,  // MVP: profile_id = user_id
     }));
 
     try {

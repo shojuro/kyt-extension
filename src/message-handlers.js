@@ -13,6 +13,7 @@ import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { HistoryImporter } from './history-import/index.js';
 import { classifyIntent, PASSIVE_CONFIDENCE_THRESHOLD } from './intent-classifier.js';
 import { getMemoryMode, setMemoryMode } from './memory-mode.js';
+import { getActiveProfileId } from './profile-manager.js';
 
 // ===== INJECTION HEALTH STATS =====
 const INJECTION_STATS_KEY = 'kyt_injection_stats';
@@ -621,6 +622,17 @@ export function registerMessageHandler(deps) {
         })();
         return true;
 
+      case 'GET_PROFILE':
+        (async () => {
+          try {
+            const profileId = await getActiveProfileId();
+            sendResponse({ success: true, profileId });
+          } catch (error) {
+            sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
       case 'SET_MEMORY_MODE':
         (async () => {
           try {
@@ -640,7 +652,7 @@ export function registerMessageHandler(deps) {
         return true;
 
       default:
-        console.warn('⚠️ Unknown message type:', message.type);
+        console.warn('Unknown message type:', message.type);
         sendResponse({ success: false, error: 'Unknown message type' });
         return true;
     }

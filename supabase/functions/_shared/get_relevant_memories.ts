@@ -341,7 +341,8 @@ export async function getRelevantMemories(
     query: string,
     userId: string,
     optionsOrTopK: SearchOptions | number = {},
-    requestId?: string
+    requestId?: string,
+    profileId?: string
 ): Promise<CandidateWithScore[]> {
     // Handle legacy signature (topK as number)
     const options: SearchOptions = typeof optionsOrTopK === "number"
@@ -353,6 +354,9 @@ export async function getRelevantMemories(
         useHyde = true,
         hydeWeight = 0.6
     } = options;
+
+    // MVP: profileId = userId (1:1). Future: pass to RPC calls for multi-profile isolation.
+    const _profileId = profileId || userId;
 
     // Vector search retrieval pool — always fetch at least 20 candidates for reranking,
     // even if client requests fewer items back. More candidates = better reranking quality.

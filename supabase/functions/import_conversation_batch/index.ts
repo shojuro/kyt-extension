@@ -509,6 +509,7 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
             access_count: 0,
             content_type: 'imported',
             entities_extracted: false,
+            profile_id: chunk.user_id,  // MVP: profile_id = user_id
             // Classification: only for single-speaker chunks
             ...(chunk.speakers?.length === 1 && chunk.speakers[0] === 'user'
               ? { is_question: detectIsQuestion(chunk.content) }
@@ -905,6 +906,7 @@ Deno.serve(async (req) => {
         access_count: 0,
         content_type: 'imported',
         entities_extracted: false,
+        profile_id: chunk.user_id,  // MVP: profile_id = user_id
         // Classification: only for single-speaker chunks
         ...(chunk.speakers?.length === 1 && chunk.speakers[0] === 'user'
           ? { is_question: detectIsQuestion(chunk.content) }

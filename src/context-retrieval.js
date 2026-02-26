@@ -162,6 +162,7 @@ export async function lookupPreferencesViaREST(category, apiConfig) {
     p_user_id: userId,
     p_category: category,
     p_limit: 3,  // Cap at 3 — dedup concern: 7 car rows floods injection, 3 suffices
+    // TODO: Add p_profile_id when RPC supports multi-profile
   });
 
   try {

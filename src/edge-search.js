@@ -47,6 +47,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
     {
       query,
       userId,
+      profileId: userId,  // MVP: profile_id = user_id
       useHyde,
       hydeWeight,
       topK,
