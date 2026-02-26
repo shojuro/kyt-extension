@@ -85,6 +85,6 @@ export class AnthropicClient {
             });
 
             return content;
-        }, { maxRetries: 1, baseDelayMs: 300, timeoutMs: 4000 });
+        }, { maxRetries: 1, baseDelayMs: 300, timeoutMs: 3000 });
     }
 }

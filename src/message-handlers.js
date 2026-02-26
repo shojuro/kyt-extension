@@ -12,7 +12,7 @@ import { syncViaEdgeFunction } from './edge-sync.js';
 import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { HistoryImporter } from './history-import/index.js';
 import { classifyIntent } from './intent-classifier.js';
-import { callEdgeFunction } from './api-client.js';
+import { classifyWithHaiku, isHaikuEnabled } from './haiku-tiebreaker.js';
 import { getMemoryMode, setMemoryMode } from './memory-mode.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
@@ -24,41 +24,65 @@ import { AUTH_SESSION_KEY } from './auth/auth-service.js';
  * Escalate a PASSIVE classification to the LLM judge (Haiku 4.5) for a
  * second opinion. Only called for PASSIVE — QUERY and SKIP bypass this.
  *
- * On any failure (network, timeout, missing key), falls through to PASSIVE
- * so the retrieval pipeline is never blocked by Layer 2 unavailability.
+ * Routing:
+ *   MEMORY_QUERY  → intent=QUERY, threshold=0.50 (pipeline fires, elevated threshold)
+ *   NO_RETRIEVAL  → intent=SKIP (no pipeline)
+ *   FALLBACK      → unchanged PASSIVE at 0.60 (Haiku unavailable/timeout/rate-limited)
  *
  * @param {string} message - The user's message
  * @param {Object} classification - Layer 1 result from classifyIntent()
- * @returns {Promise<Object>} Updated classification (intent may change to SKIP)
+ * @returns {Promise<Object>} Updated classification
  */
 async function escalateToLayer2(message, classification) {
-  try {
-    const result = await Promise.race([
-      callEdgeFunction('classify_intent', {
-        message,
-        scores: classification.scores,
-        reason: classification.reason,
-      }, { timeoutMs: 4000 }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Layer 2 timeout')), 4500))
-    ]);
-
-    if (result.intent === 'SKIP') {
-      console.log(`🧠 Layer 2 override: PASSIVE → SKIP (${result.reason})`);
-      return {
-        ...classification,
-        intent: 'SKIP',
-        reason: result.reason || 'llm_judge_skip',
-        confidenceThreshold: null,
-        layer: 2,
-      };
-    }
-
-    console.log(`🧠 Layer 2 confirmed: PASSIVE (${result.reason})`);
-    return { ...classification, layer: 2 };
-  } catch (err) {
-    console.warn(`⚠️ Layer 2 failed (${err.message}) — proceeding as PASSIVE`);
+  // Feature toggle — when disabled, PASSIVE uses v2 behavior unchanged
+  if (!(await isHaikuEnabled())) {
     return classification;
   }
+
+  const haiku = await classifyWithHaiku(message, classification.scores, classification.reason);
+
+  if (haiku.classification === 'MEMORY_QUERY') {
+    const s = classification.scores;
+    console.log(
+      `🤖 Haiku: MEMORY_QUERY (${haiku.latencyMs}ms) ` +
+      `[D:${s.directive.toFixed(2)} M:${s.memory.toFixed(2)} ` +
+      `Q:${s.question.toFixed(2)} P:${s.personal.toFixed(2)} ` +
+      `T:${s.temporal.toFixed(2)} ρ:${s.density.toFixed(2)}] ` +
+      `→ "${message.substring(0, 80)}"`
+    );
+    return {
+      ...classification,
+      intent: 'QUERY',
+      confidenceThreshold: 0.50,
+      reason: 'haiku_memory_query',
+      layer: 2,
+      haikuLatencyMs: haiku.latencyMs,
+    };
+  }
+
+  if (haiku.classification === 'NO_RETRIEVAL') {
+    const s = classification.scores;
+    console.log(
+      `🤖 Haiku: NO_RETRIEVAL (${haiku.latencyMs}ms, ${haiku.source}) ` +
+      `[D:${s.directive.toFixed(2)} M:${s.memory.toFixed(2)} ` +
+      `Q:${s.question.toFixed(2)} P:${s.personal.toFixed(2)} ` +
+      `T:${s.temporal.toFixed(2)} ρ:${s.density.toFixed(2)}] ` +
+      `→ "${message.substring(0, 80)}"`
+    );
+    return {
+      ...classification,
+      intent: 'SKIP',
+      confidenceThreshold: null,
+      reason: 'haiku_no_retrieval',
+      layer: 2,
+      haikuLatencyMs: haiku.latencyMs,
+    };
+  }
+
+  // FALLBACK — Haiku unavailable (timeout, rate limit, error)
+  // Fall through to v2 PASSIVE behavior unchanged
+  console.log(`🤖 Haiku: fallback (${haiku.latencyMs}ms, ${haiku.source}) — using v2 PASSIVE`);
+  return classification;
 }
 
 // ===== GDPR DATA HELPERS =====
