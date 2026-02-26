@@ -369,6 +369,31 @@ describe('Classification Logic', () => {
     expect(r.confidenceThreshold).toBe(0.60);
   });
 
+  it('"I only read thought books." → SKIP (personal declaration, no retrieval signals)', () => {
+    const r = classify('I only read thought books.');
+    expect(r.intent).toBe('SKIP');
+    expect(r.reason).toBe('no_signal');
+    expect(r.scores.density).toBe(0.7);     // 5 words → density sweet spot
+    expect(r.scores.memory).toBe(0);
+    expect(r.scores.question).toBe(0);
+    expect(r.scores.personal).toBe(0);
+    expect(r.scores.temporal).toBe(0);
+  });
+
+  it('short generic declarations → SKIP (density-only insufficient)', () => {
+    // 5-7 word statements with no retrieval signals
+    expect(classify('Python is a great programming language.').intent).toBe('SKIP');
+    expect(classify('The weather is nice today.').intent).toBe('SKIP');
+    expect(classify('I really enjoy building things.').intent).toBe('SKIP');
+  });
+
+  it('8+ word statements still get PASSIVE even without explicit signals', () => {
+    // Long enough to be substantive — worth attempting retrieval
+    const r = classify('I think the authentication module needs a complete overhaul soon.');
+    expect(r.intent).toBe('PASSIVE');
+    expect(r.confidenceThreshold).toBe(0.60);
+  });
+
   it('low density without memory → SKIP', () => {
     // Short, non-directive, non-question — just a fragment
     const r = classify('well okay then');

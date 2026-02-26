@@ -376,9 +376,17 @@ export function classifyIntent(message) {
     return result('PASSIVE', 0.60, 'generic_question', scores);
   }
 
-  // PASSIVE: Moderate density, no strong signals either way
+  // PASSIVE: Moderate density WITH sufficient substance to justify pipeline cost
+  // Short declarative statements (< 8 words) with density-only signal don't
+  // warrant retrieval — "I only read thought books." (5 words, all other signals 0)
+  // should not fire the pipeline
   if (scores.density >= 0.4) {
-    return result('PASSIVE', 0.60, 'default_substantive', scores);
+    const wordCount = trimmed.split(/\s+/).length;
+    if (wordCount >= 8 ||
+        scores.question > 0 || scores.memory > 0 ||
+        scores.personal >= 0.3 || scores.temporal > 0) {
+      return result('PASSIVE', 0.60, 'default_substantive', scores);
+    }
   }
 
   // SKIP: Nothing scored high enough to justify pipeline
