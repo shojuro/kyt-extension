@@ -57,20 +57,3 @@ export function updateBadge(mode) {
   }
 }
 
-/**
- * Whether message capture is allowed in the current mode.
- * @returns {Promise<boolean>}
- */
-export async function isCaptureAllowed() {
-  const mode = await getMemoryMode();
-  return mode !== 'incognito';
-}
-
-/**
- * Whether context injection is allowed in the current mode.
- * @returns {Promise<boolean>}
- */
-export async function isInjectionAllowed() {
-  const mode = await getMemoryMode();
-  return mode === 'full';
-}

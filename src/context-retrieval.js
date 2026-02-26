@@ -21,6 +21,7 @@ import { hydeCB } from './hyde-search-generator.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
+import { getActiveProfileId } from './profile-manager.js';
 
 // ===== DEFENSIVE TIMEOUT HELPER =====
 // Races a promise against a timeout. On timeout, resolves with undefined
@@ -162,7 +163,7 @@ export async function lookupPreferencesViaREST(category, apiConfig) {
     p_user_id: userId,
     p_category: category,
     p_limit: 3,  // Cap at 3 — dedup concern: 7 car rows floods injection, 3 suffices
-    // TODO: Add p_profile_id when RPC supports multi-profile
+    p_profile_id: await getActiveProfileId() || null,
   });
 
   try {

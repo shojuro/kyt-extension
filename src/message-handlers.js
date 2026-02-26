@@ -646,8 +646,12 @@ export function registerMessageHandler(deps) {
 
       case 'GET_MEMORY_MODE':
         (async () => {
-          const mode = await getMemoryMode();
-          sendResponse({ success: true, mode });
+          try {
+            const mode = await getMemoryMode();
+            sendResponse({ success: true, mode });
+          } catch (error) {
+            sendResponse({ success: false, error: error.message });
+          }
         })();
         return true;
 

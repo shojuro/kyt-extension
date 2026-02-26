@@ -301,12 +301,16 @@ export async function searchMessages(query, options = {}) {
       minTimestamp = options.minTimestamp;
     }
 
+    // Resolve profile for multi-profile isolation
+    const searchProfileId = await getActiveProfileId();
+
     const rpcBody = {
       query_embedding: queryEmbedding,
       match_threshold: config.matchThreshold || 0.6, // Calibrated optimal threshold
       match_count: limit,
       filter: filter,
-      min_timestamp: minTimestamp
+      min_timestamp: minTimestamp,
+      p_profile_id: searchProfileId || null
     };
 
     let url = `${config.supabaseUrl}/rest/v1/rpc/match_messages_v2`;
@@ -373,6 +377,9 @@ export async function findSimilarMessages(messageId, limit = 5) {
 
     const refMessage = data[0];
 
+    // Resolve profile for multi-profile isolation
+    const similarProfileId = await getActiveProfileId();
+
     // Search using the reference message's embedding
     const searchResponse = await fetch(
       `${config.supabaseUrl}/rest/v1/rpc/match_messages_v2`,
@@ -389,7 +396,8 @@ export async function findSimilarMessages(messageId, limit = 5) {
           match_count: limit + 1, // +1 because reference will match itself
           filter: {
             user_id: config.userId // Filter by User ID
-          }
+          },
+          p_profile_id: similarProfileId || null
         })
       }
     );
@@ -565,6 +573,7 @@ async function searchGraphWalk(query, options = {}) {
       return [];
     }
     const userId = config.userId;
+    const graphProfileId = await getActiveProfileId();
 
     // Step 1: Find entities matching the query embedding
     const entityResponse = await fetchWithTimeout(
@@ -580,7 +589,8 @@ async function searchGraphWalk(query, options = {}) {
           query_embedding: queryEmbedding,
           match_threshold: 0.8,
           match_count: 5,
-          p_user_id: userId
+          p_user_id: userId,
+          p_profile_id: graphProfileId || null
         })
       },
       5000
@@ -609,7 +619,8 @@ async function searchGraphWalk(query, options = {}) {
             body: JSON.stringify({
               p_query_text: query,
               p_user_id: userId,
-              p_match_count: 5
+              p_match_count: 5,
+              p_profile_id: graphProfileId || null
             })
           },
           5000
@@ -648,7 +659,8 @@ async function searchGraphWalk(query, options = {}) {
           p_user_id: userId,
           p_max_results: limit,
           p_max_depth: 2,
-          p_max_intermediate: 20
+          p_max_intermediate: 20,
+          p_profile_id: graphProfileId || null
         })
       },
       5000

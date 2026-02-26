@@ -104,7 +104,8 @@ async function vectorSearch(
     userId: string,
     boostEntityIds: string[],
     topK: number,
-    requestId?: string
+    requestId?: string,
+    profileId?: string
 ): Promise<Candidate[]> {
     const { data, error } = await supabase
         .rpc("match_messages_with_gravity", {
@@ -113,7 +114,8 @@ async function vectorSearch(
             match_count: topK,
             exclude_recent_seconds: 0,
             p_user_id: userId,
-            boost_entity_ids: boostEntityIds
+            boost_entity_ids: boostEntityIds,
+            p_profile_id: profileId
         });
 
     if (error) {
@@ -132,14 +134,16 @@ async function searchEntities(
     embedding: number[],
     userId: string,
     queryText: string,
-    requestId?: string
+    requestId?: string,
+    profileId?: string
 ): Promise<{ ids: string[]; entities: any[] }> {
     const { data: entities, error } = await supabase
         .rpc("search_entities_by_embedding", {
             query_embedding: embedding,
             match_threshold: 0.8,
             match_count: 5,
-            p_user_id: userId
+            p_user_id: userId,
+            p_profile_id: profileId
         });
 
     if (error) {
@@ -165,7 +169,8 @@ async function searchEntities(
         .rpc("search_entities_by_text", {
             p_query_text: queryText,
             p_user_id: userId,
-            p_match_count: 5
+            p_match_count: 5,
+            p_profile_id: profileId
         });
 
     if (textError) {
@@ -243,13 +248,15 @@ async function lookupPreferencesAsCandidates(
     supabase: any,
     userId: string,
     category: string,
-    requestId?: string
+    requestId?: string,
+    profileId?: string
 ): Promise<CandidateWithScore[]> {
     const { data, error } = await supabase
         .rpc("lookup_user_preferences", {
             p_user_id: userId,
             p_category: category,
-            p_limit: 10
+            p_limit: 10,
+            p_profile_id: profileId
         });
 
     if (error) {
@@ -290,7 +297,8 @@ async function detectConceptEntities(
     supabase: any,
     query: string,
     userId: string,
-    requestId?: string
+    requestId?: string,
+    profileId?: string
 ): Promise<string[]> {
     const conceptTypes = new Set(["CONCEPT", "ANALOGY", "THEME"]);
 
@@ -299,7 +307,8 @@ async function detectConceptEntities(
             .rpc("search_entities_by_text", {
                 p_query_text: query,
                 p_user_id: userId,
-                p_match_count: 10  // Fetch more, filter to concepts
+                p_match_count: 10,  // Fetch more, filter to concepts
+                p_profile_id: profileId
             });
 
         if (error) {
@@ -355,8 +364,8 @@ export async function getRelevantMemories(
         hydeWeight = 0.6
     } = options;
 
-    // MVP: profileId = userId (1:1). Future: pass to RPC calls for multi-profile isolation.
-    const _profileId = profileId || userId;
+    // MVP: profileId = userId (1:1). Future: multi-profile adds junction table.
+    const resolvedProfileId = profileId || userId;
 
     // Vector search retrieval pool — always fetch at least 20 candidates for reranking,
     // even if client requests fewer items back. More candidates = better reranking quality.
@@ -382,7 +391,7 @@ export async function getRelevantMemories(
     const prefCategory = detectPreferenceQuery(query);
     if (prefCategory) {
         Logger.info(`Preference router activated: category="${prefCategory}"`, { requestId });
-        const prefResults = await lookupPreferencesAsCandidates(supabase, userId, prefCategory, requestId);
+        const prefResults = await lookupPreferencesAsCandidates(supabase, userId, prefCategory, requestId, resolvedProfileId);
         if (prefResults.length > 0) {
             Logger.info(`Preference router: returning ${prefResults.length} results (short-circuit)`, { requestId });
             return prefResults;
@@ -406,11 +415,11 @@ export async function getRelevantMemories(
     // STEP 2: PARALLEL - Entity search + HyDE generation + Concept detection
     // ========================================================================
     const [entityResult, hydeResult, conceptEntityIds] = await Promise.all([
-        searchEntities(supabase, rawEmbedding, userId, query, requestId),
+        searchEntities(supabase, rawEmbedding, userId, query, requestId, resolvedProfileId),
         useHyde && openaiApiKey
             ? generateHyDEWithFallback(query, openaiApiKey, requestId)
             : Promise.resolve({ hydeDoc: null, usedHyde: false }),
-        detectConceptEntities(supabase, query, userId, requestId)
+        detectConceptEntities(supabase, query, userId, requestId, resolvedProfileId)
     ]);
 
     const { ids: embeddingEntityIds, entities } = entityResult;
@@ -432,7 +441,8 @@ export async function getRelevantMemories(
                 p_user_id: userId,
                 p_max_results: vectorSearchCount,
                 p_max_depth: 2,
-                p_max_intermediate: 20
+                p_max_intermediate: 20,
+                p_profile_id: resolvedProfileId
             });
             if (error) {
                 Logger.warn("Graph walk RPC failed", { requestId, error: error.message });
@@ -468,7 +478,7 @@ export async function getRelevantMemories(
 
         // Single vector search with raw query + graph results
         const vectorCandidates = await vectorSearch(
-            supabase, rawEmbedding, userId, boostEntityIds, vectorSearchCount, requestId
+            supabase, rawEmbedding, userId, boostEntityIds, vectorSearchCount, requestId, resolvedProfileId
         );
 
         // Merge vector + graph candidates, dedup by id
@@ -499,12 +509,12 @@ export async function getRelevantMemories(
 
     // Parallel vector searches
     const searchPromises: Promise<Candidate[]>[] = [
-        vectorSearch(supabase, rawEmbedding, userId, boostEntityIds, vectorSearchCount, requestId)
+        vectorSearch(supabase, rawEmbedding, userId, boostEntityIds, vectorSearchCount, requestId, resolvedProfileId)
     ];
 
     if (hydeEmbedding) {
         searchPromises.push(
-            vectorSearch(supabase, hydeEmbedding, userId, boostEntityIds, vectorSearchCount, requestId)
+            vectorSearch(supabase, hydeEmbedding, userId, boostEntityIds, vectorSearchCount, requestId, resolvedProfileId)
         );
     }
 
@@ -597,7 +607,8 @@ export async function getRelevantMemories(
                     p_entity_ids: boostEntityIds,
                     p_user_id: userId,
                     p_exclude_turn_ids: existingTurnIds,
-                    p_max_per_entity: 1
+                    p_max_per_entity: 1,
+                    p_profile_id: resolvedProfileId
                 });
 
             if (timelineError) {
