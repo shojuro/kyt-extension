@@ -8,6 +8,7 @@ import {
   getMostRecentSession,
 } from '../lib/session-parser.js';
 import { getIngestedSessions, markSessionIngested } from '../lib/config.js';
+import { filterForMemorability } from '../lib/memorability-filter.js';
 
 export const INGEST_SESSION_SCHEMA = {
   sessionId: {
@@ -93,6 +94,20 @@ async function ingestOneSession(filePath, sessionId) {
     };
   }
 
+  // Filter out unmemorable turns (noise reduction)
+  const { kept: memorableTurns, filtered: filteredCount } = filterForMemorability(newTurns);
+
+  if (memorableTurns.length === 0) {
+    // Track progress even when all turns are filtered
+    markSessionIngested(sessionId, lastCount + newTurns.length);
+    return {
+      content: [{
+        type: 'text',
+        text: `Session ${sessionId}: ${newTurns.length} new turns parsed, all filtered as unmemorable.`,
+      }],
+    };
+  }
+
   const userId = getUserId();
   const conversationId = `cc-${sessionId}`;
 
@@ -102,8 +117,8 @@ async function ingestOneSession(filePath, sessionId) {
   let totalDuplicates = 0;
   let totalErrors = 0;
 
-  for (let i = 0; i < newTurns.length; i += BATCH_SIZE) {
-    const batch = newTurns.slice(i, i + BATCH_SIZE).map(t => ({
+  for (let i = 0; i < memorableTurns.length; i += BATCH_SIZE) {
+    const batch = memorableTurns.slice(i, i + BATCH_SIZE).map(t => ({
       user_id: userId,
       conversation_id: conversationId,
       platform: 'claude-code',
@@ -135,7 +150,9 @@ async function ingestOneSession(filePath, sessionId) {
       type: 'text',
       text: [
         `Session ${sessionId} ingested:`,
-        `  New turns processed: ${newTurns.length}`,
+        `  Turns parsed: ${newTurns.length}`,
+        `  Filtered (unmemorable): ${filteredCount}`,
+        `  Memorable turns processed: ${memorableTurns.length}`,
         `  Inserted: ${totalInserted}`,
         `  Duplicates skipped: ${totalDuplicates}`,
         totalErrors > 0 ? `  Batch errors: ${totalErrors}` : null,

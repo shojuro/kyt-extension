@@ -74,6 +74,19 @@ function markSessionIngested(sessionId, count) {
   writeFileSync(path, JSON.stringify(ingested, null, 2) + '\n');
 }
 
+// Inline memorability filter (avoids heavy import for hook speed)
+function isUnmemorable(turn) {
+  const c = (turn.content || '').trim();
+  if (c.length < 15) return true;
+  if (/^(?:yes|no|ok|okay|sure|thanks|correct|exactly|right|continue|proceed|next|good|great|fine|perfect|agreed|noted|understood|got\s*it|sounds?\s*good|let'?s\s*(?:do|go|proceed|continue))[\s.!?]*$/i.test(c)) return true;
+  if (turn.role === 'assistant' && /^(?:Done\.?|Ok\.?|Got it\.?|Fixed\.?|Updated\.?|Sure\.?|Understood\.?|Will do\.?)$/i.test(c)) return true;
+  if (/^(?:fix|change|update|look\s+at|check)\s+.*(?:line\s*\d+|\.(?:js|ts|py|css|html|json)(?::\d+)?)[\s.!?]*$/i.test(c)) return true;
+  // Code-only blocks
+  const withoutCode = c.replace(/```[\s\S]*?```/g, '').trim();
+  if (c.includes('```') && withoutCode.length < 20) return true;
+  return false;
+}
+
 function parseSessionJsonl(filePath) {
   const raw = readFileSync(filePath, 'utf-8');
   const lines = raw.split('\n').filter(l => l.trim());
@@ -172,13 +185,26 @@ async function main() {
       process.exit(0);
     }
 
+    // Filter out unmemorable turns (noise reduction)
+    const memorableTurns = newTurns.filter(t => !isUnmemorable(t));
+    const filteredCount = newTurns.length - memorableTurns.length;
+    if (filteredCount > 0) {
+      process.stderr.write(`KYT session-ingest: filtered ${filteredCount} unmemorable turns\n`);
+    }
+
+    if (memorableTurns.length === 0) {
+      markSessionIngested(sessionId, lastCount + newTurns.length);
+      process.stderr.write(`KYT session-ingest: ${sessionId} — all ${newTurns.length} new turns filtered as unmemorable\n`);
+      process.exit(0);
+    }
+
     // Batch send to save_chat_turn_batch (max 50 per batch)
     const BATCH_SIZE = 50;
     let totalInserted = 0;
     const conversationId = `cc-${sessionId}`;
 
-    for (let i = 0; i < newTurns.length; i += BATCH_SIZE) {
-      const batch = newTurns.slice(i, i + BATCH_SIZE).map(t => ({
+    for (let i = 0; i < memorableTurns.length; i += BATCH_SIZE) {
+      const batch = memorableTurns.slice(i, i + BATCH_SIZE).map(t => ({
         user_id: userId,
         conversation_id: conversationId,
         platform: 'claude-code',
@@ -207,7 +233,7 @@ async function main() {
 
     // Track progress
     markSessionIngested(sessionId, lastCount + newTurns.length);
-    process.stderr.write(`KYT session-ingest: ${sessionId} — ${newTurns.length} new turns, ${totalInserted} inserted\n`);
+    process.stderr.write(`KYT session-ingest: ${sessionId} — ${newTurns.length} new turns, ${filteredCount} filtered, ${memorableTurns.length} memorable, ${totalInserted} inserted\n`);
 
   } catch (err) {
     process.stderr.write(`KYT session-ingest: ${err.message}\n`);
