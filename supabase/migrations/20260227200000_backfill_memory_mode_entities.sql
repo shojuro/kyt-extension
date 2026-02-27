@@ -11,7 +11,7 @@
 -- (canonical_name may be incognito_mode_discussed or similar)
 DO $$
 DECLARE
-  v_user_id UUID := '0499c405-8f04-4491-84b3-e68f3a30e15c';
+  v_user_id UUID := '0499c405-3bff-4901-bc94-d5d0a0c301e4';
   v_incognito_id UUID;
   v_full_id UUID;
   v_clean_id UUID;
@@ -65,24 +65,24 @@ BEGIN
   -- Step 2: Create bidirectional entity_relationships between all 3 modes
   -- Uses upsert_entity_relationship RPC pattern (manual here since we're in plpgsql)
   IF v_incognito_id IS NOT NULL AND v_full_id IS NOT NULL THEN
-    INSERT INTO entity_relationships (user_id, entity_a_id, entity_b_id, relationship_type, co_occurrence_count)
-    VALUES (v_user_id, LEAST(v_incognito_id, v_full_id), GREATEST(v_incognito_id, v_full_id), 'discussed_together', 1)
+    INSERT INTO entity_relationships (user_id, entity_a_id, entity_b_id, co_occurrence_count)
+    VALUES (v_user_id, LEAST(v_incognito_id, v_full_id), GREATEST(v_incognito_id, v_full_id), 1)
     ON CONFLICT (entity_a_id, entity_b_id) DO UPDATE SET
       co_occurrence_count = entity_relationships.co_occurrence_count + 1,
       last_seen = NOW();
   END IF;
 
   IF v_incognito_id IS NOT NULL AND v_clean_id IS NOT NULL THEN
-    INSERT INTO entity_relationships (user_id, entity_a_id, entity_b_id, relationship_type, co_occurrence_count)
-    VALUES (v_user_id, LEAST(v_incognito_id, v_clean_id), GREATEST(v_incognito_id, v_clean_id), 'discussed_together', 1)
+    INSERT INTO entity_relationships (user_id, entity_a_id, entity_b_id, co_occurrence_count)
+    VALUES (v_user_id, LEAST(v_incognito_id, v_clean_id), GREATEST(v_incognito_id, v_clean_id), 1)
     ON CONFLICT (entity_a_id, entity_b_id) DO UPDATE SET
       co_occurrence_count = entity_relationships.co_occurrence_count + 1,
       last_seen = NOW();
   END IF;
 
   IF v_full_id IS NOT NULL AND v_clean_id IS NOT NULL THEN
-    INSERT INTO entity_relationships (user_id, entity_a_id, entity_b_id, relationship_type, co_occurrence_count)
-    VALUES (v_user_id, LEAST(v_full_id, v_clean_id), GREATEST(v_full_id, v_clean_id), 'discussed_together', 1)
+    INSERT INTO entity_relationships (user_id, entity_a_id, entity_b_id, co_occurrence_count)
+    VALUES (v_user_id, LEAST(v_full_id, v_clean_id), GREATEST(v_full_id, v_clean_id), 1)
     ON CONFLICT (entity_a_id, entity_b_id) DO UPDATE SET
       co_occurrence_count = entity_relationships.co_occurrence_count + 1,
       last_seen = NOW();
@@ -96,7 +96,7 @@ BEGIN
       FROM chat_turns
       WHERE user_id = v_user_id
         AND (content ILIKE '%full memory%' OR content ILIKE '%full mode%')
-        AND role = 'user'
+        AND speakers @> ARRAY['user']
       LIMIT 10
     LOOP
       INSERT INTO entity_mentions (entity_id, conversation_id, chat_turn_id, mention_text, timestamp)
@@ -117,7 +117,7 @@ BEGIN
       FROM chat_turns
       WHERE user_id = v_user_id
         AND (content ILIKE '%clean room%' OR content ILIKE '%clean_room%')
-        AND role = 'user'
+        AND speakers @> ARRAY['user']
       LIMIT 10
     LOOP
       INSERT INTO entity_mentions (entity_id, conversation_id, chat_turn_id, mention_text, timestamp)
@@ -137,7 +137,7 @@ BEGIN
       FROM chat_turns
       WHERE user_id = v_user_id
         AND content ILIKE '%incognito%'
-        AND role = 'user'
+        AND speakers @> ARRAY['user']
         AND id NOT IN (SELECT chat_turn_id FROM entity_mentions WHERE entity_id = v_incognito_id)
       LIMIT 10
     LOOP
