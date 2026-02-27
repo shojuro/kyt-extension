@@ -1,0 +1,219 @@
+#!/usr/bin/env node
+
+/**
+ * K.Y.T. SessionEnd Hook
+ *
+ * Fires when a Claude Code session terminates.
+ * Reads the session info from stdin JSON, finds the session JSONL file,
+ * parses it, and ingests text content into K.Y.T. via save_chat_turn_batch.
+ *
+ * Non-blocking: errors are logged to stderr but never prevent session exit.
+ */
+
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { homedir } from 'os';
+import { fileURLToPath } from 'url';
+
+// --- Inline helpers (avoid heavy imports for speed) ---
+
+function getMemoryMode() {
+  try {
+    const config = JSON.parse(readFileSync(join(homedir(), '.kyt', 'config.json'), 'utf-8'));
+    return config.memoryMode || 'full';
+  } catch {
+    return 'full';
+  }
+}
+
+function loadEnv() {
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const mcpDir = join(scriptDir, '..', '..');
+
+  const envPaths = [
+    join(mcpDir, '.env'),                    // mcp/.env (relative to this script)
+    join(process.cwd(), 'mcp', '.env'),
+    join(process.cwd(), '.env'),
+    join(homedir(), '.kyt', '.env'),
+  ];
+  if (process.env.CLAUDE_PROJECT_DIR) {
+    envPaths.unshift(join(process.env.CLAUDE_PROJECT_DIR, 'mcp', '.env'));
+  }
+  for (const envPath of envPaths) {
+    if (existsSync(envPath)) {
+      const lines = readFileSync(envPath, 'utf-8').split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx === -1) continue;
+        const key = trimmed.slice(0, eqIdx).trim();
+        const value = trimmed.slice(eqIdx + 1).trim();
+        if (!process.env[key]) process.env[key] = value;
+      }
+      break;
+    }
+  }
+}
+
+function getIngestedSessions() {
+  const path = join(homedir(), '.kyt', 'ingested-sessions.json');
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function markSessionIngested(sessionId, count) {
+  const kytDir = join(homedir(), '.kyt');
+  if (!existsSync(kytDir)) mkdirSync(kytDir, { recursive: true });
+  const path = join(kytDir, 'ingested-sessions.json');
+  const ingested = getIngestedSessions();
+  ingested[sessionId] = { lastIngestedCount: count, ingestedAt: new Date().toISOString() };
+  writeFileSync(path, JSON.stringify(ingested, null, 2) + '\n');
+}
+
+function parseSessionJsonl(filePath) {
+  const raw = readFileSync(filePath, 'utf-8');
+  const lines = raw.split('\n').filter(l => l.trim());
+  const turns = [];
+
+  for (const line of lines) {
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.type === 'file-history-snapshot') continue;
+    if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+
+    const msg = entry.message;
+    if (!msg) continue;
+
+    const role = msg.role || entry.type;
+    let content;
+    if (typeof msg.content === 'string') {
+      content = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      content = msg.content
+        .filter(b => b.type === 'text')
+        .map(b => b.text || '')
+        .join('\n')
+        .trim();
+    }
+
+    if (!content || content.trim().length === 0) continue;
+
+    turns.push({
+      role,
+      content,
+      timestamp: entry.timestamp || new Date().toISOString(),
+    });
+  }
+
+  return turns;
+}
+
+async function main() {
+  let input;
+  try {
+    const raw = readFileSync(0, 'utf-8');
+    input = JSON.parse(raw);
+  } catch (err) {
+    process.stderr.write(`KYT session-ingest: failed to parse stdin: ${err.message}\n`);
+    process.exit(0);
+  }
+
+  const sessionId = input.session_id;
+  const transcriptPath = input.transcript_path;
+
+  if (!sessionId || !transcriptPath) {
+    process.stderr.write('KYT session-ingest: missing session_id or transcript_path\n');
+    process.exit(0);
+  }
+
+  // Check memory mode
+  const mode = getMemoryMode();
+  if (mode === 'incognito') {
+    process.stderr.write('KYT session-ingest: incognito mode, skipping\n');
+    process.exit(0);
+  }
+
+  // Check if transcript file exists
+  if (!existsSync(transcriptPath)) {
+    process.stderr.write(`KYT session-ingest: transcript not found: ${transcriptPath}\n`);
+    process.exit(0);
+  }
+
+  loadEnv();
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const token = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+  const userId = process.env.KYT_USER_ID;
+
+  if (!supabaseUrl || !token || !userId) {
+    process.stderr.write('KYT session-ingest: missing env vars\n');
+    process.exit(0);
+  }
+
+  try {
+    // Parse the session
+    const turns = parseSessionJsonl(transcriptPath);
+    if (turns.length === 0) {
+      process.stderr.write(`KYT session-ingest: no text content in session ${sessionId}\n`);
+      process.exit(0);
+    }
+
+    // Check incremental progress
+    const ingested = getIngestedSessions();
+    const lastCount = ingested[sessionId]?.lastIngestedCount || 0;
+    const newTurns = turns.slice(lastCount);
+
+    if (newTurns.length === 0) {
+      process.stderr.write(`KYT session-ingest: session ${sessionId} already fully ingested\n`);
+      process.exit(0);
+    }
+
+    // Batch send to save_chat_turn_batch (max 50 per batch)
+    const BATCH_SIZE = 50;
+    let totalInserted = 0;
+    const conversationId = `cc-${sessionId}`;
+
+    for (let i = 0; i < newTurns.length; i += BATCH_SIZE) {
+      const batch = newTurns.slice(i, i + BATCH_SIZE).map(t => ({
+        user_id: userId,
+        conversation_id: conversationId,
+        platform: 'claude-code',
+        content: t.content,
+        role: t.role,
+        timestamp: t.timestamp,
+        is_injection: false,
+        content_type: 'imported',
+      }));
+
+      const res = await fetch(`${supabaseUrl}/functions/v1/save_chat_turn_batch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'apikey': process.env.SUPABASE_ANON_KEY || token,
+        },
+        body: JSON.stringify({ turns: batch, skip_ai_processing: false }),
+      });
+
+      if (res.ok) {
+        const result = await res.json();
+        totalInserted += result.inserted || 0;
+      }
+    }
+
+    // Track progress
+    markSessionIngested(sessionId, lastCount + newTurns.length);
+    process.stderr.write(`KYT session-ingest: ${sessionId} — ${newTurns.length} new turns, ${totalInserted} inserted\n`);
+
+  } catch (err) {
+    process.stderr.write(`KYT session-ingest: ${err.message}\n`);
+  }
+
+  process.exit(0);
+}
+
+main();

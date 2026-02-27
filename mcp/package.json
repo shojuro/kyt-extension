@@ -1,0 +1,17 @@
+{
+  "name": "kyt-mcp-server",
+  "version": "1.0.0",
+  "description": "K.Y.T. MCP server — bridges web conversation memory to Claude Code",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test tests/"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@supabase/supabase-js": "^2.49.4",
+    "dotenv": "^16.4.7",
+    "zod": "^3.24.2"
+  }
+}

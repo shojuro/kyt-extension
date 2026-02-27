@@ -25,9 +25,10 @@ import { extractEntities, saveEntitiesWithMentions, savePreferences } from '../_
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
 
 // Platform normalization (inline — Deno edge functions can't import from client src/)
-const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli']);
-function normalizePlatform(p: string | undefined): 'chatgpt' | 'claude' | 'cli' {
-  if (p && VALID_PLATFORMS.has(p)) return p as 'chatgpt' | 'claude' | 'cli';
+const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code']);
+type Platform = 'chatgpt' | 'claude' | 'cli' | 'claude-code';
+function normalizePlatform(p: string | undefined): Platform {
+  if (p && VALID_PLATFORMS.has(p)) return p as Platform;
   return 'chatgpt';
 }
 
