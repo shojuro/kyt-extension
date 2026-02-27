@@ -34,6 +34,7 @@
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
     "https://claude.ai/*",
+    "https://gemini.google.com/*",
     "https://svrcvfzlwhnixzuxaccf.supabase.co/*",
     "https://api.openai.com/*",
     "https://router.huggingface.co/*",
@@ -71,6 +72,27 @@
       ],
       "run_at": "document_start",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "platforms/gemini/content_test.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "platforms/gemini/content_bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [
@@ -103,7 +125,8 @@
       "matches": [
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
-        "https://claude.ai/*"
+        "https://claude.ai/*",
+        "https://gemini.google.com/*"
       ]
     }
   ]

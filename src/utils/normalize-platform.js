@@ -8,7 +8,7 @@
  * This module provides a single normalization function shared by all insertion points.
  */
 
-const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code']);
+const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code', 'gemini']);
 
 const PLATFORM_ALIASES = {
   'gpt': 'chatgpt',
@@ -17,13 +17,16 @@ const PLATFORM_ALIASES = {
   'anthropic': 'claude',
   'dom_capture': 'chatgpt',   // conversationId leak into platform field
   'unknown': 'chatgpt',       // queue-manager fallback value
+  'google': 'gemini',
+  'bard': 'gemini',
+  'google-gemini': 'gemini',
 };
 
 /**
  * Normalize a platform value to one of the valid enum values: 'chatgpt' | 'claude' | 'cli' | 'claude-code'.
  *
  * @param {string|undefined|null} platform - Raw platform string
- * @returns {'chatgpt'|'claude'|'cli'|'claude-code'} Normalized platform
+ * @returns {'chatgpt'|'claude'|'cli'|'claude-code'|'gemini'} Normalized platform
  */
 export function normalizePlatform(platform) {
   if (!platform || typeof platform !== 'string') return 'chatgpt';

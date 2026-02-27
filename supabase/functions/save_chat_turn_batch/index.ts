@@ -8,8 +8,8 @@ import { generateChunkContext } from '../_shared/context-generator.ts';
 const MAX_BATCH_SIZE = 50;
 
 // Platform normalization (inline — Deno edge functions can't import from client src/)
-const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code']);
-type Platform = 'chatgpt' | 'claude' | 'cli' | 'claude-code';
+const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code', 'gemini']);
+type Platform = 'chatgpt' | 'claude' | 'cli' | 'claude-code' | 'gemini';
 function normalizePlatform(p: string | undefined): Platform {
   if (p && VALID_PLATFORMS.has(p)) return p as Platform;
   return 'chatgpt';

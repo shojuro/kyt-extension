@@ -15,6 +15,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { ChatGPTPlatform } from '../platforms/chatgpt/ChatGPTPlatform.js';
 import { ClaudePlatform } from '../platforms/claude/ClaudePlatform.js';
+import { GeminiPlatform } from '../platforms/gemini/GeminiPlatform.js';
 import { registry } from '../platforms/base/PlatformRegistry.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -26,6 +27,7 @@ console.log('🔧 KYT Manifest Generator: Starting...');
 // Register all platforms
 registry.register(new ChatGPTPlatform());
 registry.register(new ClaudePlatform());
+registry.register(new GeminiPlatform());
 
 console.log('✅ Registered platforms:', registry.getPlatformNames().join(', '));
 
