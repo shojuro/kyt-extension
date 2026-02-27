@@ -11,7 +11,7 @@ export const QUERY_MEMORY_SCHEMA = {
   },
 };
 
-export async function queryMemory({ query, topK = 5, useHyde = true, platform = 'all' }) {
+export async function queryMemory({ query, topK = 5, useHyde = true, platform = 'all', fast = false }) {
   const mode = getMemoryMode();
   if (mode === 'incognito' || mode === 'clean_room') {
     return {
@@ -31,8 +31,9 @@ export async function queryMemory({ query, topK = 5, useHyde = true, platform = 
   const body = {
     query: query.trim(),
     userId,
-    useHyde,
+    useHyde: fast ? false : useHyde,
     topK,
+    fast,
   };
 
   const result = await callEdgeFunction('search_memories', body);

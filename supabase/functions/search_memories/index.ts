@@ -36,7 +36,9 @@ serve(async (req) => {
             profileId: bodyProfileId,
             useHyde = true,     // Default: HyDE enabled
             hydeWeight = 0.6,   // Default: 60% HyDE, 40% raw
-            topK = 20
+            topK = 20,
+            fast = false,       // Fast path: skip HyDE, reranking, entity search
+            confidenceThreshold,  // Override default 0.40 confidence filter
         } = body;
 
         // Extract user from JWT if present (authenticated mode)
@@ -79,8 +81,10 @@ serve(async (req) => {
         // Build search options
         const options: SearchOptions = {
             topK,
-            useHyde,
-            hydeWeight
+            useHyde: fast ? false : useHyde,
+            hydeWeight,
+            fast,
+            confidenceThreshold,
         };
 
         // Get relevant memories using the full Hybrid HyDE pipeline:
@@ -105,8 +109,9 @@ serve(async (req) => {
             results,
             meta: {
                 requestId,
-                hydeEnabled: useHyde,
-                hydeWeight
+                hydeEnabled: fast ? false : useHyde,
+                hydeWeight,
+                fast,
             }
         }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },

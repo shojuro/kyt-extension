@@ -31,6 +31,7 @@ server.tool(
     useHyde: z.boolean().optional().default(true).describe('Enable HyDE augmented search'),
     platform: z.enum(['all', 'chatgpt', 'claude', 'claude-code', 'cli']).optional().default('all')
       .describe('Filter by platform'),
+    fast: z.boolean().optional().default(false).describe('Fast search (no HyDE/reranking, <1s)'),
   },
   async (args) => queryMemory(args),
 );

@@ -30,6 +30,8 @@ export interface SearchOptions {
     topK?: number;
     useHyde?: boolean;  // Default: true
     hydeWeight?: number;  // Default: 0.6
+    fast?: boolean;       // Skip HyDE, reranking, entity search. ~200ms.
+    confidenceThreshold?: number; // Override default 0.40 confidence filter
 }
 
 /**
@@ -361,7 +363,9 @@ export async function getRelevantMemories(
     const {
         topK = 20,
         useHyde = true,
-        hydeWeight = 0.6
+        hydeWeight = 0.6,
+        fast = false,
+        confidenceThreshold,
     } = options;
 
     // MVP: profileId = userId (1:1). Future: multi-profile adds junction table.
@@ -410,6 +414,44 @@ export async function getRelevantMemories(
     // STEP 1: Generate raw query embedding (always needed)
     // ========================================================================
     const rawEmbedding = (await hfClient.generateEmbeddings(query, requestId))[0];
+
+    // ========================================================================
+    // FAST PATH: embed → single vector search → BM25 → confidence filter
+    // Skips HyDE (2-4s), entity search (100-200ms), reranking (2-4s),
+    // graph walk (100-200ms), entity enrichment (50-100ms).
+    // Target: <300ms total.
+    // ========================================================================
+    if (fast) {
+        Logger.info("Fast path activated", { requestId });
+
+        const fastCandidates = await vectorSearch(
+            supabase, rawEmbedding, userId, [],
+            Math.max(topK, 10),
+            requestId, resolvedProfileId
+        );
+
+        const echoFiltered = filterQueryEchoes(query, fastCandidates);
+
+        const scored: CandidateWithScore[] = echoFiltered.map(c => ({
+            ...c,
+            rerank_score: c.gravity_score ?? 0.5,
+        }));
+        const boosted = applyBm25Boost(query, scored);
+
+        const threshold = confidenceThreshold ?? 0.40;
+        const filtered = boosted
+            .filter(c => c.rerank_score >= threshold)
+            .slice(0, topK);
+
+        Logger.info("Fast path complete", {
+            requestId,
+            candidates: fastCandidates.length,
+            returned: filtered.length,
+            threshold,
+        });
+
+        return filtered;
+    }
 
     // ========================================================================
     // STEP 2: PARALLEL - Entity search + HyDE generation + Concept detection
