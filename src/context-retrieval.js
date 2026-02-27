@@ -55,6 +55,7 @@ export const KYT_QUERY_PATTERNS = [
 // These are "meta about meta" — conversations about query failures, scoring, thresholds
 // Without this, diagnostic discussions cannibalize source content (meta-echo problem)
 export const RETRIEVAL_DIAGNOSTIC_PATTERNS = [
+  // --- Original 12 patterns: mechanical pipeline vocabulary ---
   /\b(query|retrieval|search)\s+(failed|returned|missed|found nothing)\b/i,
   /\bconfidence\s+(was|of|at)\s+0\.\d+\b/i,
   /\b(semantic|vector)\s+anchor/i,
@@ -67,6 +68,30 @@ export const RETRIEVAL_DIAGNOSTIC_PATTERNS = [
   /\b(scored|scoring)\s+(at|with)\s+0\.\d+\b/i,
   /\bpipeline\s+(fires|fired|should\s+(not\s+)?fire|didn't\s+fire)\b/i,
   /\bwasted\s+retrieval\s+cycle\b/i,
+
+  // --- 11 new patterns (v2): natural-language diagnostic analysis ---
+  // #13: Analysis of retrieved items quality
+  /\bretrieved\s+item\b.*\b(useful|thin|relevant|partial|incomplete|sufficient)\b/i,
+  // #14: Chunk/pointer diagnostic vocabulary
+  /\b(single\s+)?chunk\s+(is\s+a\s+)?(pointer|fragment|partial|slice)\b/i,
+  // #15: Injection quality assessment
+  /\binjection\s+(quality|accuracy|completeness|coverage)\b/i,
+  // #16: Provenance chain analysis
+  /\bprovenance\s+(chain|trail|path)\b/i,
+  // #17: Numeric score in analysis context ("0.62 single-item result")
+  /\b0\.\d{2}\s+(single-?item|item|result|confidence)\b/i,
+  // #18: Cross-session/distributed answer discussion
+  /\b(cross-?session|multi-?day|distributed)\s+(answer|content|result|retrieval)\b/i,
+  // #19: "what the pipeline/system returned/found/missed"
+  /\bwhat\s+the\s+(pipeline|system|retrieval|search)\s+(returned|found|missed|surfaced)\b/i,
+  // #20: Low/high confidence result analysis
+  /\b(low|high|medium|weak|strong)-?confidence\s+(result|item|match|retrieval)s?\b/i,
+  // #21: "KYT performed/did/ran a retrieval/search"
+  /\bK\.?Y\.?T\.?\s+(performed|did|ran|executed|triggered)\s+a?\s*(retrieval|search|query|lookup)\b/i,
+  // #22: "answer isn't/wasn't in one place/chunk"
+  /\banswer\s+(isn'?t|wasn'?t|is\s+not|was\s+not)\s+in\s+(one|a\s+single)\s+(place|chunk|item|turn)\b/i,
+  // #23: Pipeline returned N items
+  /\b(pipeline|retrieval)\s+(returned|surfaced|pulled|fetched)\s+\d+\s+(item|result|chunk|match)/i,
 ];
 
 // Skip diagnostic penalty when user is genuinely asking about retrieval analysis

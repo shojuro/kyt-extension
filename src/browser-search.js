@@ -612,6 +612,16 @@ async function searchSupabaseText(query, options = {}) {
  * @param {number} options.maxTimestamp - Exclude messages newer than this
  * @returns {Promise<Object[]>} Results with relationship_strength for RRF
  */
+// Concept synonym expansion for entity text search
+// Maps vague referential terms → domain-specific equivalents
+// Only applied when embedding entity search returns 0 results
+const ENTITY_CONCEPT_SYNONYMS = new Map([
+  ['level',    ['mode', 'tier']],
+  ['levels',   ['modes', 'tiers']],
+  ['tier',     ['mode', 'level']],
+  ['tiers',    ['modes', 'levels']],
+]);
+
 async function searchGraphWalk(query, options = {}) {
   const { limit = 10, maxTimestamp = 0 } = options;
 
@@ -689,8 +699,23 @@ async function searchGraphWalk(query, options = {}) {
     if (!entities || entities.length === 0) {
       console.log(`   🔗 Entity embedding search: 0 results, trying text fallback...`);
       try {
+        // Expand query with concept synonyms before text search
+        let expandedQuery = query;
+        const queryWords = query.toLowerCase().split(/\s+/);
+        const expansions = [];
+        for (const word of queryWords) {
+          const synonyms = ENTITY_CONCEPT_SYNONYMS.get(word);
+          if (synonyms) {
+            expansions.push(...synonyms);
+          }
+        }
+        if (expansions.length > 0) {
+          expandedQuery = query + ' ' + expansions.join(' ');
+          console.log(`   🔗 Entity concept expansion: "${query}" → "${expandedQuery}"`);
+        }
+
         const textRpcBody = {
-          p_query_text: query,
+          p_query_text: expandedQuery,
           p_user_id: userId,
           p_match_count: 5,
         };
