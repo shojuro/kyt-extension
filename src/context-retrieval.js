@@ -960,16 +960,15 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
           if (filterResult.suggestions && contextConfig.debugMode) {
             console.log(`💡 Suggestions:`, filterResult.suggestions);
           }
-          // Low-confidence tier: keep top 2 items if they're close to the threshold
-          // Rescue floor scales with threshold — don't rescue items the classifier
-          // specifically excluded by raising the threshold above default (0.40)
-          // When classifier raises threshold (e.g. 0.65), rescue floor = threshold - 0.05
-          // so only items genuinely close to the bar get rescued (not 0.33 junk)
-          const rescueFloor = confidenceThreshold > defaultThreshold
-            ? confidenceThreshold - 0.05
-            : 0.10;
-          if (filterResult.highestScore >= rescueFloor) {
-            console.log(`📋 Low-confidence tier: keeping top 2 items (highest: ${filterResult.highestScore.toFixed(3)}, rescue floor: ${rescueFloor.toFixed(3)})`);
+          // Low-confidence tier: rescue borderline items only at default threshold
+          // When the classifier explicitly raises the threshold (e.g. 0.65 > 0.40),
+          // it means "retrieval unlikely to be useful" — respect that by NOT rescuing.
+          // Rescue only fires at default threshold to catch near-misses (e.g. 0.38 vs 0.40).
+          if (confidenceThreshold > defaultThreshold) {
+            console.log(`🚫 Low-confidence tier: skipping rescue — classifier raised threshold to ${confidenceThreshold} (highest: ${filterResult.highestScore.toFixed(3)})`);
+            filteredItems = [];
+          } else if (filterResult.highestScore >= 0.10) {
+            console.log(`📋 Low-confidence tier: keeping top 2 items (highest: ${filterResult.highestScore.toFixed(3)})`);
             filteredItems = filteredItems
               .sort((a, b) => {
                 const scoreA = a.cross_encoder_score ?? a.weighted_score ?? 0;
@@ -998,7 +997,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
               return true;
             });
           } else {
-            // Below rescue floor — truly irrelevant, drop everything
+            // Below 0.10 — truly irrelevant, drop everything
             filteredItems = [];
           }
         } else {
