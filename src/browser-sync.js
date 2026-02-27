@@ -25,6 +25,10 @@ import { normalizePlatform } from './utils/normalize-platform.js';
 import { callEdgeFunction } from './api-client.js';
 import { getActiveProfileId } from './profile-manager.js';
 
+// Defensive flag: set after first error indicating profile_id column doesn't exist on chat_turns.
+// Once set, all subsequent syncs skip profile_id for this SW lifecycle.
+let _syncProfileIdUnavailable = false;
+
 // Matryoshka truncation: Qwen3-Embedding-8B at 1024d for HNSW indexing
 // (pgvector 0.8.0 caps HNSW at 2000d; 4096d forced sequential scan)
 const EMBEDDING_DIMS = 1024;
@@ -631,18 +635,24 @@ export async function syncMessages(messagesToSync) {
 
       // Reassemble: embeddable chunks get their embeddings, skipped chunks get null
       let embIdx = 0;
-      const chunksWithEmbeddings = chunksWithHyDE.map((chunk, idx) => ({
-        ...chunk,
-        embedding: skipEmbeddingIndexes.has(idx) ? null : (turnEmbeddings[embIdx++] || null),
-        is_question: chunk.is_question || false,
-        deflection: chunk.deflection || null,
-        entities_extracted: false,
-        preferences_extracted: false,
-        profile_id: profileId,
-      }));
+      const includeProfileId = !_syncProfileIdUnavailable && profileId;
+      const chunksWithEmbeddings = chunksWithHyDE.map((chunk, idx) => {
+        const payload = {
+          ...chunk,
+          embedding: skipEmbeddingIndexes.has(idx) ? null : (turnEmbeddings[embIdx++] || null),
+          is_question: chunk.is_question || false,
+          deflection: chunk.deflection || null,
+          entities_extracted: false,
+          preferences_extracted: false,
+        };
+        if (includeProfileId) {
+          payload.profile_id = profileId;
+        }
+        return payload;
+      });
 
       // Insert to chat_turns table
-      const turnsResponse = await fetch(
+      let turnsResponse = await fetch(
         `${config.supabaseUrl}/rest/v1/chat_turns?on_conflict=user_id,conversation_id,platform,start_timestamp`,
         {
           method: 'POST',
@@ -654,11 +664,39 @@ export async function syncMessages(messagesToSync) {
         }
       );
 
-      if (!turnsResponse.ok) {
+      // Retry without profile_id if column doesn't exist (migration pending)
+      if (!turnsResponse.ok && includeProfileId) {
         const turnError = await turnsResponse.json();
+        if (turnError.message?.includes('profile_id')) {
+          console.warn('⚠️ chat_turns missing profile_id column — retrying without (migration pending)');
+          _syncProfileIdUnavailable = true;
+          const fallbackChunks = chunksWithEmbeddings.map(c => {
+            const { profile_id: _drop, ...rest } = c;
+            return rest;
+          });
+          turnsResponse = await fetch(
+            `${config.supabaseUrl}/rest/v1/chat_turns?on_conflict=user_id,conversation_id,platform,start_timestamp`,
+            {
+              method: 'POST',
+              headers: {
+                ...getAuthHeaders(config),
+                'Prefer': 'resolution=ignore-duplicates,return=minimal'
+              },
+              body: JSON.stringify(fallbackChunks)
+            }
+          );
+        } else {
+          console.warn(`⚠️ Chat turns sync failed: ${turnError.message || turnsResponse.statusText}`);
+          console.warn('Continuing with message-level sync only...');
+          turnsResponse = null; // skip the ok check below
+        }
+      }
+
+      if (turnsResponse && !turnsResponse.ok) {
+        const turnError = await turnsResponse.json().catch(() => ({}));
         console.warn(`⚠️ Chat turns sync failed: ${turnError.message || turnsResponse.statusText}`);
         console.warn('Continuing with message-level sync only...');
-      } else {
+      } else if (turnsResponse) {
         console.log(`✅ Chat turns synced to 'chat_turns' table: ${turnChunks.length} chunks`);
       }
     } else {

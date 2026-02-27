@@ -23,6 +23,13 @@ import { fetchWithTimeout } from './utils/fetch.js';
 import { generateHyDEDocument, hydeCB } from './hyde-search-generator.js';
 import { getActiveProfileId } from './profile-manager.js';
 
+// Defensive flags: set after first error indicating profile_id migrations aren't applied.
+// Once set, all subsequent calls skip profile_id params for this SW lifecycle.
+const _profileCompat = {
+  rpcUnavailable: false,   // p_profile_id param missing from RPCs
+  restUnavailable: false,  // profile_id column missing from tables
+};
+
 // Matryoshka truncation: Qwen3-Embedding-8B at 1024d for HNSW indexing
 const EMBEDDING_DIMS = 1024;
 function truncateAndNormalize(embedding, dims) {
@@ -302,7 +309,7 @@ export async function searchMessages(query, options = {}) {
     }
 
     // Resolve profile for multi-profile isolation
-    const searchProfileId = await getActiveProfileId();
+    const searchProfileId = _profileCompat.rpcUnavailable ? null : await getActiveProfileId();
 
     const rpcBody = {
       query_embedding: queryEmbedding,
@@ -310,13 +317,15 @@ export async function searchMessages(query, options = {}) {
       match_count: limit,
       filter: filter,
       min_timestamp: minTimestamp,
-      p_profile_id: searchProfileId || null
     };
+    if (searchProfileId) {
+      rpcBody.p_profile_id = searchProfileId;
+    }
 
     let url = `${config.supabaseUrl}/rest/v1/rpc/match_messages_v2`;
 
     // Build query
-    const response = await fetch(url, {
+    let response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -325,6 +334,27 @@ export async function searchMessages(query, options = {}) {
       },
       body: JSON.stringify(rpcBody)
     });
+
+    // Retry without p_profile_id if RPC signature mismatch (migration not applied)
+    if (!response.ok && rpcBody.p_profile_id) {
+      const error = await response.json();
+      if (error.message?.includes('p_profile_id') || error.message?.includes('function') || response.status === 404) {
+        console.warn('⚠️ match_messages_v2 missing p_profile_id param — retrying without (migration pending)');
+        _profileCompat.rpcUnavailable = true;
+        delete rpcBody.p_profile_id;
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': config.supabaseKey,
+            'Authorization': `Bearer ${config.supabaseKey}`
+          },
+          body: JSON.stringify(rpcBody)
+        });
+      } else {
+        throw new Error(`Supabase search error: ${error.message || response.statusText}`);
+      }
+    }
 
     if (!response.ok) {
       const error = await response.json();
@@ -463,11 +493,15 @@ async function searchSupabaseText(query, options = {}) {
       return [];
     }
     filterParams += `&user_id=eq.${config.userId}`;
-    // Profile isolation filter (forward-compatible — MVP: profile_id = user_id)
-    const searchProfileId = await getActiveProfileId();
-    if (searchProfileId) {
-      filterParams += `&profile_id=eq.${searchProfileId}`;
+    // Profile isolation filter — omit if column doesn't exist yet (migration pending)
+    let textSearchProfileFilter = '';
+    if (!_profileCompat.restUnavailable) {
+      const searchProfileId = await getActiveProfileId();
+      if (searchProfileId) {
+        textSearchProfileFilter = `&profile_id=eq.${searchProfileId}`;
+      }
     }
+    filterParams += textSearchProfileFilter;
     // P1 fix: exclude questions from text search results
     filterParams += '&or=(is_question.eq.false,is_question.is.null)';
     // P3 fix: exclude deflection responses from text search results
@@ -486,13 +520,34 @@ async function searchSupabaseText(query, options = {}) {
 
     for (const keyword of keywords) {
       try {
-        const url = `${config.supabaseUrl}/rest/v1/messages?${filterParams}&content=ilike.*${encodeURIComponent(keyword)}*`;
-        const response = await fetchWithTimeout(url, {
+        let url = `${config.supabaseUrl}/rest/v1/messages?${filterParams}&content=ilike.*${encodeURIComponent(keyword)}*`;
+        let response = await fetchWithTimeout(url, {
           headers: {
             'apikey': config.supabaseKey,
             'Authorization': `Bearer ${config.supabaseKey}`
           }
         }, 8000);
+
+        // Retry without profile_id if column doesn't exist (migration pending)
+        if (!response.ok && response.status === 400 && textSearchProfileFilter) {
+          const errBody = await response.text();
+          if (errBody.includes('profile_id')) {
+            console.warn('⚠️ messages table missing profile_id column — retrying without (migration pending)');
+            _profileCompat.restUnavailable = true;
+            // Rebuild URL without profile_id filter
+            const fallbackParams = filterParams.replace(textSearchProfileFilter, '');
+            url = `${config.supabaseUrl}/rest/v1/messages?${fallbackParams}&content=ilike.*${encodeURIComponent(keyword)}*`;
+            // Also strip from filterParams for remaining keywords
+            filterParams = fallbackParams;
+            textSearchProfileFilter = '';
+            response = await fetchWithTimeout(url, {
+              headers: {
+                'apikey': config.supabaseKey,
+                'Authorization': `Bearer ${config.supabaseKey}`
+              }
+            }, 8000);
+          }
+        }
 
         if (!response.ok) {
           console.warn(`   ⚠️ Supabase text search for "${keyword}" failed: ${response.status}`);
@@ -573,10 +628,20 @@ async function searchGraphWalk(query, options = {}) {
       return [];
     }
     const userId = config.userId;
-    const graphProfileId = await getActiveProfileId();
+    const graphProfileId = _profileCompat.rpcUnavailable ? null : await getActiveProfileId();
 
     // Step 1: Find entities matching the query embedding
-    const entityResponse = await fetchWithTimeout(
+    const entityRpcBody = {
+      query_embedding: queryEmbedding,
+      match_threshold: 0.8,
+      match_count: 5,
+      p_user_id: userId,
+    };
+    if (graphProfileId) {
+      entityRpcBody.p_profile_id = graphProfileId;
+    }
+
+    let entityResponse = await fetchWithTimeout(
       `${config.supabaseUrl}/rest/v1/rpc/search_entities_by_embedding`,
       {
         method: 'POST',
@@ -585,16 +650,33 @@ async function searchGraphWalk(query, options = {}) {
           'apikey': config.supabaseKey,
           'Authorization': `Bearer ${config.supabaseKey}`
         },
-        body: JSON.stringify({
-          query_embedding: queryEmbedding,
-          match_threshold: 0.8,
-          match_count: 5,
-          p_user_id: userId,
-          p_profile_id: graphProfileId || null
-        })
+        body: JSON.stringify(entityRpcBody)
       },
       5000
     );
+
+    // Retry without p_profile_id if RPC signature mismatch (migration pending)
+    if (!entityResponse.ok && entityRpcBody.p_profile_id) {
+      const status = entityResponse.status;
+      if (status === 404 || status === 400) {
+        console.warn('⚠️ search_entities_by_embedding missing p_profile_id — retrying without (migration pending)');
+        _profileCompat.rpcUnavailable = true;
+        delete entityRpcBody.p_profile_id;
+        entityResponse = await fetchWithTimeout(
+          `${config.supabaseUrl}/rest/v1/rpc/search_entities_by_embedding`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': config.supabaseKey,
+              'Authorization': `Bearer ${config.supabaseKey}`
+            },
+            body: JSON.stringify(entityRpcBody)
+          },
+          5000
+        );
+      }
+    }
 
     if (!entityResponse.ok) {
       console.warn(`   ⚠️ Entity search failed: ${entityResponse.status}`);
@@ -607,7 +689,16 @@ async function searchGraphWalk(query, options = {}) {
     if (!entities || entities.length === 0) {
       console.log(`   🔗 Entity embedding search: 0 results, trying text fallback...`);
       try {
-        const textResponse = await fetchWithTimeout(
+        const textRpcBody = {
+          p_query_text: query,
+          p_user_id: userId,
+          p_match_count: 5,
+        };
+        if (!_profileCompat.rpcUnavailable && graphProfileId) {
+          textRpcBody.p_profile_id = graphProfileId;
+        }
+
+        let textResponse = await fetchWithTimeout(
           `${config.supabaseUrl}/rest/v1/rpc/search_entities_by_text`,
           {
             method: 'POST',
@@ -616,15 +707,30 @@ async function searchGraphWalk(query, options = {}) {
               'apikey': config.supabaseKey,
               'Authorization': `Bearer ${config.supabaseKey}`
             },
-            body: JSON.stringify({
-              p_query_text: query,
-              p_user_id: userId,
-              p_match_count: 5,
-              p_profile_id: graphProfileId || null
-            })
+            body: JSON.stringify(textRpcBody)
           },
           5000
         );
+
+        // Retry without p_profile_id if signature mismatch
+        if (!textResponse.ok && textRpcBody.p_profile_id && (textResponse.status === 404 || textResponse.status === 400)) {
+          console.warn('⚠️ search_entities_by_text missing p_profile_id — retrying without');
+          _profileCompat.rpcUnavailable = true;
+          delete textRpcBody.p_profile_id;
+          textResponse = await fetchWithTimeout(
+            `${config.supabaseUrl}/rest/v1/rpc/search_entities_by_text`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': config.supabaseKey,
+                'Authorization': `Bearer ${config.supabaseKey}`
+              },
+              body: JSON.stringify(textRpcBody)
+            },
+            5000
+          );
+        }
 
         if (textResponse.ok) {
           entities = await textResponse.json();
@@ -645,7 +751,18 @@ async function searchGraphWalk(query, options = {}) {
     console.log(`   🔗 Graph walk: found ${entityIds.length} matching entities`);
 
     // Step 2: Walk the graph from these entities
-    const graphResponse = await fetchWithTimeout(
+    const graphRpcBody = {
+      p_entity_ids: entityIds,
+      p_user_id: userId,
+      p_max_results: limit,
+      p_max_depth: 2,
+      p_max_intermediate: 20,
+    };
+    if (!_profileCompat.rpcUnavailable && graphProfileId) {
+      graphRpcBody.p_profile_id = graphProfileId;
+    }
+
+    let graphResponse = await fetchWithTimeout(
       `${config.supabaseUrl}/rest/v1/rpc/graph_walk_from_entities`,
       {
         method: 'POST',
@@ -654,17 +771,30 @@ async function searchGraphWalk(query, options = {}) {
           'apikey': config.supabaseKey,
           'Authorization': `Bearer ${config.supabaseKey}`
         },
-        body: JSON.stringify({
-          p_entity_ids: entityIds,
-          p_user_id: userId,
-          p_max_results: limit,
-          p_max_depth: 2,
-          p_max_intermediate: 20,
-          p_profile_id: graphProfileId || null
-        })
+        body: JSON.stringify(graphRpcBody)
       },
       5000
     );
+
+    // Retry without p_profile_id if signature mismatch
+    if (!graphResponse.ok && graphRpcBody.p_profile_id && (graphResponse.status === 404 || graphResponse.status === 400)) {
+      console.warn('⚠️ graph_walk_from_entities missing p_profile_id — retrying without');
+      _profileCompat.rpcUnavailable = true;
+      delete graphRpcBody.p_profile_id;
+      graphResponse = await fetchWithTimeout(
+        `${config.supabaseUrl}/rest/v1/rpc/graph_walk_from_entities`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': config.supabaseKey,
+            'Authorization': `Bearer ${config.supabaseKey}`
+          },
+          body: JSON.stringify(graphRpcBody)
+        },
+        5000
+      );
+    }
 
     if (!graphResponse.ok) {
       console.warn(`   ⚠️ Graph walk RPC failed: ${graphResponse.status}`);
