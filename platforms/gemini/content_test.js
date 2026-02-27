@@ -473,6 +473,63 @@ if (window.KYT_GEMINI_INJECTED) {
     return longest;
   }
 
+  // === BODY COERCION ===
+
+  /**
+   * Coerce fetch body to string for inspection.
+   * Gemini may send body as: string, URLSearchParams, FormData, Blob, ArrayBuffer, etc.
+   * Returns null if body cannot be read synchronously as a string.
+   */
+  function bodyToString(body) {
+    if (typeof body === 'string') return body;
+    if (body instanceof URLSearchParams) return body.toString();
+    if (body instanceof FormData) {
+      // FormData → URLSearchParams (only works for text fields)
+      const params = new URLSearchParams();
+      for (const [key, value] of body.entries()) {
+        if (typeof value === 'string') {
+          params.set(key, value);
+        }
+      }
+      return params.toString();
+    }
+    if (body instanceof ArrayBuffer || body instanceof Uint8Array) {
+      try {
+        const decoder = new TextDecoder('utf-8');
+        return decoder.decode(body);
+      } catch (_) { return null; }
+    }
+    // Blob / ReadableStream — can't read synchronously, return null
+    return null;
+  }
+
+  /**
+   * Async body coercion for types that require awaiting (Blob, ReadableStream).
+   */
+  async function bodyToStringAsync(body) {
+    // First try sync
+    const sync = bodyToString(body);
+    if (sync !== null) return sync;
+
+    if (body instanceof Blob) {
+      try { return await body.text(); } catch (_) { return null; }
+    }
+    if (body instanceof ReadableStream) {
+      try {
+        const reader = body.getReader();
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        const decoder = new TextDecoder('utf-8');
+        return chunks.map(c => decoder.decode(c, { stream: true })).join('') + decoder.decode();
+      } catch (_) { return null; }
+    }
+    return null;
+  }
+
   // === FETCH OVERRIDE ===
 
   if (!window.__kytOriginalFetch) window.__kytOriginalFetch = window.fetch;
@@ -482,9 +539,8 @@ if (window.KYT_GEMINI_INJECTED) {
   const discoveredEndpoints = new Set();
 
   /**
-   * Check if a POST request looks like a Gemini message-send RPC.
-   * Matches broadly: any POST to gemini.google.com with an f.req body param.
-   * Also matches known specific endpoint paths.
+   * Check if a body string looks like a Gemini message-send RPC.
+   * Matches broadly: any body with an f.req param containing a parseable user message.
    */
   function isGeminiMessageRequest(urlString, bodyString) {
     if (!urlString.includes('gemini.google.com')) return false;
@@ -510,40 +566,12 @@ if (window.KYT_GEMINI_INJECTED) {
     return false;
   }
 
-  window.fetch = async function(...args) {
-    const [url, options] = args;
-    const urlString = typeof url === 'string' ? url : (url?.url || String(url));
-
-    // Skip non-Gemini requests immediately
-    if (!urlString.includes('gemini.google.com')) {
-      return originalFetch.apply(this, args);
-    }
-
-    // Diagnostic: log all POST requests to gemini.google.com to discover endpoints
-    const isPost = options?.method === 'POST' || (options?.body && options?.method !== 'GET');
-    if (isPost) {
-      // Extract path for diagnostics
-      try {
-        const urlObj = new URL(urlString);
-        const path = urlObj.pathname;
-        if (!discoveredEndpoints.has(path)) {
-          discoveredEndpoints.add(path);
-          const hasBody = !!options?.body;
-          const bodyType = typeof options?.body;
-          const hasFReq = bodyType === 'string' && options.body.includes('f.req');
-          console.log('KYT Gemini [endpoint discovery]:', path, { hasBody, bodyType, hasFReq });
-        }
-      } catch (_) {}
-    }
-
-    // Get body as string
-    const bodyString = typeof options?.body === 'string' ? options.body : null;
-
-    // Check if this is a Gemini message request (broad matching via f.req content)
-    if (!isPost || !isGeminiMessageRequest(urlString, bodyString)) {
-      return originalFetch.apply(this, args);
-    }
-
+  /**
+   * Core message processing — shared between fetch and XHR interception.
+   * Extracts user message, dispatches capture event, and optionally injects context.
+   * @returns {string|null} Modified body string (with injected context), or null to use original.
+   */
+  async function processGeminiRequest(urlString, bodyString) {
     console.log('KYT Gemini: Intercepted message request:', urlString.substring(0, 120));
 
     try {
@@ -553,7 +581,7 @@ if (window.KYT_GEMINI_INJECTED) {
       const parsed = parseFReq(fReq);
       if (!parsed || !parsed.userMessage) {
         console.warn('KYT Gemini: Could not parse user message from f.req');
-        return originalFetch.apply(this, args);
+        return null;
       }
 
       // Strip injection blocks from content before saving
@@ -585,12 +613,66 @@ if (window.KYT_GEMINI_INJECTED) {
 
       // Context injection
       try {
-        options.body = await getAndInjectContext(bodyString);
+        const injected = await getAndInjectContext(bodyString);
+        return injected;
       } catch (error) {
         console.error('KYT Gemini: Context injection failed:', error);
+        return null;
       }
     } catch (error) {
       console.error('KYT Gemini: Error processing request:', error);
+      return null;
+    }
+  }
+
+  window.fetch = async function(...args) {
+    let [url, options] = args;
+    const urlString = typeof url === 'string' ? url : (url?.url || String(url));
+
+    // Skip non-Gemini requests immediately
+    if (!urlString.includes('gemini.google.com')) {
+      return originalFetch.apply(this, args);
+    }
+
+    // Diagnostic: log all POST requests to gemini.google.com to discover endpoints
+    const isPost = options?.method === 'POST' || (options?.body && options?.method !== 'GET');
+    if (isPost) {
+      try {
+        const urlObj = new URL(urlString);
+        const path = urlObj.pathname;
+        const bodyType = options?.body?.constructor?.name || typeof options?.body;
+        const cacheKey = path + ':' + bodyType;
+        if (!discoveredEndpoints.has(cacheKey)) {
+          discoveredEndpoints.add(cacheKey);
+          const hasBody = !!options?.body;
+          // Try sync coercion to check for f.req
+          const bodyStr = bodyToString(options?.body);
+          const hasFReq = bodyStr ? (bodyStr.includes('f.req=') || bodyStr.includes('f.req%')) : 'unknown';
+          console.log('KYT Gemini [endpoint discovery]:', path, { hasBody, bodyType, hasFReq, bodyLen: bodyStr?.length });
+        }
+      } catch (_) {}
+    }
+
+    // Coerce body to string (handles URLSearchParams, FormData, ArrayBuffer, etc.)
+    let bodyString = bodyToString(options?.body);
+    // Fall back to async for Blob/ReadableStream
+    if (bodyString === null && options?.body) {
+      bodyString = await bodyToStringAsync(options.body);
+    }
+
+    // Check if this is a Gemini message request (broad matching via f.req content)
+    if (!isPost || !isGeminiMessageRequest(urlString, bodyString)) {
+      return originalFetch.apply(this, args);
+    }
+
+    // Process the message (capture + context injection)
+    const injectedBody = await processGeminiRequest(urlString, bodyString);
+    if (injectedBody) {
+      // Replace the body with the context-injected version
+      if (options) {
+        options = { ...options, body: injectedBody };
+        args = [url, options];
+      }
     }
 
     // Make the actual request
@@ -598,7 +680,8 @@ if (window.KYT_GEMINI_INJECTED) {
 
     // Best-effort response capture
     if (response.ok) {
-      const fReqVal = new URLSearchParams(typeof options?.body === 'string' ? options.body : '').get('f.req') || '';
+      const finalBody = typeof options?.body === 'string' ? options.body : (bodyString || '');
+      const fReqVal = new URLSearchParams(finalBody).get('f.req') || '';
       const parsed = parseFReq(fReqVal);
       captureGeminiResponse(response, {
         conversationId: parsed?.conversationId || 'unknown',
@@ -612,6 +695,88 @@ if (window.KYT_GEMINI_INJECTED) {
 
     return response;
   };
+
+  // === XMLHttpRequest OVERRIDE ===
+  // Gemini may use XHR instead of fetch for some or all API calls.
+
+  if (!window.__kytOriginalXHROpen) window.__kytOriginalXHROpen = XMLHttpRequest.prototype.open;
+  if (!window.__kytOriginalXHRSend) window.__kytOriginalXHRSend = XMLHttpRequest.prototype.send;
+  const originalXHROpen = window.__kytOriginalXHROpen;
+  const originalXHRSend = window.__kytOriginalXHRSend;
+
+  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+    this.__kytMethod = method;
+    this.__kytUrl = typeof url === 'string' ? url : String(url);
+    return originalXHROpen.call(this, method, url, ...rest);
+  };
+
+  XMLHttpRequest.prototype.send = function(body) {
+    const method = this.__kytMethod;
+    const url = this.__kytUrl || '';
+
+    // Skip non-Gemini
+    if (!url.includes('gemini.google.com')) {
+      return originalXHRSend.call(this, body);
+    }
+
+    const isPost = method && method.toUpperCase() === 'POST';
+    if (isPost) {
+      // Endpoint discovery
+      try {
+        const urlObj = new URL(url);
+        const path = urlObj.pathname;
+        const bodyType = body?.constructor?.name || typeof body;
+        const cacheKey = 'xhr:' + path + ':' + bodyType;
+        if (!discoveredEndpoints.has(cacheKey)) {
+          discoveredEndpoints.add(cacheKey);
+          const bodyStr = bodyToString(body);
+          const hasFReq = bodyStr ? (bodyStr.includes('f.req=') || bodyStr.includes('f.req%')) : 'unknown';
+          console.log('KYT Gemini [XHR endpoint discovery]:', path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
+        }
+      } catch (_) {}
+
+      // Try to process as a Gemini message request
+      const bodyString = bodyToString(body);
+      if (bodyString && isGeminiMessageRequest(url, bodyString)) {
+        // Capture the message synchronously (XHR.send is sync — can't await context injection)
+        console.log('KYT Gemini [XHR]: Intercepted message request:', url.substring(0, 120));
+        try {
+          const params = new URLSearchParams(bodyString);
+          const fReq = params.get('f.req');
+          const parsed = parseFReq(fReq);
+
+          if (parsed && parsed.userMessage) {
+            const cleanContent = stripInjectionBlock(parsed.userMessage);
+            const messageData = {
+              content: cleanContent,
+              role: 'user',
+              conversationId: parsed.conversationId || 'unknown',
+              model: 'gemini',
+              timestamp: Date.now(),
+              messageId: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              platform: 'gemini'
+            };
+
+            let shouldCapture = true;
+            try {
+              shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch', messageData.messageId);
+            } catch (_) { /* fail-open */ }
+
+            if (shouldCapture) {
+              window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', { detail: messageData }));
+              console.log('KYT Gemini [XHR]: User message captured (' + messageData.content.length + ' chars)');
+            }
+          }
+        } catch (error) {
+          console.error('KYT Gemini [XHR]: Error processing request:', error);
+        }
+      }
+    }
+
+    return originalXHRSend.call(this, body);
+  };
+
+  console.log('KYT Gemini: XHR wrapper installed');
 
   // === HEALTH CHECK API ===
   window.KYT_Gemini_Health = {
@@ -635,5 +800,36 @@ if (window.KYT_GEMINI_INJECTED) {
     return window.KYT_Gemini_Health.getStats();
   };
 
-  console.log('KYT Gemini: Fetch wrapper installed - ready to capture messages');
+  console.log('KYT Gemini: Fetch + XHR wrappers installed - ready to capture messages');
+
+  // === NAVIGATOR.SENDBEACON OVERRIDE ===
+  // Some Google apps use sendBeacon for analytics; unlikely for messages but check anyway.
+  if (!window.__kytOriginalSendBeacon) window.__kytOriginalSendBeacon = navigator.sendBeacon?.bind(navigator);
+  const originalSendBeacon = window.__kytOriginalSendBeacon;
+  if (originalSendBeacon) {
+    navigator.sendBeacon = function(url, data) {
+      if (typeof url === 'string' && url.includes('gemini.google.com')) {
+        const bodyStr = bodyToString(data);
+        if (bodyStr && bodyStr.includes('f.req')) {
+          console.log('KYT Gemini [sendBeacon]: Detected f.req in sendBeacon to', url.substring(0, 100));
+        }
+      }
+      return originalSendBeacon(url, data);
+    };
+  }
+
+  // === DIAGNOSTIC PROBE ===
+  // Logs once after 3 seconds to confirm everything is wired up
+  setTimeout(() => {
+    const fetchOverridden = window.fetch !== originalFetch;
+    const xhrOpenOverridden = XMLHttpRequest.prototype.open !== originalXHROpen;
+    const xhrSendOverridden = XMLHttpRequest.prototype.send !== originalXHRSend;
+    console.log('KYT Gemini [diagnostic]:', {
+      fetchOverridden,
+      xhrOpenOverridden,
+      xhrSendOverridden,
+      discoveredEndpoints: Array.from(discoveredEndpoints).slice(0, 20),
+      endpointCount: discoveredEndpoints.size
+    });
+  }, 3000);
 }
