@@ -1,22 +1,27 @@
 #!/usr/bin/env node
 
 /**
- * K.Y.T. UserPromptSubmit Hook
+ * K.Y.T. UserPromptSubmit Hook — Smart Gating Edition
  *
  * Fires before every user prompt reaches Claude Code.
- * Reads the user's prompt from stdin JSON, queries K.Y.T. memory,
- * and outputs relevant context to stdout for injection.
+ * Gates:
+ *   1. Memory mode (incognito/clean_room → skip)
+ *   2. Length < 8 chars → skip
+ *   3. Code-block dominated (>70% code) → skip
+ *   4. Intent classifier SKIP → skip (~0.06ms, 90% of prompts)
+ *   5. Recency cache (similar query <30s ago) → skip
  *
- * Respects memory mode: incognito/clean_room = no injection.
- * Lightweight search: no HyDE, topK=3 for speed (<2s target).
+ * Only ~10% of prompts proceed to search_memories (fast mode, <300ms).
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { classifyIntent } from '../lib/intent-classifier.js';
 
-// Inline config reading (no heavy imports for speed)
+// ── Inline config reading (no heavy imports for speed) ──────
+
 function getMemoryMode() {
   try {
     const config = JSON.parse(readFileSync(join(homedir(), '.kyt', 'config.json'), 'utf-8'));
@@ -26,20 +31,19 @@ function getMemoryMode() {
   }
 }
 
-// Read .env manually (no dotenv import for speed)
+// ── .env loader ─────────────────────────────────────────────
+
 function loadEnv() {
-  // Resolve the mcp/ directory relative to this script file
   const scriptDir = dirname(fileURLToPath(import.meta.url));
   const mcpDir = join(scriptDir, '..', '..');
 
   const envPaths = [
-    join(mcpDir, '.env'),                    // mcp/.env (relative to this script)
-    join(process.cwd(), 'mcp', '.env'),      // cwd/mcp/.env
-    join(process.cwd(), '.env'),             // cwd/.env
-    join(homedir(), '.kyt', '.env'),         // ~/.kyt/.env
+    join(mcpDir, '.env'),
+    join(process.cwd(), 'mcp', '.env'),
+    join(process.cwd(), '.env'),
+    join(homedir(), '.kyt', '.env'),
   ];
 
-  // Also check CLAUDE_PROJECT_DIR
   if (process.env.CLAUDE_PROJECT_DIR) {
     envPaths.unshift(join(process.env.CLAUDE_PROJECT_DIR, 'mcp', '.env'));
   }
@@ -63,6 +67,40 @@ function loadEnv() {
   }
 }
 
+// ── Recency cache ───────────────────────────────────────────
+
+const CACHE_PATH = join(homedir(), '.kyt', 'hook-cache.json');
+const COOLDOWN_MS = 30000; // 30 seconds
+
+function readCache() {
+  try { return JSON.parse(readFileSync(CACHE_PATH, 'utf-8')); } catch { return {}; }
+}
+
+function writeCache(data) {
+  try {
+    const dir = join(homedir(), '.kyt');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(CACHE_PATH, JSON.stringify(data));
+  } catch { /* non-critical */ }
+}
+
+/**
+ * Simple word-overlap similarity (Jaccard-like, no external deps).
+ * Returns 0.0–1.0.
+ */
+function computeSimilarity(a, b) {
+  const stopWords = new Set(['the','a','an','is','are','was','were','be','been','being',
+    'have','has','had','do','does','did','will','would','could','should','can',
+    'to','of','in','for','on','with','at','by','from','and','or','but','not','this','that']);
+  const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w)));
+  const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w)));
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  const intersection = [...wordsA].filter(w => wordsB.has(w)).length;
+  return intersection / Math.max(wordsA.size, wordsB.size);
+}
+
+// ── Main ────────────────────────────────────────────────────
+
 async function main() {
   // Read stdin JSON
   let input;
@@ -71,21 +109,53 @@ async function main() {
     input = JSON.parse(raw);
   } catch (err) {
     process.stderr.write(`KYT hook: failed to parse stdin: ${err.message}\n`);
-    process.exit(0); // Non-blocking — don't break the prompt
+    process.exit(0);
   }
 
   const prompt = input.prompt;
-  if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 5) {
-    process.exit(0); // Too short to search meaningfully
+  if (!prompt || typeof prompt !== 'string') {
+    process.exit(0);
   }
 
-  // Check memory mode
+  const trimmed = prompt.trim();
+
+  // ── Gate 1: Length ────────────────────────────────────────
+  if (trimmed.length < 8) {
+    process.exit(0);
+  }
+
+  // ── Gate 2: Code-block dominated ─────────────────────────
+  const codeBlocks = trimmed.match(/```[\s\S]*?```/g) || [];
+  const codeLength = codeBlocks.reduce((sum, block) => sum + block.length, 0);
+  if (codeLength > 0 && codeLength / trimmed.length > 0.7) {
+    process.stderr.write('KYT hook: SKIP (code_dominated)\n');
+    process.exit(0);
+  }
+
+  // ── Gate 3: Intent classifier (~0.06ms) ──────────────────
+  const classification = classifyIntent(trimmed);
+  if (classification.intent === 'SKIP') {
+    process.stderr.write(`KYT hook: SKIP (${classification.reason})\n`);
+    process.exit(0);
+  }
+
+  // ── Gate 4: Memory mode ──────────────────────────────────
   const mode = getMemoryMode();
   if (mode !== 'full') {
-    process.exit(0); // No injection in clean_room or incognito
+    process.exit(0);
   }
 
-  // Load env vars
+  // ── Gate 5: Recency cache ────────────────────────────────
+  const now = Date.now();
+  const cache = readCache();
+  if (cache.lastQuery && cache.lastTimestamp &&
+      (now - cache.lastTimestamp) < COOLDOWN_MS &&
+      computeSimilarity(trimmed, cache.lastQuery) > 0.8) {
+    process.stderr.write('KYT hook: SKIP (cooldown)\n');
+    process.exit(0);
+  }
+
+  // ── Load env and search ──────────────────────────────────
   loadEnv();
 
   const supabaseUrl = process.env.SUPABASE_URL;
@@ -99,7 +169,7 @@ async function main() {
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000); // 20s hard timeout (search_memories pipeline is ~13-15s)
+    const timeout = setTimeout(() => controller.abort(), 20000);
 
     const res = await fetch(`${supabaseUrl}/functions/v1/search_memories`, {
       method: 'POST',
@@ -109,10 +179,12 @@ async function main() {
         'apikey': process.env.SUPABASE_ANON_KEY || token,
       },
       body: JSON.stringify({
-        query: prompt.trim().substring(0, 500), // Cap query length
+        query: trimmed.substring(0, 500),
         userId,
-        useHyde: false,  // Skip HyDE for speed
-        topK: 3,         // Lightweight results
+        useHyde: false,
+        topK: 3,
+        fast: true,
+        confidenceThreshold: classification.confidenceThreshold || 0.40,
       }),
       signal: controller.signal,
     });
@@ -128,8 +200,13 @@ async function main() {
     const results = data.results || [];
 
     if (results.length === 0) {
-      process.exit(0); // No relevant context to inject
+      // Update cache even on empty results to prevent re-searching
+      writeCache({ lastQuery: trimmed, lastTimestamp: now, lastResultCount: 0 });
+      process.exit(0);
     }
+
+    // Update recency cache
+    writeCache({ lastQuery: trimmed, lastTimestamp: now, lastResultCount: results.length });
 
     // Format context for injection
     const contextItems = results.map((r, i) => {
@@ -141,7 +218,6 @@ async function main() {
 
     const context = `[K.Y.T. Memory Context — ${results.length} relevant items from past conversations]\n${contextItems}`;
 
-    // Output as JSON with additionalContext for discrete injection
     const output = JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
@@ -158,7 +234,7 @@ async function main() {
     } else {
       process.stderr.write(`KYT hook: ${err.message}\n`);
     }
-    process.exit(0); // Never block the prompt
+    process.exit(0);
   }
 }
 
