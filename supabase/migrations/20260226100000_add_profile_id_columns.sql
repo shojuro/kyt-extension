@@ -13,7 +13,13 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS profile_id UUID;
 -- Backfill: profile_id = user_id (valid because profiles.id = auth.users.id)
 UPDATE chat_turns SET profile_id = user_id WHERE profile_id IS NULL AND user_id IN (SELECT id FROM profiles);
 UPDATE entities SET profile_id = user_id WHERE profile_id IS NULL AND user_id IN (SELECT id FROM profiles);
-UPDATE entity_mentions SET profile_id = user_id WHERE profile_id IS NULL AND user_id IN (SELECT id FROM profiles);
+-- entity_mentions has no user_id — backfill via JOIN through entities
+UPDATE entity_mentions em
+  SET profile_id = e.user_id
+  FROM entities e
+  WHERE em.entity_id = e.id
+    AND em.profile_id IS NULL
+    AND e.user_id IN (SELECT id FROM profiles);
 UPDATE user_preferences SET profile_id = user_id WHERE profile_id IS NULL AND user_id IN (SELECT id FROM profiles);
 UPDATE messages SET profile_id = user_id WHERE profile_id IS NULL AND user_id IN (SELECT id FROM profiles);
 UPDATE conversations SET profile_id = user_id WHERE profile_id IS NULL AND user_id IN (SELECT id FROM profiles);

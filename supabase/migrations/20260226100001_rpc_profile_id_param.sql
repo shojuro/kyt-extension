@@ -1,3 +1,6 @@
+-- Ensure vector type is visible (pgvector lives in extensions schema on Supabase)
+SET search_path TO public, extensions;
+
 -- Migration: Add p_profile_id parameter to all 7 search/lookup RPCs
 --
 -- WHY: The profile_id column was added to tables (20260226100000) but RPCs still
