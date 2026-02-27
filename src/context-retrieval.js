@@ -960,9 +960,16 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
           if (filterResult.suggestions && contextConfig.debugMode) {
             console.log(`💡 Suggestions:`, filterResult.suggestions);
           }
-          // Low-confidence tier: if highest score >= 0.10, keep top 2 items with caveat tag
-          if (filterResult.highestScore >= 0.10) {
-            console.log(`📋 Low-confidence tier: keeping top 2 items (highest: ${filterResult.highestScore.toFixed(3)})`);
+          // Low-confidence tier: keep top 2 items if they're close to the threshold
+          // Rescue floor scales with threshold — don't rescue items the classifier
+          // specifically excluded by raising the threshold above default (0.40)
+          // When classifier raises threshold (e.g. 0.65), rescue floor = threshold - 0.05
+          // so only items genuinely close to the bar get rescued (not 0.33 junk)
+          const rescueFloor = confidenceThreshold > defaultThreshold
+            ? confidenceThreshold - 0.05
+            : 0.10;
+          if (filterResult.highestScore >= rescueFloor) {
+            console.log(`📋 Low-confidence tier: keeping top 2 items (highest: ${filterResult.highestScore.toFixed(3)}, rescue floor: ${rescueFloor.toFixed(3)})`);
             filteredItems = filteredItems
               .sort((a, b) => {
                 const scoreA = a.cross_encoder_score ?? a.weighted_score ?? 0;
@@ -991,7 +998,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
               return true;
             });
           } else {
-            // Below 0.15 — truly irrelevant, drop everything
+            // Below rescue floor — truly irrelevant, drop everything
             filteredItems = [];
           }
         } else {
