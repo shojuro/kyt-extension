@@ -51,6 +51,31 @@ export const KYT_QUERY_PATTERNS = [
   /\bservice worker\b/i,
 ];
 
+// Retrieval-diagnostic patterns: penalize chunks that analyze retrieval behavior
+// These are "meta about meta" — conversations about query failures, scoring, thresholds
+// Without this, diagnostic discussions cannibalize source content (meta-echo problem)
+export const RETRIEVAL_DIAGNOSTIC_PATTERNS = [
+  /\b(query|retrieval|search)\s+(failed|returned|missed|found nothing)\b/i,
+  /\bconfidence\s+(was|of|at)\s+0\.\d+\b/i,
+  /\b(semantic|vector)\s+anchor/i,
+  /\bfalse\s+fire\b/i,
+  /\bburned\s+a\s+retrieval\s+cycle\b/i,
+  /\b(meta-?echo|echo\s+problem)\b/i,
+  /\bretrieval\s+(failure|gap|quality|pipeline)\b/i,
+  /\bintent\s+classif(ier|ication)\s+(would|should|could|will)\b/i,
+  /\b(confidence|match)\s+threshold\b.*\b0\.\d+\b/i,
+  /\b(scored|scoring)\s+(at|with)\s+0\.\d+\b/i,
+  /\bpipeline\s+(fires|fired|should\s+(not\s+)?fire|didn't\s+fire)\b/i,
+  /\bwasted\s+retrieval\s+cycle\b/i,
+];
+
+// Skip diagnostic penalty when user is genuinely asking about retrieval analysis
+export const RETRIEVAL_QUERY_PATTERNS = [
+  /\bretrieval\s+(failures?|issues?|problems?|quality)\b/i,
+  /\b(query|search)\s+(failures?|diagnostics?|analysis)\b/i,
+  /\bwhat\s+(went\s+wrong|failed)\s+with\s+(the\s+)?(search|retrieval|query)\b/i,
+];
+
 /**
  * Calculate word overlap ratio between query and content.
  * Used by echo filter to detect query parroting.
@@ -751,6 +776,10 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
     if (queryIsAboutKYT) {
       console.log('🔧 Meta-conversation penalty SKIPPED: query is about KYT/extension');
     }
+    const queryIsAboutRetrieval = RETRIEVAL_QUERY_PATTERNS.some(p => p.test(userMessage));
+    if (queryIsAboutRetrieval) {
+      console.log('🔬 Diagnostic-content penalty SKIPPED: query is about retrieval analysis');
+    }
 
     for (const item of contextItems) {
       const content = item.content || '';
@@ -763,6 +792,17 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
         const before = item[scoreKey];
         item[scoreKey] *= 0.3;
         console.log(`🔧 Meta-conversation penalty: score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
+      }
+
+      // Retrieval-diagnostic penalty (0.5x) — prevent meta-echo feedback loop
+      // Diagnostic conversations share vocabulary with source content ("3 levels", "modes")
+      // and outscore it. 0.5x is enough to let source win while keeping diagnostics
+      // findable when genuinely queried. Skipped when user asks about retrieval analysis.
+      if (!queryIsAboutRetrieval && scoreKey && item[scoreKey] != null
+          && RETRIEVAL_DIAGNOSTIC_PATTERNS.some(p => p.test(content))) {
+        const before = item[scoreKey];
+        item[scoreKey] *= 0.5;
+        console.log(`🔬 Diagnostic-content penalty: score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
       }
 
       // Echo penalty — assistant messages that echo stored data

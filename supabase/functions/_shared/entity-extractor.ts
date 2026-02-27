@@ -62,7 +62,8 @@ Entity type definitions:
 - ORG: Companies, institutions
 - LOCATION: Cities, countries, places
 - PROJECT: Software projects, initiatives
-- TECH: Programming languages, frameworks, tools
+- TECH: Programming languages, frameworks, tools, AND user-defined product modes, features, or configuration options
+  (e.g., "incognito mode", "clean room mode", "full memory mode", "dark mode", "dev mode")
 - MISC: Miscellaneous named entities
 - CONCEPT: Abstract ideas or principles discussed ("incremental learning", "progressive complexity", "sunk cost")
 - ANALOGY: Metaphors, comparisons, or illustrative stories used ("walking analogy for learning", "child taking steps")
@@ -78,6 +79,8 @@ Relationship vocabulary:
 
 Use "unknown" for organizations, projects, locations unless specific relationship indicated.
 For CONCEPT/ANALOGY/THEME types, use "discussed" as default relationship.
+
+When the user defines or names configuration modes, feature tiers, or classification levels, extract each as a TECH entity even if the name uses common words (e.g., "clean room" is a TECH entity when it names a product mode, not a LOCATION).
 
 PREFERENCE EXTRACTION (in the same response):
 Also extract user preferences — things the user states they like, love, prefer, dislike, hate, want, enjoy, find amazing, can't stand, always use, or have switched to. Include strong evaluative statements ("X is amazing", "nothing beats X") and behavioral signals ("I always use X", "I switched to X").
