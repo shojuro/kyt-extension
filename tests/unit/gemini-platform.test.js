@@ -62,9 +62,19 @@ describe('GeminiPlatform metadata', () => {
 // ==========================================================================
 describe('detectAPICall', () => {
   const streamUrl = 'https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate';
+  const batchUrl = 'https://gemini.google.com/_/BardChatUi/data/batchexecute';
+  const assistantUrl = 'https://gemini.google.com/_/BardChatUi/data/assistant.foo/Bar';
 
   it('detects POST to StreamGenerate endpoint', () => {
     expect(platform.detectAPICall(streamUrl, { method: 'POST', body: 'data' })).toBe(true);
+  });
+
+  it('detects POST to batchexecute endpoint', () => {
+    expect(platform.detectAPICall(batchUrl, { method: 'POST', body: 'data' })).toBe(true);
+  });
+
+  it('detects POST to assistant.* endpoint', () => {
+    expect(platform.detectAPICall(assistantUrl, { method: 'POST', body: 'data' })).toBe(true);
   });
 
   it('detects request with body (implicit POST)', () => {
@@ -84,7 +94,7 @@ describe('detectAPICall', () => {
     expect(platform.detectAPICall(null, { method: 'POST' })).toBe(false);
   });
 
-  it('rejects Gemini URLs without StreamGenerate path', () => {
+  it('rejects Gemini URLs without known API path', () => {
     expect(platform.detectAPICall('https://gemini.google.com/share/abc', { method: 'POST', body: 'x' })).toBe(false);
   });
 });

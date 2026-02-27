@@ -711,6 +711,36 @@ async function reInjectContentScripts() {
     console.error('❌ Claude tab query failed:', e.message);
   }
 
+  // ── Gemini tabs ───────────────────────────────────────────────────────
+  try {
+    const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+    console.log(`🔌 Found ${geminiTabs.length} Gemini tab(s)`);
+
+    for (const tab of geminiTabs) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => { window.KYT_GEMINI_INJECTED = false; },
+          world: 'MAIN'
+        });
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['platforms/gemini/content_test.js'],
+          world: 'MAIN'
+        });
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['platforms/gemini/content_bridge.js']
+        });
+        console.log(`✅ Re-injected Gemini scripts into tab ${tab.id}`);
+      } catch (e) {
+        console.warn(`⚠️ Failed to re-inject Gemini tab ${tab.id}:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('❌ Gemini tab query failed:', e.message);
+  }
+
   console.log('🔌 Content script re-injection complete');
 }
 
@@ -833,7 +863,8 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const isKYTPlatform =
       tab.url.startsWith('https://claude.ai/') ||
       tab.url.startsWith('https://chatgpt.com/') ||
-      tab.url.startsWith('https://chat.openai.com/');
+      tab.url.startsWith('https://chat.openai.com/') ||
+      tab.url.startsWith('https://gemini.google.com/');
     if (isKYTPlatform) {
       const pendingResult = await chrome.storage.local.get(['kyt_sync_pending']);
       if (pendingResult.kyt_sync_pending) {

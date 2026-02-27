@@ -27,7 +27,13 @@ export class GeminiPlatform extends Platform {
   detectAPICall(url, options) {
     if (typeof url !== 'string') return false;
 
-    const isGeminiAPI = url.includes('gemini.google.com') && url.includes(STREAM_GENERATE_PATH);
+    // Broad match: any POST to gemini.google.com with a body
+    // The content script does the fine-grained f.req check
+    const isGeminiAPI = url.includes('gemini.google.com') && (
+      url.includes(STREAM_GENERATE_PATH) ||
+      url.includes('/data/batchexecute') ||
+      url.includes('/data/assistant.')
+    );
     const isPost = options?.method === 'POST' || !!options?.body;
 
     return !!(isGeminiAPI && isPost);
