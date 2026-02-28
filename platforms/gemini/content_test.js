@@ -722,6 +722,236 @@ if (window.KYT_GEMINI_INJECTED) {
   // Track discovered endpoints for diagnostics
   const discoveredEndpoints = new Set();
 
+  // === CONVERSATION HISTORY CAPTURE ===
+  // Captures mobile-originated (or any pre-existing) conversations when loaded on web.
+  // Gemini loads history via batchexecute RPCs that contain conversation data in responses.
+
+  const HISTORY_CAPTURE_START = Date.now();
+  const HISTORY_CAPTURE_INIT_MS = 5000;  // Skip captures during initial page load
+  const _capturedConversationIds = new Set(); // Prevent re-capturing same conversation
+
+  /**
+   * Check if a POST request is a Gemini conversation-history load (NOT a message send).
+   * These are batchexecute RPCs containing a conversation ID but no user message.
+   *
+   * @param {string} urlString - Request URL
+   * @param {string} bodyString - Request body string
+   * @returns {Object|false} Parsed info if history load, false otherwise
+   */
+  function isGeminiHistoryLoad(urlString, bodyString) {
+    if (!isGoogleDomain(urlString)) return false;
+    if (!bodyString || typeof bodyString !== 'string') return false;
+    if (!bodyString.includes('f.req=') && !bodyString.includes('f.req%')) return false;
+
+    try {
+      const params = new URLSearchParams(bodyString);
+      const fReq = params.get('f.req');
+      if (!fReq) return false;
+
+      let outer;
+      try { outer = JSON.parse(fReq); } catch (_) { return false; }
+      if (typeof outer === 'string') {
+        try { outer = JSON.parse(outer); } catch (_) { return false; }
+      }
+      if (!Array.isArray(outer)) return false;
+
+      // If this is a StreamGenerate with a user message, it's a message-send (not history)
+      if (outer[0] === null && typeof outer[1] === 'string') {
+        // StreamGenerate format — skip if it has a real user message
+        try {
+          const payload = JSON.parse(outer[1]);
+          if (Array.isArray(payload) && Array.isArray(payload[0]) &&
+              typeof payload[0][0] === 'string' && payload[0][0].trim().length > 0) {
+            return false; // This is a message-send, not history
+          }
+        } catch (_) {}
+      }
+
+      // batchexecute RPC format: [[["rpcId", "jsonArgs", null, "generic"], ...]]
+      if (!Array.isArray(outer[0])) return false;
+
+      const rpcs = outer[0];
+      // Look for RPCs that carry a conversation ID (c_...) in their args
+      for (let i = 0; i < rpcs.length; i++) {
+        if (!Array.isArray(rpcs[i])) continue;
+        const rpcId = rpcs[i][0];
+        const rpcArgs = rpcs[i][1];
+
+        if (typeof rpcArgs !== 'string') continue;
+
+        // Check if args contain a conversation ID pattern
+        if (rpcArgs.includes('"c_') || rpcArgs.includes("'c_")) {
+          // Verify this isn't a known system-only RPC
+          const systemRpcIds = ['L5adhe', 'GPRiHf', 'bYBfhb', 'aKUX7e', 'LCWRX'];
+          if (systemRpcIds.includes(rpcId)) continue;
+
+          return {
+            rpcId: rpcId,
+            rpcIndex: i,
+            conversationIdHint: (rpcArgs.match(/"(c_[^"]+)"/) || [])[1] || null
+          };
+        }
+      }
+
+      // Also match requests to conversation-related endpoints
+      if (urlString.includes('/conversation') || urlString.includes('GetConversation') ||
+          urlString.includes('ListMessages') || urlString.includes('ChatHistory')) {
+        return { rpcId: 'url-match', conversationIdHint: null };
+      }
+
+    } catch (_) {}
+    return false;
+  }
+
+  /**
+   * Extract all meaningful text strings from Gemini's nested response frames.
+   * Returns an array of {text, role} objects for user and assistant messages.
+   *
+   * Gemini response format:
+   *   Anti-XSSI prefix: )]}'\n
+   *   Length-prefixed frames: number\n[json-array]\n
+   *   Inside frames: deeply nested arrays with text at various positions
+   *
+   * @param {string} responseText - Raw response body
+   * @returns {Array<{content: string, role: string}>} Extracted messages
+   */
+  function extractConversationMessages(responseText) {
+    const messages = [];
+
+    // Strip anti-XSSI prefix
+    let cleaned = responseText;
+    if (cleaned.startsWith(")]}'")) {
+      cleaned = cleaned.substring(cleaned.indexOf('\n') + 1);
+    }
+
+    // Parse each length-prefixed frame
+    const lines = cleaned.split('\n');
+    const allStringsFound = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || /^\d+$/.test(trimmed)) continue;
+
+      try {
+        const parsed = JSON.parse(trimmed);
+        // Collect all strings > 20 chars from this frame (likely message content)
+        const strings = findAllStrings(parsed, 15);
+        for (const s of strings) {
+          if (s.length > 20) {
+            allStringsFound.push(s);
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Filter out system strings (auth tokens, request IDs, URLs, JSON-like strings)
+    const isSystemString = (s) => {
+      if (s.startsWith('r_') || s.startsWith('!')) return true; // Request IDs, auth tokens
+      if (/^[0-9a-f]{32,}$/i.test(s)) return true; // Hex strings
+      if (s.startsWith('http://') || s.startsWith('https://')) return true; // URLs
+      if (s.startsWith('{') || s.startsWith('[')) return true; // Nested JSON
+      if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) return true; // Base64-like
+      if (s.split('\n').length < 2 && /^[a-zA-Z0-9_.-]+$/.test(s)) return true; // Identifiers
+      return false;
+    };
+
+    const contentStrings = allStringsFound.filter(s => !isSystemString(s));
+
+    // Deduplicate and sort by length (longest = most likely to be full messages)
+    const seen = new Set();
+    const unique = [];
+    for (const s of contentStrings) {
+      const normalized = s.trim();
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        unique.push(normalized);
+      }
+    }
+
+    // Heuristic: alternate user/assistant based on order of appearance
+    // The first substantial text is usually the first message in the conversation
+    for (let i = 0; i < unique.length; i++) {
+      messages.push({
+        content: unique[i],
+        role: i % 2 === 0 ? 'user' : 'assistant'
+      });
+    }
+
+    return messages;
+  }
+
+  /**
+   * Capture conversation history from a Gemini history-load response.
+   * Extracts all messages and dispatches KYT_MESSAGE_CAPTURED events.
+   *
+   * @param {Response} response - Cloned fetch Response object
+   * @param {Object} metadata - Request metadata
+   * @param {string} metadata.conversationId - Conversation ID hint
+   * @param {string} metadata.rpcId - The RPC that loaded this conversation
+   */
+  async function captureConversationHistory(response, metadata) {
+    try {
+      if (!response?.body) return;
+
+      const text = await response.text();
+      if (!text || text.length < 50) return;
+
+      const messages = extractConversationMessages(text);
+
+      if (messages.length === 0) {
+        console.log('KYT Gemini [history]: No messages found in history response');
+        return;
+      }
+
+      const isInitPhase = (Date.now() - HISTORY_CAPTURE_START) < HISTORY_CAPTURE_INIT_MS;
+      const conversationId = metadata.conversationId || 'history_' + Date.now();
+
+      // Prevent re-capturing the same conversation
+      if (_capturedConversationIds.has(conversationId)) {
+        console.log('KYT Gemini [history]: Already captured conversation', conversationId);
+        return;
+      }
+      _capturedConversationIds.add(conversationId);
+
+      console.log(`KYT Gemini [history]: Found ${messages.length} messages in conversation ${conversationId} (init: ${isInitPhase})`);
+
+      let captured = 0;
+      for (const msg of messages) {
+        const cleanContent = stripInjectionBlock(msg.content);
+        if (!cleanContent || cleanContent.length < 2) continue;
+
+        const messageData = {
+          content: cleanContent,
+          role: msg.role,
+          conversationId: conversationId,
+          model: 'gemini',
+          timestamp: Date.now(),
+          messageId: `msg_history_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          platform: 'gemini',
+          source: isInitPhase ? 'initial-load' : 'history-load'
+        };
+
+        let shouldCapture = true;
+        try {
+          shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'history', messageData.messageId);
+        } catch (_) { /* fail-open */ }
+
+        if (shouldCapture) {
+          window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
+            detail: messageData
+          }));
+          captured++;
+        }
+      }
+
+      console.log(`KYT Gemini [history]: Captured ${captured}/${messages.length} messages from ${conversationId}`);
+
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+      console.error('KYT Gemini [history]: Error capturing conversation:', error);
+    }
+  }
+
   /**
    * Check if a body string looks like a Gemini message-send RPC.
    * Matches broadly: any body with an f.req param containing a parseable user message.
@@ -842,7 +1072,8 @@ if (window.KYT_GEMINI_INJECTED) {
 
     // BROAD DISCOVERY: log ALL POST requests from the page for the first 60s
     // This is critical to find which domain Gemini actually sends API calls to
-    if (isPost && (Date.now() - DISCOVERY_START) < DISCOVERY_DURATION_MS) {
+    const inDiscoveryPhase = (Date.now() - DISCOVERY_START) < DISCOVERY_DURATION_MS;
+    if (isPost && inDiscoveryPhase) {
       try {
         const urlObj = new URL(urlString);
         const host = urlObj.hostname;
@@ -889,6 +1120,53 @@ if (window.KYT_GEMINI_INJECTED) {
 
     // Check if this is a Gemini message request (broad matching via f.req content)
     if (!isPost || !isGeminiMessageRequest(urlString, bodyString)) {
+      // Not a message-send — but check if it's a conversation history load
+      if (isPost && bodyString) {
+        const historyInfo = isGeminiHistoryLoad(urlString, bodyString);
+        if (historyInfo) {
+          console.log('KYT Gemini [history]: Detected history-load RPC:', historyInfo.rpcId,
+            historyInfo.conversationIdHint || '(no cid)');
+          const response = await originalFetch.apply(this, args);
+          if (response.ok) {
+            captureConversationHistory(response.clone(), {
+              conversationId: historyInfo.conversationIdHint || 'unknown',
+              rpcId: historyInfo.rpcId
+            }).catch(err => console.error('KYT Gemini [history]: Capture failed:', err));
+          }
+          return response;
+        }
+
+        // Discovery: log response previews for Google-domain POST RPCs during first 60s
+        if (inDiscoveryPhase && isGoogleDomain(urlString) && bodyString.includes('f.req')) {
+          const response = await originalFetch.apply(this, args);
+          if (response.ok) {
+            try {
+              const clone = response.clone();
+              const respText = await clone.text();
+              // Extract RPC ID from request body for labeling
+              let rpcLabel = 'unknown';
+              try {
+                const params = new URLSearchParams(bodyString);
+                const fReq = params.get('f.req');
+                if (fReq) {
+                  let p = JSON.parse(fReq);
+                  if (typeof p === 'string') p = JSON.parse(p);
+                  if (Array.isArray(p) && Array.isArray(p[0]) && Array.isArray(p[0][0])) {
+                    rpcLabel = p[0][0][0] || 'unknown';
+                  }
+                }
+              } catch (_) {}
+              console.log('KYT Gemini [response discovery]:', {
+                url: urlString.substring(0, 100),
+                rpcId: rpcLabel,
+                responseLen: respText.length,
+                preview: respText.substring(0, 500)
+              });
+            } catch (_) {}
+          }
+          return response;
+        }
+      }
       return originalFetch.apply(this, args);
     }
 
@@ -1047,6 +1325,27 @@ if (window.KYT_GEMINI_INJECTED) {
           }
         } catch (error) {
           console.error('KYT Gemini [XHR]: Error processing request:', error);
+        }
+      } else if (bodyString) {
+        // Not a message-send — check if it's a conversation history load
+        const historyInfo = isGeminiHistoryLoad(url, bodyString);
+        if (historyInfo) {
+          console.log('KYT Gemini [XHR history]: Detected history-load RPC:', historyInfo.rpcId);
+          // XHR is sync so we capture the response via load event
+          const xhr = this;
+          xhr.addEventListener('load', function() {
+            try {
+              if (xhr.status >= 200 && xhr.status < 300 && xhr.responseText) {
+                captureConversationHistory(
+                  { body: true, text: () => Promise.resolve(xhr.responseText) },
+                  {
+                    conversationId: historyInfo.conversationIdHint || 'unknown',
+                    rpcId: historyInfo.rpcId
+                  }
+                ).catch(err => console.error('KYT Gemini [XHR history]: Capture failed:', err));
+              }
+            } catch (_) {}
+          }, { once: true });
         }
       }
     }

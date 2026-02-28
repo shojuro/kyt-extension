@@ -1,8 +1,9 @@
 /**
  * Gemini Platform Unit Tests
  *
- * Tests GeminiPlatform class (detection, extraction, re-encoding)
- * and platform normalization for Gemini aliases.
+ * Tests GeminiPlatform class (detection, extraction, re-encoding),
+ * platform normalization for Gemini aliases,
+ * and conversation history capture functions.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -249,5 +250,311 @@ describe('normalizePlatform for Gemini', () => {
 
   it('"BARD" (uppercase) normalizes to "gemini"', () => {
     expect(normalizePlatform('BARD')).toBe('gemini');
+  });
+});
+
+// ==========================================================================
+// 8. isGeminiHistoryLoad (logic extracted from content_test.js)
+// ==========================================================================
+
+// Re-implement the history-load detection logic for unit testing
+// (Original lives inside content_test.js IIFE, not importable)
+function isGeminiHistoryLoad(urlString, bodyString) {
+  const GOOGLE_DOMAINS = ['gemini.google.com', '.google.com', '.googleapis.com'];
+  const isGoogleDomain = (url) => GOOGLE_DOMAINS.some(d => url.includes(d));
+
+  if (!isGoogleDomain(urlString)) return false;
+  if (!bodyString || typeof bodyString !== 'string') return false;
+  if (!bodyString.includes('f.req=') && !bodyString.includes('f.req%')) return false;
+
+  try {
+    const params = new URLSearchParams(bodyString);
+    const fReq = params.get('f.req');
+    if (!fReq) return false;
+
+    let outer;
+    try { outer = JSON.parse(fReq); } catch (_) { return false; }
+    if (typeof outer === 'string') {
+      try { outer = JSON.parse(outer); } catch (_) { return false; }
+    }
+    if (!Array.isArray(outer)) return false;
+
+    // StreamGenerate with user message = message-send, not history
+    if (outer[0] === null && typeof outer[1] === 'string') {
+      try {
+        const payload = JSON.parse(outer[1]);
+        if (Array.isArray(payload) && Array.isArray(payload[0]) &&
+            typeof payload[0][0] === 'string' && payload[0][0].trim().length > 0) {
+          return false;
+        }
+      } catch (_) {}
+    }
+
+    // batchexecute RPC format
+    if (!Array.isArray(outer[0])) return false;
+    const rpcs = outer[0];
+    for (let i = 0; i < rpcs.length; i++) {
+      if (!Array.isArray(rpcs[i])) continue;
+      const rpcId = rpcs[i][0];
+      const rpcArgs = rpcs[i][1];
+      if (typeof rpcArgs !== 'string') continue;
+      if (rpcArgs.includes('"c_') || rpcArgs.includes("'c_")) {
+        const systemRpcIds = ['L5adhe', 'GPRiHf', 'bYBfhb', 'aKUX7e', 'LCWRX'];
+        if (systemRpcIds.includes(rpcId)) continue;
+        return {
+          rpcId, rpcIndex: i,
+          conversationIdHint: (rpcArgs.match(/"(c_[^"]+)"/) || [])[1] || null
+        };
+      }
+    }
+
+    if (urlString.includes('/conversation') || urlString.includes('GetConversation')) {
+      return { rpcId: 'url-match', conversationIdHint: null };
+    }
+  } catch (_) {}
+  return false;
+}
+
+// Helper: build a batchexecute body with RPC calls (not user messages)
+function makeRpcBody(rpcId, argsString) {
+  const rpcs = [[rpcId, argsString, null, 'generic']];
+  const outer = [rpcs];
+  const params = new URLSearchParams();
+  params.set('f.req', JSON.stringify(outer));
+  return params.toString();
+}
+
+describe('isGeminiHistoryLoad', () => {
+  const geminiUrl = 'https://gemini.google.com/_/BardChatUi/data/batchexecute';
+
+  it('detects RPC with conversation ID', () => {
+    const body = makeRpcBody('SomeRpc', '["c_abc123","param2"]');
+    const result = isGeminiHistoryLoad(geminiUrl, body);
+    expect(result).toBeTruthy();
+    expect(result.rpcId).toBe('SomeRpc');
+    expect(result.conversationIdHint).toBe('c_abc123');
+  });
+
+  it('extracts conversation ID from nested args', () => {
+    const body = makeRpcBody('LoadConv', '[null,null,"c_xyz789_def"]');
+    const result = isGeminiHistoryLoad(geminiUrl, body);
+    expect(result).toBeTruthy();
+    expect(result.conversationIdHint).toBe('c_xyz789_def');
+  });
+
+  it('rejects known system RPCs even with c_ in args', () => {
+    const body = makeRpcBody('L5adhe', '["c_something"]');
+    const result = isGeminiHistoryLoad(geminiUrl, body);
+    expect(result).toBeFalsy();
+  });
+
+  it('rejects StreamGenerate with user message (message-send)', () => {
+    // StreamGenerate format: [null, "json_payload"]
+    const payload = [['Hello Gemini', 0, null], ['en'], []];
+    const outer = [null, JSON.stringify(payload)];
+    const params = new URLSearchParams();
+    params.set('f.req', JSON.stringify(outer));
+    const result = isGeminiHistoryLoad(geminiUrl, params.toString());
+    expect(result).toBeFalsy();
+  });
+
+  it('rejects non-Google domains', () => {
+    const body = makeRpcBody('SomeRpc', '["c_abc"]');
+    const result = isGeminiHistoryLoad('https://example.com/api', body);
+    expect(result).toBeFalsy();
+  });
+
+  it('rejects body without f.req', () => {
+    const params = new URLSearchParams();
+    params.set('other', 'value');
+    const result = isGeminiHistoryLoad(geminiUrl, params.toString());
+    expect(result).toBeFalsy();
+  });
+
+  it('rejects RPC args without conversation ID', () => {
+    const body = makeRpcBody('SomeRpc', '["no_conv_id","param2"]');
+    const result = isGeminiHistoryLoad(geminiUrl, body);
+    expect(result).toBeFalsy();
+  });
+
+  it('rejects empty/null body', () => {
+    expect(isGeminiHistoryLoad(geminiUrl, null)).toBeFalsy();
+    expect(isGeminiHistoryLoad(geminiUrl, '')).toBeFalsy();
+  });
+
+  it('matches URL-based detection for /conversation paths', () => {
+    // RPC without c_ in args but URL contains /conversation
+    const body = makeRpcBody('SomeRpc', '["no_cid"]');
+    const result = isGeminiHistoryLoad('https://gemini.google.com/conversation/load', body);
+    expect(result).toBeTruthy();
+    expect(result.rpcId).toBe('url-match');
+  });
+
+  it('handles double-encoded f.req', () => {
+    const rpcs = [['LoadConv', '["c_double_enc"]', null, 'generic']];
+    const outer = [rpcs];
+    const params = new URLSearchParams();
+    params.set('f.req', JSON.stringify(JSON.stringify(outer)));
+    const result = isGeminiHistoryLoad(geminiUrl, params.toString());
+    expect(result).toBeTruthy();
+    expect(result.conversationIdHint).toBe('c_double_enc');
+  });
+});
+
+// ==========================================================================
+// 9. extractConversationMessages (logic extracted from content_test.js)
+// ==========================================================================
+
+// Re-implement for unit testing
+function findAllStrings(obj, maxDepth = 10) {
+  const strings = [];
+  function walk(val, depth) {
+    if (depth > maxDepth) return;
+    if (typeof val === 'string' && val.length > 3) {
+      strings.push(val);
+    } else if (Array.isArray(val)) {
+      for (const item of val) walk(item, depth + 1);
+    } else if (val && typeof val === 'object') {
+      for (const v of Object.values(val)) walk(v, depth + 1);
+    }
+  }
+  walk(obj, 0);
+  return strings.sort((a, b) => b.length - a.length);
+}
+
+function extractConversationMessages(responseText) {
+  const messages = [];
+  let cleaned = responseText;
+  if (cleaned.startsWith(")]}'")) {
+    cleaned = cleaned.substring(cleaned.indexOf('\n') + 1);
+  }
+
+  const lines = cleaned.split('\n');
+  const allStringsFound = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || /^\d+$/.test(trimmed)) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      const strings = findAllStrings(parsed, 15);
+      for (const s of strings) {
+        if (s.length > 20) {
+          allStringsFound.push(s);
+        }
+      }
+    } catch (_) {}
+  }
+
+  const isSystemString = (s) => {
+    if (s.startsWith('r_') || s.startsWith('!')) return true;
+    if (/^[0-9a-f]{32,}$/i.test(s)) return true;
+    if (s.startsWith('http://') || s.startsWith('https://')) return true;
+    if (s.startsWith('{') || s.startsWith('[')) return true;
+    if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) return true;
+    if (s.split('\n').length < 2 && /^[a-zA-Z0-9_.-]+$/.test(s)) return true;
+    return false;
+  };
+
+  const contentStrings = allStringsFound.filter(s => !isSystemString(s));
+  const seen = new Set();
+  const unique = [];
+  for (const s of contentStrings) {
+    const normalized = s.trim();
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      unique.push(normalized);
+    }
+  }
+
+  for (let i = 0; i < unique.length; i++) {
+    messages.push({
+      content: unique[i],
+      role: i % 2 === 0 ? 'user' : 'assistant'
+    });
+  }
+  return messages;
+}
+
+describe('extractConversationMessages', () => {
+  it('extracts messages from Gemini-style response with anti-XSSI prefix', () => {
+    // Simulate Gemini response format: anti-XSSI + length-prefixed frames
+    const frame1 = JSON.stringify([
+      [null, null, 'How do I set up row-level security in Supabase?']
+    ]);
+    const frame2 = JSON.stringify([
+      [null, null, 'To set up RLS in Supabase, first go to the Authentication settings and enable RLS on your table.']
+    ]);
+    const response = `)]}'\n${frame1.length}\n${frame1}\n${frame2.length}\n${frame2}`;
+
+    const messages = extractConversationMessages(response);
+    expect(messages.length).toBe(2);
+    expect(messages[0].content).toContain('row-level security');
+    expect(messages[0].role).toBe('user');
+    expect(messages[1].content).toContain('enable RLS');
+    expect(messages[1].role).toBe('assistant');
+  });
+
+  it('filters out system strings (URLs, hex, auth tokens)', () => {
+    const frame = JSON.stringify([
+      'https://gemini.google.com/share/abc',
+      'r_request_12345678901234567890',
+      '!auth_token_that_is_very_long_here',
+      'abcdef0123456789abcdef0123456789',  // 32-char hex
+      'This is a real conversation message that should be kept'
+    ]);
+    const response = `${frame.length}\n${frame}`;
+
+    const messages = extractConversationMessages(response);
+    expect(messages.length).toBe(1);
+    expect(messages[0].content).toContain('real conversation message');
+  });
+
+  it('deduplicates identical strings', () => {
+    const msg = 'This is a duplicate message that appears multiple times';
+    const frame = JSON.stringify([msg, msg, msg]);
+    const response = `${frame.length}\n${frame}`;
+
+    const messages = extractConversationMessages(response);
+    expect(messages.length).toBe(1);
+  });
+
+  it('returns empty array for non-parseable response', () => {
+    const messages = extractConversationMessages('not valid response data');
+    expect(messages).toEqual([]);
+  });
+
+  it('returns empty array for response with only short strings', () => {
+    const frame = JSON.stringify(['hi', 'ok', 'yes']);
+    const response = `${frame.length}\n${frame}`;
+    const messages = extractConversationMessages(response);
+    expect(messages).toEqual([]);
+  });
+
+  it('strips anti-XSSI prefix correctly', () => {
+    const content = 'This is a message about Kubernetes deployment strategies';
+    const frame = JSON.stringify([content]);
+    // Various anti-XSSI prefix forms
+    const response = `)]}'\n${frame.length}\n${frame}`;
+    const messages = extractConversationMessages(response);
+    expect(messages.length).toBe(1);
+    expect(messages[0].content).toBe(content);
+  });
+
+  it('handles multiple frames with conversation turns', () => {
+    const userMsg = 'What is the best way to handle authentication in React?';
+    const assistantMsg = 'There are several approaches to authentication in React. The most common are JWT tokens stored in httpOnly cookies, session-based auth, and OAuth with providers like Google.';
+    const followupMsg = 'Can you show me an example with JWT tokens?';
+
+    const frame1 = JSON.stringify([[userMsg]]);
+    const frame2 = JSON.stringify([[assistantMsg]]);
+    const frame3 = JSON.stringify([[followupMsg]]);
+    const response = `)]}'\n${frame1.length}\n${frame1}\n${frame2.length}\n${frame2}\n${frame3.length}\n${frame3}`;
+
+    const messages = extractConversationMessages(response);
+    expect(messages.length).toBe(3);
+    expect(messages[0].role).toBe('user');
+    expect(messages[1].role).toBe('assistant');
+    expect(messages[2].role).toBe('user');
   });
 });
