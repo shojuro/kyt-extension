@@ -168,6 +168,10 @@ if (window.KYT_GEMINI_INJECTED) {
     /^popup_/,
     /^current/,
     /^IMAGE_/,
+    /^r_[0-9a-f]+$/,  // request/response IDs like "r_740338f66a6d4770"
+    /^c_[0-9a-f]+$/,  // conversation IDs (we extract these separately)
+    /^[0-9a-f]{16,}$/, // hex-only strings (likely IDs/tokens)
+    /^![\w+/=]+$/,    // auth tokens starting with !
   ];
 
   function isSystemValue(str) {
@@ -196,15 +200,22 @@ if (window.KYT_GEMINI_INJECTED) {
   }
 
   /**
-   * Parse the f.req payload from batchexecute form data.
+   * Parse the f.req payload from batchexecute/StreamGenerate form data.
    *
-   * Handles the real batchexecute RPC protocol:
-   *   f.req = [[["rpcId", "jsonArgs", null, "generic"], ...]]
+   * Handles TWO distinct formats:
    *
-   * Scans all RPCs for the one containing user message text.
+   * 1. StreamGenerate format (carries user messages):
+   *    f.req = [null, "[[\"hello\",0,null,...],[\"en\"],[...],\"auth_token\"]"]
+   *    - outer[0] = null
+   *    - outer[1] = JSON string → parse → payload[0][0] = user message
+   *
+   * 2. batchexecute RPC format (system/polling calls):
+   *    f.req = [[["rpcId", "jsonArgs", null, "generic"], ...]]
+   *    - outer[0] = array of RPC calls
+   *    - Each RPC has JSON-encoded args at position [1]
    *
    * @param {string} fReq - Raw f.req value from URLSearchParams
-   * @returns {{ userMessage: string, conversationId: string|null, rpcId: string, rpcArgs: Array, rpcIndex: number }|null}
+   * @returns {{ userMessage: string, conversationId: string|null, format: string, ... }|null}
    */
   function parseFReq(fReq) {
     let outer;
@@ -220,9 +231,48 @@ if (window.KYT_GEMINI_INJECTED) {
       try { outer = JSON.parse(outer); } catch (_) { return null; }
     }
 
-    if (!Array.isArray(outer) || !Array.isArray(outer[0])) return null;
+    if (!Array.isArray(outer)) return null;
 
-    // outer[0] is the array of RPC calls
+    // === FORMAT 1: StreamGenerate ===
+    // [null, "json_payload_string"]
+    // The real user message lives here!
+    if (outer[0] === null && typeof outer[1] === 'string') {
+      try {
+        const payload = JSON.parse(outer[1]);
+        if (Array.isArray(payload) && Array.isArray(payload[0])) {
+          const userMessage = typeof payload[0][0] === 'string' ? payload[0][0] : null;
+          if (userMessage && userMessage.trim().length > 0) {
+            // Look for conversation ID in the payload
+            let conversationId = null;
+            const allStrings = findAllStrings(payload);
+            for (const s of allStrings) {
+              if (s !== userMessage && (s.startsWith('c_') || s.startsWith('r_'))) {
+                conversationId = s;
+                break;
+              }
+            }
+
+            console.log('KYT Gemini [parseFReq]: Found user message in StreamGenerate format',
+              '(' + userMessage.length + ' chars)');
+
+            return {
+              userMessage: userMessage.trim(),
+              conversationId,
+              format: 'streamgenerate',
+              payloadIndex: 1,  // outer[1] contains the payload
+              messagePosition: [0, 0], // payload[0][0] is the message
+            };
+          }
+        }
+      } catch (_) {
+        // Not StreamGenerate format, fall through
+      }
+    }
+
+    // === FORMAT 2: batchexecute RPC ===
+    // [[["rpcId", "jsonArgs", null, "generic"], ...]]
+    if (!Array.isArray(outer[0])) return null;
+
     const rpcs = outer[0];
     let bestCandidate = null;
 
@@ -242,7 +292,7 @@ if (window.KYT_GEMINI_INJECTED) {
       try {
         args = JSON.parse(argsJson);
       } catch (_) {
-        continue; // Not valid JSON args
+        continue;
       }
 
       // Search for strings in the parsed args
@@ -251,12 +301,10 @@ if (window.KYT_GEMINI_INJECTED) {
       // Find the longest string that looks like user text (not a system value)
       for (const str of strings) {
         if (isSystemValue(str)) continue;
-        // This looks like a user message
         if (!bestCandidate || str.length > bestCandidate.userMessage.length) {
-          // Try to find a conversation ID (look for strings starting with "c_" or UUIDs)
           let conversationId = null;
           for (const s of strings) {
-            if (s !== str && (s.startsWith('c_') || /^[0-9a-f]{8,}/.test(s))) {
+            if (s !== str && (s.startsWith('c_') || /^[0-9a-f]{8,}$/.test(s))) {
               conversationId = s;
               break;
             }
@@ -264,16 +312,16 @@ if (window.KYT_GEMINI_INJECTED) {
           bestCandidate = {
             userMessage: str,
             conversationId,
+            format: 'batchexecute',
             rpcId,
             rpcArgs: args,
             rpcIndex: i,
           };
         }
-        break; // strings are sorted longest-first, take the first non-system one
+        break;
       }
     }
 
-    // Log discovery for debugging
     if (bestCandidate) {
       console.log('KYT Gemini [parseFReq]: Found user message in RPC "' + bestCandidate.rpcId + '"',
         '(' + bestCandidate.userMessage.length + ' chars)');
@@ -283,12 +331,12 @@ if (window.KYT_GEMINI_INJECTED) {
   }
 
   /**
-   * Re-encode modified message back into batchexecute f.req format.
-   * Finds the message-carrying RPC and replaces the user text in its args.
+   * Re-encode modified message back into f.req format.
+   * Handles both StreamGenerate and batchexecute formats.
    *
    * @param {string} originalBody - Original URL-encoded form data
    * @param {string} newMessage - The new message text (with injected context)
-   * @param {object} parseResult - Result from parseFReq (contains rpcId, rpcIndex, rpcArgs)
+   * @param {object} parseResult - Result from parseFReq
    * @returns {string|null} Re-encoded body or null on failure
    */
   function reEncodeFReq(originalBody, newMessage, parseResult) {
@@ -310,40 +358,41 @@ if (window.KYT_GEMINI_INJECTED) {
         outer = JSON.parse(outer);
       }
 
-      // Find the RPC and replace the user message in its args
-      const rpcs = outer[0];
-      const rpc = rpcs[parseResult.rpcIndex];
-      let args = JSON.parse(rpc[1]);
+      if (parseResult.format === 'streamgenerate') {
+        // StreamGenerate: outer = [null, "json_payload"]
+        // payload[0][0] = user message
+        let payload = JSON.parse(outer[1]);
+        payload[0][0] = newMessage;
+        outer[1] = JSON.stringify(payload);
+      } else {
+        // batchexecute: outer = [[["rpcId", "jsonArgs", null, "generic"]]]
+        const rpcs = outer[0];
+        const rpc = rpcs[parseResult.rpcIndex];
+        let args = JSON.parse(rpc[1]);
 
-      // Replace the user message string in the args (depth-first search for the exact string)
-      function replaceInPlace(obj, target, replacement) {
-        if (Array.isArray(obj)) {
-          for (let i = 0; i < obj.length; i++) {
-            if (obj[i] === target) {
-              obj[i] = replacement;
-              return true;
+        // Replace the user message string in the args (depth-first)
+        function replaceInPlace(obj, target, replacement) {
+          if (Array.isArray(obj)) {
+            for (let i = 0; i < obj.length; i++) {
+              if (obj[i] === target) { obj[i] = replacement; return true; }
+              if (replaceInPlace(obj[i], target, replacement)) return true;
             }
-            if (replaceInPlace(obj[i], target, replacement)) return true;
-          }
-        } else if (obj && typeof obj === 'object') {
-          for (const key of Object.keys(obj)) {
-            if (obj[key] === target) {
-              obj[key] = replacement;
-              return true;
+          } else if (obj && typeof obj === 'object') {
+            for (const key of Object.keys(obj)) {
+              if (obj[key] === target) { obj[key] = replacement; return true; }
+              if (replaceInPlace(obj[key], target, replacement)) return true;
             }
-            if (replaceInPlace(obj[key], target, replacement)) return true;
           }
+          return false;
         }
-        return false;
-      }
 
-      if (!replaceInPlace(args, parseResult.userMessage, newMessage)) {
-        console.warn('KYT Gemini: Could not find user message to replace in RPC args');
-        return null;
-      }
+        if (!replaceInPlace(args, parseResult.userMessage, newMessage)) {
+          console.warn('KYT Gemini: Could not find user message to replace in RPC args');
+          return null;
+        }
 
-      // Re-encode the args back to JSON string
-      rpc[1] = JSON.stringify(args);
+        rpc[1] = JSON.stringify(args);
+      }
 
       let encoded = JSON.stringify(outer);
       if (isDoubleEncoded) {
