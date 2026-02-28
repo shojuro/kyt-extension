@@ -497,33 +497,7 @@ function stripInjectionBlock(content) {
  * Claude format: { uuid, name, chat_messages: [{ uuid, text, sender, created_at }] }
  */
 function processClaudeConversation(response) {
-  // DIAGNOSTIC: Log the response structure comprehensively
-  const firstMsg = response?.chat_messages?.[0];
-  console.log('🔍 KYT DIAG processClaudeConversation called with:', {
-    hasResponse: !!response,
-    responseKeys: response ? Object.keys(response).slice(0, 15) : [],
-    hasChatMessages: !!response?.chat_messages,
-    chatMessagesLength: response?.chat_messages?.length || 0,
-    firstMessage: firstMsg ? {
-      allKeys: Object.keys(firstMsg),
-      sender: firstMsg.sender,
-      // Check all possible text field names
-      hasText: !!firstMsg.text,
-      hasContent: !!firstMsg.content,
-      hasMessage: !!firstMsg.message,
-      hasBody: !!firstMsg.body,
-      // Show actual values
-      textValue: firstMsg.text?.substring?.(0, 80) || firstMsg.text,
-      contentValue: firstMsg.content?.substring?.(0, 80) || firstMsg.content,
-      messageValue: firstMsg.message?.substring?.(0, 80) || firstMsg.message,
-      // Check if text is nested
-      textContent: firstMsg.text?.content?.substring?.(0, 80),
-      contentText: firstMsg.content?.text?.substring?.(0, 80)
-    } : 'NO_MESSAGES'
-  });
-
   if (!response || !response.chat_messages || !Array.isArray(response.chat_messages)) {
-    console.log('⚠️ KYT DIAG: No chat_messages array found');
     return;
   }
 
@@ -534,8 +508,6 @@ function processClaudeConversation(response) {
     const messages = [...response.chat_messages].sort((a, b) => {
       return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
     });
-
-    console.log(`🔍 KYT DIAG: Processing ${messages.length} messages for conversation ${conversationId}`);
 
     let processedCount = 0;
     let skippedNoContent = 0;
@@ -578,14 +550,8 @@ function processClaudeConversation(response) {
         extractedFrom = 'body';
       }
 
-      // Log extraction result for debugging
-      console.log(`📝 KYT Content Extraction [${idx}]: extractedFrom=${extractedFrom}, length=${content.length}, sender=${msg.sender}`);
-
       if (!content) {
-        // CRITICAL: Full message dump for failed extractions
-        console.error(`❌ KYT: NO CONTENT EXTRACTED [${idx}]`);
-        console.error(`   Keys available: ${Object.keys(msg).join(', ')}`);
-        console.error(`   FULL MSG DUMP:`, JSON.stringify(msg, null, 2));
+        console.warn(`⚠️ KYT Claude: No content extracted [${idx}], keys: ${Object.keys(msg).join(', ')}`);
         skippedNoContent++;
         continue;
       }
@@ -597,11 +563,7 @@ function processClaudeConversation(response) {
       // Strip injection blocks from content
       const cleanedContent = stripInjectionBlock(content);
 
-      // CRITICAL: Validate content wasn't stripped to nothing
       if (!cleanedContent || cleanedContent.length < 2) {
-        console.error(`❌ KYT: Content stripped to empty! [${idx}]`);
-        console.error(`   Original (${content.length} chars):`, content.substring(0, 200));
-        console.error(`   Cleaned (${cleanedContent?.length || 0} chars):`, cleanedContent);
         skippedNoContent++;
         continue;
       }
@@ -624,10 +586,6 @@ function processClaudeConversation(response) {
       }
 
       if (shouldCapture) {
-        // DIAGNOSTIC: Log role assignment for each message
-        console.log(`🎙️ KYT Claude (Mobile Sync): sender="${msg.sender}" → role="${role}"`);
-        console.log(`   Content: ${messageData.content.substring(0, 50)}...`);
-
         window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
           detail: messageData
         }));
@@ -638,13 +596,7 @@ function processClaudeConversation(response) {
       }
     }
 
-    // DIAGNOSTIC: Summary
-    console.log('🔍 KYT DIAG Summary:', {
-      totalMessages: messages.length,
-      captured: processedCount,
-      skippedNoContent: skippedNoContent,
-      skippedDuplicate: skippedDuplicate
-    });
+    console.log(`🎯 KYT Claude: Processed conversation ${conversationId.substring(0, 8)}... — ${processedCount} captured, ${skippedDuplicate} dedup, ${skippedNoContent} empty`);
 
   } catch (error) {
     console.error('❌ KYT Claude: Error processing conversation:', error);
@@ -706,13 +658,6 @@ window.fetch = async function(...args) {
 
     if (response.ok) {
       const contentType = response.headers.get('content-type') || '';
-
-      console.log('🔍 KYT DIAG Response (GET):', {
-        url: urlString.substring(0, 100),
-        status: response.status,
-        contentType: contentType,
-        conversationId: conversationId
-      });
 
       if (contentType.includes('application/json')) {
         const clone = response.clone();

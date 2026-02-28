@@ -78,16 +78,17 @@ function isDisconnectionError(msg) {
  * @param {Object} messageData - Raw message data from MAIN world event
  */
 async function captureMessage(messageData) {
-  const msgId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const msgId = messageData.messageId || messageData.originalId || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const queuedMessage = {
     id: msgId,
     messageId: msgId,
-    timestamp: Date.now(),
+    timestamp: messageData.timestamp || Date.now(),
     platform: messageData.platform || 'claude',
     content: messageData.content,
     role: messageData.role,
     conversationId: messageData.conversationId,
     model: messageData.model,
+    source: messageData.source || messageData.captureMethod,
     retryCount: 0
   };
 
