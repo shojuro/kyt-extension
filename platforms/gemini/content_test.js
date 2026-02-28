@@ -136,58 +136,162 @@ if (window.KYT_GEMINI_INJECTED) {
 
   // === BATCHEXECUTE PARSER ===
 
-  // Gemini's RPC endpoint has changed over time:
-  //   Bard era:   /_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate
-  //   Gemini era: various paths under /_/BardChatUi/data/ or similar
-  // We match broadly on POST requests with f.req body param to gemini.google.com
-  const STREAM_GENERATE_PATH = '/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate';
+  // Gemini uses Google's batchexecute RPC protocol.
+  // f.req format: [[["rpcId", "JSON.stringify(args)", null, "generic"], ...moreRpcs]]
+  //
+  // Each RPC call is a 4-element array:
+  //   [0] = RPC method ID (obfuscated, e.g. "GPRiHf", "L5adhe")
+  //   [1] = JSON-encoded arguments string (must be parsed again)
+  //   [2] = null
+  //   [3] = "generic"
+  //
+  // The user message RPC has the typed text somewhere in its args array.
+  // We find it by scanning all RPCs for the longest natural-text string.
+
+  // Known system RPC IDs (never contain user messages)
+  const SYSTEM_RPC_IDS = new Set([
+    'GPRiHf',  // initialization
+    'maGuAc',  // settings
+    'qpEbW',   // feature checks
+    'L5adhe',  // feature flags (tons of nulls)
+    'ESY5D',   // activity status
+    'aPya6c',  // initialization
+    'DYBcR',   // language
+    'o30O0e',  // person info
+  ]);
+
+  // Strings that look like system values, not user text
+  const SYSTEM_VALUE_PATTERNS = [
+    /^(generic|null|en|true|false|\d+)$/i,
+    /^[a-zA-Z_]+_[a-zA-Z_]+$/, // snake_case system identifiers like "bard_activity_enabled"
+    /^person\./,  // person.photo, person.name, etc.
+    /^popup_/,
+    /^current/,
+    /^IMAGE_/,
+  ];
+
+  function isSystemValue(str) {
+    if (str.length < 5) return true;
+    return SYSTEM_VALUE_PATTERNS.some(p => p.test(str));
+  }
+
+  /**
+   * Deep-search an array/object for all strings.
+   * Returns strings sorted by length (longest first).
+   */
+  function findAllStrings(obj, maxDepth = 10) {
+    const strings = [];
+    function walk(val, depth) {
+      if (depth > maxDepth) return;
+      if (typeof val === 'string' && val.length > 3) {
+        strings.push(val);
+      } else if (Array.isArray(val)) {
+        for (const item of val) walk(item, depth + 1);
+      } else if (val && typeof val === 'object') {
+        for (const v of Object.values(val)) walk(v, depth + 1);
+      }
+    }
+    walk(obj, 0);
+    return strings.sort((a, b) => b.length - a.length);
+  }
 
   /**
    * Parse the f.req payload from batchexecute form data.
-   * Handles single and double JSON encoding.
+   *
+   * Handles the real batchexecute RPC protocol:
+   *   f.req = [[["rpcId", "jsonArgs", null, "generic"], ...]]
+   *
+   * Scans all RPCs for the one containing user message text.
    *
    * @param {string} fReq - Raw f.req value from URLSearchParams
-   * @returns {{ userMessage: string, conversationId: string|null, inner: Array }|null}
+   * @returns {{ userMessage: string, conversationId: string|null, rpcId: string, rpcArgs: Array, rpcIndex: number }|null}
    */
   function parseFReq(fReq) {
     let outer;
     try {
       outer = JSON.parse(fReq);
     } catch (_) {
+      console.warn('KYT Gemini: Failed to parse f.req');
+      return null;
+    }
+
+    // Handle double encoding
+    if (typeof outer === 'string') {
+      try { outer = JSON.parse(outer); } catch (_) { return null; }
+    }
+
+    if (!Array.isArray(outer) || !Array.isArray(outer[0])) return null;
+
+    // outer[0] is the array of RPC calls
+    const rpcs = outer[0];
+    let bestCandidate = null;
+
+    for (let i = 0; i < rpcs.length; i++) {
+      const rpc = rpcs[i];
+      if (!Array.isArray(rpc) || rpc.length < 2) continue;
+
+      const rpcId = rpc[0];
+      const argsJson = rpc[1];
+
+      // Skip known system RPCs
+      if (typeof rpcId === 'string' && SYSTEM_RPC_IDS.has(rpcId)) continue;
+
+      // Parse the JSON-encoded arguments
+      if (typeof argsJson !== 'string') continue;
+      let args;
       try {
-        outer = JSON.parse(JSON.parse(fReq));
-      } catch (_2) {
-        console.warn('KYT Gemini: Failed to parse f.req');
-        return null;
+        args = JSON.parse(argsJson);
+      } catch (_) {
+        continue; // Not valid JSON args
+      }
+
+      // Search for strings in the parsed args
+      const strings = findAllStrings(args);
+
+      // Find the longest string that looks like user text (not a system value)
+      for (const str of strings) {
+        if (isSystemValue(str)) continue;
+        // This looks like a user message
+        if (!bestCandidate || str.length > bestCandidate.userMessage.length) {
+          // Try to find a conversation ID (look for strings starting with "c_" or UUIDs)
+          let conversationId = null;
+          for (const s of strings) {
+            if (s !== str && (s.startsWith('c_') || /^[0-9a-f]{8,}/.test(s))) {
+              conversationId = s;
+              break;
+            }
+          }
+          bestCandidate = {
+            userMessage: str,
+            conversationId,
+            rpcId,
+            rpcArgs: args,
+            rpcIndex: i,
+          };
+        }
+        break; // strings are sorted longest-first, take the first non-system one
       }
     }
 
-    if (!Array.isArray(outer)) return null;
-
-    // Navigate to inner array
-    let inner = outer[0];
-    if (Array.isArray(inner) && Array.isArray(inner[0]) && typeof inner[0][0] !== 'string') {
-      inner = inner[0];
+    // Log discovery for debugging
+    if (bestCandidate) {
+      console.log('KYT Gemini [parseFReq]: Found user message in RPC "' + bestCandidate.rpcId + '"',
+        '(' + bestCandidate.userMessage.length + ' chars)');
     }
-    if (!Array.isArray(inner)) return null;
 
-    const userMessage = typeof inner[0] === 'string' ? inner[0] : null;
-
-    let conversationId = null;
-    try {
-      if (Array.isArray(inner[2]) && typeof inner[2][0] === 'string') {
-        conversationId = inner[2][0];
-      }
-    } catch (_) { /* optional */ }
-
-    return { userMessage, conversationId, inner };
+    return bestCandidate;
   }
 
   /**
-   * Re-encode the f.req payload back into URL-encoded form data.
-   * Used by context injection.
+   * Re-encode modified message back into batchexecute f.req format.
+   * Finds the message-carrying RPC and replaces the user text in its args.
+   *
+   * @param {string} originalBody - Original URL-encoded form data
+   * @param {string} newMessage - The new message text (with injected context)
+   * @param {object} parseResult - Result from parseFReq (contains rpcId, rpcIndex, rpcArgs)
+   * @returns {string|null} Re-encoded body or null on failure
    */
-  function reEncodeFReq(originalBody, modifiedInner) {
+  function reEncodeFReq(originalBody, newMessage, parseResult) {
     try {
       const params = new URLSearchParams(originalBody);
       const fReq = params.get('f.req');
@@ -198,15 +302,48 @@ if (window.KYT_GEMINI_INJECTED) {
       try {
         outer = JSON.parse(fReq);
       } catch (_) {
-        outer = JSON.parse(JSON.parse(fReq));
-        isDoubleEncoded = true;
+        return null;
       }
 
-      if (Array.isArray(outer[0]) && Array.isArray(outer[0][0]) && typeof outer[0][0][0] !== 'string') {
-        outer[0][0] = modifiedInner;
-      } else {
-        outer[0] = modifiedInner;
+      if (typeof outer === 'string') {
+        isDoubleEncoded = true;
+        outer = JSON.parse(outer);
       }
+
+      // Find the RPC and replace the user message in its args
+      const rpcs = outer[0];
+      const rpc = rpcs[parseResult.rpcIndex];
+      let args = JSON.parse(rpc[1]);
+
+      // Replace the user message string in the args (depth-first search for the exact string)
+      function replaceInPlace(obj, target, replacement) {
+        if (Array.isArray(obj)) {
+          for (let i = 0; i < obj.length; i++) {
+            if (obj[i] === target) {
+              obj[i] = replacement;
+              return true;
+            }
+            if (replaceInPlace(obj[i], target, replacement)) return true;
+          }
+        } else if (obj && typeof obj === 'object') {
+          for (const key of Object.keys(obj)) {
+            if (obj[key] === target) {
+              obj[key] = replacement;
+              return true;
+            }
+            if (replaceInPlace(obj[key], target, replacement)) return true;
+          }
+        }
+        return false;
+      }
+
+      if (!replaceInPlace(args, parseResult.userMessage, newMessage)) {
+        console.warn('KYT Gemini: Could not find user message to replace in RPC args');
+        return null;
+      }
+
+      // Re-encode the args back to JSON string
+      rpc[1] = JSON.stringify(args);
 
       let encoded = JSON.stringify(outer);
       if (isDoubleEncoded) {
@@ -303,10 +440,8 @@ if (window.KYT_GEMINI_INJECTED) {
 
     if (event.detail.success && event.detail.formattedContext) {
       console.log('KYT Gemini: Context received, injecting...');
-      // Prepend context to user message in the inner array
-      const modified = [...pending.inner];
-      modified[0] = `${event.detail.formattedContext}\n\n---\n\n${modified[0]}`;
-      const reEncoded = reEncodeFReq(pending.originalBody, modified);
+      const newMessage = `${event.detail.formattedContext}\n\n---\n\n${pending.userMessage}`;
+      const reEncoded = reEncodeFReq(pending.originalBody, newMessage, pending.parseResult);
       if (reEncoded) {
         pending.resolve(reEncoded);
       } else {
@@ -354,7 +489,7 @@ if (window.KYT_GEMINI_INJECTED) {
         pendingContextRequests.set(requestId, {
           resolve,
           timeout,
-          inner: parsed.inner,
+          parseResult: parsed,
           originalBody: bodyString,
           messageHash,
           userMessage: parsed.userMessage,
