@@ -1031,13 +1031,6 @@ if (window.KYT_GEMINI_INJECTED) {
       const isInitPhase = (Date.now() - HISTORY_CAPTURE_START) < HISTORY_CAPTURE_INIT_MS;
       const conversationId = metadata.conversationId || 'history_' + Date.now();
 
-      // Prevent re-capturing the same conversation
-      if (_capturedConversationIds.has(conversationId)) {
-        console.log('KYT Gemini [history]: Already captured conversation', conversationId);
-        return;
-      }
-      _capturedConversationIds.add(conversationId);
-
       console.log(`KYT Gemini [history]: Found ${messages.length} messages in conversation ${conversationId} (init: ${isInitPhase})`);
 
       let captured = 0;
@@ -1048,6 +1041,10 @@ if (window.KYT_GEMINI_INJECTED) {
         const msg = messages[i];
         const cleanContent = stripInjectionBlock(msg.content);
         if (!cleanContent || cleanContent.length < 2) continue;
+
+        // Skip base64/binary payloads (encrypted voice audio data, tokens, etc.)
+        // Real messages always contain spaces; binary payloads don't
+        if (cleanContent.length > 40 && !cleanContent.includes(' ') && /^[A-Za-z0-9+/=]+$/.test(cleanContent)) continue;
 
         const messageData = {
           content: cleanContent,
