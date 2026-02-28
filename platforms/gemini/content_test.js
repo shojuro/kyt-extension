@@ -543,7 +543,7 @@ if (window.KYT_GEMINI_INJECTED) {
    * Matches broadly: any body with an f.req param containing a parseable user message.
    */
   function isGeminiMessageRequest(urlString, bodyString) {
-    if (!urlString.includes('gemini.google.com')) return false;
+    if (!isGoogleDomain(urlString)) return false;
     if (!bodyString || typeof bodyString !== 'string') return false;
 
     // Fast check: does the body contain 'f.req=' (URL-encoded form with f.req param)?
@@ -625,30 +625,71 @@ if (window.KYT_GEMINI_INJECTED) {
     }
   }
 
+  // Google domains that Gemini might use for API calls
+  const GOOGLE_API_DOMAINS = [
+    'gemini.google.com',
+    'alkalimakersuite-pa.clients6.google.com',
+    'content-push.googleapis.com',
+    'generativelanguage.googleapis.com',
+    'clients6.google.com',
+    '.google.com',
+    '.googleapis.com',
+    '.googleprod.com',
+  ];
+
+  function isGoogleDomain(urlString) {
+    for (const domain of GOOGLE_API_DOMAINS) {
+      if (urlString.includes(domain)) return true;
+    }
+    return false;
+  }
+
+  // Discovery mode: log ALL fetches for the first 60s to find the real API domain
+  const DISCOVERY_START = Date.now();
+  const DISCOVERY_DURATION_MS = 60000;
+
   window.fetch = async function(...args) {
     let [url, options] = args;
     const urlString = typeof url === 'string' ? url : (url?.url || String(url));
 
-    // Skip non-Gemini requests immediately
-    if (!urlString.includes('gemini.google.com')) {
+    const isPost = options?.method === 'POST' || (options?.body && options?.method !== 'GET');
+
+    // BROAD DISCOVERY: log ALL POST requests from the page for the first 60s
+    // This is critical to find which domain Gemini actually sends API calls to
+    if (isPost && (Date.now() - DISCOVERY_START) < DISCOVERY_DURATION_MS) {
+      try {
+        const urlObj = new URL(urlString);
+        const host = urlObj.hostname;
+        const path = urlObj.pathname;
+        const bodyType = options?.body?.constructor?.name || typeof options?.body;
+        const cacheKey = host + path + ':' + bodyType;
+        if (!discoveredEndpoints.has(cacheKey)) {
+          discoveredEndpoints.add(cacheKey);
+          const bodyStr = bodyToString(options?.body);
+          const hasFReq = bodyStr ? (bodyStr.includes('f.req=') || bodyStr.includes('f.req%')) : 'unknown';
+          console.log('KYT Gemini [fetch POST discovery]:', host + path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
+        }
+      } catch (_) {}
+    }
+
+    // Skip non-Google requests for message processing
+    if (!isGoogleDomain(urlString)) {
       return originalFetch.apply(this, args);
     }
 
-    // Diagnostic: log all POST requests to gemini.google.com to discover endpoints
-    const isPost = options?.method === 'POST' || (options?.body && options?.method !== 'GET');
-    if (isPost) {
+    // Also log Google-domain POSTs after discovery period
+    if (isPost && (Date.now() - DISCOVERY_START) >= DISCOVERY_DURATION_MS) {
       try {
         const urlObj = new URL(urlString);
+        const host = urlObj.hostname;
         const path = urlObj.pathname;
         const bodyType = options?.body?.constructor?.name || typeof options?.body;
-        const cacheKey = path + ':' + bodyType;
+        const cacheKey = host + path + ':' + bodyType;
         if (!discoveredEndpoints.has(cacheKey)) {
           discoveredEndpoints.add(cacheKey);
-          const hasBody = !!options?.body;
-          // Try sync coercion to check for f.req
           const bodyStr = bodyToString(options?.body);
           const hasFReq = bodyStr ? (bodyStr.includes('f.req=') || bodyStr.includes('f.req%')) : 'unknown';
-          console.log('KYT Gemini [endpoint discovery]:', path, { hasBody, bodyType, hasFReq, bodyLen: bodyStr?.length });
+          console.log('KYT Gemini [endpoint discovery]:', host + path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
         }
       } catch (_) {}
     }
@@ -714,24 +755,43 @@ if (window.KYT_GEMINI_INJECTED) {
     const method = this.__kytMethod;
     const url = this.__kytUrl || '';
 
-    // Skip non-Gemini
-    if (!url.includes('gemini.google.com')) {
-      return originalXHRSend.call(this, body);
-    }
-
     const isPost = method && method.toUpperCase() === 'POST';
-    if (isPost) {
-      // Endpoint discovery
+
+    // BROAD DISCOVERY: log ALL XHR POST requests for the first 60s
+    if (isPost && (Date.now() - DISCOVERY_START) < DISCOVERY_DURATION_MS) {
       try {
-        const urlObj = new URL(url);
+        const urlObj = new URL(url, window.location.origin);
+        const host = urlObj.hostname;
         const path = urlObj.pathname;
         const bodyType = body?.constructor?.name || typeof body;
-        const cacheKey = 'xhr:' + path + ':' + bodyType;
+        const cacheKey = 'xhr:' + host + path + ':' + bodyType;
         if (!discoveredEndpoints.has(cacheKey)) {
           discoveredEndpoints.add(cacheKey);
           const bodyStr = bodyToString(body);
           const hasFReq = bodyStr ? (bodyStr.includes('f.req=') || bodyStr.includes('f.req%')) : 'unknown';
-          console.log('KYT Gemini [XHR endpoint discovery]:', path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
+          console.log('KYT Gemini [XHR POST discovery]:', host + path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
+        }
+      } catch (_) {}
+    }
+
+    // Skip non-Google domains for message processing
+    if (!isGoogleDomain(url)) {
+      return originalXHRSend.call(this, body);
+    }
+
+    if (isPost) {
+      // Endpoint discovery for Google domains after discovery period
+      try {
+        const urlObj = new URL(url, window.location.origin);
+        const host = urlObj.hostname;
+        const path = urlObj.pathname;
+        const bodyType = body?.constructor?.name || typeof body;
+        const cacheKey = 'xhr:' + host + path + ':' + bodyType;
+        if (!discoveredEndpoints.has(cacheKey)) {
+          discoveredEndpoints.add(cacheKey);
+          const bodyStr = bodyToString(body);
+          const hasFReq = bodyStr ? (bodyStr.includes('f.req=') || bodyStr.includes('f.req%')) : 'unknown';
+          console.log('KYT Gemini [XHR endpoint discovery]:', host + path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
         }
       } catch (_) {}
 
