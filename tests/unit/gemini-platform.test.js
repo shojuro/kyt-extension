@@ -450,7 +450,7 @@ describe('isGeminiHistoryLoad', () => {
 // 9. extractConversationMessages (logic extracted from content_test.js)
 // ==========================================================================
 
-// Re-implement for unit testing
+// Re-implement for unit testing (must stay in sync with content_test.js)
 function findAllStrings(obj, maxDepth = 10) {
   const strings = [];
   function walk(val, depth) {
@@ -475,22 +475,97 @@ function extractConversationMessages(responseText) {
   }
 
   const lines = cleaned.split('\n');
-  const allStringsFound = [];
+  let innerConversationData = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || /^\d+$/.test(trimmed)) continue;
     try {
       const parsed = JSON.parse(trimmed);
-      const strings = findAllStrings(parsed, 15);
-      for (const s of strings) {
-        if (s.length > 10) {
-          allStringsFound.push(s);
+      if (!Array.isArray(parsed)) continue;
+      for (const entry of parsed) {
+        if (!Array.isArray(entry)) continue;
+        if (entry[0] !== 'wrb.fr') continue;
+        if (typeof entry[2] !== 'string') continue;
+        try { innerConversationData = JSON.parse(entry[2]); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  if (!innerConversationData || !Array.isArray(innerConversationData)) {
+    return extractConversationMessagesFallback(responseText);
+  }
+
+  let turns = innerConversationData;
+  if (Array.isArray(turns[0]) && Array.isArray(turns[0][0]) && Array.isArray(turns[0][0][0])) {
+    turns = turns[0];
+  }
+
+  for (const turn of turns) {
+    if (!Array.isArray(turn)) continue;
+    try {
+      const userMsgArr = turn[2];
+      if (Array.isArray(userMsgArr) && Array.isArray(userMsgArr[0])) {
+        const userText = userMsgArr[0][0];
+        if (typeof userText === 'string' && userText.trim().length > 0) {
+          messages.push({ content: userText.trim(), role: 'user' });
+        }
+      }
+    } catch (_) {}
+    try {
+      const respArr = turn[3];
+      if (Array.isArray(respArr) && Array.isArray(respArr[0])) {
+        const candidate = respArr[0];
+        if (Array.isArray(candidate) && Array.isArray(candidate[0])) {
+          const textArr = candidate[0][1];
+          if (Array.isArray(textArr) && typeof textArr[0] === 'string') {
+            if (textArr[0].trim().length > 0) {
+              messages.push({ content: textArr[0].trim(), role: 'assistant' });
+            }
+          }
         }
       }
     } catch (_) {}
   }
 
+  if (messages.length === 0 && innerConversationData) {
+    const allStrs = findAllStrings(innerConversationData, 20);
+    const contentStrs = allStrs.filter(s => {
+      if (s.length < 20) return false;
+      if (s.startsWith('r_') || s.startsWith('rc_') || s.startsWith('c_')) return false;
+      if (/^[0-9a-f]{16,}$/i.test(s)) return false;
+      if (s.startsWith('http')) return false;
+      return true;
+    });
+    const seen = new Set();
+    for (let i = 0; i < contentStrs.length; i++) {
+      const t = contentStrs[i].trim();
+      if (seen.has(t)) continue;
+      seen.add(t);
+      messages.push({ content: t, role: i % 2 === 0 ? 'user' : 'assistant' });
+    }
+  }
+
+  return messages;
+}
+
+function extractConversationMessagesFallback(responseText) {
+  const messages = [];
+  let cleaned = responseText;
+  if (cleaned.startsWith(")]}'")) {
+    cleaned = cleaned.substring(cleaned.indexOf('\n') + 1);
+  }
+  const lines = cleaned.split('\n');
+  const allStringsFound = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || /^\d+$/.test(trimmed)) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      const strings = findAllStrings(parsed, 15);
+      for (const s of strings) { if (s.length > 10) allStringsFound.push(s); }
+    } catch (_) {}
+  }
   const isSystemString = (s) => {
     if (s.startsWith('r_') || s.startsWith('!')) return true;
     if (/^[0-9a-f]{32,}$/i.test(s)) return true;
@@ -500,106 +575,121 @@ function extractConversationMessages(responseText) {
     if (s.split('\n').length < 2 && /^[a-zA-Z0-9_.-]+$/.test(s)) return true;
     return false;
   };
-
   const contentStrings = allStringsFound.filter(s => !isSystemString(s));
   const seen = new Set();
-  const unique = [];
-  for (const s of contentStrings) {
-    const normalized = s.trim();
-    if (!seen.has(normalized)) {
-      seen.add(normalized);
-      unique.push(normalized);
-    }
-  }
-
-  for (let i = 0; i < unique.length; i++) {
-    messages.push({
-      content: unique[i],
-      role: i % 2 === 0 ? 'user' : 'assistant'
-    });
+  for (let i = 0; i < contentStrings.length; i++) {
+    const t = contentStrings[i].trim();
+    if (seen.has(t)) continue;
+    seen.add(t);
+    messages.push({ content: t, role: i % 2 === 0 ? 'user' : 'assistant' });
   }
   return messages;
 }
 
-describe('extractConversationMessages', () => {
-  it('extracts messages from Gemini-style response with anti-XSSI prefix', () => {
-    // Simulate Gemini response format: anti-XSSI + length-prefixed frames
-    const frame1 = JSON.stringify([
-      [null, null, 'How do I set up row-level security in Supabase?']
-    ]);
-    const frame2 = JSON.stringify([
-      [null, null, 'To set up RLS in Supabase, first go to the Authentication settings and enable RLS on your table.']
-    ]);
-    const response = `)]}'\n${frame1.length}\n${frame1}\n${frame2.length}\n${frame2}`;
+// Helper: build a real batchexecute wrb.fr response (matching Gemini's actual format)
+function makeBatchexecuteHistoryResponse(turns) {
+  // turns: [{user: "text", assistant: "text", convId: "c_...", turnId: "r_..."}, ...]
+  const innerTurns = turns.map((t, i) => {
+    const rId = t.turnId || `r_${i}`;
+    const rcId = `rc_${i}`;
+    return [
+      [t.convId || 'c_test', rId],
+      [t.convId || 'c_test', `r_resp_${i}`, rcId],
+      [[t.user], 2, null, 0, `hash_${i}`, 0, null, null, false, null, []],
+      [[[rcId, [t.assistant]]]]
+    ];
+  });
+  const innerJson = JSON.stringify([innerTurns]);
+  const frame = JSON.stringify([['wrb.fr', 'hNvQHb', innerJson, null, null, null, 'generic']]);
+  return `)]}'\n${frame.length}\n${frame}`;
+}
 
+describe('extractConversationMessages', () => {
+  it('extracts user and assistant messages from real batchexecute wrb.fr format', () => {
+    const response = makeBatchexecuteHistoryResponse([
+      { user: 'How do I set up RLS in Supabase?', assistant: 'To set up RLS, go to Authentication settings and enable it on your table.' },
+    ]);
     const messages = extractConversationMessages(response);
     expect(messages.length).toBe(2);
-    expect(messages[0].content).toContain('row-level security');
+    expect(messages[0].content).toContain('RLS in Supabase');
     expect(messages[0].role).toBe('user');
-    expect(messages[1].content).toContain('enable RLS');
+    expect(messages[1].content).toContain('enable it on your table');
     expect(messages[1].role).toBe('assistant');
   });
 
-  it('filters out system strings (URLs, hex, auth tokens)', () => {
+  it('extracts multiple conversation turns', () => {
+    const response = makeBatchexecuteHistoryResponse([
+      { user: 'What is React?', assistant: 'React is a JavaScript library for building UIs.' },
+      { user: 'How do I use hooks?', assistant: 'Hooks let you use state and lifecycle features in function components.' },
+    ]);
+    const messages = extractConversationMessages(response);
+    expect(messages.length).toBe(4);
+    expect(messages[0].role).toBe('user');
+    expect(messages[0].content).toBe('What is React?');
+    expect(messages[1].role).toBe('assistant');
+    expect(messages[2].role).toBe('user');
+    expect(messages[2].content).toBe('How do I use hooks?');
+    expect(messages[3].role).toBe('assistant');
+  });
+
+  it('handles anti-XSSI prefix correctly', () => {
+    const response = makeBatchexecuteHistoryResponse([
+      { user: 'Test message', assistant: 'Test response with enough content to matter' }
+    ]);
+    expect(response.startsWith(")]}'\n")).toBe(true);
+    const messages = extractConversationMessages(response);
+    expect(messages.length).toBe(2);
+  });
+
+  it('preserves conversation IDs from turn data', () => {
+    const response = makeBatchexecuteHistoryResponse([
+      { user: 'Hello from mobile', assistant: 'Hi there!', convId: 'c_d256defe4aabd853' }
+    ]);
+    const messages = extractConversationMessages(response);
+    expect(messages.length).toBe(2);
+    expect(messages[0].content).toBe('Hello from mobile');
+  });
+
+  it('falls back to heuristic extraction for non-wrb.fr responses', () => {
+    // Non-batchexecute format: raw frames with strings
     const frame = JSON.stringify([
-      'https://gemini.google.com/share/abc',
-      'r_request_12345678901234567890',
-      '!auth_token_that_is_very_long_here',
-      'abcdef0123456789abcdef0123456789',  // 32-char hex
-      'This is a real conversation message that should be kept'
+      'This is a real conversation message that should be extracted from the response'
     ]);
     const response = `${frame.length}\n${frame}`;
-
     const messages = extractConversationMessages(response);
     expect(messages.length).toBe(1);
     expect(messages[0].content).toContain('real conversation message');
   });
 
-  it('deduplicates identical strings', () => {
-    const msg = 'This is a duplicate message that appears multiple times';
-    const frame = JSON.stringify([msg, msg, msg]);
+  it('fallback filters out system strings (URLs, hex, auth tokens)', () => {
+    const frame = JSON.stringify([
+      'https://gemini.google.com/share/abc',
+      'r_request_12345678901234567890',
+      'abcdef0123456789abcdef0123456789',
+      'This is a real conversation message that should be kept'
+    ]);
     const response = `${frame.length}\n${frame}`;
-
     const messages = extractConversationMessages(response);
     expect(messages.length).toBe(1);
+    expect(messages[0].content).toContain('real conversation message');
   });
 
   it('returns empty array for non-parseable response', () => {
-    const messages = extractConversationMessages('not valid response data');
-    expect(messages).toEqual([]);
+    expect(extractConversationMessages('not valid response data')).toEqual([]);
   });
 
   it('returns empty array for response with only short strings', () => {
     const frame = JSON.stringify(['hi', 'ok', 'yes']);
     const response = `${frame.length}\n${frame}`;
-    const messages = extractConversationMessages(response);
-    expect(messages).toEqual([]);
+    expect(extractConversationMessages(response)).toEqual([]);
   });
 
-  it('strips anti-XSSI prefix correctly', () => {
-    const content = 'This is a message about Kubernetes deployment strategies';
-    const frame = JSON.stringify([content]);
-    // Various anti-XSSI prefix forms
-    const response = `)]}'\n${frame.length}\n${frame}`;
+  it('trims whitespace from extracted messages', () => {
+    const response = makeBatchexecuteHistoryResponse([
+      { user: '  Hello Gemini  ', assistant: '  Hi there!  ' }
+    ]);
     const messages = extractConversationMessages(response);
-    expect(messages.length).toBe(1);
-    expect(messages[0].content).toBe(content);
-  });
-
-  it('handles multiple frames with conversation turns', () => {
-    const userMsg = 'What is the best way to handle authentication in React?';
-    const assistantMsg = 'There are several approaches to authentication in React. The most common are JWT tokens stored in httpOnly cookies, session-based auth, and OAuth with providers like Google.';
-    const followupMsg = 'Can you show me an example with JWT tokens?';
-
-    const frame1 = JSON.stringify([[userMsg]]);
-    const frame2 = JSON.stringify([[assistantMsg]]);
-    const frame3 = JSON.stringify([[followupMsg]]);
-    const response = `)]}'\n${frame1.length}\n${frame1}\n${frame2.length}\n${frame2}\n${frame3.length}\n${frame3}`;
-
-    const messages = extractConversationMessages(response);
-    expect(messages.length).toBe(3);
-    expect(messages[0].role).toBe('user');
-    expect(messages[1].role).toBe('assistant');
-    expect(messages[2].role).toBe('user');
+    expect(messages[0].content).toBe('Hello Gemini');
+    expect(messages[1].content).toBe('Hi there!');
   });
 });

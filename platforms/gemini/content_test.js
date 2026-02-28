@@ -830,13 +830,22 @@ if (window.KYT_GEMINI_INJECTED) {
   }
 
   /**
-   * Extract all meaningful text strings from Gemini's nested response frames.
-   * Returns an array of {text, role} objects for user and assistant messages.
+   * Extract conversation messages from a Gemini hNvQHb batchexecute response.
    *
-   * Gemini response format:
+   * Response format (confirmed via live discovery):
    *   Anti-XSSI prefix: )]}'\n
-   *   Length-prefixed frames: number\n[json-array]\n
-   *   Inside frames: deeply nested arrays with text at various positions
+   *   Length prefix: 23413\n
+   *   Frame: [["wrb.fr","hNvQHb","<double-encoded JSON conversation data>", ...]]
+   *
+   * The conversation data at position [0][2] is a JSON STRING that must be parsed again.
+   * Once parsed, its structure is:
+   *   [[ [userTurnIds], [responseTurnIds], [userMsgData], [assistantMsgData] ], ...more turns...]
+   *
+   * Per turn:
+   *   turn[0] = ["c_<convId>", "r_<turnId>"]                     — user turn IDs
+   *   turn[1] = ["c_<convId>", "r_<turnId>", "rc_<candidateId>"] — response IDs
+   *   turn[2] = [["user message text"], 2, null, 0, ...]         — user message (text at [0][0])
+   *   turn[3] = [[["rc_<id>", ["assistant response text"]]]]     — response (text at [0][0][1][0])
    *
    * @param {string} responseText - Raw response body
    * @returns {Array<{content: string, role: string}>} Extracted messages
@@ -850,9 +859,9 @@ if (window.KYT_GEMINI_INJECTED) {
       cleaned = cleaned.substring(cleaned.indexOf('\n') + 1);
     }
 
-    // Parse each length-prefixed frame
+    // Parse each length-prefixed frame, looking for batchexecute wrb.fr frames
     const lines = cleaned.split('\n');
-    const allStringsFound = [];
+    let innerConversationData = null;
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -860,49 +869,138 @@ if (window.KYT_GEMINI_INJECTED) {
 
       try {
         const parsed = JSON.parse(trimmed);
-        // Collect all strings > 10 chars from this frame (possible message content)
-        const strings = findAllStrings(parsed, 15);
-        for (const s of strings) {
-          if (s.length > 10) {
-            allStringsFound.push(s);
+        // batchexecute response format: [["wrb.fr", "rpcId", "<json-string>", ...], ...]
+        if (!Array.isArray(parsed)) continue;
+
+        for (const entry of parsed) {
+          if (!Array.isArray(entry)) continue;
+          if (entry[0] !== 'wrb.fr') continue;
+          // entry[2] is the double-encoded conversation JSON string
+          if (typeof entry[2] !== 'string') continue;
+
+          try {
+            innerConversationData = JSON.parse(entry[2]);
+          } catch (_) {
+            // Try findAllStrings as fallback on the raw string
           }
         }
       } catch (_) {}
     }
 
-    // Filter out system strings (auth tokens, request IDs, URLs, JSON-like strings)
+    if (!innerConversationData || !Array.isArray(innerConversationData)) {
+      // Fallback: try to find strings directly (old heuristic path)
+      return extractConversationMessagesFallback(responseText);
+    }
+
+    // Walk the conversation turns structure
+    // innerConversationData is: [[ turn1, turn2, ... ]] or [ turn1, turn2, ... ]
+    let turns = innerConversationData;
+    // Unwrap outer array if needed: [[turns...]] → [turns...]
+    if (Array.isArray(turns[0]) && Array.isArray(turns[0][0]) && Array.isArray(turns[0][0][0])) {
+      turns = turns[0]; // [[turn1, turn2]] → [turn1, turn2]
+    } else if (Array.isArray(turns[0]) && Array.isArray(turns[0][0]) && typeof turns[0][0] === 'object') {
+      // Already [turn1, turn2, ...]
+    }
+
+    for (const turn of turns) {
+      if (!Array.isArray(turn)) continue;
+
+      // Extract user message: turn[2][0][0]
+      try {
+        const userMsgArr = turn[2];
+        if (Array.isArray(userMsgArr) && Array.isArray(userMsgArr[0])) {
+          const userText = userMsgArr[0][0];
+          if (typeof userText === 'string' && userText.trim().length > 0) {
+            messages.push({ content: userText.trim(), role: 'user' });
+          }
+        }
+      } catch (_) {}
+
+      // Extract assistant response: turn[3][0][0][1][0]
+      try {
+        const respArr = turn[3];
+        if (Array.isArray(respArr) && Array.isArray(respArr[0])) {
+          // May have multiple response candidates; take the first
+          const candidate = respArr[0];
+          if (Array.isArray(candidate) && Array.isArray(candidate[0])) {
+            const textArr = candidate[0][1]; // ["rc_id", ["text"]]
+            if (Array.isArray(textArr) && typeof textArr[0] === 'string') {
+              const assistantText = textArr[0];
+              if (assistantText.trim().length > 0) {
+                messages.push({ content: assistantText.trim(), role: 'assistant' });
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    // If structured parsing found nothing, try the fallback
+    if (messages.length === 0 && innerConversationData) {
+      // Use findAllStrings on the unwrapped inner data as a last resort
+      const allStrs = findAllStrings(innerConversationData, 20);
+      const contentStrs = allStrs.filter(s => {
+        if (s.length < 20) return false;
+        if (s.startsWith('r_') || s.startsWith('rc_') || s.startsWith('c_')) return false;
+        if (/^[0-9a-f]{16,}$/i.test(s)) return false;
+        if (s.startsWith('http')) return false;
+        return true;
+      });
+      const seen = new Set();
+      for (let i = 0; i < contentStrs.length; i++) {
+        const t = contentStrs[i].trim();
+        if (seen.has(t)) continue;
+        seen.add(t);
+        messages.push({ content: t, role: i % 2 === 0 ? 'user' : 'assistant' });
+      }
+    }
+
+    return messages;
+  }
+
+  /**
+   * Fallback message extraction: find all long strings heuristically.
+   * Used when the response isn't in the expected batchexecute wrb.fr format.
+   */
+  function extractConversationMessagesFallback(responseText) {
+    const messages = [];
+    let cleaned = responseText;
+    if (cleaned.startsWith(")]}'")) {
+      cleaned = cleaned.substring(cleaned.indexOf('\n') + 1);
+    }
+
+    const lines = cleaned.split('\n');
+    const allStringsFound = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || /^\d+$/.test(trimmed)) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        const strings = findAllStrings(parsed, 15);
+        for (const s of strings) {
+          if (s.length > 10) allStringsFound.push(s);
+        }
+      } catch (_) {}
+    }
+
     const isSystemString = (s) => {
-      if (s.startsWith('r_') || s.startsWith('!')) return true; // Request IDs, auth tokens
-      if (/^[0-9a-f]{32,}$/i.test(s)) return true; // Hex strings
-      if (s.startsWith('http://') || s.startsWith('https://')) return true; // URLs
-      if (s.startsWith('{') || s.startsWith('[')) return true; // Nested JSON
-      if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) return true; // Base64-like
-      if (s.split('\n').length < 2 && /^[a-zA-Z0-9_.-]+$/.test(s)) return true; // Identifiers
+      if (s.startsWith('r_') || s.startsWith('!')) return true;
+      if (/^[0-9a-f]{32,}$/i.test(s)) return true;
+      if (s.startsWith('http://') || s.startsWith('https://')) return true;
+      if (s.startsWith('{') || s.startsWith('[')) return true;
+      if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) return true;
+      if (s.split('\n').length < 2 && /^[a-zA-Z0-9_.-]+$/.test(s)) return true;
       return false;
     };
 
     const contentStrings = allStringsFound.filter(s => !isSystemString(s));
-
-    // Deduplicate and sort by length (longest = most likely to be full messages)
     const seen = new Set();
-    const unique = [];
-    for (const s of contentStrings) {
-      const normalized = s.trim();
-      if (!seen.has(normalized)) {
-        seen.add(normalized);
-        unique.push(normalized);
-      }
+    for (let i = 0; i < contentStrings.length; i++) {
+      const t = contentStrings[i].trim();
+      if (seen.has(t)) continue;
+      seen.add(t);
+      messages.push({ content: t, role: i % 2 === 0 ? 'user' : 'assistant' });
     }
-
-    // Heuristic: alternate user/assistant based on order of appearance
-    // The first substantial text is usually the first message in the conversation
-    for (let i = 0; i < unique.length; i++) {
-      messages.push({
-        content: unique[i],
-        role: i % 2 === 0 ? 'user' : 'assistant'
-      });
-    }
-
     return messages;
   }
 
@@ -925,30 +1023,27 @@ if (window.KYT_GEMINI_INJECTED) {
       const messages = extractConversationMessages(text);
 
       if (messages.length === 0) {
-        // Diagnostic: log what we got so we can tune the parser
-        console.log('KYT Gemini [history]: No messages found in response from RPC:', metadata.rpcId, {
-          responseLen: text.length,
-          preview: text.substring(0, 500),
-          hasAntiXssi: text.startsWith(")]}'"),
-        });
-        // Also log the parsed frames for debugging
+        // Diagnostic: stringify everything so it's visible in text paste
+        console.log('KYT Gemini [history DIAG]: RPC=' + metadata.rpcId +
+          ' responseLen=' + text.length +
+          ' hasAntiXssi=' + text.startsWith(")]}'"));
+        console.log('KYT Gemini [history DIAG]: RESPONSE PREVIEW:', text.substring(0, 800));
+        // Parse frames and log string contents
         try {
           let cleaned = text;
           if (cleaned.startsWith(")]}'")) cleaned = cleaned.substring(cleaned.indexOf('\n') + 1);
           const frameLines = cleaned.split('\n').filter(l => l.trim() && !/^\d+$/.test(l.trim()));
-          console.log('KYT Gemini [history]: Frames:', frameLines.length, 'parseable lines');
-          for (let fi = 0; fi < Math.min(frameLines.length, 3); fi++) {
+          console.log('KYT Gemini [history DIAG]: ' + frameLines.length + ' parseable frames');
+          for (let fi = 0; fi < Math.min(frameLines.length, 5); fi++) {
+            console.log('KYT Gemini [history DIAG]: RAW FRAME ' + fi + ' (' + frameLines[fi].length + ' chars): ' + frameLines[fi].substring(0, 500));
             try {
               const parsed = JSON.parse(frameLines[fi]);
               const strs = findAllStrings(parsed, 15);
-              const longStrs = strs.filter(s => s.length > 10).slice(0, 5);
-              console.log(`KYT Gemini [history]: Frame ${fi}:`, {
-                topLevelLen: Array.isArray(parsed) ? parsed.length : 'not-array',
-                allStrings: strs.length,
-                longStrings: longStrs.map(s => s.substring(0, 120)),
-              });
-            } catch (_) {
-              console.log(`KYT Gemini [history]: Frame ${fi}: unparseable (${frameLines[fi].substring(0, 100)})`);
+              const longStrs = strs.filter(s => s.length > 10).slice(0, 8);
+              console.log('KYT Gemini [history DIAG]: Frame ' + fi + ' strings (' + strs.length + ' total, ' + longStrs.length + ' >10ch): ' +
+                JSON.stringify(longStrs.map(s => s.substring(0, 150))));
+            } catch (e) {
+              console.log('KYT Gemini [history DIAG]: Frame ' + fi + ' parse error: ' + e.message);
             }
           }
         } catch (_) {}
