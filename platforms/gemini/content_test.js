@@ -1023,30 +1023,8 @@ if (window.KYT_GEMINI_INJECTED) {
       const messages = extractConversationMessages(text);
 
       if (messages.length === 0) {
-        // Diagnostic: stringify everything so it's visible in text paste
-        console.log('KYT Gemini [history DIAG]: RPC=' + metadata.rpcId +
-          ' responseLen=' + text.length +
-          ' hasAntiXssi=' + text.startsWith(")]}'"));
-        console.log('KYT Gemini [history DIAG]: RESPONSE PREVIEW:', text.substring(0, 800));
-        // Parse frames and log string contents
-        try {
-          let cleaned = text;
-          if (cleaned.startsWith(")]}'")) cleaned = cleaned.substring(cleaned.indexOf('\n') + 1);
-          const frameLines = cleaned.split('\n').filter(l => l.trim() && !/^\d+$/.test(l.trim()));
-          console.log('KYT Gemini [history DIAG]: ' + frameLines.length + ' parseable frames');
-          for (let fi = 0; fi < Math.min(frameLines.length, 5); fi++) {
-            console.log('KYT Gemini [history DIAG]: RAW FRAME ' + fi + ' (' + frameLines[fi].length + ' chars): ' + frameLines[fi].substring(0, 500));
-            try {
-              const parsed = JSON.parse(frameLines[fi]);
-              const strs = findAllStrings(parsed, 15);
-              const longStrs = strs.filter(s => s.length > 10).slice(0, 8);
-              console.log('KYT Gemini [history DIAG]: Frame ' + fi + ' strings (' + strs.length + ' total, ' + longStrs.length + ' >10ch): ' +
-                JSON.stringify(longStrs.map(s => s.substring(0, 150))));
-            } catch (e) {
-              console.log('KYT Gemini [history DIAG]: Frame ' + fi + ' parse error: ' + e.message);
-            }
-          }
-        } catch (_) {}
+        console.log('KYT Gemini [history]: No messages extracted from', metadata.rpcId,
+          '(' + text.length + ' bytes)');
         return;
       }
 
@@ -1207,7 +1185,7 @@ if (window.KYT_GEMINI_INJECTED) {
 
   // Discovery mode: log ALL fetches for the first 60s to find the real API domain
   const DISCOVERY_START = Date.now();
-  const DISCOVERY_DURATION_MS = 120000; // Extended to 2 min for history-load diagnosis
+  const DISCOVERY_DURATION_MS = 60000;
 
   window.fetch = async function(...args) {
     let [url, options] = args;
@@ -1283,75 +1261,23 @@ if (window.KYT_GEMINI_INJECTED) {
           return response;
         }
 
-        // Discovery: log ALL Google-domain POST RPCs with f.req — request + response details
-        // This runs for 2 minutes and does NOT dedup, so we see every RPC call
+        // Discovery: log unmatched Google-domain f.req RPCs (first 2 min only, deduped)
         if (inDiscoveryPhase && isGoogleDomain(urlString) && bodyString.includes('f.req')) {
-          // Extract RPC details from request body
-          let rpcLabel = 'unknown';
-          let rpcArgPreview = '';
           try {
             const params = new URLSearchParams(bodyString);
             const fReq = params.get('f.req');
             if (fReq) {
               let p = JSON.parse(fReq);
               if (typeof p === 'string') p = JSON.parse(p);
-              if (Array.isArray(p) && Array.isArray(p[0])) {
-                const rpcs = Array.isArray(p[0][0]) ? p[0] : [p[0]];
-                const labels = [];
-                for (const rpc of rpcs) {
-                  if (Array.isArray(rpc) && typeof rpc[0] === 'string') {
-                    labels.push(rpc[0]);
-                    if (typeof rpc[1] === 'string') {
-                      rpcArgPreview += rpc[0] + ': ' + rpc[1].substring(0, 200) + '\n';
-                    }
-                  }
+              if (Array.isArray(p) && Array.isArray(p[0]) && Array.isArray(p[0][0])) {
+                const rpcId = p[0][0][0];
+                if (!discoveredEndpoints.has('rpc:' + rpcId)) {
+                  discoveredEndpoints.add('rpc:' + rpcId);
+                  console.log('KYT Gemini [unmatched RPC]:', rpcId);
                 }
-                rpcLabel = labels.join(', ');
               }
             }
           } catch (_) {}
-
-          console.log('KYT Gemini [RPC discovery REQUEST]:', {
-            url: urlString.substring(0, 120),
-            rpcIds: rpcLabel,
-            bodyLen: bodyString.length,
-            argPreview: rpcArgPreview.substring(0, 400)
-          });
-
-          const response = await originalFetch.apply(this, args);
-          if (response.ok) {
-            try {
-              const clone = response.clone();
-              const respText = await clone.text();
-
-              // Parse frames and find longest text strings
-              let longStrings = [];
-              try {
-                let cleaned = respText;
-                if (cleaned.startsWith(")]}'")) cleaned = cleaned.substring(cleaned.indexOf('\n') + 1);
-                for (const line of cleaned.split('\n')) {
-                  const t = line.trim();
-                  if (!t || /^\d+$/.test(t)) continue;
-                  try {
-                    const strs = findAllStrings(JSON.parse(t), 10);
-                    for (const s of strs) {
-                      if (s.length > 50) longStrings.push(s);
-                    }
-                  } catch (_) {}
-                }
-              } catch (_) {}
-              longStrings = longStrings.slice(0, 5);
-
-              console.log('KYT Gemini [RPC discovery RESPONSE]:', {
-                rpcIds: rpcLabel,
-                responseLen: respText.length,
-                preview: respText.substring(0, 300),
-                longStrings: longStrings.map(s => s.substring(0, 120)),
-                hasConversationContent: longStrings.some(s => s.length > 100)
-              });
-            } catch (_) {}
-          }
-          return response;
         }
       }
       return originalFetch.apply(this, args);
@@ -1447,36 +1373,6 @@ if (window.KYT_GEMINI_INJECTED) {
           console.log('KYT Gemini [XHR endpoint discovery]:', host + path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
         }
       } catch (_) {}
-
-      // Deep debug for batchexecute endpoint
-      if (url.includes('batchexecute') || url.includes('BardChat') || url.includes('assistant.')) {
-        const bodyStr2 = bodyToString(body);
-        if (bodyStr2 && bodyStr2.includes('f.req')) {
-          try {
-            const debugParams = new URLSearchParams(bodyStr2);
-            const fReqRaw = debugParams.get('f.req');
-            // Log the raw f.req value to discover the real array structure
-            console.log('KYT Gemini [f.req raw] (len=' + (fReqRaw?.length || 0) + '):', fReqRaw?.substring(0, 500));
-            // Try parsing and log the structure
-            if (fReqRaw) {
-              let parsed = JSON.parse(fReqRaw);
-              if (typeof parsed === 'string') parsed = JSON.parse(parsed);
-              // Log the top-level shape
-              if (Array.isArray(parsed)) {
-                console.log('KYT Gemini [f.req structure]:', {
-                  outerLen: parsed.length,
-                  outer0Type: Array.isArray(parsed[0]) ? 'array[' + parsed[0].length + ']' : typeof parsed[0],
-                  outer0_0Type: parsed[0] && Array.isArray(parsed[0][0]) ? 'array[' + parsed[0][0].length + ']' : typeof parsed[0]?.[0],
-                  outer0_0_0: typeof parsed[0]?.[0]?.[0] === 'string' ? parsed[0][0][0].substring(0, 80) : typeof parsed[0]?.[0]?.[0],
-                  outer0_0_1Preview: typeof parsed[0]?.[0]?.[1] === 'string' ? parsed[0][0][1].substring(0, 200) : typeof parsed[0]?.[0]?.[1],
-                });
-              }
-            }
-          } catch (e) {
-            console.log('KYT Gemini [f.req parse error]:', e.message);
-          }
-        }
-      }
 
       // Try to process as a Gemini message request
       const bodyString = bodyToString(body);
