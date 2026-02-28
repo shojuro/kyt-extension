@@ -738,6 +738,25 @@ if (window.KYT_GEMINI_INJECTED) {
    * @param {string} bodyString - Request body string
    * @returns {Object|false} Parsed info if history load, false otherwise
    */
+  // Known RPCs that are system-only (polling, analytics, settings) — never carry conversation history
+  const SYSTEM_ONLY_RPCS = new Set([
+    'L5adhe', 'GPRiHf', 'bYBfhb', 'aKUX7e', 'LCWRX',  // Known system RPCs
+    'jQ1olc', 'MkEWBc',  // Settings/config
+    'ESY5D',   // Settings lookup (bard_activity_enabled etc.) — false positive
+    'otAQ7b',  // Init
+    'MaZiqc',  // UI config
+    'aPya6c',  // Session/auth
+    'cYRIkd',  // Locale
+    'maGuAc',  // Feature flags
+    'K4WWud',  // Feature flags
+    'ozz5Z',   // Experiment config
+    'CNgdBe',  // Locale/experiments
+    'qpEbW',   // UI layout
+    'o30O0e',  // User profile
+    'ku4Jyf',  // Locale/experiments
+    'DYBcR',   // Locale
+  ]);
+
   function isGeminiHistoryLoad(urlString, bodyString) {
     if (!isGoogleDomain(urlString)) return false;
     if (!bodyString || typeof bodyString !== 'string') return false;
@@ -757,7 +776,6 @@ if (window.KYT_GEMINI_INJECTED) {
 
       // If this is a StreamGenerate with a user message, it's a message-send (not history)
       if (outer[0] === null && typeof outer[1] === 'string') {
-        // StreamGenerate format — skip if it has a real user message
         try {
           const payload = JSON.parse(outer[1]);
           if (Array.isArray(payload) && Array.isArray(payload[0]) &&
@@ -771,24 +789,32 @@ if (window.KYT_GEMINI_INJECTED) {
       if (!Array.isArray(outer[0])) return false;
 
       const rpcs = outer[0];
-      // Look for RPCs that carry a conversation ID (c_...) in their args
+
       for (let i = 0; i < rpcs.length; i++) {
         if (!Array.isArray(rpcs[i])) continue;
         const rpcId = rpcs[i][0];
         const rpcArgs = rpcs[i][1];
-
         if (typeof rpcArgs !== 'string') continue;
 
-        // Check if args contain a conversation ID pattern
-        if (rpcArgs.includes('"c_') || rpcArgs.includes("'c_")) {
-          // Verify this isn't a known system-only RPC
-          const systemRpcIds = ['L5adhe', 'GPRiHf', 'bYBfhb', 'aKUX7e', 'LCWRX'];
-          if (systemRpcIds.includes(rpcId)) continue;
+        // Skip known system-only RPCs
+        if (SYSTEM_ONLY_RPCS.has(rpcId)) continue;
+
+        // Look for conversation-ID-like patterns in args:
+        //   c_<hex> (confirmed Gemini format), or long hex-only strings (possible alternative format)
+        const convIdMatch = rpcArgs.match(/"(c_[0-9a-f]{8,})"/) ||     // c_ + hex (confirmed format)
+                            rpcArgs.match(/"([0-9a-f]{20,})"/) ;       // long hex IDs (fallback)
+
+        if (convIdMatch) {
+          // Additional check: args should be relatively short (conversation load, not a message payload)
+          // Message-send RPCs have long args (user message text); history-load RPCs have short args (just IDs)
+          const argsLen = rpcArgs.length;
+          // If args are very long (>2000 chars), it's likely a message send, not a history load
+          if (argsLen > 2000) continue;
 
           return {
             rpcId: rpcId,
             rpcIndex: i,
-            conversationIdHint: (rpcArgs.match(/"(c_[^"]+)"/) || [])[1] || null
+            conversationIdHint: convIdMatch[1] || null
           };
         }
       }
@@ -834,10 +860,10 @@ if (window.KYT_GEMINI_INJECTED) {
 
       try {
         const parsed = JSON.parse(trimmed);
-        // Collect all strings > 20 chars from this frame (likely message content)
+        // Collect all strings > 10 chars from this frame (possible message content)
         const strings = findAllStrings(parsed, 15);
         for (const s of strings) {
-          if (s.length > 20) {
+          if (s.length > 10) {
             allStringsFound.push(s);
           }
         }
@@ -899,7 +925,33 @@ if (window.KYT_GEMINI_INJECTED) {
       const messages = extractConversationMessages(text);
 
       if (messages.length === 0) {
-        console.log('KYT Gemini [history]: No messages found in history response');
+        // Diagnostic: log what we got so we can tune the parser
+        console.log('KYT Gemini [history]: No messages found in response from RPC:', metadata.rpcId, {
+          responseLen: text.length,
+          preview: text.substring(0, 500),
+          hasAntiXssi: text.startsWith(")]}'"),
+        });
+        // Also log the parsed frames for debugging
+        try {
+          let cleaned = text;
+          if (cleaned.startsWith(")]}'")) cleaned = cleaned.substring(cleaned.indexOf('\n') + 1);
+          const frameLines = cleaned.split('\n').filter(l => l.trim() && !/^\d+$/.test(l.trim()));
+          console.log('KYT Gemini [history]: Frames:', frameLines.length, 'parseable lines');
+          for (let fi = 0; fi < Math.min(frameLines.length, 3); fi++) {
+            try {
+              const parsed = JSON.parse(frameLines[fi]);
+              const strs = findAllStrings(parsed, 15);
+              const longStrs = strs.filter(s => s.length > 10).slice(0, 5);
+              console.log(`KYT Gemini [history]: Frame ${fi}:`, {
+                topLevelLen: Array.isArray(parsed) ? parsed.length : 'not-array',
+                allStrings: strs.length,
+                longStrings: longStrs.map(s => s.substring(0, 120)),
+              });
+            } catch (_) {
+              console.log(`KYT Gemini [history]: Frame ${fi}: unparseable (${frameLines[fi].substring(0, 100)})`);
+            }
+          }
+        } catch (_) {}
         return;
       }
 
@@ -1060,7 +1112,7 @@ if (window.KYT_GEMINI_INJECTED) {
 
   // Discovery mode: log ALL fetches for the first 60s to find the real API domain
   const DISCOVERY_START = Date.now();
-  const DISCOVERY_DURATION_MS = 60000;
+  const DISCOVERY_DURATION_MS = 120000; // Extended to 2 min for history-load diagnosis
 
   window.fetch = async function(...args) {
     let [url, options] = args;
@@ -1136,31 +1188,71 @@ if (window.KYT_GEMINI_INJECTED) {
           return response;
         }
 
-        // Discovery: log response previews for Google-domain POST RPCs during first 60s
+        // Discovery: log ALL Google-domain POST RPCs with f.req — request + response details
+        // This runs for 2 minutes and does NOT dedup, so we see every RPC call
         if (inDiscoveryPhase && isGoogleDomain(urlString) && bodyString.includes('f.req')) {
+          // Extract RPC details from request body
+          let rpcLabel = 'unknown';
+          let rpcArgPreview = '';
+          try {
+            const params = new URLSearchParams(bodyString);
+            const fReq = params.get('f.req');
+            if (fReq) {
+              let p = JSON.parse(fReq);
+              if (typeof p === 'string') p = JSON.parse(p);
+              if (Array.isArray(p) && Array.isArray(p[0])) {
+                const rpcs = Array.isArray(p[0][0]) ? p[0] : [p[0]];
+                const labels = [];
+                for (const rpc of rpcs) {
+                  if (Array.isArray(rpc) && typeof rpc[0] === 'string') {
+                    labels.push(rpc[0]);
+                    if (typeof rpc[1] === 'string') {
+                      rpcArgPreview += rpc[0] + ': ' + rpc[1].substring(0, 200) + '\n';
+                    }
+                  }
+                }
+                rpcLabel = labels.join(', ');
+              }
+            }
+          } catch (_) {}
+
+          console.log('KYT Gemini [RPC discovery REQUEST]:', {
+            url: urlString.substring(0, 120),
+            rpcIds: rpcLabel,
+            bodyLen: bodyString.length,
+            argPreview: rpcArgPreview.substring(0, 400)
+          });
+
           const response = await originalFetch.apply(this, args);
           if (response.ok) {
             try {
               const clone = response.clone();
               const respText = await clone.text();
-              // Extract RPC ID from request body for labeling
-              let rpcLabel = 'unknown';
+
+              // Parse frames and find longest text strings
+              let longStrings = [];
               try {
-                const params = new URLSearchParams(bodyString);
-                const fReq = params.get('f.req');
-                if (fReq) {
-                  let p = JSON.parse(fReq);
-                  if (typeof p === 'string') p = JSON.parse(p);
-                  if (Array.isArray(p) && Array.isArray(p[0]) && Array.isArray(p[0][0])) {
-                    rpcLabel = p[0][0][0] || 'unknown';
-                  }
+                let cleaned = respText;
+                if (cleaned.startsWith(")]}'")) cleaned = cleaned.substring(cleaned.indexOf('\n') + 1);
+                for (const line of cleaned.split('\n')) {
+                  const t = line.trim();
+                  if (!t || /^\d+$/.test(t)) continue;
+                  try {
+                    const strs = findAllStrings(JSON.parse(t), 10);
+                    for (const s of strs) {
+                      if (s.length > 50) longStrings.push(s);
+                    }
+                  } catch (_) {}
                 }
               } catch (_) {}
-              console.log('KYT Gemini [response discovery]:', {
-                url: urlString.substring(0, 100),
-                rpcId: rpcLabel,
+              longStrings = longStrings.slice(0, 5);
+
+              console.log('KYT Gemini [RPC discovery RESPONSE]:', {
+                rpcIds: rpcLabel,
                 responseLen: respText.length,
-                preview: respText.substring(0, 500)
+                preview: respText.substring(0, 300),
+                longStrings: longStrings.map(s => s.substring(0, 120)),
+                hasConversationContent: longStrings.some(s => s.length > 100)
               });
             } catch (_) {}
           }
@@ -1364,12 +1456,30 @@ if (window.KYT_GEMINI_INJECTED) {
           enabled: true,
           status: 'Context injection ENABLED'
         },
+        historyCapture: {
+          capturedConversations: Array.from(_capturedConversationIds),
+          initPhaseActive: (Date.now() - HISTORY_CAPTURE_START) < HISTORY_CAPTURE_INIT_MS,
+          discoveryPhaseActive: (Date.now() - DISCOVERY_START) < DISCOVERY_DURATION_MS,
+          discoveredEndpoints: Array.from(discoveredEndpoints).slice(0, 30)
+        },
         platform: 'gemini',
         timestamp: Date.now()
       };
     },
     resetStats: function() {
       window.KYT_Deduplicator.resetStats();
+    },
+    // Manual diagnostic: test if a response text contains extractable messages
+    testExtract: function(responseText) {
+      const messages = extractConversationMessages(responseText);
+      console.log('KYT Gemini [manual extract]:', messages.length, 'messages found');
+      messages.forEach((m, i) => console.log(`  [${i}] ${m.role}: ${m.content.substring(0, 100)}`));
+      return messages;
+    },
+    // Manual diagnostic: reset captured conversation set (allows re-capture)
+    resetHistoryCapture: function() {
+      _capturedConversationIds.clear();
+      console.log('KYT Gemini: History capture state reset');
     }
   };
 

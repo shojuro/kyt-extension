@@ -259,6 +259,15 @@ describe('normalizePlatform for Gemini', () => {
 
 // Re-implement the history-load detection logic for unit testing
 // (Original lives inside content_test.js IIFE, not importable)
+// MUST stay in sync with content_test.js isGeminiHistoryLoad()
+const SYSTEM_ONLY_RPCS = new Set([
+  'L5adhe', 'GPRiHf', 'bYBfhb', 'aKUX7e', 'LCWRX',
+  'jQ1olc', 'MkEWBc',
+  'ESY5D', 'otAQ7b', 'MaZiqc', 'aPya6c', 'cYRIkd',
+  'maGuAc', 'K4WWud', 'ozz5Z', 'CNgdBe', 'qpEbW',
+  'o30O0e', 'ku4Jyf', 'DYBcR',
+]);
+
 function isGeminiHistoryLoad(urlString, bodyString) {
   const GOOGLE_DOMAINS = ['gemini.google.com', '.google.com', '.googleapis.com'];
   const isGoogleDomain = (url) => GOOGLE_DOMAINS.some(d => url.includes(d));
@@ -298,12 +307,18 @@ function isGeminiHistoryLoad(urlString, bodyString) {
       const rpcId = rpcs[i][0];
       const rpcArgs = rpcs[i][1];
       if (typeof rpcArgs !== 'string') continue;
-      if (rpcArgs.includes('"c_') || rpcArgs.includes("'c_")) {
-        const systemRpcIds = ['L5adhe', 'GPRiHf', 'bYBfhb', 'aKUX7e', 'LCWRX'];
-        if (systemRpcIds.includes(rpcId)) continue;
+
+      if (SYSTEM_ONLY_RPCS.has(rpcId)) continue;
+
+      // Match conversation-ID-like patterns
+      const convIdMatch = rpcArgs.match(/"(c_[0-9a-f]{8,})"/) ||
+                          rpcArgs.match(/"([0-9a-f]{20,})"/);
+
+      if (convIdMatch) {
+        if (rpcArgs.length > 2000) continue;
         return {
           rpcId, rpcIndex: i,
-          conversationIdHint: (rpcArgs.match(/"(c_[^"]+)"/) || [])[1] || null
+          conversationIdHint: convIdMatch[1] || null
         };
       }
     }
@@ -327,25 +342,31 @@ function makeRpcBody(rpcId, argsString) {
 describe('isGeminiHistoryLoad', () => {
   const geminiUrl = 'https://gemini.google.com/_/BardChatUi/data/batchexecute';
 
-  it('detects RPC with conversation ID', () => {
-    const body = makeRpcBody('SomeRpc', '["c_abc123","param2"]');
+  it('detects RPC with c_ hex conversation ID (real Gemini format)', () => {
+    const body = makeRpcBody('hNvQHb', '["c_d256defe4aabd853",10,null,1,[1],[4],null,1]');
     const result = isGeminiHistoryLoad(geminiUrl, body);
     expect(result).toBeTruthy();
-    expect(result.rpcId).toBe('SomeRpc');
-    expect(result.conversationIdHint).toBe('c_abc123');
+    expect(result.rpcId).toBe('hNvQHb');
+    expect(result.conversationIdHint).toBe('c_d256defe4aabd853');
   });
 
   it('extracts conversation ID from nested args', () => {
-    const body = makeRpcBody('LoadConv', '[null,null,"c_xyz789_def"]');
+    const body = makeRpcBody('LoadConv', '[null,null,"c_a1b2c3d4e5f6a7b8"]');
     const result = isGeminiHistoryLoad(geminiUrl, body);
     expect(result).toBeTruthy();
-    expect(result.conversationIdHint).toBe('c_xyz789_def');
+    expect(result.conversationIdHint).toBe('c_a1b2c3d4e5f6a7b8');
   });
 
-  it('rejects known system RPCs even with c_ in args', () => {
-    const body = makeRpcBody('L5adhe', '["c_something"]');
+  it('rejects known system RPCs even with c_ hex in args', () => {
+    const body = makeRpcBody('L5adhe', '["c_abcdef0123456789"]');
     const result = isGeminiHistoryLoad(geminiUrl, body);
     expect(result).toBeFalsy();
+  });
+
+  it('rejects known system RPCs (jQ1olc, MkEWBc, ESY5D)', () => {
+    expect(isGeminiHistoryLoad(geminiUrl, makeRpcBody('jQ1olc', '["c_abcdef12"]'))).toBeFalsy();
+    expect(isGeminiHistoryLoad(geminiUrl, makeRpcBody('MkEWBc', '["c_abcdef12"]'))).toBeFalsy();
+    expect(isGeminiHistoryLoad(geminiUrl, makeRpcBody('ESY5D', '[[["bard_activity_enabled"]]]'))).toBeFalsy();
   });
 
   it('rejects StreamGenerate with user message (message-send)', () => {
@@ -371,8 +392,8 @@ describe('isGeminiHistoryLoad', () => {
     expect(result).toBeFalsy();
   });
 
-  it('rejects RPC args without conversation ID', () => {
-    const body = makeRpcBody('SomeRpc', '["no_conv_id","param2"]');
+  it('rejects RPC args without conversation ID (short strings)', () => {
+    const body = makeRpcBody('SomeRpc', '["hi","x"]');
     const result = isGeminiHistoryLoad(geminiUrl, body);
     expect(result).toBeFalsy();
   });
@@ -383,21 +404,45 @@ describe('isGeminiHistoryLoad', () => {
   });
 
   it('matches URL-based detection for /conversation paths', () => {
-    // RPC without c_ in args but URL contains /conversation
-    const body = makeRpcBody('SomeRpc', '["no_cid"]');
+    // RPC without matching ID in args but URL contains /conversation
+    const body = makeRpcBody('SomeRpc', '["short"]');
     const result = isGeminiHistoryLoad('https://gemini.google.com/conversation/load', body);
     expect(result).toBeTruthy();
     expect(result.rpcId).toBe('url-match');
   });
 
   it('handles double-encoded f.req', () => {
-    const rpcs = [['LoadConv', '["c_double_enc"]', null, 'generic']];
+    const rpcs = [['LoadConv', '["c_abcdef0123456789"]', null, 'generic']];
     const outer = [rpcs];
     const params = new URLSearchParams();
     params.set('f.req', JSON.stringify(JSON.stringify(outer)));
     const result = isGeminiHistoryLoad(geminiUrl, params.toString());
     expect(result).toBeTruthy();
-    expect(result.conversationIdHint).toBe('c_double_enc');
+    expect(result.conversationIdHint).toBe('c_abcdef0123456789');
+  });
+
+  it('detects hex conversation IDs (non c_ prefix)', () => {
+    // Gemini may use hex/UUID-style conversation IDs
+    const hexId = 'a1b2c3d4e5f6a7b8c9d0e1f2';
+    const body = makeRpcBody('GetConv', `["${hexId}"]`);
+    const result = isGeminiHistoryLoad(geminiUrl, body);
+    expect(result).toBeTruthy();
+    expect(result.conversationIdHint).toBe(hexId);
+  });
+
+  it('rejects short non-hex alphanumeric strings (settings, not conv IDs)', () => {
+    // "bard_activity_enabled" is 21 chars but alphanumeric with underscores, not hex
+    const body = makeRpcBody('SomeRpc', '[[["bard_activity_enabled"]]]');
+    const result = isGeminiHistoryLoad(geminiUrl, body);
+    expect(result).toBeFalsy();
+  });
+
+  it('rejects RPCs with very long args (likely message-send)', () => {
+    // A message-send would have long text content in the args
+    const longMessage = 'a'.repeat(3000);
+    const body = makeRpcBody('SomeRpc', `["c_abcdef0123456789","${longMessage}"]`);
+    const result = isGeminiHistoryLoad(geminiUrl, body);
+    expect(result).toBeFalsy();
   });
 });
 
@@ -439,7 +484,7 @@ function extractConversationMessages(responseText) {
       const parsed = JSON.parse(trimmed);
       const strings = findAllStrings(parsed, 15);
       for (const s of strings) {
-        if (s.length > 20) {
+        if (s.length > 10) {
           allStringsFound.push(s);
         }
       }
