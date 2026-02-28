@@ -155,7 +155,6 @@ phase0_*.mjs
 check_message_count.mjs
 
 # Local/personal files
-CLAUDE.md
 gravity_results.csv
 test_output.txt
 
