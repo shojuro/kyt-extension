@@ -795,6 +795,23 @@ if (window.KYT_GEMINI_INJECTED) {
         }
       } catch (_) {}
 
+      // Deep debug for batchexecute endpoint
+      if (url.includes('batchexecute') || url.includes('BardChat') || url.includes('assistant.')) {
+        const bodyType2 = body?.constructor?.name || typeof body;
+        const bodyStr2 = bodyToString(body);
+        const bodyPreview = bodyStr2 ? bodyStr2.substring(0, 200) : '(null - bodyToString failed)';
+        const hasFReq2 = bodyStr2 ? bodyStr2.includes('f.req') : false;
+        console.log('KYT Gemini [XHR batchexecute debug]:', {
+          url: url.substring(0, 150),
+          bodyType: bodyType2,
+          bodyToStringOk: bodyStr2 !== null,
+          bodyLen: bodyStr2?.length,
+          hasFReq: hasFReq2,
+          bodyPreview: bodyPreview,
+          isGoogleDomain: isGoogleDomain(url),
+        });
+      }
+
       // Try to process as a Gemini message request
       const bodyString = bodyToString(body);
       if (bodyString && isGeminiMessageRequest(url, bodyString)) {
