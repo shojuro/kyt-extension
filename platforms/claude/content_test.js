@@ -937,6 +937,171 @@ async function captureClaudeAssistantResponse(response, metadata) {
   };
 
   console.log('🟢 KYT Claude: Fetch wrapper installed - ready to capture messages');
-  console.log('ℹ️ Use window.KYT_Deduplicator.getStats() to check deduplication stats');
-  console.log('ℹ️ Use window.KYT_Claude_Health.getStats() for full health check');
+
+  // === SSR CONVERSATION CAPTURE ===
+  // Claude uses SSR for conversation pages — data is embedded in HTML,
+  // not fetched via client-side API. The fetch wrapper only catches
+  // user-initiated actions (POST /completion). For mobile-synced
+  // conversations opened on web, we must extract data from the page.
+
+  // Cache org_id once discovered — used for self-fetch fallback
+  let _cachedOrgId = null;
+
+  /**
+   * Discover org_id from page data or API responses.
+   * Claude's API URLs: /api/organizations/{org_id}/chat_conversations/{id}
+   */
+  function discoverOrgId() {
+    if (_cachedOrgId) return _cachedOrgId;
+
+    // Method 1: __NEXT_DATA__ page props
+    try {
+      const nd = window.__NEXT_DATA__;
+      const id = nd?.props?.pageProps?.organizationId
+              || nd?.props?.pageProps?.orgId
+              || nd?.query?.organizationId;
+      if (id) { _cachedOrgId = id; return id; }
+    } catch (_) {}
+
+    // Method 2: Scan meta tags
+    try {
+      const meta = document.querySelector('meta[name="organization-id"]');
+      if (meta?.content) { _cachedOrgId = meta.content; return meta.content; }
+    } catch (_) {}
+
+    // Method 3: Cookie (Claude sets lastActiveOrg)
+    try {
+      const m = document.cookie.match(/lastActiveOrg=([^;]+)/);
+      if (m) { _cachedOrgId = m[1]; return m[1]; }
+    } catch (_) {}
+
+    // Method 4: Extract from any visible API link on the page
+    try {
+      const links = document.querySelectorAll('a[href*="/organizations/"]');
+      for (const link of links) {
+        const m = link.href.match(/\/organizations\/([a-f0-9-]+)/);
+        if (m) { _cachedOrgId = m[1]; return m[1]; }
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  /**
+   * Recursively search an object tree for a node with chat_messages array.
+   */
+  function findConversationData(obj, depth) {
+    if (depth > 5 || !obj || typeof obj !== 'object') return null;
+    if (Array.isArray(obj.chat_messages)) return obj;
+    for (const key of Object.keys(obj)) {
+      const result = findConversationData(obj[key], depth + 1);
+      if (result) return result;
+    }
+    return null;
+  }
+
+  /**
+   * Attempt to capture conversation data from SSR-embedded sources.
+   * Falls back to self-fetching the conversation via API.
+   */
+  function attemptSSRCapture() {
+    const conversationMatch = window.location.pathname.match(/\/chat\/([a-f0-9-]+)/);
+    if (!conversationMatch) return;
+    const conversationId = conversationMatch[1];
+
+    console.log('🔍 KYT Claude: Conversation page detected, checking for SSR data...');
+
+    // Method 1: __NEXT_DATA__ global (Next.js SSR)
+    try {
+      const nextData = window.__NEXT_DATA__;
+      if (nextData) {
+        const conversation = findConversationData(nextData, 0);
+        if (conversation) {
+          console.log('🎯 KYT Claude: Found conversation in __NEXT_DATA__');
+          processClaudeConversation(conversation);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ KYT Claude: __NEXT_DATA__ parse error:', e.message);
+    }
+
+    // Method 2: Scan <script type="application/json"> tags
+    try {
+      const jsonScripts = document.querySelectorAll('script[type="application/json"]');
+      for (const script of jsonScripts) {
+        try {
+          const data = JSON.parse(script.textContent);
+          const conversation = findConversationData(data, 0);
+          if (conversation) {
+            console.log('🎯 KYT Claude: Found conversation in embedded JSON script');
+            processClaudeConversation(conversation);
+            return;
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    // Method 3: Scan all <script> tags for inline chat_messages data
+    try {
+      const allScripts = document.querySelectorAll('script:not([src])');
+      for (const script of allScripts) {
+        const text = script.textContent || '';
+        if (!text.includes('chat_messages')) continue;
+        // Try to extract JSON from script content (e.g., self.__next_f.push payloads)
+        const jsonMatches = text.match(/\{[^{}]*"chat_messages"\s*:\s*\[[\s\S]*?\]\s*[^{}]*\}/g);
+        if (jsonMatches) {
+          for (const jsonStr of jsonMatches) {
+            try {
+              const data = JSON.parse(jsonStr);
+              if (data.chat_messages) {
+                console.log('🎯 KYT Claude: Found conversation in inline script');
+                processClaudeConversation(data);
+                return;
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+
+    // Method 4: Self-fetch the conversation via API
+    // Our fetch wrapper will intercept the response and process it automatically
+    const orgId = discoverOrgId();
+    if (orgId) {
+      console.log('🔍 KYT Claude: Self-fetching conversation via API...');
+      originalFetch(`/api/organizations/${orgId}/chat_conversations/${conversationId}`)
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.clone().json();
+        })
+        .then(json => {
+          if (json?.chat_messages) {
+            console.log('🎯 KYT Claude: Self-fetch successful, processing conversation');
+            processClaudeConversation(json);
+          }
+        })
+        .catch(e => console.warn('⚠️ KYT Claude: Self-fetch failed:', e.message));
+    } else {
+      console.log('⚠️ KYT Claude: No org_id found — cannot self-fetch conversation');
+      console.log('   Checked: __NEXT_DATA__, meta tags, cookies, page links');
+    }
+  }
+
+  // Run SSR capture after DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(attemptSSRCapture, 500));
+  } else {
+    setTimeout(attemptSSRCapture, 500);
+  }
+
+  // Intercept SPA navigation (Next.js client-side routing)
+  const _origPushState = history.pushState;
+  history.pushState = function(...args) {
+    _origPushState.apply(this, args);
+    setTimeout(attemptSSRCapture, 1000);
+  };
+  window.addEventListener('popstate', () => setTimeout(attemptSSRCapture, 1000));
+
+  console.log('🟢 KYT Claude: SSR capture + SPA navigation listener installed');
 }
