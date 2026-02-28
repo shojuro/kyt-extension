@@ -1041,7 +1041,11 @@ if (window.KYT_GEMINI_INJECTED) {
       console.log(`KYT Gemini [history]: Found ${messages.length} messages in conversation ${conversationId} (init: ${isInitPhase})`);
 
       let captured = 0;
-      for (const msg of messages) {
+      // Space timestamps 1s apart to avoid unique constraint collisions
+      // (user_id, conversation_id, platform, start_timestamp)
+      const baseTimestamp = Date.now() - messages.length * 1000;
+      for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
         const cleanContent = stripInjectionBlock(msg.content);
         if (!cleanContent || cleanContent.length < 2) continue;
 
@@ -1050,7 +1054,7 @@ if (window.KYT_GEMINI_INJECTED) {
           role: msg.role,
           conversationId: conversationId,
           model: 'gemini',
-          timestamp: Date.now(),
+          timestamp: baseTimestamp + i * 1000,
           messageId: `msg_history_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           platform: 'gemini',
           source: isInitPhase ? 'initial-load' : 'history-load'

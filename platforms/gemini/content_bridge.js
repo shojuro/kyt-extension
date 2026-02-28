@@ -65,12 +65,13 @@ async function captureMessage(messageData) {
   const queuedMessage = {
     id: msgId,
     messageId: msgId,
-    timestamp: Date.now(),
+    timestamp: messageData.timestamp || Date.now(),
     platform: messageData.platform || 'gemini',
     content: messageData.content,
     role: messageData.role,
     conversationId: messageData.conversationId,
     model: messageData.model,
+    source: messageData.source,
     retryCount: 0
   };
 
