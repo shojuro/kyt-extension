@@ -265,6 +265,30 @@ describe('Demo Query: "car preference"', () => {
     expect(category).not.toContain('why');
   });
 
+  it('should strip "of all time" qualifier from category', () => {
+    expect(detectPreferenceQuery('What is my favorite movie of all time?')).toBe('movie');
+    expect(detectPreferenceQuery('What is my favorite movie of all times?')).toBe('movie');
+  });
+
+  it('should strip "ever" qualifier from category', () => {
+    expect(detectPreferenceQuery('What is my favorite movie ever?')).toBe('movie');
+  });
+
+  it('should strip "in the world" and similar superlative qualifiers', () => {
+    expect(detectPreferenceQuery('What is my favorite car in the world?')).toBe('car');
+    expect(detectPreferenceQuery('What is my favorite song in the universe?')).toBe('song');
+    expect(detectPreferenceQuery('What is my favorite band on earth?')).toBe('band');
+    expect(detectPreferenceQuery('What is my favorite book in history?')).toBe('book');
+  });
+
+  it('should strip qualifiers combined with "and why"', () => {
+    expect(detectPreferenceQuery('What is my favorite movie of all time and why?')).toBe('movie');
+  });
+
+  it('should still work with no qualifiers', () => {
+    expect(detectPreferenceQuery('What is my favorite movie?')).toBe('movie');
+  });
+
   it('should NOT detect non-preference queries as preferences', () => {
     expect(detectPreferenceQuery('how do I change my car oil')).toBeNull();
     expect(detectPreferenceQuery('what happened to my car')).toBeNull();

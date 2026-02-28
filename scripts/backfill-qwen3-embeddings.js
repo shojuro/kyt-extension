@@ -2,339 +2,249 @@
 /**
  * Backfill Qwen3 Embeddings Script
  *
- * Re-embeds all messages with NULL embeddings using Qwen3-Embedding-8B (4096d)
- * via HuggingFace Inference Providers (Nebius backend).
+ * Re-embeds all messages/chat_turns with NULL embeddings using Qwen3-Embedding-8B
+ * via HuggingFace Inference Providers (Scaleway backend).
+ *
+ * CRITICAL: Produces 1024d Matryoshka-truncated + L2-normalized vectors,
+ * matching the extension's browser-sync.js generateEmbeddings() output.
  *
  * Usage:
- *   SUPABASE_URL=https://xxx.supabase.co \
- *   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key \
- *   HUGGINGFACE_API_KEY=hf_... \
  *   node scripts/backfill-qwen3-embeddings.js
+ *   node scripts/backfill-qwen3-embeddings.js --dry-run
+ *   node scripts/backfill-qwen3-embeddings.js --batch-size 20 --limit 50
+ *   node scripts/backfill-qwen3-embeddings.js --table messages
+ *   node scripts/backfill-qwen3-embeddings.js --table chat_turns
  *
- * Options:
- *   --dry-run       Preview without making changes
- *   --batch-size N  Process N messages per batch (default: 10)
- *   --limit N       Process only N total messages (default: all)
- *
- * Requires: npm install @huggingface/inference
+ * Environment (loaded from .env via dotenv):
+ *   SUPABASE_URL, SUPABASE_SERVICE_KEY, HUGGINGFACE_API_KEY
  */
 
-import { InferenceClient } from '@huggingface/inference';
+import 'dotenv/config';
+
+// ── Config ──────────────────────────────────────────────────────────────────
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const HF_API_KEY = process.env.HUGGINGFACE_API_KEY;
+
+const EMBEDDING_DIMS = 1024;  // Matryoshka truncation target (matches extension)
+const HF_ROUTER_URL = 'https://router.huggingface.co/scaleway/v1/embeddings';
+const HF_MODEL = 'qwen3-embedding-8b';
 
 // Parse CLI args
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const BATCH_SIZE = parseInt(args[args.indexOf('--batch-size') + 1]) || 10;
 const LIMIT = args.includes('--limit') ? parseInt(args[args.indexOf('--limit') + 1]) : null;
+const TABLE_FILTER = args.includes('--table') ? args[args.indexOf('--table') + 1] : null;
 
-// Validate environment
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !HUGGINGFACE_API_KEY) {
+// Validate
+if (!SUPABASE_URL || !SUPABASE_KEY || !HF_API_KEY) {
   console.error('Missing required environment variables:');
-  console.error('   SUPABASE_URL:', SUPABASE_URL ? 'Set' : 'Missing');
-  console.error('   SUPABASE_SERVICE_ROLE_KEY:', SUPABASE_SERVICE_ROLE_KEY ? 'Set' : 'Missing');
-  console.error('   HUGGINGFACE_API_KEY:', HUGGINGFACE_API_KEY ? 'Set' : 'Missing');
+  console.error('   SUPABASE_URL:', SUPABASE_URL ? 'OK' : 'MISSING');
+  console.error('   SUPABASE_SERVICE_KEY:', SUPABASE_KEY ? 'OK' : 'MISSING');
+  console.error('   HUGGINGFACE_API_KEY:', HF_API_KEY ? 'OK' : 'MISSING');
+  console.error('\nEnsure .env exists in project root.');
   process.exit(1);
 }
 
-// Initialize HuggingFace Inference Client with Nebius provider
-const hfClient = new InferenceClient(HUGGINGFACE_API_KEY);
-
-console.log('Qwen3 Embedding Backfill Script');
-console.log(`   Supabase URL: ${SUPABASE_URL}`);
+console.log('Qwen3 Embedding Backfill (1024d Matryoshka)');
+console.log(`   Supabase: ${SUPABASE_URL}`);
 console.log(`   Batch size: ${BATCH_SIZE}`);
 console.log(`   Limit: ${LIMIT || 'all'}`);
+console.log(`   Table filter: ${TABLE_FILTER || 'both (messages + chat_turns)'}`);
 console.log(`   Dry run: ${DRY_RUN}`);
-console.log(`   Provider: nebius (Qwen3-Embedding-8B 4096d)`);
+console.log(`   Endpoint: ${HF_ROUTER_URL}`);
+console.log(`   Output dims: ${EMBEDDING_DIMS}`);
 console.log('');
 
-/**
- * Fetch messages with NULL embeddings from messages table
- */
-async function fetchMessagesWithNullEmbeddings(offset = 0, limit = 100) {
-  const url = `${SUPABASE_URL}/rest/v1/messages?embedding=is.null&select=id,message_id,content&order=created_at.asc&offset=${offset}&limit=${limit}`;
+// ── Matryoshka truncation (matches browser-sync.js) ─────────────────────
 
-  const response = await fetch(url, {
-    headers: {
-      'apikey': SUPABASE_SERVICE_ROLE_KEY,
-      'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch messages: ${response.status}`);
-  }
-
-  return response.json();
+function truncateAndNormalize(embedding, dims) {
+  const truncated = embedding.slice(0, dims);
+  const norm = Math.sqrt(truncated.reduce((sum, val) => sum + val * val, 0));
+  if (norm === 0) return truncated;
+  return truncated.map(val => val / norm);
 }
 
-/**
- * Fetch chat_turns with NULL embeddings
- */
-async function fetchTurnsWithNullEmbeddings(offset = 0, limit = 100) {
-  const url = `${SUPABASE_URL}/rest/v1/chat_turns?embedding=is.null&select=id,content&order=created_at.asc&offset=${offset}&limit=${limit}`;
+// ── Supabase helpers ────────────────────────────────────────────────────
 
-  const response = await fetch(url, {
-    headers: {
-      'apikey': SUPABASE_SERVICE_ROLE_KEY,
-      'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
-    }
-  });
+const supaHeaders = {
+  'apikey': SUPABASE_KEY,
+  'Authorization': `Bearer ${SUPABASE_KEY}`,
+  'Content-Type': 'application/json',
+};
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch chat_turns: ${response.status}`);
-  }
+async function fetchNullEmbeddings(table, offset, limit) {
+  const idCol = table === 'messages' ? 'message_id' : 'id';
+  const url = `${SUPABASE_URL}/rest/v1/${table}?embedding=is.null&select=${idCol},content&order=created_at.asc&offset=${offset}&limit=${limit}`;
 
-  return response.json();
+  const resp = await fetch(url, { headers: supaHeaders });
+  if (!resp.ok) throw new Error(`Query ${table} failed: ${resp.status} ${await resp.text()}`);
+  return resp.json();
 }
 
-/**
- * Generate embeddings using Qwen3-Embedding-8B via HuggingFace Inference Providers
- * Uses Nebius as the backend provider for Qwen3 models
- */
-async function generateQwen3Embeddings(texts) {
-  const embeddings = [];
-
-  // Process texts one at a time (featureExtraction doesn't support batch in same way)
-  for (const text of texts) {
-    const result = await hfClient.featureExtraction({
-      provider: 'nebius',
-      model: 'Qwen/Qwen3-Embedding-8B',
-      inputs: text || ' '  // Use space for empty strings to avoid API errors
-    });
-
-    // Result is [[...4096 floats...]] - nested array (batch wrapper)
-    // We need to extract result[0] to get the actual embedding vector
-    if (Array.isArray(result) && Array.isArray(result[0])) {
-      embeddings.push(result[0]);  // Unwrap the batch wrapper
-    } else if (Array.isArray(result)) {
-      embeddings.push(result);  // Already flat array
-    } else {
-      console.warn(`   Warning: Unexpected embedding format for text`);
-      embeddings.push(result);
-    }
-  }
-
-  // Validate dimensions
-  if (embeddings.length > 0 && Array.isArray(embeddings[0])) {
-    const dim = embeddings[0].length;
-    if (dim !== 4096) {
-      console.warn(`   Warning: Expected 4096d, got ${dim}d`);
-    }
-  }
-
-  return embeddings;
-}
-
-/**
- * Update message embeddings in database
- */
-async function updateMessageEmbedding(messageId, embedding) {
+async function patchEmbedding(table, id, embedding) {
   if (DRY_RUN) {
-    const dim = Array.isArray(embedding) ? embedding.length : 'unknown';
-    console.log(`   [DRY RUN] Would update message ${messageId} with ${dim}d embedding`);
+    console.log(`   [DRY RUN] Would patch ${table} ${id.substring(0, 20)}... (${embedding.length}d)`);
     return true;
   }
 
-  const url = `${SUPABASE_URL}/rest/v1/messages?message_id=eq.${messageId}`;
+  const idCol = table === 'messages' ? 'message_id' : 'id';
+  const url = `${SUPABASE_URL}/rest/v1/${table}?${idCol}=eq.${encodeURIComponent(id)}`;
 
-  const response = await fetch(url, {
+  const resp = await fetch(url, {
     method: 'PATCH',
-    headers: {
-      'apikey': SUPABASE_SERVICE_ROLE_KEY,
-      'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=minimal'
-    },
-    body: JSON.stringify({ embedding })
+    headers: { ...supaHeaders, 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ embedding }),
   });
 
-  if (!response.ok) {
-    const error = await response.text();
-    console.error(`   Failed to update message ${messageId}: ${error}`);
+  if (!resp.ok) {
+    console.error(`   PATCH failed for ${id}: ${resp.status}`);
     return false;
   }
-
   return true;
 }
 
-/**
- * Update chat_turn embeddings in database
- */
-async function updateTurnEmbedding(turnId, embedding) {
-  if (DRY_RUN) {
-    const dim = Array.isArray(embedding) ? embedding.length : 'unknown';
-    console.log(`   [DRY RUN] Would update turn ${turnId} with ${dim}d embedding`);
-    return true;
-  }
+// ── Embedding generation (matches extension's Scaleway path) ────────────
 
-  const url = `${SUPABASE_URL}/rest/v1/chat_turns?id=eq.${turnId}`;
-
-  const response = await fetch(url, {
-    method: 'PATCH',
+async function generateEmbeddings(texts) {
+  const resp = await fetch(HF_ROUTER_URL, {
+    method: 'POST',
     headers: {
-      'apikey': SUPABASE_SERVICE_ROLE_KEY,
-      'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      'Authorization': `Bearer ${HF_API_KEY}`,
       'Content-Type': 'application/json',
-      'Prefer': 'return=minimal'
     },
-    body: JSON.stringify({ embedding })
+    body: JSON.stringify({ model: HF_MODEL, input: texts }),
   });
 
-  if (!response.ok) {
-    const error = await response.text();
-    console.error(`   Failed to update turn ${turnId}: ${error}`);
-    return false;
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`HuggingFace API ${resp.status}: ${errText}`);
   }
 
-  return true;
+  const data = await resp.json();
+
+  if (!data.data || !Array.isArray(data.data)) {
+    throw new Error('Unexpected response format from HuggingFace');
+  }
+
+  // Truncate to 1024d + L2-normalize (Matryoshka, same as browser-sync.js)
+  return data.data.map(item => truncateAndNormalize(item.embedding, EMBEDDING_DIMS));
 }
 
-/**
- * Sleep helper for rate limiting
- */
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+// ── Process one table ───────────────────────────────────────────────────
 
-/**
- * Main backfill process
- */
-async function main() {
+async function processTable(table) {
+  console.log(`\nProcessing ${table} table...`);
+
   let totalProcessed = 0;
   let totalSuccess = 0;
   let totalFailed = 0;
-  const startTime = Date.now();
-
-  // Process messages table
-  console.log('Processing messages table...');
-  let offset = 0;
 
   while (true) {
-    const messages = await fetchMessagesWithNullEmbeddings(offset, BATCH_SIZE);
+    // Always offset=0 because patched rows disappear from IS NULL result set
+    const rows = await fetchNullEmbeddings(table, 0, BATCH_SIZE);
 
-    if (messages.length === 0) {
-      console.log('   No more messages with NULL embeddings');
+    if (rows.length === 0) {
+      console.log(`   No more ${table} with NULL embeddings`);
       break;
     }
 
-    console.log(`   Processing batch at offset ${offset}: ${messages.length} messages`);
+    console.log(`   Batch: ${rows.length} rows`);
 
-    // Generate embeddings for batch
-    const texts = messages.map(m => m.content || '');
+    const texts = rows.map(r => (r.content || '').trim() || ' ');
+    const idCol = table === 'messages' ? 'message_id' : 'id';
 
     try {
-      const embeddings = await generateQwen3Embeddings(texts);
+      const embeddings = await generateEmbeddings(texts);
 
-      // Update each message
-      for (let i = 0; i < messages.length; i++) {
-        const msg = messages[i];
-        const embedding = embeddings[i];
+      for (let i = 0; i < rows.length; i++) {
+        const id = rows[i][idCol];
+        const ok = await patchEmbedding(table, id, embeddings[i]);
 
-        const success = await updateMessageEmbedding(msg.message_id, embedding);
-
-        if (success) {
+        if (ok) {
           totalSuccess++;
-          console.log(`   [${totalProcessed + 1}] Updated: ${msg.message_id.substring(0, 20)}...`);
+          console.log(`   [${totalProcessed + 1}] OK: ${id.substring(0, 24)}... (${embeddings[i].length}d)`);
         } else {
           totalFailed++;
         }
-
         totalProcessed++;
 
-        // Check limit
-        if (LIMIT && totalProcessed >= LIMIT) {
-          console.log(`   Reached limit of ${LIMIT} messages`);
-          break;
-        }
+        if (LIMIT && totalProcessed >= LIMIT) break;
       }
+    } catch (err) {
+      console.error(`   Batch failed: ${err.message}`);
+      totalFailed += rows.length;
+      totalProcessed += rows.length;
 
-    } catch (error) {
-      console.error(`   Batch failed: ${error.message}`);
-      totalFailed += messages.length;
+      // If rate limited, wait and retry
+      if (err.message.includes('429')) {
+        console.log('   Waiting 30s for rate limit cooldown...');
+        await new Promise(r => setTimeout(r, 30000));
+        continue;  // Retry the same batch
+      }
     }
-
-    // Rate limit
-    await sleep(1000);
-
-    // NOTE: Don't increment offset - records disappear from "IS NULL" result set after update
-    // offset += BATCH_SIZE;  // BUG: This skips records!
 
     if (LIMIT && totalProcessed >= LIMIT) break;
+
+    // Rate limit protection between batches
+    await new Promise(r => setTimeout(r, 1000));
   }
 
-  // Process chat_turns table
-  console.log('\nProcessing chat_turns table...');
-  offset = 0;
-  let turnsProcessed = 0;
+  return { processed: totalProcessed, success: totalSuccess, failed: totalFailed };
+}
 
-  while (true) {
-    const turns = await fetchTurnsWithNullEmbeddings(offset, BATCH_SIZE);
+// ── Main ────────────────────────────────────────────────────────────────
 
-    if (turns.length === 0) {
-      console.log('   No more turns with NULL embeddings');
-      break;
-    }
+async function main() {
+  const startTime = Date.now();
+  let totalSuccess = 0;
+  let totalFailed = 0;
 
-    console.log(`   Processing batch at offset ${offset}: ${turns.length} turns`);
-
-    const texts = turns.map(t => t.content || '');
-
+  // Count null embeddings first
+  for (const table of ['messages', 'chat_turns']) {
+    if (TABLE_FILTER && TABLE_FILTER !== table) continue;
     try {
-      const embeddings = await generateQwen3Embeddings(texts);
-
-      for (let i = 0; i < turns.length; i++) {
-        const turn = turns[i];
-        const embedding = embeddings[i];
-
-        const success = await updateTurnEmbedding(turn.id, embedding);
-
-        if (success) {
-          totalSuccess++;
-          turnsProcessed++;
-          console.log(`   [${turnsProcessed}] Updated turn: ${turn.id.substring(0, 20)}...`);
-        } else {
-          totalFailed++;
-        }
-      }
-
-    } catch (error) {
-      console.error(`   Batch failed: ${error.message}`);
-      totalFailed += turns.length;
+      const rows = await fetchNullEmbeddings(table, 0, 1000);
+      console.log(`${table}: ${rows.length} rows with NULL embeddings`);
+    } catch (e) {
+      console.log(`${table}: error counting — ${e.message}`);
     }
+  }
+  console.log('');
 
-    await sleep(1000);
-    // NOTE: Don't increment offset - records disappear from "IS NULL" result set after update
-    // offset += BATCH_SIZE;  // BUG: This skips records!
+  // Process tables
+  if (!TABLE_FILTER || TABLE_FILTER === 'messages') {
+    const r = await processTable('messages');
+    totalSuccess += r.success;
+    totalFailed += r.failed;
+  }
+
+  if (!TABLE_FILTER || TABLE_FILTER === 'chat_turns') {
+    const r = await processTable('chat_turns');
+    totalSuccess += r.success;
+    totalFailed += r.failed;
   }
 
   // Summary
-  const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
-
-  console.log('\nBackfill Summary');
-  console.log('='.repeat(40));
-  console.log(`   Total processed: ${totalProcessed + turnsProcessed}`);
-  console.log(`   Successful: ${totalSuccess}`);
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log('\n' + '='.repeat(50));
+  console.log(`Backfill complete in ${elapsed}s`);
+  console.log(`   Success: ${totalSuccess}`);
   console.log(`   Failed: ${totalFailed}`);
-  console.log(`   Time elapsed: ${elapsed} minutes`);
   console.log(`   Dry run: ${DRY_RUN}`);
-  console.log('');
 
   if (DRY_RUN) {
-    console.log('Run without --dry-run to apply changes');
+    console.log('\nRun without --dry-run to apply changes.');
   } else {
-    console.log('Backfill complete!');
-    console.log('');
-    console.log('Verify with:');
-    console.log('  SELECT COUNT(*) FROM messages WHERE embedding IS NULL;');
-    console.log('  SELECT vector_dims(embedding) FROM messages WHERE embedding IS NOT NULL LIMIT 1;');
+    console.log('\nVerify:');
+    console.log('  SELECT platform, COUNT(*) FILTER (WHERE embedding IS NULL) as missing');
+    console.log('  FROM messages GROUP BY platform;');
   }
 }
 
-main().catch(error => {
-  console.error('Fatal error:', error);
+main().catch(err => {
+  console.error('Fatal:', err);
   process.exit(1);
 });

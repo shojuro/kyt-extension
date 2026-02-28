@@ -13,6 +13,14 @@
  * - Provide "WOW moment" - instant searchable history on download
  */
 
+// ── In-memory rate limit tracker ────────────────────────────────────────
+// Prevents wasting service worker time on doomed OpenAI calls when rate-limited.
+// Resets on service worker restart (intentional — transient by design).
+let _hydeRateLimitedUntil = 0;
+let _hydeConsecutiveFailures = 0;
+const HYDE_COOLDOWN_MS = 60000;       // 1 min after first 429
+const HYDE_MAX_COOLDOWN_MS = 300000;  // 5 min max backoff
+
 /**
  * Generate hypothetical questions for a conversation turn chunk
  *
@@ -41,6 +49,16 @@
  */
 export async function generateHypotheticalQuestions(turnChunk, apiKey, questionCount = 3) {
   try {
+    // Check in-memory rate limit cooldown FIRST
+    if (Date.now() < _hydeRateLimitedUntil) {
+      const waitSec = Math.ceil((_hydeRateLimitedUntil - Date.now()) / 1000);
+      return {
+        success: false,
+        questions: [],
+        error: `HyDE rate-limited, skipping (${waitSec}s remaining)`
+      };
+    }
+
     // Validate inputs
     if (!turnChunk || !turnChunk.content) {
       throw new Error('Invalid turn chunk: missing content');
@@ -81,9 +99,25 @@ export async function generateHypotheticalQuestions(turnChunk, apiKey, questionC
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(`OpenAI API error: ${error.error?.message || response.statusText}`);
+      const error = await response.json().catch(() => ({}));
+      const errorMsg = error.error?.message || response.statusText;
+
+      // Rate limit detection: engage cooldown to skip remaining chunks
+      if (response.status === 429) {
+        _hydeConsecutiveFailures++;
+        const cooldown = Math.min(
+          HYDE_COOLDOWN_MS * Math.pow(2, _hydeConsecutiveFailures - 1),
+          HYDE_MAX_COOLDOWN_MS
+        );
+        _hydeRateLimitedUntil = Date.now() + cooldown;
+        console.warn(`⚠️ HyDE rate-limited (429). Cooldown: ${cooldown / 1000}s. Skipping HyDE for remaining chunks.`);
+      }
+
+      throw new Error(`OpenAI API error: ${errorMsg}`);
     }
+
+    // Success — reset failure counter
+    _hydeConsecutiveFailures = 0;
 
     const data = await response.json();
     const questionsText = data.choices[0].message.content.trim();

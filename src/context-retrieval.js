@@ -227,6 +227,7 @@ export function detectPreferenceQuery(query) {
       const category = match[1]
         .replace(/[?.!,]/g, '')
         .replace(/(?:^|\s+)(?:and|or)\s+(?:why|how|when|where|who|what|which|how much|how many).*$/i, '')
+        .replace(/\s+(?:of all time[s]?|ever|in the world|in the universe|on earth|in history)\s*$/i, '')
         .trim();
       if (category.length > 0 && category.length < 50) {
         return category;

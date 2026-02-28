@@ -29,6 +29,7 @@ import { HistoryImporter } from './src/history-import/index.js';
 import { refreshSession, isAuthenticated, AUTH_SESSION_KEY } from './src/auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
 import { detectDeflection } from './src/assistant-quality-detector.js';
+import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/embedding-circuit-breaker.js';
 
 // Extracted modules
 import { getApiConfig, clearConfigCache } from './src/auth-config.js';
@@ -1064,6 +1065,71 @@ globalThis.KYT_DEBUG = {
   getContext: (message) => getContextForInjection(message, {}).then(console.log),
   viewStorage: () => chrome.storage.local.get(null).then(console.log),
   clearStorage: () => chrome.storage.local.clear().then(() => console.log('✅ Storage cleared')),
+  diagnoseEmbeddings: async () => {
+    const cbState = await getEmbeddingCircuitState();
+    const config = await getConfig();
+    const hasHfKey = !!(config.huggingfaceKey);
+    const hfKeyPrefix = hasHfKey ? config.huggingfaceKey.substring(0, 8) + '...' : 'MISSING';
+
+    // Count null embeddings via Supabase REST
+    let nullCounts = 'unable to query';
+    try {
+      const storageResult = await chrome.storage.local.get(['user_id', 'auth_session']);
+      const userId = storageResult.auth_session?.user?.id || storageResult.user_id || config.userId;
+      if (userId && config.supabaseUrl) {
+        const headers = getAuthHeaders(config);
+        const resp = await fetch(
+          `${config.supabaseUrl}/rest/v1/rpc/get_null_embedding_counts`,
+          { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ p_user_id: userId }) }
+        ).catch(() => null);
+        if (resp && resp.ok) {
+          nullCounts = await resp.json();
+        } else {
+          // Fallback: direct query
+          const fallback = await fetch(
+            `${config.supabaseUrl}/rest/v1/messages?embedding=is.null&user_id=eq.${userId}&select=platform&limit=500`,
+            { headers }
+          ).catch(() => null);
+          if (fallback && fallback.ok) {
+            const rows = await fallback.json();
+            nullCounts = rows.reduce((acc, r) => {
+              acc[r.platform || 'unknown'] = (acc[r.platform || 'unknown'] || 0) + 1;
+              return acc;
+            }, { total: rows.length });
+          }
+        }
+      }
+    } catch (e) {
+      nullCounts = `error: ${e.message}`;
+    }
+
+    const report = {
+      circuitBreaker: {
+        isOpen: cbState.isOpen,
+        openedAt: cbState.openedAt ? new Date(cbState.openedAt).toISOString() : null,
+        consecutiveFailures: cbState.consecutiveFailures,
+        lastFailureCode: cbState.lastFailureCode,
+        lastFailureMessage: cbState.lastFailureMessage,
+        cooldownMs: cbState.cooldownMs,
+        totalTrips: cbState.totalTrips,
+      },
+      huggingfaceKey: hfKeyPrefix,
+      nullEmbeddingCounts: nullCounts,
+      recommendation: cbState.isOpen
+        ? 'Circuit breaker is OPEN. Run KYT_DEBUG.resetEmbeddingCircuit() then KYT_DEBUG.backfillEmbeddings()'
+        : !hasHfKey
+          ? 'HuggingFace API key is MISSING. Add it in extension settings.'
+          : 'Circuit breaker OK. Run KYT_DEBUG.backfillEmbeddings() to fill null embeddings.',
+    };
+    console.log('🔍 Embedding Diagnosis:', report);
+    return report;
+  },
+  resetEmbeddingCircuit: async () => {
+    await chrome.storage.local.remove(CIRCUIT_BREAKER_STORAGE_KEY);
+    console.log('🔌 Embedding circuit breaker RESET. Run KYT_DEBUG.backfillEmbeddings() to retry.');
+    return 'Circuit breaker reset';
+  },
   backfillEmbeddings: () => backfillNullEmbeddings().then(console.log),
   backfillEntities: (force = false) => callEdgeFunction('backfill_entities', { force_reextract: force })
     .then(result => { console.log('🔗 Entity backfill result:', result); return result; })
@@ -1118,6 +1184,8 @@ console.log('   Debug: Use KYT_DEBUG object for testing');
 console.log('   - KYT_DEBUG.getStats() - View storage statistics');
 console.log('   - KYT_DEBUG.getContext("test message") - Test context retrieval');
 console.log('   - KYT_DEBUG.viewStorage() - View all storage');
+console.log('   - KYT_DEBUG.diagnoseEmbeddings() - Check circuit breaker, HF key, null embedding counts');
+console.log('   - KYT_DEBUG.resetEmbeddingCircuit() - Reset embedding circuit breaker');
 console.log('   - KYT_DEBUG.backfillEmbeddings() - Backfill null embeddings in Supabase');
 console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
 console.log('   - KYT_DEBUG.backfillContextual() - Generate context summaries + re-embed');
