@@ -205,7 +205,17 @@ function generateMessageId() {
   return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-async function saveMessage(messageData) {
+// Serialization queue: prevents concurrent read-modify-write races on chrome.storage.local
+// when multiple messages arrive simultaneously (e.g., history-load captures 20 messages at once)
+let _saveQueue = Promise.resolve();
+
+function saveMessage(messageData) {
+  const next = _saveQueue.then(() => _saveMessageCore(messageData));
+  _saveQueue = next.catch(() => {}); // prevent chain breakage on errors
+  return next;
+}
+
+async function _saveMessageCore(messageData) {
   try {
     if (!messageData || typeof messageData !== 'object') {
       throw new Error('Invalid message data: expected object');
