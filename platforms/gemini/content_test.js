@@ -650,7 +650,9 @@ if (window.KYT_GEMINI_INJECTED) {
 
   window.fetch = async function(...args) {
     let [url, options] = args;
-    const urlString = typeof url === 'string' ? url : (url?.url || String(url));
+    let urlString = typeof url === 'string' ? url : (url?.url || String(url));
+    // Resolve relative URLs to absolute (Gemini may use relative paths)
+    try { urlString = new URL(urlString, window.location.origin).href; } catch (_) {}
 
     const isPost = options?.method === 'POST' || (options?.body && options?.method !== 'GET');
 
@@ -753,7 +755,9 @@ if (window.KYT_GEMINI_INJECTED) {
 
   XMLHttpRequest.prototype.send = function(body) {
     const method = this.__kytMethod;
-    const url = this.__kytUrl || '';
+    // Resolve relative URLs (Gemini uses relative paths like /_/BardChatUi/...)
+    let url = this.__kytUrl || '';
+    try { url = new URL(url, window.location.origin).href; } catch (_) {}
 
     const isPost = method && method.toUpperCase() === 'POST';
 
