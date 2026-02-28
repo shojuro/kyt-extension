@@ -674,7 +674,7 @@ window.fetch = async function(...args) {
   }
 
   // Check if this is a Claude message completion request
-  if (typeof url === 'string' && url.includes('/chat_conversations/') && url.includes('/completion')) {
+  if (typeof url === 'string' && url.includes('/chat_conversations/') && url.includes('/completion') && !url.includes('/completion_status')) {
     console.log('🟢 KYT Claude: Intercepted completion request:', url);
 
     try {
@@ -766,7 +766,7 @@ window.fetch = async function(...args) {
   const response = await originalFetch.apply(this, args);
 
   // PHASE 1.5: Capture assistant response
-  if (typeof url === 'string' && url.includes('/chat_conversations/') && url.includes('/completion') && response.ok) {
+  if (typeof url === 'string' && url.includes('/chat_conversations/') && url.includes('/completion') && !url.includes('/completion_status') && response.ok) {
     // Extract conversation ID from URL
     const conversationIdMatch = url.match(/chat_conversations\/([^\/]+)\/completion/);
     const conversationId = conversationIdMatch ? conversationIdMatch[1] : 'unknown';
