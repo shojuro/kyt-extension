@@ -801,19 +801,32 @@ if (window.KYT_GEMINI_INJECTED) {
 
       // Deep debug for batchexecute endpoint
       if (url.includes('batchexecute') || url.includes('BardChat') || url.includes('assistant.')) {
-        const bodyType2 = body?.constructor?.name || typeof body;
         const bodyStr2 = bodyToString(body);
-        const bodyPreview = bodyStr2 ? bodyStr2.substring(0, 200) : '(null - bodyToString failed)';
-        const hasFReq2 = bodyStr2 ? bodyStr2.includes('f.req') : false;
-        console.log('KYT Gemini [XHR batchexecute debug]:', {
-          url: url.substring(0, 150),
-          bodyType: bodyType2,
-          bodyToStringOk: bodyStr2 !== null,
-          bodyLen: bodyStr2?.length,
-          hasFReq: hasFReq2,
-          bodyPreview: bodyPreview,
-          isGoogleDomain: isGoogleDomain(url),
-        });
+        if (bodyStr2 && bodyStr2.includes('f.req')) {
+          try {
+            const debugParams = new URLSearchParams(bodyStr2);
+            const fReqRaw = debugParams.get('f.req');
+            // Log the raw f.req value to discover the real array structure
+            console.log('KYT Gemini [f.req raw] (len=' + (fReqRaw?.length || 0) + '):', fReqRaw?.substring(0, 500));
+            // Try parsing and log the structure
+            if (fReqRaw) {
+              let parsed = JSON.parse(fReqRaw);
+              if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+              // Log the top-level shape
+              if (Array.isArray(parsed)) {
+                console.log('KYT Gemini [f.req structure]:', {
+                  outerLen: parsed.length,
+                  outer0Type: Array.isArray(parsed[0]) ? 'array[' + parsed[0].length + ']' : typeof parsed[0],
+                  outer0_0Type: parsed[0] && Array.isArray(parsed[0][0]) ? 'array[' + parsed[0][0].length + ']' : typeof parsed[0]?.[0],
+                  outer0_0_0: typeof parsed[0]?.[0]?.[0] === 'string' ? parsed[0][0][0].substring(0, 80) : typeof parsed[0]?.[0]?.[0],
+                  outer0_0_1Preview: typeof parsed[0]?.[0]?.[1] === 'string' ? parsed[0][0][1].substring(0, 200) : typeof parsed[0]?.[0]?.[1],
+                });
+              }
+            }
+          } catch (e) {
+            console.log('KYT Gemini [f.req parse error]:', e.message);
+          }
+        }
       }
 
       // Try to process as a Gemini message request
