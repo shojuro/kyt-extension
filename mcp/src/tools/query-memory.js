@@ -7,7 +7,7 @@ export const QUERY_MEMORY_SCHEMA = {
   useHyde: { type: 'boolean', description: 'Enable HyDE augmented search (default: true)' },
   platform: {
     type: 'string',
-    description: 'Filter by platform: all, chatgpt, claude, claude-code, cli (default: all)',
+    description: 'Filter by platform: all, chatgpt, claude, claude-code, cli, gemini (default: all)',
   },
 };
 

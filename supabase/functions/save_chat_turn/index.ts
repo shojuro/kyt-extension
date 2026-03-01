@@ -55,7 +55,7 @@ interface SaveChatTurnRequest {
   content: string;
   turn_range?: string;
   conversation_id?: string;
-  platform?: 'chatgpt' | 'claude' | 'cli';
+  platform?: 'chatgpt' | 'claude' | 'cli' | 'claude-code' | 'gemini';
   speakers: string[];
   turn_count?: number;
   start_timestamp?: number;
