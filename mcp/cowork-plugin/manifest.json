@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0",
+  "name": "kyt-memory",
+  "configuration": {
+    "properties": {
+      "KYT_SUPABASE_URL": {
+        "type": "string",
+        "title": "Supabase Project URL",
+        "description": "Your K.Y.T. Supabase project URL (e.g. https://yourproject.supabase.co)",
+        "required": true
+      },
+      "KYT_SUPABASE_ANON_KEY": {
+        "type": "string",
+        "title": "Supabase Anon Key",
+        "description": "Your K.Y.T. Supabase anonymous/publishable key",
+        "sensitive": true,
+        "required": true
+      },
+      "KYT_USER_ID": {
+        "type": "string",
+        "title": "K.Y.T. User ID",
+        "description": "Your K.Y.T. user UUID (from your subscription)",
+        "sensitive": true,
+        "required": true
+      }
+    }
+  },
+  "tools": {
+    "query_memory": {
+      "default_permission": "allow",
+      "description": "Search conversation memory (read-only)"
+    },
+    "search_entities": {
+      "default_permission": "allow",
+      "description": "Search knowledge graph (read-only)"
+    },
+    "get_preferences": {
+      "default_permission": "allow",
+      "description": "Look up user preferences (read-only)"
+    },
+    "save_note": {
+      "default_permission": "ask",
+      "description": "Save a note to memory (writes data)"
+    },
+    "set_memory_mode": {
+      "default_permission": "ask",
+      "description": "Change memory capture mode"
+    },
+    "ingest_session": {
+      "default_permission": "ask",
+      "description": "Import Claude Code sessions into memory"
+    }
+  }
+}

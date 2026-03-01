@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "kyt-memory": {
+      "command": "node",
+      "args": ["${PLUGIN_DIR}/../src/server.js"],
+      "env": {
+        "SUPABASE_URL": "${KYT_SUPABASE_URL}",
+        "SUPABASE_ANON_KEY": "${KYT_SUPABASE_ANON_KEY}",
+        "KYT_USER_ID": "${KYT_USER_ID}"
+      }
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "name": "kyt-memory",
+  "displayName": "K.Y.T. — Know Your Things",
+  "version": "1.0.0",
+  "description": "Cross-platform conversation memory. Recall anything you've ever discussed — across ChatGPT, Claude, Gemini, and Claude Code.",
+  "author": {
+    "name": "K.Y.T.",
+    "url": "https://github.com/penguinzyue/kyt-memory"
+  },
+  "icon": "icon.png",
+  "category": "productivity",
+  "tags": ["memory", "search", "knowledge-graph", "cross-platform"],
+  "minClaudeVersion": "1.0.0",
+  "permissions": [
+    "network"
+  ],
+  "mcp": {
+    "server": "mcp.json"
+  },
+  "commands": [
+    {
+      "name": "recall",
+      "description": "Search your conversation memory for a topic",
+      "file": "commands/recall.md"
+    },
+    {
+      "name": "remember",
+      "description": "Save a note or decision to memory",
+      "file": "commands/remember.md"
+    },
+    {
+      "name": "digest",
+      "description": "Get a digest of recent memories by platform",
+      "file": "commands/digest.md"
+    },
+    {
+      "name": "who",
+      "description": "Look up a person, project, or concept from your knowledge graph",
+      "file": "commands/who.md"
+    }
+  ],
+  "skills": [
+    {
+      "name": "memory-search",
+      "description": "Deep semantic search across all conversation history",
+      "directory": "skills/memory-search"
+    },
+    {
+      "name": "preference-lookup",
+      "description": "Find user preferences extracted from past conversations",
+      "directory": "skills/preference-lookup"
+    }
+  ]
+}
