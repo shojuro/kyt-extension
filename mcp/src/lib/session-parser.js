@@ -72,16 +72,44 @@ export function parseSessionFile(filePath) {
   return turns;
 }
 
+function extractWrittenContent(block) {
+  if (block.type !== 'tool_use') return null;
+  const name = block.name;
+  const input = block.input || {};
+
+  // Write tool: capture full content written to .md files
+  if (name === 'Write' && input.file_path && input.content) {
+    if (input.file_path.endsWith('.md')) {
+      const filename = input.file_path.split('/').pop();
+      return `[Written to ${filename}]\n${input.content}`;
+    }
+  }
+
+  // Edit tool: capture new_string for .md file edits
+  if (name === 'Edit' && input.file_path && input.new_string) {
+    if (input.file_path.endsWith('.md')) {
+      const filename = input.file_path.split('/').pop();
+      return `[Edited ${filename}]\n${input.new_string}`;
+    }
+  }
+
+  return null;
+}
+
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
 
   if (Array.isArray(content)) {
-    // Extract only text blocks, skip thinking/tool_use/tool_result
-    return content
-      .filter(block => block.type === 'text')
-      .map(block => block.text || '')
-      .join('\n')
-      .trim();
+    const parts = [];
+    for (const block of content) {
+      if (block.type === 'text' && block.text) {
+        parts.push(block.text);
+      } else {
+        const written = extractWrittenContent(block);
+        if (written) parts.push(written);
+      }
+    }
+    return parts.join('\n').trim();
   }
 
   return '';

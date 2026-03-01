@@ -19,9 +19,13 @@ export const INGEST_SESSION_SCHEMA = {
     type: 'boolean',
     description: 'Ingest all un-ingested sessions (default: false)',
   },
+  force: {
+    type: 'boolean',
+    description: 'Force re-ingestion of a session (resets ingested count to 0)',
+  },
 };
 
-export async function ingestSession({ sessionId, all = false }) {
+export async function ingestSession({ sessionId, all = false, force = false }) {
   const mode = getMemoryMode();
   if (mode === 'incognito') {
     return {
@@ -46,14 +50,14 @@ export async function ingestSession({ sessionId, all = false }) {
     if (sessionId) {
       const filePath = findSessionFile(dir, sessionId);
       if (filePath) {
-        return ingestOneSession(filePath, sessionId);
+        return ingestOneSession(filePath, sessionId, force);
       }
     } else {
       const recent = getMostRecentSession(dir);
       if (recent) {
         const filePath = findSessionFile(dir, recent.sessionId);
         if (filePath) {
-          return ingestOneSession(filePath, recent.sessionId);
+          return ingestOneSession(filePath, recent.sessionId, force);
         }
       }
     }
@@ -70,9 +74,9 @@ export async function ingestSession({ sessionId, all = false }) {
   };
 }
 
-async function ingestOneSession(filePath, sessionId) {
+async function ingestOneSession(filePath, sessionId, force = false) {
   const ingested = getIngestedSessions();
-  const lastCount = ingested[sessionId]?.lastIngestedCount || 0;
+  const lastCount = force ? 0 : (ingested[sessionId]?.lastIngestedCount || 0);
 
   const turns = parseSessionFile(filePath);
 

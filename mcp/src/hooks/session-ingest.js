@@ -106,11 +106,20 @@ function parseSessionJsonl(filePath) {
     if (typeof msg.content === 'string') {
       content = msg.content;
     } else if (Array.isArray(msg.content)) {
-      content = msg.content
-        .filter(b => b.type === 'text')
-        .map(b => b.text || '')
-        .join('\n')
-        .trim();
+      const parts = [];
+      for (const b of msg.content) {
+        if (b.type === 'text' && b.text) {
+          parts.push(b.text);
+        } else if (b.type === 'tool_use') {
+          const inp = b.input || {};
+          if (b.name === 'Write' && inp.file_path?.endsWith('.md') && inp.content) {
+            parts.push(`[Written to ${inp.file_path.split('/').pop()}]\n${inp.content}`);
+          } else if (b.name === 'Edit' && inp.file_path?.endsWith('.md') && inp.new_string) {
+            parts.push(`[Edited ${inp.file_path.split('/').pop()}]\n${inp.new_string}`);
+          }
+        }
+      }
+      content = parts.join('\n').trim();
     }
 
     if (!content || content.trim().length === 0) continue;

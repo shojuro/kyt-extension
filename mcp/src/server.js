@@ -85,6 +85,7 @@ server.tool(
   {
     sessionId: z.string().optional().describe('Session ID to ingest (defaults to most recent)'),
     all: z.boolean().optional().default(false).describe('Ingest all un-ingested sessions'),
+    force: z.boolean().optional().default(false).describe('Force re-ingestion (resets ingested count to 0)'),
   },
   async (args) => ingestSession(args),
 );
