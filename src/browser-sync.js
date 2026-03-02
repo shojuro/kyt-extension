@@ -698,6 +698,14 @@ export async function syncMessages(messagesToSync) {
         console.warn('Continuing with message-level sync only...');
       } else if (turnsResponse) {
         console.log(`✅ Chat turns synced to 'chat_turns' table: ${turnChunks.length} chunks`);
+
+        // Schedule backfill alarm if any chat_turns were synced with null embeddings
+        // (circuit breaker tripped, rate limit, missing HF key, etc.)
+        const hasNullTurnEmbeddings = turnEmbeddings.some(e => e === null);
+        if (hasNullTurnEmbeddings) {
+          console.log('⏰ Scheduling backfillEmbeddings alarm (chat_turns have null embeddings)');
+          chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 5 });
+        }
       }
     } else {
       console.log('📊 No conversation turns created (insufficient messages for chunking)');
@@ -950,6 +958,168 @@ export async function backfillNullEmbeddings(options = {}) {
 
   } catch (error) {
     console.error('❌ Backfill failed:', error.message);
+    return { success: false, error: error.message, backfilled: 0 };
+  }
+}
+
+/**
+ * Backfill null embeddings in chat_turns table.
+ * Mirrors backfillNullEmbeddings() but targets chat_turns — the primary retrieval table
+ * used by match_messages_with_gravity RPC. Without embeddings, chat_turns rows are
+ * invisible to vector search.
+ *
+ * Uses contextual_content (if available) || content for embedding text, matching
+ * the asymmetric embedding pattern used by the backfill_contextual edge function.
+ *
+ * @param {Object} options - Backfill options
+ * @param {number} options.batchSize - Rows per batch (default: 50)
+ * @param {number} options.delayMs - Delay between batches in ms (default: 200)
+ * @param {string} options.platform - Optional platform filter (e.g. 'gemini')
+ * @returns {Promise<Object>} Result with backfilled count and errors
+ */
+export async function backfillNullChatTurnEmbeddings(options = {}) {
+  const { batchSize = 50, delayMs = 200, platform = null } = options;
+
+  console.log(`🔄 Starting embedding backfill for null-embedding chat_turns...${platform ? ` (platform: ${platform})` : ''}`);
+
+  try {
+    const config = await getConfig();
+
+    if (!config.supabaseUrl || !config.supabaseKey) {
+      return { success: false, error: 'Supabase not configured' };
+    }
+
+    // Check circuit breaker before starting
+    const circuitStatus = await isEmbeddingCircuitOpen();
+    if (circuitStatus.open) {
+      console.warn(`⚠️ Chat turns backfill skipped: embedding circuit breaker open (${circuitStatus.reason})`);
+      return { success: false, error: `Circuit breaker open: ${circuitStatus.reason}`, backfilled: 0 };
+    }
+
+    // Resolve userId
+    const storageResult = await chrome.storage.local.get(['user_id', 'auth_session']);
+    const userId = storageResult.auth_session?.user?.id || storageResult.user_id || config.userId;
+    if (!userId) {
+      console.warn('⚠️ Chat turns backfill skipped: no userId available');
+      return { success: false, error: 'No userId available', backfilled: 0 };
+    }
+
+    let totalBackfilled = 0;
+    let totalErrors = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      // Query chat_turns with null embeddings
+      let filterParams = `embedding=is.null&select=id,content,contextual_content&limit=${batchSize}&offset=0&order=start_timestamp.desc`;
+      filterParams += `&user_id=eq.${userId}`;
+      if (platform) {
+        filterParams += `&platform=eq.${platform}`;
+      }
+
+      const queryResponse = await fetchWithTimeout(
+        `${config.supabaseUrl}/rest/v1/chat_turns?${filterParams}`,
+        {
+          headers: getAuthHeaders(config)
+        },
+        15000
+      );
+
+      if (!queryResponse.ok) {
+        const errorText = await queryResponse.text();
+        console.error(`❌ Chat turns backfill query failed: ${queryResponse.status} - ${errorText}`);
+        return { success: false, error: `Query failed: ${queryResponse.status}`, backfilled: totalBackfilled };
+      }
+
+      const rows = await queryResponse.json();
+
+      if (rows.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      console.log(`📊 Chat turns backfill batch: ${rows.length} rows with null embeddings`);
+
+      // Use contextual_content (richer, includes conversation context) if available,
+      // fall back to raw content — mirrors backfill_contextual edge fn pattern
+      const texts = rows.map(r => (r.contextual_content || r.content || '').trim() || ' ');
+      let embeddings;
+      try {
+        embeddings = await generateEmbeddings(texts, config.openaiKey);
+      } catch (embeddingError) {
+        console.error(`❌ Chat turns embedding generation failed: ${embeddingError.message}`);
+        return {
+          success: false,
+          error: `Embedding generation failed: ${embeddingError.message}`,
+          backfilled: totalBackfilled,
+          remaining: rows.length
+        };
+      }
+
+      // Patch each row with its embedding
+      let batchSuccess = 0;
+      for (let i = 0; i < rows.length; i++) {
+        try {
+          const patchResponse = await fetchWithTimeout(
+            `${config.supabaseUrl}/rest/v1/chat_turns?id=eq.${encodeURIComponent(rows[i].id)}`,
+            {
+              method: 'PATCH',
+              headers: {
+                ...getAuthHeaders(config),
+                'Prefer': 'return=minimal'
+              },
+              body: JSON.stringify({ embedding: embeddings[i] })
+            },
+            10000
+          );
+
+          if (patchResponse.ok) {
+            batchSuccess++;
+          } else {
+            console.warn(`   ⚠️ Chat turn patch failed for ${rows[i].id}: ${patchResponse.status}`);
+            totalErrors++;
+          }
+        } catch (patchError) {
+          console.warn(`   ⚠️ Chat turn patch error for ${rows[i].id}: ${patchError.message}`);
+          totalErrors++;
+        }
+      }
+
+      totalBackfilled += batchSuccess;
+      console.log(`   ✅ Chat turns backfilled ${totalBackfilled} so far (${totalErrors} errors)`);
+
+      // If we got fewer than batchSize, we're done
+      if (rows.length < batchSize) {
+        hasMore = false;
+      }
+      // Don't increment offset — patched rows disappear from IS NULL result set
+
+      // Delay between batches
+      if (hasMore) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+
+        // Re-check circuit breaker between batches
+        const midCheckCircuit = await isEmbeddingCircuitOpen();
+        if (midCheckCircuit.open) {
+          console.warn(`⚠️ Chat turns backfill paused: circuit breaker opened mid-backfill`);
+          return {
+            success: false,
+            error: 'Circuit breaker opened during backfill',
+            backfilled: totalBackfilled,
+            willRetry: true
+          };
+        }
+      }
+    }
+
+    console.log(`✅ Chat turns backfill complete: ${totalBackfilled} rows updated, ${totalErrors} errors`);
+    return {
+      success: true,
+      backfilled: totalBackfilled,
+      errors: totalErrors
+    };
+
+  } catch (error) {
+    console.error('❌ Chat turns backfill failed:', error.message);
     return { success: false, error: error.message, backfilled: 0 };
   }
 }

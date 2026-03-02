@@ -18,6 +18,7 @@ import { filterByConfidence } from './confidence-filter.js';
 import { detectDeflection, applyDeflectionPenalty } from './assistant-quality-detector.js';
 import { searchViaEdgeFunction } from './edge-search.js';
 import { hydeCB } from './hyde-search-generator.js';
+import { isEmbeddingCircuitOpen } from './embedding-circuit-breaker.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
@@ -439,6 +440,23 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
       disableQueryTransformation: config?.disableQueryTransformation ?? apiConfig.disableQueryTransformation ?? false
     };
 
+    // ===== PIPELINE DIAGNOSTICS =====
+    // Accumulates per-stage counts for debugging 0-item results
+    const diagnostics = {
+      routingMode: null,
+      edgeItems: null,        // items from edge function (null = not attempted)
+      legacyItems: null,      // items from legacy hybrid search (null = not attempted)
+      preFilterItems: 0,      // items before confidence filter
+      postFilterItems: 0,     // items after confidence filter
+      confidenceThreshold: null,
+      highestScore: null,
+      apiCircuitBreakerOpen: false,
+      embeddingCircuitBreakerOpen: false,
+      hydeCBOpen: false,
+      queryTransformed: false,
+      preferenceRouted: false,
+    };
+
     // ========================================================================
     // STEP 0: Preference Query Router (0ms regex, before any embedding)
     // Short-circuits the entire vector pipeline for "what is my favorite X?"
@@ -459,6 +477,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
           // Short-circuit only if no trailing qualifier — pure "what is my favorite X?"
           if (!queryHasQualifier) {
             console.log(`✅ Preference router: ${prefItems.length} preferences found — short-circuiting vector pipeline`);
+            diagnostics.preferenceRouted = true;
 
             const elapsedTime = performance.now() - startTime;
 
@@ -488,6 +507,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
               formattedContext,
               elapsedMs: elapsedTime,
               transformation: { transformed: false },
+              diagnostics,
             };
           }
           console.log(`ℹ️ Preference router: ${prefItems.length} preferences found — continuing to vector pipeline for "${userMessage.match(/\b(?:and|or)\s+(?:why|how|when|where|who|what)\b.*/i)?.[0] || 'qualifier'}" context`);
@@ -502,6 +522,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
     // Check in-memory circuit breaker — only affects API-dependent paths
     // BM25 keyword search is local and always available even when CB is open
     const apiAvailable = deps.isCircuitBreakerOpen ? !deps.isCircuitBreakerOpen() : true;
+    diagnostics.apiCircuitBreakerOpen = !apiAvailable;
     if (!apiAvailable) {
       const waitSeconds = Math.ceil(((deps.circuitBreakerOpenUntil || 0) - Date.now()) / 1000);
       console.warn(
@@ -510,9 +531,21 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
       );
     }
 
+    // Check embedding circuit breaker (shared HuggingFace rate limit)
+    try {
+      const embCBStatus = await isEmbeddingCircuitOpen();
+      diagnostics.embeddingCircuitBreakerOpen = embCBStatus.open;
+      if (embCBStatus.open) {
+        console.warn(`⚠️ Embedding circuit breaker OPEN: ${embCBStatus.reason} — vector search will fall back to BM25`);
+      }
+    } catch (_) {
+      // Non-fatal — just can't report status
+    }
+
     // Resolve routing mode early — edge mode handles query expansion server-side
     // so we skip client-side OpenAI calls that would CORS-fail from the SW.
     const routingMode = await getRoutingMode();
+    diagnostics.routingMode = routingMode;
 
     // PHASE 7: Query Transformation (Dual ICP Support)
     let searchQuery = userMessage;
@@ -523,6 +556,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
     if (!contextConfig.disableQueryTransformation && apiAvailable && routingMode !== 'edge') {
       // Skip transformation if HyDE CB is open (same OpenAI key — would 429 too)
       const hydeCbStatus = await hydeCB.isOpen();
+      diagnostics.hydeCBOpen = hydeCbStatus.open;
       if (hydeCbStatus.open) {
         console.log('⚡ Query transformation skipped: HyDE circuit breaker open (shared OpenAI key)');
       } else {
@@ -556,6 +590,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
             original: userMessage,
             optimized: searchQuery
           };
+          diagnostics.queryTransformed = true;
           console.log(`🔄 Query transformed: "${userMessage}" → "${searchQuery}"`);
         } else if (transformResult) {
           console.log(`📊 Using original query (transformation ${transformResult.transformed ? 'succeeded' : 'skipped/failed'})`);
@@ -593,6 +628,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
           contextItems = await searchViaEdgeFunction(queryToUse, {
             topK: contextConfig.candidatePoolSize,
           });
+          diagnostics.edgeItems = contextItems.length;
           console.log(`✅ Context Retrieval (edge): Found ${contextItems.length} items (pool: ${contextConfig.candidatePoolSize}, inject cap: ${contextConfig.maxContextItems})`);
 
           // Retry with original query if transformed returned 0
@@ -631,6 +667,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
           maxTimestamp: maxTimestamp,
         });
 
+        diagnostics.legacyItems = contextItems.length;
         console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search (pool: ${contextConfig.candidatePoolSize})`);
         console.log('📊 Search Strategy Breakdown:', JSON.stringify({
           routing: routingMode,
@@ -930,6 +967,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
     }
 
     // === PRIORITY 2: CONFIDENCE THRESHOLD FILTERING ===
+    diagnostics.preFilterItems = filteredItems.length;
     if (filteredItems.length > 0) {
       try {
         const semanticWasAvailable = contextItems.metadata?.semanticAvailable ?? true;
@@ -948,9 +986,11 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
         } else if (!semanticWasAvailable) {
           console.log(`🎯 BM25-only mode — adaptive threshold: ${confidenceThreshold}`);
         }
+        diagnostics.confidenceThreshold = confidenceThreshold;
         console.log(`🎯 Applying confidence filter (threshold: ${confidenceThreshold}) to ${filteredItems.length} candidates...`);
 
         const filterResult = filterByConfidence(filteredItems, confidenceThreshold);
+        diagnostics.highestScore = filterResult.highestScore ?? null;
 
         // Log filtering results
         if (filterResult.status === 'success') {
@@ -1011,6 +1051,8 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
         console.error('❌ Confidence filtering failed, falling back to keyword-boosted results:', error.message);
       }
     }
+
+    diagnostics.postFilterItems = filteredItems.length;
 
     // === PREFERENCE + VECTOR MERGE ===
     if (prefItems && prefItems.length > 0 && queryHasQualifier) {
@@ -1090,7 +1132,8 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
       items: filteredItems,
       formattedContext: formattedContext,
       elapsedMs: elapsedTime,
-      transformation: transformationMetadata
+      transformation: transformationMetadata,
+      diagnostics,
     };
 
   } catch (error) {

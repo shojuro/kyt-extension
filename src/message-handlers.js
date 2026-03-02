@@ -170,6 +170,114 @@ export async function updateInjectionStats(update) {
 }
 
 /**
+ * Standalone async handler for GET_CONTEXT messages.
+ * Called from a DEDICATED onMessage listener that returns this Promise directly,
+ * so Chrome MV3 properly tracks the async lifecycle and keeps the SW alive.
+ *
+ * @param {Object} message - The GET_CONTEXT message
+ * @param {Function} getContextForInjection - The context retrieval function
+ * @returns {Promise<Object>} The context response (Chrome sends resolved value to caller)
+ */
+async function handleGetContextAsync(message, getContextForInjection) {
+  const injectionStart = performance.now();
+  const diag = { steps: [], startMs: Date.now(), query: '' };
+  async function diagSave() {
+    try { await chrome.storage.local.set({ kyt_context_diag: diag }); } catch (_) {}
+  }
+  try {
+    if (!message.userMessage || typeof message.userMessage !== 'string') {
+      return { success: false, error: 'Missing userMessage' };
+    }
+    diag.query = message.userMessage.substring(0, 80);
+    diag.steps.push('start');
+
+    const memMode = await getMemoryMode();
+    diag.steps.push('memMode:' + memMode);
+    if (memMode !== 'full') {
+      return { success: true, items: [], formattedContext: null, modeBlocked: true, mode: memMode };
+    }
+
+    let classification = classifyIntent(message.userMessage);
+    diag.steps.push('intent:' + classification.intent + ':' + classification.reason);
+
+    if (classification.intent === 'SKIP') {
+      diag.steps.push('SKIP');
+      await diagSave();
+      return { success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason };
+    }
+
+    if (classification.intent === 'PASSIVE') {
+      diag.steps.push('layer2_start');
+      classification = await escalateToLayer2(message.userMessage, classification);
+      diag.steps.push('layer2:' + classification.intent);
+      if (classification.intent === 'SKIP') {
+        await diagSave();
+        return { success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason };
+      }
+    }
+
+    updateInjectionStats({ attempt: true }).catch(() => {});
+
+    const result = await chrome.storage.local.get(['kytDebugMode']);
+    const config = {
+      ...message.config,
+      debugMode: result.kytDebugMode || false
+    };
+    if (classification.confidenceThreshold) {
+      config.confidenceThreshold = classification.confidenceThreshold;
+    }
+
+    diag.steps.push('pipeline_start');
+    await diagSave();
+    const contextData = await Promise.race([
+      getContextForInjection(message.userMessage, config),
+      new Promise((_, reject) => setTimeout(() => {
+        reject(new Error('getContextForInjection timed out after 25000ms'));
+      }, 25000))
+    ]);
+
+    const latencyMs = Math.round(performance.now() - injectionStart);
+    const itemCount = contextData.items?.length || 0;
+    diag.steps.push('done:' + itemCount + 'items:' + latencyMs + 'ms');
+    diag.hasContext = !!(contextData.formattedContext);
+    diag.diagnostics = contextData.diagnostics || null;
+    diag.endMs = Date.now();
+    await diagSave();
+
+    if (itemCount > 0) {
+      updateInjectionStats({ success: true, itemCount, latencyMs, result: true }).catch(() => {});
+    } else {
+      updateInjectionStats({ empty: true, latencyMs, result: true }).catch(() => {});
+    }
+
+    // Sanitize for Chrome message serialization
+    return {
+      success: contextData.success !== false,
+      items: (contextData.items || []).map(item => ({
+        id: item.id,
+        content: typeof item.content === 'string' ? item.content : String(item.content || ''),
+        platform: item.platform || 'unknown',
+        timestamp: item.timestamp || null,
+        similarity: typeof item.similarity === 'number' ? item.similarity : 0,
+        source_type: item.source_type || null,
+      })),
+      formattedContext: contextData.formattedContext || null,
+      elapsedMs: latencyMs,
+    };
+  } catch (error) {
+    const latencyMs = Math.round(performance.now() - injectionStart);
+    const isTimeout = error.message?.includes('timed out');
+    diag.steps.push('ERROR:' + (error.message || String(error)));
+    diag.endMs = Date.now();
+    await diagSave();
+    updateInjectionStats({
+      error: !isTimeout, timeout: isTimeout, latencyMs, result: true, errorMsg: error.message
+    }).catch(() => {});
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Register the port-based handler for GET_CONTEXT requests.
  * Using chrome.runtime.connect() instead of sendMessage+return true avoids
  * the "message channel closed" error in chrome://extensions when the SW dies
@@ -181,80 +289,31 @@ export function registerPortHandler(getContextForInjection) {
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== 'kyt-context') return;
 
-    port.onMessage.addListener(async (msg) => {
-      const injectionStart = performance.now();
-      try {
-        if (!msg.userMessage || typeof msg.userMessage !== 'string') {
-          port.postMessage({ requestId: msg.requestId, success: false, error: 'Missing userMessage' });
-          return;
-        }
-        console.log('🔍 KYT Background: Context request (port) for:', msg.userMessage.substring(0, 50) + '...');
+    // Track port lifecycle so we don't postMessage to a dead port
+    let portAlive = true;
+    port.onDisconnect.addListener(() => {
+      portAlive = false;
+      const err = chrome.runtime.lastError?.message || 'unknown';
+      console.warn('🔌 KYT Background: Context port disconnected:', err);
+    });
 
-        // Memory mode gate — skip injection unless full mode
-        const memMode = await getMemoryMode();
-        if (memMode !== 'full') {
-          console.log(`🚫 ${memMode} mode — injection skipped`);
-          port.postMessage({ requestId: msg.requestId, success: true, items: [], formattedContext: null, modeBlocked: true, mode: memMode });
-          return;
-        }
-
-        // Intent classification gate — skip retrieval for directives/filler
-        let classification = classifyIntent(msg.userMessage);
-        const s = classification.scores;
-        console.log(`🎯 Intent: ${classification.intent} (${classification.reason})` +
-          (s ? ` [D:${s.directive.toFixed(2)} M:${s.memory.toFixed(2)} Q:${s.question.toFixed(2)} P:${s.personal.toFixed(2)} T:${s.temporal.toFixed(2)} ρ:${s.density.toFixed(2)}]` : '') +
-          (classification.confidenceThreshold ? ` threshold=${classification.confidenceThreshold}` : '') +
-          ` → "${msg.userMessage.substring(0, 80)}${msg.userMessage.length > 80 ? '...' : ''}"`);
-
-        if (classification.intent === 'SKIP') {
-          console.log(`⏭️ Skipping injection: ${classification.reason}`);
-          port.postMessage({ requestId: msg.requestId, success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason });
-          return;
-        }
-
-        // Layer 2: LLM judge for PASSIVE cases — may override to SKIP
-        if (classification.intent === 'PASSIVE') {
-          classification = await escalateToLayer2(msg.userMessage, classification);
-          if (classification.intent === 'SKIP') {
-            console.log(`⏭️ Skipping injection (Layer 2): ${classification.reason}`);
-            port.postMessage({ requestId: msg.requestId, success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason });
-            return;
-          }
-        }
-
-        updateInjectionStats({ attempt: true }).catch(() => {});
-
-        const result = await chrome.storage.local.get(['kytDebugMode']);
-        const config = { ...msg.config, debugMode: result.kytDebugMode || false };
-
-        // Apply per-message confidence threshold from intent classifier
-        if (classification.confidenceThreshold) {
-          config.confidenceThreshold = classification.confidenceThreshold;
-        }
-
-        const contextData = await Promise.race([
-          getContextForInjection(msg.userMessage, config),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('getContextForInjection timed out after 25000ms')), 25000))
-        ]);
-
-        const latencyMs = Math.round(performance.now() - injectionStart);
-        const itemCount = contextData.items?.length || 0;
-        console.log('✅ Context retrieved (port):', itemCount, 'items');
-
-        if (itemCount > 0) {
-          updateInjectionStats({ success: true, itemCount, latencyMs, result: true }).catch(() => {});
-        } else {
-          updateInjectionStats({ empty: true, latencyMs, result: true }).catch(() => {});
-        }
-
-        port.postMessage({ requestId: msg.requestId, ...contextData });
-      } catch (error) {
-        const latencyMs = Math.round(performance.now() - injectionStart);
-        const isTimeout = error.message?.includes('timed out');
-        console.error('❌ Context retrieval error (port):', error);
-        updateInjectionStats({ error: !isTimeout, timeout: isTimeout, latencyMs, result: true, errorMsg: error.message }).catch(() => {});
-        port.postMessage({ requestId: msg.requestId, success: false, error: error.message });
+    function safePostMessage(data) {
+      if (!portAlive) {
+        console.warn('🔌 KYT Background: Skipping postMessage — port already disconnected');
+        return;
       }
+      try {
+        port.postMessage(data);
+      } catch (e) {
+        console.warn('🔌 KYT Background: postMessage failed:', e.message);
+      }
+    }
+
+    port.onMessage.addListener(async (msg) => {
+      console.log('🔍 KYT Background: Context request (port) for:', (msg.userMessage || '').substring(0, 50) + '...');
+      // Reuse handleGetContextAsync — same pipeline, same diagnostics, same diag storage
+      const result = await handleGetContextAsync(msg, getContextForInjection);
+      safePostMessage({ requestId: msg.requestId, ...result });
     });
   });
 }
@@ -282,8 +341,19 @@ export function registerMessageHandler(deps) {
     activeImporterRef,
   } = deps;
 
+  // Throttle noisy SAVE_MESSAGE logs — only log every Nth
+  let saveMessageCount = 0;
+  const SAVE_MSG_LOG_INTERVAL = 50;
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    console.log('📨 KYT Background: Received message:', message.type);
+    if (message.type === 'SAVE_MESSAGE') {
+      saveMessageCount++;
+      if (saveMessageCount % SAVE_MSG_LOG_INTERVAL === 1) {
+        console.log(`📨 KYT Background: SAVE_MESSAGE #${saveMessageCount} (logging every ${SAVE_MSG_LOG_INTERVAL})`);
+      }
+    } else {
+      console.log('📨 KYT Background: Received message:', message.type);
+    }
 
     switch (message.type) {
       case 'FLUSH_QUEUE':
@@ -324,6 +394,22 @@ export function registerMessageHandler(deps) {
           }
         })();
         return true;
+
+      case 'GET_CONTEXT': {
+        // Storage-based async: Chrome MV3 kills async continuations in onMessage
+        // handlers, so we can't use sendResponse or returned Promises for long ops.
+        // Instead: acknowledge immediately, run pipeline, write result to storage.
+        // The bridge picks up the result via chrome.storage.onChanged.
+        const ctxRequestId = message.requestId;
+        const ctxStorageKey = 'kyt_ctx_' + ctxRequestId;
+        // Fire-and-forget: pipeline runs independently of message channel
+        handleGetContextAsync(message, getContextForInjection)
+          .then(result => chrome.storage.local.set({ [ctxStorageKey]: result }))
+          .catch(err => chrome.storage.local.set({ [ctxStorageKey]: { success: false, error: err.message } }));
+        // Immediate sync response — channel closes, pipeline continues via storage
+        sendResponse({ acknowledged: true, requestId: ctxRequestId });
+        return false;
+      }
 
       case 'EXTRACTION_ERROR':
         console.error('⚠️ Content script extraction error:', message.error);
@@ -428,96 +514,6 @@ export function registerMessageHandler(deps) {
             sendResponse({ success: false, error: error.message });
           });
         return true;
-
-      case 'GET_CONTEXT': {
-        (async () => {
-          const injectionStart = performance.now();
-          try {
-            if (!message.userMessage || typeof message.userMessage !== 'string') {
-              sendResponse({ success: false, error: 'Missing userMessage' });
-              return;
-            }
-            console.log('🔍 KYT Background: Context request for message:', message.userMessage.substring(0, 50) + '...');
-
-            // Memory mode gate — skip injection unless full mode
-            const memMode = await getMemoryMode();
-            if (memMode !== 'full') {
-              console.log(`🚫 ${memMode} mode — injection skipped`);
-              sendResponse({ success: true, items: [], formattedContext: null, modeBlocked: true, mode: memMode });
-              return;
-            }
-
-            // Intent classification gate — skip retrieval for directives/filler
-            let classification = classifyIntent(message.userMessage);
-            const s = classification.scores;
-            console.log(`🎯 Intent: ${classification.intent} (${classification.reason})` +
-              (s ? ` [D:${s.directive.toFixed(2)} M:${s.memory.toFixed(2)} Q:${s.question.toFixed(2)} P:${s.personal.toFixed(2)} T:${s.temporal.toFixed(2)} ρ:${s.density.toFixed(2)}]` : '') +
-              (classification.confidenceThreshold ? ` threshold=${classification.confidenceThreshold}` : '') +
-              ` → "${message.userMessage.substring(0, 80)}${message.userMessage.length > 80 ? '...' : ''}"`);
-
-            if (classification.intent === 'SKIP') {
-              console.log(`⏭️ Skipping injection: ${classification.reason}`);
-              sendResponse({ success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason });
-              return;
-            }
-
-            // Layer 2: LLM judge for PASSIVE cases — may override to SKIP
-            if (classification.intent === 'PASSIVE') {
-              classification = await escalateToLayer2(message.userMessage, classification);
-              if (classification.intent === 'SKIP') {
-                console.log(`⏭️ Skipping injection (Layer 2): ${classification.reason}`);
-                sendResponse({ success: true, items: [], formattedContext: null, intentSkipped: true, skipReason: classification.reason });
-                return;
-              }
-            }
-
-            updateInjectionStats({ attempt: true }).catch(() => {});
-
-            const result = await chrome.storage.local.get(['kytDebugMode']);
-            const config = {
-              ...message.config,
-              debugMode: result.kytDebugMode || false
-            };
-
-            // Apply per-message confidence threshold from intent classifier
-            if (classification.confidenceThreshold) {
-              config.confidenceThreshold = classification.confidenceThreshold;
-            }
-
-            const contextData = await Promise.race([
-              getContextForInjection(message.userMessage, config),
-              new Promise((_, reject) => setTimeout(() => {
-                reject(new Error('getContextForInjection timed out after 25000ms'));
-              }, 25000))
-            ]);
-
-            const latencyMs = Math.round(performance.now() - injectionStart);
-            const itemCount = contextData.items?.length || 0;
-            console.log('✅ Context retrieved:', itemCount, 'items');
-
-            if (itemCount > 0) {
-              updateInjectionStats({ success: true, itemCount, latencyMs, result: true }).catch(() => {});
-            } else {
-              updateInjectionStats({ empty: true, latencyMs, result: true }).catch(() => {});
-            }
-
-            sendResponse(contextData);
-          } catch (error) {
-            const latencyMs = Math.round(performance.now() - injectionStart);
-            const isTimeout = error.message?.includes('timed out');
-            console.error('❌ Context retrieval error:', error);
-            updateInjectionStats({
-              error: !isTimeout,
-              timeout: isTimeout,
-              latencyMs,
-              result: true,
-              errorMsg: error.message
-            }).catch(() => {});
-            sendResponse({ success: false, error: error.message });
-          }
-        })();
-        return true;
-      }
 
       case 'GET_INJECTION_STATS':
         chrome.storage.local.get([INJECTION_STATS_KEY]).then(result => {

@@ -72,27 +72,6 @@
       ],
       "run_at": "document_start",
       "all_frames": false
-    },
-    {
-      "matches": [
-        "https://gemini.google.com/*"
-      ],
-      "js": [
-        "platforms/gemini/content_test.js"
-      ],
-      "run_at": "document_start",
-      "all_frames": false,
-      "world": "MAIN"
-    },
-    {
-      "matches": [
-        "https://gemini.google.com/*"
-      ],
-      "js": [
-        "platforms/gemini/content_bridge.js"
-      ],
-      "run_at": "document_start",
-      "all_frames": false
     }
   ],
   "web_accessible_resources": [

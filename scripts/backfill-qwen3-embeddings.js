@@ -14,6 +14,8 @@
  *   node scripts/backfill-qwen3-embeddings.js --batch-size 20 --limit 50
  *   node scripts/backfill-qwen3-embeddings.js --table messages
  *   node scripts/backfill-qwen3-embeddings.js --table chat_turns
+ *   node scripts/backfill-qwen3-embeddings.js --platform gemini
+ *   node scripts/backfill-qwen3-embeddings.js --table chat_turns --platform gemini
  *
  * Environment (loaded from .env via dotenv):
  *   SUPABASE_URL, SUPABASE_SERVICE_KEY, HUGGINGFACE_API_KEY
@@ -37,6 +39,7 @@ const DRY_RUN = args.includes('--dry-run');
 const BATCH_SIZE = parseInt(args[args.indexOf('--batch-size') + 1]) || 10;
 const LIMIT = args.includes('--limit') ? parseInt(args[args.indexOf('--limit') + 1]) : null;
 const TABLE_FILTER = args.includes('--table') ? args[args.indexOf('--table') + 1] : null;
+const PLATFORM_FILTER = args.includes('--platform') ? args[args.indexOf('--platform') + 1] : null;
 
 // Validate
 if (!SUPABASE_URL || !SUPABASE_KEY || !HF_API_KEY) {
@@ -53,6 +56,7 @@ console.log(`   Supabase: ${SUPABASE_URL}`);
 console.log(`   Batch size: ${BATCH_SIZE}`);
 console.log(`   Limit: ${LIMIT || 'all'}`);
 console.log(`   Table filter: ${TABLE_FILTER || 'both (messages + chat_turns)'}`);
+console.log(`   Platform filter: ${PLATFORM_FILTER || 'all'}`);
 console.log(`   Dry run: ${DRY_RUN}`);
 console.log(`   Endpoint: ${HF_ROUTER_URL}`);
 console.log(`   Output dims: ${EMBEDDING_DIMS}`);
@@ -77,7 +81,17 @@ const supaHeaders = {
 
 async function fetchNullEmbeddings(table, offset, limit) {
   const idCol = table === 'messages' ? 'message_id' : 'id';
-  const url = `${SUPABASE_URL}/rest/v1/${table}?embedding=is.null&select=${idCol},content&order=created_at.asc&offset=${offset}&limit=${limit}`;
+  // For chat_turns, also fetch contextual_content (richer embedding text)
+  const selectCols = table === 'chat_turns'
+    ? `${idCol},content,contextual_content`
+    : `${idCol},content`;
+  let url = `${SUPABASE_URL}/rest/v1/${table}?embedding=is.null&select=${selectCols}&order=created_at.asc&offset=${offset}&limit=${limit}`;
+
+  // Platform filter: column name differs between tables
+  if (PLATFORM_FILTER) {
+    const platformCol = table === 'messages' ? 'source' : 'platform';
+    url += `&${platformCol}=eq.${PLATFORM_FILTER}`;
+  }
 
   const resp = await fetch(url, { headers: supaHeaders });
   if (!resp.ok) throw new Error(`Query ${table} failed: ${resp.status} ${await resp.text()}`);
@@ -153,7 +167,8 @@ async function processTable(table) {
 
     console.log(`   Batch: ${rows.length} rows`);
 
-    const texts = rows.map(r => (r.content || '').trim() || ' ');
+    // For chat_turns, prefer contextual_content (richer) over raw content
+    const texts = rows.map(r => (r.contextual_content || r.content || '').trim() || ' ');
     const idCol = table === 'messages' ? 'message_id' : 'id';
 
     try {

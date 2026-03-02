@@ -21,7 +21,7 @@
  */
 
 // ===== STATIC IMPORTS (MV3 — no dynamic import()) =====
-import { syncToSupabase, backfillNullEmbeddings } from './src/browser-sync.js';
+import { syncToSupabase, backfillNullEmbeddings, backfillNullChatTurnEmbeddings } from './src/browser-sync.js';
 import { prewarmEmbeddingModel } from './src/browser-search.js';
 import { queueProcessor } from './src/background/queue-processor.js';
 import { callEdgeFunction } from './src/api-client.js';
@@ -722,36 +722,6 @@ async function reInjectContentScripts() {
     console.error('❌ Claude tab query failed:', e.message);
   }
 
-  // ── Gemini tabs ───────────────────────────────────────────────────────
-  try {
-    const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
-    console.log(`🔌 Found ${geminiTabs.length} Gemini tab(s)`);
-
-    for (const tab of geminiTabs) {
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: () => { window.KYT_GEMINI_INJECTED = false; },
-          world: 'MAIN'
-        });
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['platforms/gemini/content_test.js'],
-          world: 'MAIN'
-        });
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['platforms/gemini/content_bridge.js']
-        });
-        console.log(`✅ Re-injected Gemini scripts into tab ${tab.id}`);
-      } catch (e) {
-        console.warn(`⚠️ Failed to re-inject Gemini tab ${tab.id}:`, e.message);
-      }
-    }
-  } catch (e) {
-    console.error('❌ Gemini tab query failed:', e.message);
-  }
-
   console.log('🔌 Content script re-injection complete');
 }
 
@@ -952,10 +922,19 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       try {
         console.log('⏰ Backfill retry alarm fired');
         const backfillResult = await backfillNullEmbeddings();
-        if (backfillResult.success) {
-          console.log(`✅ Backfill retry complete: ${backfillResult.backfilled} messages patched`);
+        console.log(`✅ Messages backfill: ${backfillResult.backfilled || 0} patched`);
+
+        // Also backfill chat_turns (primary retrieval table)
+        const chatTurnsResult = await backfillNullChatTurnEmbeddings();
+        console.log(`✅ Chat turns backfill: ${chatTurnsResult.backfilled || 0} patched`);
+
+        const bothSuccess = backfillResult.success && chatTurnsResult.success;
+        const hasRemaining = backfillResult.willRetry || backfillResult.remaining ||
+                             chatTurnsResult.willRetry || chatTurnsResult.remaining;
+        if (bothSuccess && !hasRemaining) {
+          console.log(`✅ Backfill retry complete`);
           chrome.alarms.clear('backfillEmbeddings');
-        } else if (backfillResult.willRetry || backfillResult.remaining) {
+        } else if (hasRemaining) {
           console.warn(`⚠️ Backfill retry incomplete, will try again in 5 minutes`);
           chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 5 });
         }
@@ -1058,6 +1037,7 @@ async function getConfig() {
     supabaseKey: apiConfig.supabaseKey || SUPABASE_ANON_KEY,
     accessToken: apiConfig.accessToken,
     userId: apiConfig.userId,
+    huggingfaceKey: apiConfig.huggingfaceKey,
   };
 }
 
@@ -1141,6 +1121,7 @@ globalThis.KYT_DEBUG = {
     return 'Circuit breaker reset';
   },
   backfillEmbeddings: () => backfillNullEmbeddings().then(console.log),
+  backfillChatTurnEmbeddings: (platform) => backfillNullChatTurnEmbeddings({ platform }).then(console.log),
   backfillEntities: (force = false) => callEdgeFunction('backfill_entities', { force_reextract: force })
     .then(result => { console.log('🔗 Entity backfill result:', result); return result; })
     .catch(err => { console.error('❌ Entity backfill failed:', err.message); return { success: false, error: err.message }; }),
@@ -1187,6 +1168,29 @@ globalThis.KYT_DEBUG = {
     console.log(`✅ Re-included conversation ${conversationId}: ${d1.length} chat_turns, ${d2.length} messages`);
     return { chat_turns: d1.length, messages: d2.length };
   },
+  // Diagnostic: read pipeline progress from storage (console drops logs in SW)
+  contextDiag: async function() {
+    const r = await chrome.storage.local.get('kyt_context_diag');
+    const d = r.kyt_context_diag;
+    if (!d) { console.log('No context diagnostic data yet'); return null; }
+    const elapsed = d.endMs ? (d.endMs - d.startMs) + 'ms' : 'still running';
+    console.log('Context pipeline diagnostic:', elapsed);
+    console.log('  Query:', d.query);
+    console.log('  Steps:', d.steps.join(' → '));
+    console.log('  Has context:', d.hasContext);
+    if (d.diagnostics) {
+      const dx = d.diagnostics;
+      console.log('  Pipeline stages:');
+      console.log('    Routing:', dx.routingMode);
+      console.log('    Edge items:', dx.edgeItems ?? 'n/a');
+      console.log('    Legacy items:', dx.legacyItems ?? 'n/a');
+      console.log('    Pre-filter:', dx.preFilterItems, '→ Post-filter:', dx.postFilterItems);
+      console.log('    Confidence threshold:', dx.confidenceThreshold, '| Highest score:', dx.highestScore);
+      console.log('    Circuit breakers — API:', dx.apiCircuitBreakerOpen, '| Embedding:', dx.embeddingCircuitBreakerOpen, '| HyDE:', dx.hydeCBOpen);
+      console.log('    Query transformed:', dx.queryTransformed, '| Preference routed:', dx.preferenceRouted);
+    }
+    return d;
+  },
 };
 
 console.log('✅ KYT Background: Service worker ready');
@@ -1196,7 +1200,8 @@ console.log('   - KYT_DEBUG.getContext("test message") - Test context retrieval'
 console.log('   - KYT_DEBUG.viewStorage() - View all storage');
 console.log('   - KYT_DEBUG.diagnoseEmbeddings() - Check circuit breaker, HF key, null embedding counts');
 console.log('   - KYT_DEBUG.resetEmbeddingCircuit() - Reset embedding circuit breaker');
-console.log('   - KYT_DEBUG.backfillEmbeddings() - Backfill null embeddings in Supabase');
+console.log('   - KYT_DEBUG.backfillEmbeddings() - Backfill null embeddings in messages table');
+console.log('   - KYT_DEBUG.backfillChatTurnEmbeddings(platform?) - Backfill null embeddings in chat_turns (e.g. "gemini")');
 console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
 console.log('   - KYT_DEBUG.backfillContextual() - Generate context summaries + re-embed');
 console.log('   - KYT_DEBUG.backfillPostImport() - Full post-import chain (contextual → entities)');

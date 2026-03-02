@@ -569,8 +569,9 @@ if (window.KYT_GEMINI_INJECTED) {
     try {
       if (!response?.body) return;
 
-      const clone = response.clone();
-      const text = await clone.text();
+      // fetch Response has .clone(); XHR mock object does not
+      const readable = typeof response.clone === 'function' ? response.clone() : response;
+      const text = await readable.text();
 
       // Strip anti-XSSI prefix
       let cleaned = text;
@@ -1186,7 +1187,7 @@ if (window.KYT_GEMINI_INJECTED) {
 
   // Discovery mode: log ALL fetches for the first 60s to find the real API domain
   const DISCOVERY_START = Date.now();
-  const DISCOVERY_DURATION_MS = 60000;
+  const DISCOVERY_DURATION_MS = 0; // Endpoints are known; disable broad discovery logging
 
   window.fetch = async function(...args) {
     let [url, options] = args;
@@ -1196,45 +1197,9 @@ if (window.KYT_GEMINI_INJECTED) {
 
     const isPost = options?.method === 'POST' || (options?.body && options?.method !== 'GET');
 
-    // BROAD DISCOVERY: log ALL POST requests from the page for the first 60s
-    // This is critical to find which domain Gemini actually sends API calls to
-    const inDiscoveryPhase = (Date.now() - DISCOVERY_START) < DISCOVERY_DURATION_MS;
-    if (isPost && inDiscoveryPhase) {
-      try {
-        const urlObj = new URL(urlString);
-        const host = urlObj.hostname;
-        const path = urlObj.pathname;
-        const bodyType = options?.body?.constructor?.name || typeof options?.body;
-        const cacheKey = host + path + ':' + bodyType;
-        if (!discoveredEndpoints.has(cacheKey)) {
-          discoveredEndpoints.add(cacheKey);
-          const bodyStr = bodyToString(options?.body);
-          const hasFReq = bodyStr ? (bodyStr.includes('f.req=') || bodyStr.includes('f.req%')) : 'unknown';
-          console.log('KYT Gemini [fetch POST discovery]:', host + path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
-        }
-      } catch (_) {}
-    }
-
     // Skip non-Google requests for message processing
     if (!isGoogleDomain(urlString)) {
       return originalFetch.apply(this, args);
-    }
-
-    // Also log Google-domain POSTs after discovery period
-    if (isPost && (Date.now() - DISCOVERY_START) >= DISCOVERY_DURATION_MS) {
-      try {
-        const urlObj = new URL(urlString);
-        const host = urlObj.hostname;
-        const path = urlObj.pathname;
-        const bodyType = options?.body?.constructor?.name || typeof options?.body;
-        const cacheKey = host + path + ':' + bodyType;
-        if (!discoveredEndpoints.has(cacheKey)) {
-          discoveredEndpoints.add(cacheKey);
-          const bodyStr = bodyToString(options?.body);
-          const hasFReq = bodyStr ? (bodyStr.includes('f.req=') || bodyStr.includes('f.req%')) : 'unknown';
-          console.log('KYT Gemini [endpoint discovery]:', host + path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
-        }
-      } catch (_) {}
     }
 
     // Coerce body to string (handles URLSearchParams, FormData, ArrayBuffer, etc.)
@@ -1262,24 +1227,6 @@ if (window.KYT_GEMINI_INJECTED) {
           return response;
         }
 
-        // Discovery: log unmatched Google-domain f.req RPCs (first 2 min only, deduped)
-        if (inDiscoveryPhase && isGoogleDomain(urlString) && bodyString.includes('f.req')) {
-          try {
-            const params = new URLSearchParams(bodyString);
-            const fReq = params.get('f.req');
-            if (fReq) {
-              let p = JSON.parse(fReq);
-              if (typeof p === 'string') p = JSON.parse(p);
-              if (Array.isArray(p) && Array.isArray(p[0]) && Array.isArray(p[0][0])) {
-                const rpcId = p[0][0][0];
-                if (!discoveredEndpoints.has('rpc:' + rpcId)) {
-                  discoveredEndpoints.add('rpc:' + rpcId);
-                  console.log('KYT Gemini [unmatched RPC]:', rpcId);
-                }
-              }
-            }
-          } catch (_) {}
-        }
       }
       return originalFetch.apply(this, args);
     }
@@ -1337,85 +1284,50 @@ if (window.KYT_GEMINI_INJECTED) {
 
     const isPost = method && method.toUpperCase() === 'POST';
 
-    // BROAD DISCOVERY: log ALL XHR POST requests for the first 60s
-    if (isPost && (Date.now() - DISCOVERY_START) < DISCOVERY_DURATION_MS) {
-      try {
-        const urlObj = new URL(url, window.location.origin);
-        const host = urlObj.hostname;
-        const path = urlObj.pathname;
-        const bodyType = body?.constructor?.name || typeof body;
-        const cacheKey = 'xhr:' + host + path + ':' + bodyType;
-        if (!discoveredEndpoints.has(cacheKey)) {
-          discoveredEndpoints.add(cacheKey);
-          const bodyStr = bodyToString(body);
-          const hasFReq = bodyStr ? (bodyStr.includes('f.req=') || bodyStr.includes('f.req%')) : 'unknown';
-          console.log('KYT Gemini [XHR POST discovery]:', host + path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
-        }
-      } catch (_) {}
-    }
-
     // Skip non-Google domains for message processing
     if (!isGoogleDomain(url)) {
       return originalXHRSend.call(this, body);
     }
 
     if (isPost) {
-      // Endpoint discovery for Google domains after discovery period
-      try {
-        const urlObj = new URL(url, window.location.origin);
-        const host = urlObj.hostname;
-        const path = urlObj.pathname;
-        const bodyType = body?.constructor?.name || typeof body;
-        const cacheKey = 'xhr:' + host + path + ':' + bodyType;
-        if (!discoveredEndpoints.has(cacheKey)) {
-          discoveredEndpoints.add(cacheKey);
-          const bodyStr = bodyToString(body);
-          const hasFReq = bodyStr ? (bodyStr.includes('f.req=') || bodyStr.includes('f.req%')) : 'unknown';
-          console.log('KYT Gemini [XHR endpoint discovery]:', host + path, { bodyType, hasFReq, bodyLen: bodyStr?.length });
-        }
-      } catch (_) {}
-
       // Try to process as a Gemini message request
       const bodyString = bodyToString(body);
       if (bodyString && isGeminiMessageRequest(url, bodyString)) {
-        // Capture the message synchronously (XHR.send is sync — can't await context injection)
-        console.log('KYT Gemini [XHR]: Intercepted message request:', url.substring(0, 120));
-        try {
-          const params = new URLSearchParams(bodyString);
-          const fReq = params.get('f.req');
-          const parsed = parseFReq(fReq);
+        // Async context injection — defer XHR.send() until context resolves.
+        // Async XHR (default) allows this: send() just initiates, response comes via events.
+        const xhr = this;
+        const XHR_CONTEXT_TIMEOUT_MS = 28000; // Must exceed pipeline timeout (25s) to give context a chance
 
-          if (parsed && parsed.userMessage) {
-            const cleanContent = stripInjectionBlock(parsed.userMessage);
-            const messageData = {
-              content: cleanContent,
-              role: 'user',
-              conversationId: parsed.conversationId || 'unknown',
-              model: 'gemini',
-              timestamp: Date.now(),
-              messageId: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-              platform: 'gemini'
-            };
-
-            let shouldCapture = true;
+        Promise.race([
+          processGeminiRequest(url, bodyString),
+          new Promise(resolve => setTimeout(() => resolve(null), XHR_CONTEXT_TIMEOUT_MS))
+        ]).then(injectedBody => {
+          // Best-effort response capture (mirrors fetch path)
+          xhr.addEventListener('load', function() {
             try {
-              shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch', messageData.messageId);
-            } catch (_) { /* fail-open */ }
+              if (xhr.status >= 200 && xhr.status < 300 && xhr.responseText) {
+                const finalBody = injectedBody || bodyString;
+                const fReqVal = new URLSearchParams(finalBody).get('f.req') || '';
+                const parsed = parseFReq(fReqVal);
+                captureGeminiResponse(
+                  { body: true, text: () => Promise.resolve(xhr.responseText) },
+                  { conversationId: parsed?.conversationId || 'unknown', platform: 'gemini', model: 'gemini', timestamp: Date.now() }
+                ).catch(err => console.error('KYT Gemini [XHR]: Response capture failed:', err));
+              }
+            } catch (_) {}
+          }, { once: true });
 
-            if (shouldCapture) {
-              window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', { detail: messageData }));
-              console.log('KYT Gemini [XHR]: User message captured (' + messageData.content.length + ' chars)');
-            }
-          }
-        } catch (error) {
-          console.error('KYT Gemini [XHR]: Error processing request:', error);
-        }
+          originalXHRSend.call(xhr, injectedBody || body);
+        }).catch(() => {
+          originalXHRSend.call(xhr, body);
+        });
+
+        return; // Don't fall through to synchronous send
       } else if (bodyString) {
         // Not a message-send — check if it's a conversation history load
         const historyInfo = isGeminiHistoryLoad(url, bodyString);
         if (historyInfo) {
           console.log('KYT Gemini [XHR history]: Detected history-load RPC:', historyInfo.rpcId);
-          // XHR is sync so we capture the response via load event
           const xhr = this;
           xhr.addEventListener('load', function() {
             try {
@@ -1480,22 +1392,6 @@ if (window.KYT_GEMINI_INJECTED) {
   };
 
   console.log('KYT Gemini: Fetch + XHR wrappers installed - ready to capture messages');
-
-  // === NAVIGATOR.SENDBEACON OVERRIDE ===
-  // Some Google apps use sendBeacon for analytics; unlikely for messages but check anyway.
-  if (!window.__kytOriginalSendBeacon) window.__kytOriginalSendBeacon = navigator.sendBeacon?.bind(navigator);
-  const originalSendBeacon = window.__kytOriginalSendBeacon;
-  if (originalSendBeacon) {
-    navigator.sendBeacon = function(url, data) {
-      if (typeof url === 'string' && url.includes('gemini.google.com')) {
-        const bodyStr = bodyToString(data);
-        if (bodyStr && bodyStr.includes('f.req')) {
-          console.log('KYT Gemini [sendBeacon]: Detected f.req in sendBeacon to', url.substring(0, 100));
-        }
-      }
-      return originalSendBeacon(url, data);
-    };
-  }
 
   // === DIAGNOSTIC PROBE ===
   // Logs once after 3 seconds to confirm everything is wired up

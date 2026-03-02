@@ -603,6 +603,149 @@ async function searchSupabaseText(query, options = {}) {
 }
 
 /**
+ * Supabase text search on chat_turns table (keyword fallback for cross-platform recall).
+ * Mirrors searchSupabaseText() but targets chat_turns — the primary retrieval table.
+ * This ensures Gemini and other platform content with null embeddings can still be
+ * found via keyword matching.
+ *
+ * @param {string} query - Search query text
+ * @param {Object} options - Search options
+ * @param {number} options.limit - Max results (default: 10)
+ * @param {number} options.maxTimestamp - Exclude messages newer than this
+ * @returns {Promise<Object[]>} Results with bm25_score field for RRF compatibility
+ */
+async function searchSupabaseChatTurnsText(query, options = {}) {
+  const { limit = 10, maxTimestamp = 0 } = options;
+
+  try {
+    const config = await getConfig();
+
+    // Extract keywords: split on whitespace, filter short/stop words
+    const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'but', 'with', 'about', 'me', 'my', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'do', 'does', 'did', 'have', 'has', 'had', 'be', 'been', 'being', 'what', 'which', 'who', 'when', 'where', 'how', 'that', 'this', 'tell']);
+    const keywords = query
+      .toLowerCase()
+      .replace(/[^\w\s-]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 2 && !stopWords.has(w));
+
+    if (keywords.length === 0) {
+      console.log('   🔤 chat_turns text search: no viable keywords from query');
+      return [];
+    }
+
+    console.log(`   🔤 chat_turns text search: keywords=[${keywords.join(', ')}]`);
+
+    // Build filter params
+    let filterParams = `select=id,content,platform,start_timestamp,conversation_id,speakers&limit=${limit}&order=start_timestamp.desc`;
+
+    // User ID filter
+    if (!config.userId) {
+      console.warn('⚠️ chat_turns text search skipped: no userId available');
+      return [];
+    }
+    filterParams += `&user_id=eq.${config.userId}`;
+
+    // Profile isolation filter
+    let textSearchProfileFilter = '';
+    if (!_profileCompat.restUnavailable) {
+      const searchProfileId = await getActiveProfileId();
+      if (searchProfileId) {
+        textSearchProfileFilter = `&profile_id=eq.${searchProfileId}`;
+      }
+    }
+    filterParams += textSearchProfileFilter;
+
+    // Exclude questions and deflections
+    filterParams += '&or=(is_question.eq.false,is_question.is.null)';
+    filterParams += '&or=(deflection.lt.0.70,deflection.is.null)';
+    filterParams += '&or=(exclude_from_search.eq.false,exclude_from_search.is.null)';
+
+    // Search for each keyword via ilike, deduplicate results
+    const resultMap = new Map();
+
+    for (const keyword of keywords) {
+      try {
+        let url = `${config.supabaseUrl}/rest/v1/chat_turns?${filterParams}&content=ilike.*${encodeURIComponent(keyword)}*`;
+        let response = await fetchWithTimeout(url, {
+          headers: {
+            'apikey': config.supabaseKey,
+            'Authorization': `Bearer ${config.supabaseKey}`
+          }
+        }, 8000);
+
+        // Retry without profile_id if column doesn't exist
+        if (!response.ok && response.status === 400 && textSearchProfileFilter) {
+          const errBody = await response.text();
+          if (errBody.includes('profile_id')) {
+            console.warn('⚠️ chat_turns missing profile_id column — retrying without (migration pending)');
+            _profileCompat.restUnavailable = true;
+            const fallbackParams = filterParams.replace(textSearchProfileFilter, '');
+            url = `${config.supabaseUrl}/rest/v1/chat_turns?${fallbackParams}&content=ilike.*${encodeURIComponent(keyword)}*`;
+            filterParams = fallbackParams;
+            textSearchProfileFilter = '';
+            response = await fetchWithTimeout(url, {
+              headers: {
+                'apikey': config.supabaseKey,
+                'Authorization': `Bearer ${config.supabaseKey}`
+              }
+            }, 8000);
+          }
+        }
+
+        if (!response.ok) {
+          console.warn(`   ⚠️ chat_turns text search for "${keyword}" failed: ${response.status}`);
+          continue;
+        }
+
+        const data = await response.json();
+
+        for (const row of data) {
+          const id = row.id;
+          if (resultMap.has(id)) {
+            resultMap.get(id).hitCount += 1;
+          } else {
+            // Apply timestamp filter client-side
+            const rowTimestamp = row.start_timestamp || 0;
+            if (maxTimestamp > 0 && rowTimestamp > maxTimestamp) continue;
+
+            resultMap.set(id, {
+              // Map to searchHybrid's expected shape
+              message_id: row.id,
+              id: row.id,
+              content: row.content,
+              conversation_id: row.conversation_id,
+              source: row.platform,
+              timestamp: row.start_timestamp,
+              speakers: row.speakers,
+              hitCount: 1
+            });
+          }
+        }
+      } catch (keywordError) {
+        console.warn(`   ⚠️ chat_turns text search for "${keyword}" error: ${keywordError.message}`);
+      }
+    }
+
+    // Score by keyword coverage, sort
+    const results = Array.from(resultMap.values())
+      .map(item => ({
+        ...item,
+        bm25_score: item.hitCount / keywords.length,
+        hitCount: undefined
+      }))
+      .sort((a, b) => b.bm25_score - a.bm25_score)
+      .slice(0, limit);
+
+    console.log(`   ✅ chat_turns text search: ${results.length} results from ${resultMap.size} unique matches`);
+    return results;
+
+  } catch (error) {
+    console.error('   ❌ chat_turns text search failed:', error.message);
+    return [];
+  }
+}
+
+/**
  * Graph walk: traverse entity relationships to find conceptually related chat_turns.
  * Generates query embedding, then calls search_entities_by_embedding → graph_walk_from_entities RPCs.
  *
@@ -1039,7 +1182,7 @@ export async function searchHybrid(query, options = {}) {
       let semanticAvailable = false;
       if (enableGraph) console.log(`   🔗 Running graph walk (entity traversal)...`);
 
-      const [supabaseTextResults, semanticResults, graphWalkResults] = await Promise.all([
+      const [supabaseTextResults, semanticResults, graphWalkResults, chatTurnsTextResults] = await Promise.all([
         enableBM25
           ? searchSupabaseText(query, { limit: limit * 2, role, source, maxTimestamp })
               .catch(err => { console.warn('Supabase text search failed:', err.message); return []; })
@@ -1057,16 +1200,27 @@ export async function searchHybrid(query, options = {}) {
         enableGraph
           ? searchGraphWalk(query, { limit: limit * 2, maxTimestamp })
               .catch(err => { console.warn('Graph walk failed:', err.message); return []; })
+          : Promise.resolve([]),
+        // chat_turns text search: catches Gemini/other platform content with null embeddings
+        enableBM25
+          ? searchSupabaseChatTurnsText(query, { limit: limit * 2, maxTimestamp })
+              .catch(err => { console.warn('chat_turns text search failed:', err.message); return []; })
           : Promise.resolve([])
       ]);
 
       // Per-strategy diagnostic counts
-      console.log(`📊 Search counts: BM25=${enableBM25 ? (rankedLists.length > 0 ? rankedLists[0].length : 0) : 'disabled'}, supabaseText=${supabaseTextResults.length}, semantic=${semanticResults.length}, graph=${graphWalkResults?.length || 0}`);
+      console.log(`📊 Search counts: BM25=${enableBM25 ? (rankedLists.length > 0 ? rankedLists[0].length : 0) : 'disabled'}, supabaseText=${supabaseTextResults.length}, chatTurnsText=${chatTurnsTextResults.length}, semantic=${semanticResults.length}, graph=${graphWalkResults?.length || 0}`);
 
-      // Process Supabase text results
+      // Process Supabase text results (messages table)
       if (supabaseTextResults.length > 0) {
         console.log(`   ✅ Supabase text search: ${supabaseTextResults.length} results`);
         rankedLists.push(supabaseTextResults);
+      }
+
+      // Process chat_turns text results (catches null-embedding rows from Gemini etc.)
+      if (chatTurnsTextResults.length > 0) {
+        console.log(`   ✅ chat_turns text search: ${chatTurnsTextResults.length} results`);
+        rankedLists.push(chatTurnsTextResults);
       }
 
       // Process semantic results

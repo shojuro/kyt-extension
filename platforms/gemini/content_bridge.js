@@ -185,56 +185,76 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
     return;
   }
 
-  try {
-    const port = chrome.runtime.connect({ name: 'kyt-context' });
-    let responded = false;
+  // Storage-based async pattern: Chrome MV3 kills async continuations in
+  // onMessage handlers. Instead, background acknowledges immediately and writes
+  // the result to chrome.storage.local. We listen for the result here.
+  let responded = false;
+  const ctxStorageKey = 'kyt_ctx_' + requestId;
 
-    const timeoutId = setTimeout(() => {
-      if (responded) return;
-      responded = true;
-      try { port.disconnect(); } catch (_) {}
-      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
-        detail: { requestId, success: false, formattedContext: null, items: [], elapsedMs: 0, error: 'Context request timed out' }
-      }));
-    }, 26000);
+  const timeoutId = setTimeout(() => {
+    if (responded) return;
+    responded = true;
+    chrome.storage.onChanged.removeListener(onStorageChanged);
+    console.warn('KYT Gemini BRIDGE: Context request timed out after 30s');
+    window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+      detail: { requestId, success: false, formattedContext: null, items: [], elapsedMs: 0, error: 'Context request timed out' }
+    }));
+  }, 30000);
 
-    port.onMessage.addListener((response) => {
-      if (responded) return;
-      responded = true;
-      clearTimeout(timeoutId);
-      resetDisconnectState();
-      try { port.disconnect(); } catch (_) {}
+  // Listen for the pipeline result in storage
+  function onStorageChanged(changes, area) {
+    if (area !== 'local' || !changes[ctxStorageKey]) return;
+    if (responded) return;
+    responded = true;
+    clearTimeout(timeoutId);
+    chrome.storage.onChanged.removeListener(onStorageChanged);
 
-      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
-        detail: {
-          requestId,
-          success: response.success,
-          formattedContext: response.formattedContext,
-          items: response.items,
-          elapsedMs: response.elapsedMs,
-          error: response.error
-        }
-      }));
-    });
+    const result = changes[ctxStorageKey].newValue;
+    resetDisconnectState();
 
-    port.onDisconnect.addListener(() => {
-      if (responded) return;
-      responded = true;
-      clearTimeout(timeoutId);
-      const err = chrome.runtime.lastError?.message || 'Port disconnected';
-      if (isDisconnectionError(err) || err === 'Port disconnected') {
-        markDisconnected(err);
+    // Clean up the storage key (fire-and-forget)
+    try { chrome.storage.local.remove(ctxStorageKey); } catch (_) {}
+
+    console.log('KYT Gemini BRIDGE: Context result received via storage');
+    window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+      detail: {
+        requestId,
+        success: result?.success,
+        formattedContext: result?.formattedContext,
+        items: result?.items,
+        elapsedMs: result?.elapsedMs,
+        error: result?.error
       }
-      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
-        detail: { requestId, success: false, formattedContext: null, items: [], elapsedMs: 0, error: err }
-      }));
-    });
+    }));
+  }
+  chrome.storage.onChanged.addListener(onStorageChanged);
 
-    port.postMessage({ requestId, userMessage, config });
+  // Send the request — background acknowledges immediately, pipeline runs async
+  try {
+    chrome.runtime.sendMessage(
+      { type: 'GET_CONTEXT', requestId, userMessage, config },
+      (ack) => {
+        if (chrome.runtime.lastError) {
+          if (responded) return;
+          responded = true;
+          clearTimeout(timeoutId);
+          chrome.storage.onChanged.removeListener(onStorageChanged);
+          const err = chrome.runtime.lastError.message;
+          console.warn('KYT Gemini BRIDGE: sendMessage error:', err);
+          if (isDisconnectionError(err)) markDisconnected(err);
+          window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+            detail: { requestId, success: false, formattedContext: null, items: [], elapsedMs: 0, error: err }
+          }));
+        }
+        // ack.acknowledged = true means pipeline is running, result comes via storage
+      }
+    );
   } catch (error) {
-    if (isDisconnectionError(error.message)) {
-      markDisconnected(error.message);
-    }
+    if (responded) return;
+    responded = true;
+    clearTimeout(timeoutId);
+    chrome.storage.onChanged.removeListener(onStorageChanged);
+    if (isDisconnectionError(error.message)) markDisconnected(error.message);
     window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
       detail: { requestId, success: false, formattedContext: null, items: [], elapsedMs: 0, error: error.message }
     }));
