@@ -49,7 +49,7 @@ const API_MAX_RETRIES = 2; // Max retries for transient failures
 
 // Jina reranker settings — capped at 5s to stay within 10s injection budget
 const JINA_TIMEOUT_MS = 5000;  // 5s timeout (was 15s, exceeded injection deadline)
-const MAX_RERANK_DOCS = 10;    // Match top_n; no point sending more than we keep
+const MAX_RERANK_DOCS = 25;    // Send all merged results to Jina (was 10 — missed relevant items at rank 11+)
 const MAX_JINA_ATTEMPTS = 2;   // One retry on timeout for cold-start recovery
 
 /**

@@ -127,6 +127,7 @@ function extractAssistantResponse(responseText) {
 function isMetadataString(str) {
   if (str.length < 10) return false;
   const trimmed = str.trimStart();
+  if (/^\d+$/.test(trimmed)) return true;
   if (trimmed.startsWith('[null,') || trimmed.startsWith('[["')) return true;
   if (/^(c_|r_|rc_)[0-9a-f]{8,}/.test(trimmed)) return true;
   if ((trimmed.startsWith('[') || trimmed.startsWith('{')) && trimmed.length > 50) {
@@ -564,6 +565,11 @@ describe('isMetadataString — filters serialized JSON from response', () => {
     expect(isMetadataString('c_d55a4bc9fb3d58b8abcd1234')).toBe(true);
     expect(isMetadataString('r_7d526c69f5982ee6abcd1234')).toBe(true);
     expect(isMetadataString('rc_1900b53362295bfa')).toBe(true);
+  });
+
+  it('filters pure numeric strings (response IDs, timestamps)', () => {
+    expect(isMetadataString('455561854643717217')).toBe(true);
+    expect(isMetadataString('1772462194781')).toBe(true);
   });
 
   it('passes through natural language text', () => {

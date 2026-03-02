@@ -274,6 +274,8 @@
     // Filter out JSON-encoded metadata strings that beat real text on length
     if (str.length < 10) return false;
     const trimmed = str.trimStart();
+    // Pure numeric strings (response IDs, timestamps)
+    if (/^\d+$/.test(trimmed)) return true;
     // Serialized JSON arrays (conversation state, IDs, settings)
     if (trimmed.startsWith('[null,') || trimmed.startsWith('[["')) return true;
     // Strings that are mostly conversation/request IDs
