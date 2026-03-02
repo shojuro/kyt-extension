@@ -87,6 +87,12 @@
       url: data.url || window.location.href,
     };
 
+    // Check context validity BEFORE attempting any capture — after extension
+    // reload, old content.js handlers fire with dead chrome.runtime context.
+    if (!chrome.runtime?.id) {
+      return; // silently drop — message will be re-captured after page refresh
+    }
+
     if (queueManager) {
       await queueManager.capture(messageData);
     } else {
