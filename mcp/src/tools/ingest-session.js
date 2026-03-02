@@ -42,7 +42,7 @@ export async function ingestSession({ sessionId, all = false, force = false }) {
   }
 
   if (all) {
-    return ingestAllSessions(projectDirs);
+    return ingestAllSessions(projectDirs, force);
   }
 
   // Find the target session
@@ -133,16 +133,20 @@ async function ingestOneSession(filePath, sessionId, force = false) {
       content_type: 'imported',
     }));
 
-    const result = await callEdgeFunction('save_chat_turn_batch', {
-      turns: batch,
-      skip_ai_processing: false,
-    });
+    try {
+      const result = await callEdgeFunction('save_chat_turn_batch', {
+        turns: batch,
+        skip_ai_processing: false,
+      });
 
-    if (result.error) {
+      if (result.error) {
+        totalErrors++;
+      } else {
+        totalInserted += result.inserted || 0;
+        totalDuplicates += result.duplicates_skipped || 0;
+      }
+    } catch {
       totalErrors++;
-    } else {
-      totalInserted += result.inserted || 0;
-      totalDuplicates += result.duplicates_skipped || 0;
     }
   }
 
@@ -166,40 +170,63 @@ async function ingestOneSession(filePath, sessionId, force = false) {
   };
 }
 
-async function ingestAllSessions(projectDirs) {
+async function ingestAllSessions(projectDirs, force = false) {
   const ingested = getIngestedSessions();
   let sessionsProcessed = 0;
-  let totalNewTurns = 0;
+  let totalInserted = 0;
+  let totalErrors = 0;
 
   for (const dir of projectDirs) {
+    // Discover sessions from both the index AND by scanning for .jsonl files
     const index = getSessionIndex(dir);
+    const indexSids = new Set(index.map(s => s.sessionId));
 
-    for (const session of index) {
-      const sid = session.sessionId;
+    // Scan for .jsonl files not in the index
+    let dirFiles = [];
+    try {
+      const { readdirSync } = await import('fs');
+      dirFiles = readdirSync(dir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => f.replace('.jsonl', ''));
+    } catch { /* ignore */ }
+
+    // Merge: index entries + discovered files
+    const allSids = new Set([...indexSids, ...dirFiles]);
+
+    for (const sid of allSids) {
+      const indexEntry = index.find(s => s.sessionId === sid);
       const lastCount = ingested[sid]?.lastIngestedCount || 0;
-      const currentCount = session.messageCount || 0;
+      const currentCount = indexEntry?.messageCount || 0;
 
-      // Skip if already fully ingested
-      if (lastCount >= currentCount) continue;
+      // Skip if already fully ingested (unless force)
+      if (!force && currentCount > 0 && lastCount >= currentCount) continue;
+      if (!force && lastCount > 0 && currentCount === 0) continue; // no index entry, already ingested
 
       const filePath = findSessionFile(dir, sid);
       if (!filePath) continue;
 
-      const result = await ingestOneSession(filePath, sid);
-      sessionsProcessed++;
+      try {
+        const result = await ingestOneSession(filePath, sid, force);
+        sessionsProcessed++;
 
-      // Extract inserted count from result text
-      const match = result.content[0]?.text?.match(/New turns processed: (\d+)/);
-      if (match) totalNewTurns += parseInt(match[1], 10);
+        const match = result.content[0]?.text?.match(/Inserted: (\d+)/);
+        if (match) totalInserted += parseInt(match[1], 10);
+      } catch (err) {
+        totalErrors++;
+        process.stderr?.write?.(`ingestAll: ${sid} failed: ${err.message}\n`);
+      }
     }
   }
 
   return {
     content: [{
       type: 'text',
-      text: sessionsProcessed > 0
-        ? `Batch ingestion complete: ${sessionsProcessed} sessions, ${totalNewTurns} new turns.`
-        : 'All sessions already ingested — nothing new to process.',
+      text: [
+        sessionsProcessed > 0
+          ? `Batch ingestion complete: ${sessionsProcessed} sessions, ${totalInserted} inserted.`
+          : 'All sessions already ingested — nothing new to process.',
+        totalErrors > 0 ? `${totalErrors} sessions failed (see stderr).` : null,
+      ].filter(Boolean).join('\n'),
     }],
   };
 }
