@@ -416,6 +416,27 @@
   // DISPATCH CAPTURE
   // ═══════════════════════════════════════════════════════════════════════
 
+  // DEBUG helper: describe nested array structure without dumping content
+  function describeStructure(val, depth) {
+    if (depth > 4) return '...';
+    if (val === null) return 'null';
+    if (typeof val === 'string') {
+      if (val.length > 100) return 'str(' + val.length + '):"' + val.substring(0, 60) + '..."';
+      return 'str(' + val.length + '):"' + val.substring(0, 40) + '"';
+    }
+    if (typeof val === 'number') return 'num:' + val;
+    if (typeof val === 'boolean') return 'bool:' + val;
+    if (Array.isArray(val)) {
+      if (val.length === 0) return '[]';
+      if (val.length > 5) {
+        const first3 = val.slice(0, 3).map(v => describeStructure(v, depth + 1));
+        return '[' + first3.join(', ') + ', ...+' + (val.length - 3) + ']';
+      }
+      return '[' + val.map(v => describeStructure(v, depth + 1)).join(', ') + ']';
+    }
+    return typeof val;
+  }
+
   function dispatchCapture(content, role, captureMethod, conversationId) {
     if (!content || typeof content !== 'string' || content.trim().length < 2) return;
 
@@ -474,13 +495,35 @@
     this.addEventListener('load', function () {
       try {
         if (this.responseText) {
+          // DEBUG: Dump raw response structure to find where assistant text lives
+          console.log('🔬 KYT Gemini DEBUG: Raw response length=' + this.responseText.length);
+          const debugLines = this.responseText.substring(0, 2000).split('\n');
+          for (let i = 0; i < Math.min(debugLines.length, 15); i++) {
+            const line = debugLines[i];
+            if (/^\d+$/.test(line.trim())) continue; // skip length prefixes
+            if (!line.trim()) continue;
+            try {
+              const parsed = JSON.parse(line.trim());
+              // Log the structure (types/lengths, not content) for each frame
+              const desc = describeStructure(parsed, 0);
+              console.log('🔬 Frame ' + i + ': ' + desc);
+            } catch (_) {
+              console.log('🔬 Line ' + i + ' (unparseable): ' + line.substring(0, 100));
+            }
+          }
+
           const assistantText = extractAssistantResponse(this.responseText);
           if (assistantText) {
             console.log('📥 KYT Gemini: Assistant response captured via XHR (' + assistantText.length + ' chars)');
+            console.log('📥 Preview: "' + assistantText.substring(0, 200) + '"');
             dispatchCapture(assistantText, 'assistant', 'xhr', conversationId);
+          } else {
+            console.warn('⚠️ KYT Gemini: No assistant text extracted from response');
           }
         }
-      } catch (e) { /* non-fatal */ }
+      } catch (e) {
+        console.error('⚠️ KYT Gemini: Response capture error:', e.message);
+      }
     }, { once: true });
 
     // Context injection: defer send until context resolves
