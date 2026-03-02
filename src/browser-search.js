@@ -636,7 +636,7 @@ async function searchSupabaseChatTurnsText(query, options = {}) {
     console.log(`   🔤 chat_turns text search: keywords=[${keywords.join(', ')}]`);
 
     // Build filter params
-    let filterParams = `select=id,content,platform,start_timestamp,conversation_id,speakers&limit=${limit}&order=start_timestamp.desc`;
+    let filterParams = `select=id,content,contextual_content,platform,start_timestamp,conversation_id,speakers&limit=${limit}&order=start_timestamp.desc`;
 
     // User ID filter
     if (!config.userId) {
@@ -1421,7 +1421,9 @@ async function rerankResults(query, results) {
   }
 
   // Prepare documents (cap at MAX_RERANK_DOCS — no point sending more than top_n)
-  const documents = results.slice(0, MAX_RERANK_DOCS).map(r => r.content || '');
+  // Prefer contextual_content (enriched with context summaries) — matches edge function behavior.
+  // Falls back to raw content for items without contextual_content.
+  const documents = results.slice(0, MAX_RERANK_DOCS).map(r => r.contextual_content || r.content || '');
   const topN = documents.length;
 
   // DEBUG: Log what we're sending to Jina (first 3 docs, truncated)
@@ -1490,9 +1492,11 @@ async function rerankResults(query, results) {
         };
       });
 
-      // Scale non-Jina items into the bottom of the Jina score range.
-      // Items beyond MAX_RERANK_DOCS weren't sent to Jina — give them a
-      // proportional score rather than 0 (which kills them in confidence filter).
+      // Scale non-Jina items BELOW the Jina score range.
+      // Items beyond MAX_RERANK_DOCS weren't sent to Jina — they must always
+      // rank below Jina-scored items (Jina is the authority on relevance).
+      // Previous bug: Math.max(jinaMin * 0.8, 0.10) floored at 0.10, which
+      // pushed unscored items ABOVE Jina-scored items when all Jina scores < 0.10.
       const jinaScored = reranked.filter(r => r.jinaReranked);
       const unscored = reranked.filter(r => !r.jinaReranked);
       if (jinaScored.length > 0 && unscored.length > 0) {
@@ -1500,9 +1504,9 @@ async function rerankResults(query, results) {
         const wScores = unscored.map(r => r.weighted_score || 0);
         const wMax = Math.max(...wScores, 0.001);
         for (const r of unscored) {
-          // Scale to bottom of Jina range — inherently lower-ranked but not zero.
-          // Floor at 0.10 so entity-graph items have a real survival chance.
-          const scaled = ((r.weighted_score || 0) / wMax) * Math.max(jinaMin * 0.8, 0.10);
+          // Scale to 80% of Jina's minimum — always below Jina-scored items.
+          // No floor: if Jina says everything is 0.04, unscored gets 0.032 max.
+          const scaled = ((r.weighted_score || 0) / wMax) * (jinaMin * 0.8);
           r.cross_encoder_score = scaled;
           r.rerank_score = scaled;
         }
