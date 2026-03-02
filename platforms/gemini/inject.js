@@ -270,8 +270,30 @@
     return stripped && stripped.length >= 2 ? stripped : null;
   }
 
+  function isMetadataString(str) {
+    // Filter out JSON-encoded metadata strings that beat real text on length
+    if (str.length < 10) return false;
+    const trimmed = str.trimStart();
+    // Serialized JSON arrays (conversation state, IDs, settings)
+    if (trimmed.startsWith('[null,') || trimmed.startsWith('[["')) return true;
+    // Strings that are mostly conversation/request IDs
+    if (/^(c_|r_|rc_)[0-9a-f]{8,}/.test(trimmed)) return true;
+    // Strings that look like valid JSON arrays/objects (metadata payloads)
+    if ((trimmed.startsWith('[') || trimmed.startsWith('{')) && trimmed.length > 50) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed === 'object' && parsed !== null) return true;
+      } catch (_) {
+        // Not valid JSON — it's text, not metadata
+      }
+    }
+    return false;
+  }
+
   function findLongestString(val) {
-    if (typeof val === 'string') return val;
+    if (typeof val === 'string') {
+      return isMetadataString(val) ? '' : val;
+    }
     if (!Array.isArray(val)) return '';
     let longest = '';
     for (const item of val) {

@@ -124,8 +124,24 @@ function extractAssistantResponse(responseText) {
   return stripped && stripped.length >= 2 ? stripped : null;
 }
 
+function isMetadataString(str) {
+  if (str.length < 10) return false;
+  const trimmed = str.trimStart();
+  if (trimmed.startsWith('[null,') || trimmed.startsWith('[["')) return true;
+  if (/^(c_|r_|rc_)[0-9a-f]{8,}/.test(trimmed)) return true;
+  if ((trimmed.startsWith('[') || trimmed.startsWith('{')) && trimmed.length > 50) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === 'object' && parsed !== null) return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
 function findLongestString(val) {
-  if (typeof val === 'string') return val;
+  if (typeof val === 'string') {
+    return isMetadataString(val) ? '' : val;
+  }
   if (!Array.isArray(val)) return '';
   let longest = '';
   for (const item of val) {
@@ -530,6 +546,64 @@ describe('bodyToString', () => {
     expect(bodyToString(null)).toBeNull();
     expect(bodyToString(undefined)).toBeNull();
     expect(bodyToString(42)).toBeNull();
+  });
+});
+
+describe('isMetadataString — filters serialized JSON from response', () => {
+  it('filters [null,...] conversation state strings', () => {
+    const metadata = '[null,["c_d55a4bc9fb3d58b8","r_7d526c69f5982ee6"],null,null]';
+    expect(isMetadataString(metadata)).toBe(true);
+  });
+
+  it('filters [["..."]] nested RPC response strings', () => {
+    const metadata = '[["wrb.fr","rpcId","some long data payload here that exceeds the threshold"]]';
+    expect(isMetadataString(metadata)).toBe(true);
+  });
+
+  it('filters conversation ID strings', () => {
+    expect(isMetadataString('c_d55a4bc9fb3d58b8abcd1234')).toBe(true);
+    expect(isMetadataString('r_7d526c69f5982ee6abcd1234')).toBe(true);
+    expect(isMetadataString('rc_1900b53362295bfa')).toBe(true);
+  });
+
+  it('passes through natural language text', () => {
+    expect(isMetadataString('This is a normal assistant response about AI')).toBe(false);
+    expect(isMetadataString('Andrew Ng is influential in AI education')).toBe(false);
+  });
+
+  it('passes through short strings', () => {
+    expect(isMetadataString('hello')).toBe(false);
+  });
+
+  it('filters valid JSON object strings over 50 chars', () => {
+    const jsonObj = JSON.stringify({ key: 'value', long: 'x'.repeat(50) });
+    expect(isMetadataString(jsonObj)).toBe(true);
+  });
+
+  it('passes through bracket-starting text that is not valid JSON', () => {
+    expect(isMetadataString('[This is a list item] followed by more text that is long enough')).toBe(false);
+  });
+});
+
+describe('extractAssistantResponse — metadata filtering', () => {
+  it('skips metadata strings and returns actual text', () => {
+    // Simulate a response where metadata string is longer than assistant text
+    const metadata = '[null,["c_abc123def456","r_789xyz"],null,null,[["rc_id",["very long metadata payload that should be skipped entirely by the filter"]]]]';
+    const nested = [metadata, 'The actual assistant response text'];
+    const frame = JSON.stringify(nested);
+    const response = ")]}'\n" + frame.length + '\n' + frame;
+
+    const result = extractAssistantResponse(response);
+    expect(result).toBe('The actual assistant response text');
+  });
+
+  it('extracts text even when conversation IDs are present', () => {
+    const nested = ['c_d55a4bc9fb3d58b8', 'Here is what I know about Andrew Ng'];
+    const frame = JSON.stringify(nested);
+    const response = ")]}'\n" + frame.length + '\n' + frame;
+
+    const result = extractAssistantResponse(response);
+    expect(result).toBe('Here is what I know about Andrew Ng');
   });
 });
 
