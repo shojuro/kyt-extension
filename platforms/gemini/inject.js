@@ -228,13 +228,22 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // RESPONSE EXTRACTION — Longest-string heuristic
+  // RESPONSE EXTRACTION — Length-prefixed frame parser
   // ═══════════════════════════════════════════════════════════════════════
 
   /**
-   * Extract assistant response from Gemini's response frames.
-   * Response format: anti-XSSI prefix `)]}'\n` + length-prefixed JSON frames.
-   * We depth-first search for the longest string (the assistant's reply).
+   * Extract assistant response from Gemini's streaming response.
+   *
+   * Response format:
+   *   )]}'\n                    <- anti-XSSI prefix
+   *   <number>\n               <- byte-count length prefix
+   *   <JSON frame>\n           <- exactly N chars of JSON
+   *   <number>\n               <- next length prefix
+   *   <JSON frame>\n           <- next frame ...
+   *
+   * Each frame is a JSON array. wrb.fr frames contain the response:
+   *   [["wrb.fr", null, "<double-encoded-JSON>"]]
+   * Position [0][2] is a JSON string that must be parsed again.
    */
   function extractAssistantResponse(responseText) {
     if (!responseText || typeof responseText !== 'string') return null;
@@ -246,60 +255,142 @@
       if (nlIdx >= 0) cleaned = cleaned.substring(nlIdx + 1);
     }
 
-    let longest = '';
+    // Parse length-prefixed frames (NOT line-by-line split)
+    const frames = parseLengthPrefixedFrames(cleaned);
 
-    // Parse length-prefixed frames
-    const lines = cleaned.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || /^\d+$/.test(trimmed)) continue;
+    // Extract text from wrb.fr frames, strip injection blocks, pick best natural text
+    let bestText = '';
+    for (const frame of frames) {
+      const raw = extractTextFromFrame(frame);
+      if (!raw || raw.length < 20) continue;
 
-      try {
-        const parsed = JSON.parse(trimmed);
-        const found = findLongestString(parsed);
-        if (found.length > longest.length) longest = found;
-      } catch (_) {
-        // Not valid JSON — skip
+      // Strip injection blocks first (response may echo injected context)
+      const cleaned = stripInjectionBlock(raw);
+      const candidate = cleaned && cleaned.length >= 20 ? cleaned : raw;
+
+      if (candidate.length > bestText.length && isNaturalLanguage(candidate)) {
+        bestText = candidate;
       }
     }
 
-    if (longest.length < 2) return null;
-
-    // Strip any KYT injection blocks to prevent feedback loops
-    const stripped = stripInjectionBlock(longest);
-    return stripped && stripped.length >= 2 ? stripped : null;
+    if (bestText.length < 10) return null;
+    return bestText;
   }
 
-  function isMetadataString(str) {
-    // Filter out JSON-encoded metadata strings that beat real text on length
-    if (str.length < 10) return false;
+  /**
+   * Parse Gemini's length-prefixed streaming format into JSON frames.
+   * Each frame is preceded by a decimal byte count on its own line.
+   */
+  function parseLengthPrefixedFrames(text) {
+    const frames = [];
+    let pos = 0;
+    while (pos < text.length) {
+      // Skip whitespace between frames
+      while (pos < text.length && (text[pos] === '\n' || text[pos] === '\r')) pos++;
+      if (pos >= text.length) break;
+
+      // Read the length prefix (decimal number)
+      let numStr = '';
+      while (pos < text.length && text[pos] >= '0' && text[pos] <= '9') {
+        numStr += text[pos++];
+      }
+      if (!numStr) { pos++; continue; } // skip unexpected char
+      const len = parseInt(numStr, 10);
+      if (isNaN(len) || len <= 0 || len > 500000) continue;
+
+      // Skip newline after the number
+      if (pos < text.length && text[pos] === '\n') pos++;
+
+      // Read exactly len chars as one frame
+      const frameStr = text.substring(pos, pos + len);
+      pos += len;
+
+      try {
+        frames.push(JSON.parse(frameStr));
+      } catch (_) {
+        // malformed frame — skip
+      }
+    }
+    return frames;
+  }
+
+  /**
+   * Extract assistant text from a parsed wrb.fr frame.
+   * wrb.fr entries have double-encoded JSON at position [2].
+   */
+  function extractTextFromFrame(frame) {
+    if (!Array.isArray(frame) || !Array.isArray(frame[0])) return null;
+
+    for (const entry of frame) {
+      if (!Array.isArray(entry) || entry[0] !== 'wrb.fr') continue;
+
+      // entry[2] is a double-encoded JSON string containing response data
+      const innerStr = entry[2];
+      if (typeof innerStr !== 'string') continue;
+
+      let inner;
+      try { inner = JSON.parse(innerStr); } catch (_) { continue; }
+      if (!Array.isArray(inner)) continue;
+
+      const candidate = findLongestRawText(inner);
+      if (candidate) return candidate;
+    }
+    return null;
+  }
+
+  /**
+   * Positive signal check: is this string natural language text?
+   * Replaces the old isMetadataString negative-filter approach.
+   */
+  function isNaturalLanguage(str) {
+    if (!str || str.length < 20) return false;
+    // Must contain spaces (multi-word text)
+    const words = str.split(/\s+/).filter(w => w.length > 0);
+    if (words.length < 3) return false;
+    // Must contain at least one lowercase letter (not ALL-CAPS IDs)
+    if (!/[a-z]/.test(str)) return false;
+    // Must not start with metadata patterns
     const trimmed = str.trimStart();
-    // Pure numeric strings (response IDs, timestamps)
-    if (/^\d+$/.test(trimmed)) return true;
-    // Serialized JSON arrays (conversation state, IDs, settings)
-    if (trimmed.startsWith('[null,') || trimmed.startsWith('[["')) return true;
-    // Strings that are mostly conversation/request IDs
-    if (/^(c_|r_|rc_)[0-9a-f]{8,}/.test(trimmed)) return true;
-    // Strings that look like valid JSON arrays/objects (metadata payloads)
-    if ((trimmed.startsWith('[') || trimmed.startsWith('{')) && trimmed.length > 50) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (typeof parsed === 'object' && parsed !== null) return true;
-      } catch (_) {
-        // Not valid JSON — it's text, not metadata
-      }
-    }
-    return false;
+    if (/^[\[{]/.test(trimmed) || /^-?\d+$/.test(trimmed)) return false;
+    if (/^(c_|r_|rc_|af\.)/.test(trimmed)) return false;
+    return true;
   }
 
-  function findLongestString(val) {
+  /**
+   * Depth-first search for the longest non-trivial string in a nested structure.
+   * Filters obvious metadata (pure numbers, conv IDs, JSON) but allows strings
+   * that may contain injection blocks (those get stripped later).
+   */
+  function findLongestRawText(val) {
     if (typeof val === 'string') {
-      return isMetadataString(val) ? '' : val;
+      if (val.length < 20) return '';
+      const trimmed = val.trimStart();
+      // Filter pure numeric (response IDs, timestamps)
+      if (/^-?\d+$/.test(trimmed)) return '';
+      // Filter conv/request IDs
+      if (/^(c_|r_|rc_|af\.)[0-9a-f]{8,}/.test(trimmed)) return '';
+      return val;
     }
     if (!Array.isArray(val)) return '';
     let longest = '';
     for (const item of val) {
-      const found = findLongestString(item);
+      const found = findLongestRawText(item);
+      if (found.length > longest.length) longest = found;
+    }
+    return longest;
+  }
+
+  /**
+   * Depth-first search for the longest natural-language string in a nested structure.
+   */
+  function findLongestNaturalText(val) {
+    if (typeof val === 'string') {
+      return isNaturalLanguage(val) ? val : '';
+    }
+    if (!Array.isArray(val)) return '';
+    let longest = '';
+    for (const item of val) {
+      const found = findLongestNaturalText(item);
       if (found.length > longest.length) longest = found;
     }
     return longest;
@@ -416,27 +507,6 @@
   // DISPATCH CAPTURE
   // ═══════════════════════════════════════════════════════════════════════
 
-  // DEBUG helper: describe nested array structure without dumping content
-  function describeStructure(val, depth) {
-    if (depth > 4) return '...';
-    if (val === null) return 'null';
-    if (typeof val === 'string') {
-      if (val.length > 100) return 'str(' + val.length + '):"' + val.substring(0, 60) + '..."';
-      return 'str(' + val.length + '):"' + val.substring(0, 40) + '"';
-    }
-    if (typeof val === 'number') return 'num:' + val;
-    if (typeof val === 'boolean') return 'bool:' + val;
-    if (Array.isArray(val)) {
-      if (val.length === 0) return '[]';
-      if (val.length > 5) {
-        const first3 = val.slice(0, 3).map(v => describeStructure(v, depth + 1));
-        return '[' + first3.join(', ') + ', ...+' + (val.length - 3) + ']';
-      }
-      return '[' + val.map(v => describeStructure(v, depth + 1)).join(', ') + ']';
-    }
-    return typeof val;
-  }
-
   function dispatchCapture(content, role, captureMethod, conversationId) {
     if (!content || typeof content !== 'string' || content.trim().length < 2) return;
 
@@ -495,23 +565,6 @@
     this.addEventListener('load', function () {
       try {
         if (this.responseText) {
-          // DEBUG: Dump raw response structure to find where assistant text lives
-          console.log('🔬 KYT Gemini DEBUG: Raw response length=' + this.responseText.length);
-          const debugLines = this.responseText.substring(0, 2000).split('\n');
-          for (let i = 0; i < Math.min(debugLines.length, 15); i++) {
-            const line = debugLines[i];
-            if (/^\d+$/.test(line.trim())) continue; // skip length prefixes
-            if (!line.trim()) continue;
-            try {
-              const parsed = JSON.parse(line.trim());
-              // Log the structure (types/lengths, not content) for each frame
-              const desc = describeStructure(parsed, 0);
-              console.log('🔬 Frame ' + i + ': ' + desc);
-            } catch (_) {
-              console.log('🔬 Line ' + i + ' (unparseable): ' + line.substring(0, 100));
-            }
-          }
-
           const assistantText = extractAssistantResponse(this.responseText);
           if (assistantText) {
             console.log('📥 KYT Gemini: Assistant response captured via XHR (' + assistantText.length + ' chars)');

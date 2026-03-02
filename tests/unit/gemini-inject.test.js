@@ -102,51 +102,109 @@ function extractAssistantResponse(responseText) {
     if (nlIdx >= 0) cleaned = cleaned.substring(nlIdx + 1);
   }
 
-  let longest = '';
+  const frames = parseLengthPrefixedFrames(cleaned);
 
-  const lines = cleaned.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || /^\d+$/.test(trimmed)) continue;
+  // Extract text from wrb.fr frames, strip injection blocks, pick best natural text
+  let bestText = '';
+  for (const frame of frames) {
+    const raw = extractTextFromFrame(frame);
+    if (!raw || raw.length < 20) continue;
 
-    try {
-      const parsed = JSON.parse(trimmed);
-      const found = findLongestString(parsed);
-      if (found.length > longest.length) longest = found;
-    } catch (_) {
-      // Not valid JSON — skip
+    // Strip injection blocks first (response may echo injected context)
+    const stripped = stripInjectionBlock(raw);
+    const candidate = stripped && stripped.length >= 20 ? stripped : raw;
+
+    if (candidate.length > bestText.length && isNaturalLanguage(candidate)) {
+      bestText = candidate;
     }
   }
 
-  if (longest.length < 2) return null;
-
-  const stripped = stripInjectionBlock(longest);
-  return stripped && stripped.length >= 2 ? stripped : null;
+  if (bestText.length < 10) return null;
+  return bestText;
 }
 
-function isMetadataString(str) {
-  if (str.length < 10) return false;
-  const trimmed = str.trimStart();
-  if (/^\d+$/.test(trimmed)) return true;
-  if (trimmed.startsWith('[null,') || trimmed.startsWith('[["')) return true;
-  if (/^(c_|r_|rc_)[0-9a-f]{8,}/.test(trimmed)) return true;
-  if ((trimmed.startsWith('[') || trimmed.startsWith('{')) && trimmed.length > 50) {
+function parseLengthPrefixedFrames(text) {
+  const frames = [];
+  let pos = 0;
+  while (pos < text.length) {
+    while (pos < text.length && (text[pos] === '\n' || text[pos] === '\r')) pos++;
+    if (pos >= text.length) break;
+
+    let numStr = '';
+    while (pos < text.length && text[pos] >= '0' && text[pos] <= '9') {
+      numStr += text[pos++];
+    }
+    if (!numStr) { pos++; continue; }
+    const len = parseInt(numStr, 10);
+    if (isNaN(len) || len <= 0 || len > 500000) continue;
+
+    if (pos < text.length && text[pos] === '\n') pos++;
+
+    const frameStr = text.substring(pos, pos + len);
+    pos += len;
+
     try {
-      const parsed = JSON.parse(trimmed);
-      if (typeof parsed === 'object' && parsed !== null) return true;
+      frames.push(JSON.parse(frameStr));
     } catch (_) {}
   }
-  return false;
+  return frames;
 }
 
-function findLongestString(val) {
+function extractTextFromFrame(frame) {
+  if (!Array.isArray(frame) || !Array.isArray(frame[0])) return null;
+
+  for (const entry of frame) {
+    if (!Array.isArray(entry) || entry[0] !== 'wrb.fr') continue;
+
+    const innerStr = entry[2];
+    if (typeof innerStr !== 'string') continue;
+
+    let inner;
+    try { inner = JSON.parse(innerStr); } catch (_) { continue; }
+    if (!Array.isArray(inner)) continue;
+
+    const candidate = findLongestRawText(inner);
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+function findLongestRawText(val) {
   if (typeof val === 'string') {
-    return isMetadataString(val) ? '' : val;
+    if (val.length < 20) return '';
+    const trimmed = val.trimStart();
+    if (/^-?\d+$/.test(trimmed)) return '';
+    if (/^(c_|r_|rc_|af\.)[0-9a-f]{8,}/.test(trimmed)) return '';
+    return val;
   }
   if (!Array.isArray(val)) return '';
   let longest = '';
   for (const item of val) {
-    const found = findLongestString(item);
+    const found = findLongestRawText(item);
+    if (found.length > longest.length) longest = found;
+  }
+  return longest;
+}
+
+function isNaturalLanguage(str) {
+  if (!str || str.length < 20) return false;
+  const words = str.split(/\s+/).filter(w => w.length > 0);
+  if (words.length < 3) return false;
+  if (!/[a-z]/.test(str)) return false;
+  const trimmed = str.trimStart();
+  if (/^[\[{]/.test(trimmed) || /^-?\d+$/.test(trimmed)) return false;
+  if (/^(c_|r_|rc_|af\.)/.test(trimmed)) return false;
+  return true;
+}
+
+function findLongestNaturalText(val) {
+  if (typeof val === 'string') {
+    return isNaturalLanguage(val) ? val : '';
+  }
+  if (!Array.isArray(val)) return '';
+  let longest = '';
+  for (const item of val) {
+    const found = findLongestNaturalText(item);
     if (found.length > longest.length) longest = found;
   }
   return longest;
@@ -259,16 +317,28 @@ function makeBatchexecuteBody(rpcId, argsObj) {
 }
 
 function makeGeminiResponse(assistantText) {
-  // Simulates Gemini's response format: anti-XSSI prefix + length-prefixed JSON
-  const frame = JSON.stringify([['wrb.fr', 'rpcId', assistantText]]);
-  return ")]}'\\n\n" + frame.length + '\n' + frame + '\n';
+  // Simulates Gemini's response: anti-XSSI prefix + length-prefixed wrb.fr frame
+  // The assistant text is double-encoded inside the wrb.fr entry
+  const innerPayload = JSON.stringify([[[assistantText]]]);
+  const frame = JSON.stringify([['wrb.fr', null, innerPayload]]);
+  return ")]}'\n" + frame.length + '\n' + frame + '\n';
 }
 
 function makeNestedGeminiResponse(texts) {
-  // Multiple nested strings — longest should win
-  const nested = texts.map(t => [t]);
-  const frame = JSON.stringify(nested);
+  // Multiple texts in the inner payload — longest natural text should win
+  const innerPayload = JSON.stringify(texts.map(t => [[t]]));
+  const frame = JSON.stringify([['wrb.fr', null, innerPayload]]);
   return ")]}'\n" + frame.length + '\n' + frame + '\n';
+}
+
+function makeMultiFrameResponse(frames) {
+  // Build a response with multiple length-prefixed frames
+  let result = ")]}'\n";
+  for (const frameData of frames) {
+    const json = JSON.stringify(frameData);
+    result += json.length + '\n' + json + '\n';
+  }
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -400,24 +470,176 @@ describe('parseFReq — edge cases', () => {
   });
 });
 
-describe('extractAssistantResponse', () => {
-  it('extracts longest string from response frames', () => {
-    const response = makeGeminiResponse('This is the assistant reply');
-    const result = extractAssistantResponse(response);
-    expect(result).toBe('This is the assistant reply');
+describe('parseLengthPrefixedFrames', () => {
+  it('parses single frame', () => {
+    const frame = JSON.stringify([['wrb.fr', null, '"hello"']]);
+    const input = frame.length + '\n' + frame + '\n';
+    const result = parseLengthPrefixedFrames(input);
+    expect(result).toHaveLength(1);
+    expect(result[0][0][0]).toBe('wrb.fr');
   });
 
-  it('extracts longest from nested arrays', () => {
-    const response = makeNestedGeminiResponse(['short', 'This is a longer response text']);
+  it('parses multiple frames', () => {
+    const f1 = JSON.stringify([['wrb.fr', null, '"first"']]);
+    const f2 = JSON.stringify([['wrb.fr', null, '"second"']]);
+    const input = f1.length + '\n' + f1 + '\n' + f2.length + '\n' + f2 + '\n';
+    const result = parseLengthPrefixedFrames(input);
+    expect(result).toHaveLength(2);
+  });
+
+  it('skips malformed frames', () => {
+    const good = JSON.stringify([['wrb.fr', null, '"ok"']]);
+    const input = good.length + '\n' + good + '\n5\n{bad}\n';
+    const result = parseLengthPrefixedFrames(input);
+    expect(result).toHaveLength(1);
+  });
+
+  it('handles empty input', () => {
+    expect(parseLengthPrefixedFrames('')).toHaveLength(0);
+  });
+
+  it('skips frames with oversized length prefix', () => {
+    const input = '999999\n' + 'x'.repeat(100) + '\n';
+    const result = parseLengthPrefixedFrames(input);
+    // Frame length 999999 > available chars, but parser reads what it can
+    expect(result).toHaveLength(0); // parse fails on truncated JSON
+  });
+
+  it('handles leading/trailing whitespace', () => {
+    const frame = JSON.stringify(['data']);
+    const input = '\n\n' + frame.length + '\n' + frame + '\n\n';
+    const result = parseLengthPrefixedFrames(input);
+    expect(result).toHaveLength(1);
+  });
+});
+
+describe('extractTextFromFrame', () => {
+  it('extracts text from wrb.fr frame with double-encoded inner JSON', () => {
+    const innerPayload = JSON.stringify([['This is the assistant reply with enough words to pass']]);
+    const frame = [['wrb.fr', null, innerPayload]];
+    const result = extractTextFromFrame(frame);
+    expect(result).toBe('This is the assistant reply with enough words to pass');
+  });
+
+  it('returns null for non-wrb.fr frames', () => {
+    const frame = [['other.rpc', null, '"some data"']];
+    expect(extractTextFromFrame(frame)).toBeNull();
+  });
+
+  it('returns null for non-array input', () => {
+    expect(extractTextFromFrame('string')).toBeNull();
+    expect(extractTextFromFrame(null)).toBeNull();
+    expect(extractTextFromFrame(42)).toBeNull();
+  });
+
+  it('returns null when inner JSON is not a string', () => {
+    const frame = [['wrb.fr', null, 42]];
+    expect(extractTextFromFrame(frame)).toBeNull();
+  });
+
+  it('returns null when inner JSON is not parseable', () => {
+    const frame = [['wrb.fr', null, '{invalid json}']];
+    expect(extractTextFromFrame(frame)).toBeNull();
+  });
+
+  it('finds longest natural text in deeply nested inner structure', () => {
+    const short = 'hi';
+    const long = 'This is a much longer response text from the Gemini assistant model';
+    const innerPayload = JSON.stringify([[short], [long], ['x']]);
+    const frame = [['wrb.fr', null, innerPayload]];
+    const result = extractTextFromFrame(frame);
+    expect(result).toBe(long);
+  });
+});
+
+describe('isNaturalLanguage', () => {
+  it('accepts normal multi-word text', () => {
+    expect(isNaturalLanguage('This is a normal assistant response about AI topics')).toBe(true);
+    expect(isNaturalLanguage('Andrew Ng is influential in AI education worldwide')).toBe(true);
+  });
+
+  it('rejects short strings', () => {
+    expect(isNaturalLanguage('hello')).toBe(false);
+    expect(isNaturalLanguage('short text')).toBe(false);
+  });
+
+  it('rejects strings with fewer than 3 words', () => {
+    expect(isNaturalLanguage('single-word-but-long-enough')).toBe(false);
+  });
+
+  it('rejects ALL-CAPS strings (likely IDs)', () => {
+    expect(isNaturalLanguage('ABCDEF1234567890GHIJKLMNOP')).toBe(false);
+  });
+
+  it('rejects strings starting with [', () => {
+    expect(isNaturalLanguage('[null,"c_abc123","r_def456",null,null]')).toBe(false);
+  });
+
+  it('rejects strings starting with {', () => {
+    expect(isNaturalLanguage('{"key":"value","other":"data","more":"info"}')).toBe(false);
+  });
+
+  it('rejects conversation ID strings', () => {
+    expect(isNaturalLanguage('c_d55a4bc9fb3d58b8 and some other text here')).toBe(false);
+    expect(isNaturalLanguage('r_7d526c69f5982ee6 something else extra')).toBe(false);
+    expect(isNaturalLanguage('rc_1900b53362295bfa with more text padding')).toBe(false);
+  });
+
+  it('rejects numeric strings', () => {
+    expect(isNaturalLanguage('455561854643717217')).toBe(false);
+  });
+
+  it('rejects null/undefined', () => {
+    expect(isNaturalLanguage(null)).toBe(false);
+    expect(isNaturalLanguage(undefined)).toBe(false);
+    expect(isNaturalLanguage('')).toBe(false);
+  });
+});
+
+describe('findLongestNaturalText', () => {
+  it('returns natural language string', () => {
+    expect(findLongestNaturalText('This is a long enough natural text string')).toBe('This is a long enough natural text string');
+  });
+
+  it('returns empty for metadata string', () => {
+    expect(findLongestNaturalText('c_d55a4bc9fb3d58b8abcd1234')).toBe('');
+  });
+
+  it('finds longest natural text in nested arrays', () => {
+    const data = [
+      'short',
+      ['c_abc123def456_extra_padding_text_here'],
+      ['This is the actual assistant response with many words in it'],
+      [42, null, 'x']
+    ];
+    expect(findLongestNaturalText(data)).toBe('This is the actual assistant response with many words in it');
+  });
+
+  it('returns empty for non-string/non-array', () => {
+    expect(findLongestNaturalText(42)).toBe('');
+    expect(findLongestNaturalText(null)).toBe('');
+    expect(findLongestNaturalText(true)).toBe('');
+  });
+});
+
+describe('extractAssistantResponse', () => {
+  it('extracts text from wrb.fr frame in length-prefixed response', () => {
+    const response = makeGeminiResponse('This is a detailed assistant reply with several words in it');
     const result = extractAssistantResponse(response);
-    expect(result).toBe('This is a longer response text');
+    expect(result).toBe('This is a detailed assistant reply with several words in it');
+  });
+
+  it('extracts longest natural text from nested response', () => {
+    const response = makeNestedGeminiResponse(['short text here', 'This is a longer and more detailed response text from Gemini']);
+    const result = extractAssistantResponse(response);
+    expect(result).toBe('This is a longer and more detailed response text from Gemini');
   });
 
   it('strips anti-XSSI prefix', () => {
-    const frame = JSON.stringify(['Hello from Gemini!']);
-    const response = ")]}'\n" + frame.length + '\n' + frame;
+    const response = makeGeminiResponse('Hello from Gemini with enough words to pass the filter');
+    expect(response.startsWith(")]}'")).toBe(true);
     const result = extractAssistantResponse(response);
-    expect(result).toBe('Hello from Gemini!');
+    expect(result).toBe('Hello from Gemini with enough words to pass the filter');
   });
 
   it('returns null for empty/short responses', () => {
@@ -432,11 +654,36 @@ describe('extractAssistantResponse', () => {
   });
 
   it('strips KYT injection blocks from response', () => {
-    const text = '[SESSION_CONTEXT]\nSome injected context\n===\nActual assistant response here';
-    const frame = JSON.stringify([text]);
-    const response = ")]}'\n" + frame.length + '\n' + frame;
+    const text = '[SESSION_CONTEXT]\nSome injected context\n===\nActual assistant response here that is long enough to pass natural language check';
+    const response = makeGeminiResponse(text);
     const result = extractAssistantResponse(response);
-    expect(result).toBe('Actual assistant response here');
+    expect(result).toBe('Actual assistant response here that is long enough to pass natural language check');
+  });
+
+  it('handles multi-frame response picking best text', () => {
+    // Frame 1: metadata-only wrb.fr
+    const metaInner = JSON.stringify([['c_abc123def456_padding']]);
+    const metaFrame = [['wrb.fr', 'meta', metaInner]];
+    // Frame 2: actual content wrb.fr
+    const contentInner = JSON.stringify([['The real Gemini assistant response with many natural language words']]);
+    const contentFrame = [['wrb.fr', 'content', contentInner]];
+    const response = makeMultiFrameResponse([metaFrame, contentFrame]);
+    const result = extractAssistantResponse(response);
+    expect(result).toBe('The real Gemini assistant response with many natural language words');
+  });
+});
+
+describe('extractAssistantResponse — metadata filtering', () => {
+  it('skips metadata and returns actual text from wrb.fr', () => {
+    const innerPayload = JSON.stringify([
+      'c_abc123def456',
+      'The actual assistant response text that is long enough to pass'
+    ]);
+    const frame = [['wrb.fr', null, innerPayload]];
+    const json = JSON.stringify(frame);
+    const response = ")]}'\n" + json.length + '\n' + json + '\n';
+    const result = extractAssistantResponse(response);
+    expect(result).toBe('The actual assistant response text that is long enough to pass');
   });
 });
 
@@ -547,69 +794,6 @@ describe('bodyToString', () => {
     expect(bodyToString(null)).toBeNull();
     expect(bodyToString(undefined)).toBeNull();
     expect(bodyToString(42)).toBeNull();
-  });
-});
-
-describe('isMetadataString — filters serialized JSON from response', () => {
-  it('filters [null,...] conversation state strings', () => {
-    const metadata = '[null,["c_d55a4bc9fb3d58b8","r_7d526c69f5982ee6"],null,null]';
-    expect(isMetadataString(metadata)).toBe(true);
-  });
-
-  it('filters [["..."]] nested RPC response strings', () => {
-    const metadata = '[["wrb.fr","rpcId","some long data payload here that exceeds the threshold"]]';
-    expect(isMetadataString(metadata)).toBe(true);
-  });
-
-  it('filters conversation ID strings', () => {
-    expect(isMetadataString('c_d55a4bc9fb3d58b8abcd1234')).toBe(true);
-    expect(isMetadataString('r_7d526c69f5982ee6abcd1234')).toBe(true);
-    expect(isMetadataString('rc_1900b53362295bfa')).toBe(true);
-  });
-
-  it('filters pure numeric strings (response IDs, timestamps)', () => {
-    expect(isMetadataString('455561854643717217')).toBe(true);
-    expect(isMetadataString('1772462194781')).toBe(true);
-  });
-
-  it('passes through natural language text', () => {
-    expect(isMetadataString('This is a normal assistant response about AI')).toBe(false);
-    expect(isMetadataString('Andrew Ng is influential in AI education')).toBe(false);
-  });
-
-  it('passes through short strings', () => {
-    expect(isMetadataString('hello')).toBe(false);
-  });
-
-  it('filters valid JSON object strings over 50 chars', () => {
-    const jsonObj = JSON.stringify({ key: 'value', long: 'x'.repeat(50) });
-    expect(isMetadataString(jsonObj)).toBe(true);
-  });
-
-  it('passes through bracket-starting text that is not valid JSON', () => {
-    expect(isMetadataString('[This is a list item] followed by more text that is long enough')).toBe(false);
-  });
-});
-
-describe('extractAssistantResponse — metadata filtering', () => {
-  it('skips metadata strings and returns actual text', () => {
-    // Simulate a response where metadata string is longer than assistant text
-    const metadata = '[null,["c_abc123def456","r_789xyz"],null,null,[["rc_id",["very long metadata payload that should be skipped entirely by the filter"]]]]';
-    const nested = [metadata, 'The actual assistant response text'];
-    const frame = JSON.stringify(nested);
-    const response = ")]}'\n" + frame.length + '\n' + frame;
-
-    const result = extractAssistantResponse(response);
-    expect(result).toBe('The actual assistant response text');
-  });
-
-  it('extracts text even when conversation IDs are present', () => {
-    const nested = ['c_d55a4bc9fb3d58b8', 'Here is what I know about Andrew Ng'];
-    const frame = JSON.stringify(nested);
-    const response = ")]}'\n" + frame.length + '\n' + frame;
-
-    const result = extractAssistantResponse(response);
-    expect(result).toBe('Here is what I know about Andrew Ng');
   });
 });
 
