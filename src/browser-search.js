@@ -1424,6 +1424,13 @@ async function rerankResults(query, results) {
   const documents = results.slice(0, MAX_RERANK_DOCS).map(r => r.content || '');
   const topN = documents.length;
 
+  // DEBUG: Log what we're sending to Jina (first 3 docs, truncated)
+  console.log(`   📋 Jina input: query="${query.substring(0, 80)}..." docs=[`);
+  documents.slice(0, 3).forEach((d, i) => {
+    const preview = (d || '(empty)').substring(0, 120).replace(/\n/g, '\\n');
+    console.log(`      [${i}] (${d.length} chars) "${preview}..."`);
+  });
+
   // ── Retry loop (timeout-only retry for cold-start recovery) ───────────
   let lastError = null;
 
@@ -1468,6 +1475,9 @@ async function rerankResults(query, results) {
         for (const item of data.results) {
           scoreMap.set(item.index, item.relevance_score);
         }
+        // DEBUG: Log raw Jina scores
+        const topScores = data.results.slice(0, 5).map(r => `[${r.index}]=${r.relevance_score?.toFixed(4)}`);
+        console.log(`   📊 Jina raw scores (top 5): ${topScores.join(', ')}`);
       }
 
       const reranked = results.map((result, idx) => {
