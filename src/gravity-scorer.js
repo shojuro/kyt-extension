@@ -49,7 +49,7 @@ export async function classifyImpact(text, apiKey) {
                 'Authorization': `Bearer ${apiKey}`
             },
             body: JSON.stringify({
-                model: 'gpt-4o-mini', // Fast, cheap, accurate enough
+                model: 'gpt-4.1-mini', // Fast, cheap, separate RPD quota from 4o-mini
                 messages: [
                     {
                         role: 'system',
