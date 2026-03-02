@@ -72,6 +72,16 @@
       ],
       "run_at": "document_start",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "platforms/gemini/content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [
@@ -91,6 +101,14 @@
       ],
       "matches": [
         "https://claude.ai/*"
+      ]
+    },
+    {
+      "resources": [
+        "platforms/gemini/inject.js"
+      ],
+      "matches": [
+        "https://gemini.google.com/*"
       ]
     },
     {

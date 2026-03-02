@@ -722,6 +722,33 @@ async function reInjectContentScripts() {
     console.error('❌ Claude tab query failed:', e.message);
   }
 
+  // ── Gemini tabs ───────────────────────────────────────────────────────
+  try {
+    const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+    console.log(`🔌 Found ${geminiTabs.length} Gemini tab(s)`);
+
+    for (const tab of geminiTabs) {
+      try {
+        // Reset injection guard so inject.js re-initializes
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => { window.__kytGeminiInjected = false; },
+          world: 'MAIN'
+        });
+        // content.js (ISOLATED) will re-inject inject.js (MAIN) via <script> tag
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['platforms/gemini/content.js']
+        });
+        console.log(`✅ Re-injected Gemini scripts into tab ${tab.id}`);
+      } catch (e) {
+        console.warn(`⚠️ Failed to re-inject Gemini tab ${tab.id}:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('❌ Gemini tab query failed:', e.message);
+  }
+
   console.log('🔌 Content script re-injection complete');
 }
 
