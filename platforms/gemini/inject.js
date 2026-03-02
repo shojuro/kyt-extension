@@ -298,18 +298,15 @@
       const len = parseInt(numStr, 10);
       if (isNaN(len) || len <= 0 || len > 500000) continue;
 
-      // Skip newline after the number
-      if (pos < text.length && text[pos] === '\n') pos++;
+      // NOTE: Do NOT skip \n here — the length prefix includes it in the byte count
 
-      // Read exactly len chars as one frame
-      const frameStr = text.substring(pos, pos + len);
+      // Read exactly len chars as one frame (includes leading \n and trailing \n)
+      const frameStr = text.substring(pos, pos + len).trim();
       pos += len;
 
       try {
         frames.push(JSON.parse(frameStr));
-      } catch (_) {
-        // malformed frame — skip
-      }
+      } catch (_) {}
     }
     return frames;
   }

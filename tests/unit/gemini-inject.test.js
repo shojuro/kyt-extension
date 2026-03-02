@@ -138,9 +138,8 @@ function parseLengthPrefixedFrames(text) {
     const len = parseInt(numStr, 10);
     if (isNaN(len) || len <= 0 || len > 500000) continue;
 
-    if (pos < text.length && text[pos] === '\n') pos++;
-
-    const frameStr = text.substring(pos, pos + len);
+    // NOTE: Do NOT skip \n here — the length prefix includes it in the byte count
+    const frameStr = text.substring(pos, pos + len).trim();
     pos += len;
 
     try {
@@ -319,24 +318,26 @@ function makeBatchexecuteBody(rpcId, argsObj) {
 function makeGeminiResponse(assistantText) {
   // Simulates Gemini's response: anti-XSSI prefix + length-prefixed wrb.fr frame
   // The assistant text is double-encoded inside the wrb.fr entry
+  // Length prefix includes the \n before the frame (matching Google's byte-count format)
   const innerPayload = JSON.stringify([[[assistantText]]]);
   const frame = JSON.stringify([['wrb.fr', null, innerPayload]]);
-  return ")]}'\n" + frame.length + '\n' + frame + '\n';
+  return ")]}'\n" + (frame.length + 1) + '\n' + frame + '\n';
 }
 
 function makeNestedGeminiResponse(texts) {
   // Multiple texts in the inner payload — longest natural text should win
   const innerPayload = JSON.stringify(texts.map(t => [[t]]));
   const frame = JSON.stringify([['wrb.fr', null, innerPayload]]);
-  return ")]}'\n" + frame.length + '\n' + frame + '\n';
+  return ")]}'\n" + (frame.length + 1) + '\n' + frame + '\n';
 }
 
 function makeMultiFrameResponse(frames) {
   // Build a response with multiple length-prefixed frames
+  // Length prefix includes the \n before each frame
   let result = ")]}'\n";
   for (const frameData of frames) {
     const json = JSON.stringify(frameData);
-    result += json.length + '\n' + json + '\n';
+    result += (json.length + 1) + '\n' + json + '\n';
   }
   return result;
 }
@@ -473,7 +474,8 @@ describe('parseFReq — edge cases', () => {
 describe('parseLengthPrefixedFrames', () => {
   it('parses single frame', () => {
     const frame = JSON.stringify([['wrb.fr', null, '"hello"']]);
-    const input = frame.length + '\n' + frame + '\n';
+    // Length includes the \n before frame (matching Google's format)
+    const input = (frame.length + 1) + '\n' + frame + '\n';
     const result = parseLengthPrefixedFrames(input);
     expect(result).toHaveLength(1);
     expect(result[0][0][0]).toBe('wrb.fr');
@@ -482,14 +484,14 @@ describe('parseLengthPrefixedFrames', () => {
   it('parses multiple frames', () => {
     const f1 = JSON.stringify([['wrb.fr', null, '"first"']]);
     const f2 = JSON.stringify([['wrb.fr', null, '"second"']]);
-    const input = f1.length + '\n' + f1 + '\n' + f2.length + '\n' + f2 + '\n';
+    const input = (f1.length + 1) + '\n' + f1 + '\n' + (f2.length + 1) + '\n' + f2 + '\n';
     const result = parseLengthPrefixedFrames(input);
     expect(result).toHaveLength(2);
   });
 
   it('skips malformed frames', () => {
     const good = JSON.stringify([['wrb.fr', null, '"ok"']]);
-    const input = good.length + '\n' + good + '\n5\n{bad}\n';
+    const input = (good.length + 1) + '\n' + good + '\n6\n{bad}\n';
     const result = parseLengthPrefixedFrames(input);
     expect(result).toHaveLength(1);
   });
@@ -507,7 +509,7 @@ describe('parseLengthPrefixedFrames', () => {
 
   it('handles leading/trailing whitespace', () => {
     const frame = JSON.stringify(['data']);
-    const input = '\n\n' + frame.length + '\n' + frame + '\n\n';
+    const input = '\n\n' + (frame.length + 1) + '\n' + frame + '\n\n';
     const result = parseLengthPrefixedFrames(input);
     expect(result).toHaveLength(1);
   });
@@ -681,7 +683,7 @@ describe('extractAssistantResponse — metadata filtering', () => {
     ]);
     const frame = [['wrb.fr', null, innerPayload]];
     const json = JSON.stringify(frame);
-    const response = ")]}'\n" + json.length + '\n' + json + '\n';
+    const response = ")]}'\n" + (json.length + 1) + '\n' + json + '\n';
     const result = extractAssistantResponse(response);
     expect(result).toBe('The actual assistant response text that is long enough to pass');
   });
