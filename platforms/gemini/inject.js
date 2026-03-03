@@ -265,8 +265,8 @@
       if (!raw || raw.length < 20) continue;
 
       // Strip injection blocks first (response may echo injected context)
-      const cleaned = stripInjectionBlock(raw);
-      const candidate = cleaned && cleaned.length >= 20 ? cleaned : raw;
+      const stripped = stripInjectionBlock(raw);
+      const candidate = stripped && stripped.length >= 20 ? stripped : raw;
 
       if (candidate.length > bestText.length && isNaturalLanguage(candidate)) {
         bestText = candidate;
@@ -279,29 +279,39 @@
 
   /**
    * Parse Gemini's length-prefixed streaming format into JSON frames.
-   * Each frame is preceded by a decimal byte count on its own line.
+   * Each frame is preceded by a decimal UTF-8 byte count on its own line.
+   * Uses TextEncoder/TextDecoder to handle multi-byte characters (emoji, CJK, Thai)
+   * where UTF-8 byte count !== JS string length.
    */
   function parseLengthPrefixedFrames(text) {
     const frames = [];
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const sourceBytes = encoder.encode(text);
     let pos = 0;
-    while (pos < text.length) {
-      // Skip whitespace between frames
-      while (pos < text.length && (text[pos] === '\n' || text[pos] === '\r')) pos++;
-      if (pos >= text.length) break;
 
-      // Read the length prefix (decimal number)
+    while (pos < sourceBytes.length) {
+      // Skip whitespace/newlines between frames (0x0A=\n, 0x0D=\r)
+      while (pos < sourceBytes.length && (sourceBytes[pos] === 0x0A || sourceBytes[pos] === 0x0D)) pos++;
+      if (pos >= sourceBytes.length) break;
+
+      // Read the length prefix digits (0x30='0' through 0x39='9')
       let numStr = '';
-      while (pos < text.length && text[pos] >= '0' && text[pos] <= '9') {
-        numStr += text[pos++];
+      while (pos < sourceBytes.length && sourceBytes[pos] >= 0x30 && sourceBytes[pos] <= 0x39) {
+        numStr += String.fromCharCode(sourceBytes[pos++]);
       }
-      if (!numStr) { pos++; continue; } // skip unexpected char
+      if (!numStr) { pos++; continue; } // skip unexpected byte
       const len = parseInt(numStr, 10);
       if (isNaN(len) || len <= 0 || len > 500000) continue;
 
-      // NOTE: Do NOT skip \n here — the length prefix includes it in the byte count
+      // NOTE: Do NOT skip \n here — Google's length prefix INCLUDES
+      // the \n before the frame content in its byte count.
+      // We read len bytes (which starts with \n), then .trim() it off.
 
-      // Read exactly len chars as one frame (includes leading \n and trailing \n)
-      const frameStr = text.substring(pos, pos + len).trim();
+      // Read exactly len UTF-8 bytes, then decode to string
+      if (pos + len > sourceBytes.length) break; // not enough data
+      const frameBytes = sourceBytes.slice(pos, pos + len);
+      const frameStr = decoder.decode(frameBytes).trim();
       pos += len;
 
       try {

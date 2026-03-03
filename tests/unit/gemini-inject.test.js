@@ -125,21 +125,28 @@ function extractAssistantResponse(responseText) {
 
 function parseLengthPrefixedFrames(text) {
   const frames = [];
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const sourceBytes = encoder.encode(text);
   let pos = 0;
-  while (pos < text.length) {
-    while (pos < text.length && (text[pos] === '\n' || text[pos] === '\r')) pos++;
-    if (pos >= text.length) break;
+
+  while (pos < sourceBytes.length) {
+    while (pos < sourceBytes.length && (sourceBytes[pos] === 0x0A || sourceBytes[pos] === 0x0D)) pos++;
+    if (pos >= sourceBytes.length) break;
 
     let numStr = '';
-    while (pos < text.length && text[pos] >= '0' && text[pos] <= '9') {
-      numStr += text[pos++];
+    while (pos < sourceBytes.length && sourceBytes[pos] >= 0x30 && sourceBytes[pos] <= 0x39) {
+      numStr += String.fromCharCode(sourceBytes[pos++]);
     }
     if (!numStr) { pos++; continue; }
     const len = parseInt(numStr, 10);
     if (isNaN(len) || len <= 0 || len > 500000) continue;
 
-    // NOTE: Do NOT skip \n here — the length prefix includes it in the byte count
-    const frameStr = text.substring(pos, pos + len).trim();
+    // NOTE: Do NOT skip \n — it's included in Google's byte count
+
+    if (pos + len > sourceBytes.length) break;
+    const frameBytes = sourceBytes.slice(pos, pos + len);
+    const frameStr = decoder.decode(frameBytes).trim();
     pos += len;
 
     try {
@@ -321,23 +328,27 @@ function makeGeminiResponse(assistantText) {
   // Length prefix includes the \n before the frame (matching Google's byte-count format)
   const innerPayload = JSON.stringify([[[assistantText]]]);
   const frame = JSON.stringify([['wrb.fr', null, innerPayload]]);
-  return ")]}'\n" + (frame.length + 1) + '\n' + frame + '\n';
+  const byteLen = new TextEncoder().encode('\n' + frame).length;
+  return ")]}'\n" + byteLen + '\n' + frame + '\n';
 }
 
 function makeNestedGeminiResponse(texts) {
   // Multiple texts in the inner payload — longest natural text should win
   const innerPayload = JSON.stringify(texts.map(t => [[t]]));
   const frame = JSON.stringify([['wrb.fr', null, innerPayload]]);
-  return ")]}'\n" + (frame.length + 1) + '\n' + frame + '\n';
+  const byteLen = new TextEncoder().encode('\n' + frame).length;
+  return ")]}'\n" + byteLen + '\n' + frame + '\n';
 }
 
 function makeMultiFrameResponse(frames) {
   // Build a response with multiple length-prefixed frames
-  // Length prefix includes the \n before each frame
+  // Length prefix includes the \n before each frame (Google's byte-count format)
+  const encoder = new TextEncoder();
   let result = ")]}'\n";
   for (const frameData of frames) {
     const json = JSON.stringify(frameData);
-    result += (json.length + 1) + '\n' + json + '\n';
+    const byteLen = encoder.encode('\n' + json).length;
+    result += byteLen + '\n' + json + '\n';
   }
   return result;
 }
@@ -472,10 +483,12 @@ describe('parseFReq — edge cases', () => {
 });
 
 describe('parseLengthPrefixedFrames', () => {
+  // Helper: Google's length prefix includes the \n before the frame
+  const byteLen = (frame) => new TextEncoder().encode('\n' + frame).length;
+
   it('parses single frame', () => {
     const frame = JSON.stringify([['wrb.fr', null, '"hello"']]);
-    // Length includes the \n before frame (matching Google's format)
-    const input = (frame.length + 1) + '\n' + frame + '\n';
+    const input = byteLen(frame) + '\n' + frame + '\n';
     const result = parseLengthPrefixedFrames(input);
     expect(result).toHaveLength(1);
     expect(result[0][0][0]).toBe('wrb.fr');
@@ -484,14 +497,14 @@ describe('parseLengthPrefixedFrames', () => {
   it('parses multiple frames', () => {
     const f1 = JSON.stringify([['wrb.fr', null, '"first"']]);
     const f2 = JSON.stringify([['wrb.fr', null, '"second"']]);
-    const input = (f1.length + 1) + '\n' + f1 + '\n' + (f2.length + 1) + '\n' + f2 + '\n';
+    const input = byteLen(f1) + '\n' + f1 + '\n' + byteLen(f2) + '\n' + f2 + '\n';
     const result = parseLengthPrefixedFrames(input);
     expect(result).toHaveLength(2);
   });
 
   it('skips malformed frames', () => {
     const good = JSON.stringify([['wrb.fr', null, '"ok"']]);
-    const input = (good.length + 1) + '\n' + good + '\n6\n{bad}\n';
+    const input = byteLen(good) + '\n' + good + '\n6\n{bad}\n';
     const result = parseLengthPrefixedFrames(input);
     expect(result).toHaveLength(1);
   });
@@ -503,15 +516,51 @@ describe('parseLengthPrefixedFrames', () => {
   it('skips frames with oversized length prefix', () => {
     const input = '999999\n' + 'x'.repeat(100) + '\n';
     const result = parseLengthPrefixedFrames(input);
-    // Frame length 999999 > available chars, but parser reads what it can
-    expect(result).toHaveLength(0); // parse fails on truncated JSON
+    // Frame length 999999 > available bytes — parser breaks early
+    expect(result).toHaveLength(0);
   });
 
   it('handles leading/trailing whitespace', () => {
     const frame = JSON.stringify(['data']);
-    const input = '\n\n' + (frame.length + 1) + '\n' + frame + '\n\n';
+    const input = '\n\n' + byteLen(frame) + '\n' + frame + '\n\n';
     const result = parseLengthPrefixedFrames(input);
     expect(result).toHaveLength(1);
+  });
+
+  it('handles multi-byte characters (Thai/emoji) where byte count != char count', () => {
+    const thaiText = 'สวัสดีครับ นี่คือข้อความทดสอบที่มีภาษาไทยหลายคำ';
+    const innerPayload = JSON.stringify([[[thaiText]]]);
+    const frame = JSON.stringify([['wrb.fr', null, innerPayload]]);
+    const frameByteLenWithNewline = new TextEncoder().encode('\n' + frame).length;
+    // Verify byte count differs from char count (the whole point of this test)
+    expect(frameByteLenWithNewline).toBeGreaterThan(frame.length + 1);
+    const input = frameByteLenWithNewline + '\n' + frame + '\n';
+    const result = parseLengthPrefixedFrames(input);
+    expect(result).toHaveLength(1);
+    const inner = JSON.parse(result[0][0][2]);
+    expect(inner[0][0][0]).toBe(thaiText);
+  });
+
+  it('handles emoji in frames where byte count != char count', () => {
+    const emojiText = 'Here are some emojis: 🎉🚀💻 and they work great in responses';
+    const innerPayload = JSON.stringify([[[emojiText]]]);
+    const frame = JSON.stringify([['wrb.fr', null, innerPayload]]);
+    const frameByteLenWithNewline = new TextEncoder().encode('\n' + frame).length;
+    expect(frameByteLenWithNewline).toBeGreaterThan(frame.length + 1);
+    const input = frameByteLenWithNewline + '\n' + frame + '\n';
+    const result = parseLengthPrefixedFrames(input);
+    expect(result).toHaveLength(1);
+    const inner = JSON.parse(result[0][0][2]);
+    expect(inner[0][0][0]).toBe(emojiText);
+  });
+
+  it('parses multiple frames with mixed ASCII and multi-byte content', () => {
+    const f1Json = JSON.stringify([['wrb.fr', null, '"ascii only frame"']]);
+    const f2Json = JSON.stringify([['wrb.fr', null, JSON.stringify([[['คำตอบจากผู้ช่วยที่มีข้อมูลเพียงพอสำหรับการทดสอบ']]]) ]]);
+    const input = byteLen(f1Json) + '\n' + f1Json + '\n' +
+                  byteLen(f2Json) + '\n' + f2Json + '\n';
+    const result = parseLengthPrefixedFrames(input);
+    expect(result).toHaveLength(2);
   });
 });
 
