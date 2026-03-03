@@ -134,12 +134,25 @@ function parseSessionJsonl(filePath) {
   return turns;
 }
 
+function debugLog(msg) {
+  const logPath = join(homedir(), '.kyt', 'session-hook-debug.log');
+  const kytDir = join(homedir(), '.kyt');
+  if (!existsSync(kytDir)) mkdirSync(kytDir, { recursive: true });
+  const ts = new Date().toISOString();
+  const line = `[${ts}] ${msg}\n`;
+  try { writeFileSync(logPath, line, { flag: 'a' }); } catch {}
+}
+
 async function main() {
+  debugLog('SessionEnd hook fired');
   let input;
   try {
     const raw = readFileSync(0, 'utf-8');
+    debugLog(`stdin received: ${raw.length} bytes`);
     input = JSON.parse(raw);
+    debugLog(`parsed: session_id=${input.session_id}, transcript_path=${input.transcript_path}`);
   } catch (err) {
+    debugLog(`stdin parse FAILED: ${err.message}`);
     process.stderr.write(`KYT session-ingest: failed to parse stdin: ${err.message}\n`);
     process.exit(0);
   }
@@ -148,6 +161,7 @@ async function main() {
   const transcriptPath = input.transcript_path;
 
   if (!sessionId || !transcriptPath) {
+    debugLog('SKIP: missing session_id or transcript_path');
     process.stderr.write('KYT session-ingest: missing session_id or transcript_path\n');
     process.exit(0);
   }
@@ -155,12 +169,14 @@ async function main() {
   // Check memory mode
   const mode = getMemoryMode();
   if (mode === 'incognito') {
+    debugLog('SKIP: incognito mode');
     process.stderr.write('KYT session-ingest: incognito mode, skipping\n');
     process.exit(0);
   }
 
   // Check if transcript file exists
   if (!existsSync(transcriptPath)) {
+    debugLog(`SKIP: transcript not found: ${transcriptPath}`);
     process.stderr.write(`KYT session-ingest: transcript not found: ${transcriptPath}\n`);
     process.exit(0);
   }
@@ -172,6 +188,7 @@ async function main() {
   const userId = process.env.KYT_USER_ID;
 
   if (!supabaseUrl || !token || !userId) {
+    debugLog(`SKIP: missing env vars (url=${!!supabaseUrl}, token=${!!token}, userId=${!!userId})`);
     process.stderr.write('KYT session-ingest: missing env vars\n');
     process.exit(0);
   }
@@ -242,9 +259,12 @@ async function main() {
 
     // Track progress
     markSessionIngested(sessionId, lastCount + newTurns.length);
-    process.stderr.write(`KYT session-ingest: ${sessionId} — ${newTurns.length} new turns, ${filteredCount} filtered, ${memorableTurns.length} memorable, ${totalInserted} inserted\n`);
+    const summary = `${sessionId} — ${newTurns.length} new, ${filteredCount} filtered, ${memorableTurns.length} memorable, ${totalInserted} inserted`;
+    debugLog(`SUCCESS: ${summary}`);
+    process.stderr.write(`KYT session-ingest: ${summary}\n`);
 
   } catch (err) {
+    debugLog(`ERROR: ${err.message}`);
     process.stderr.write(`KYT session-ingest: ${err.message}\n`);
   }
 

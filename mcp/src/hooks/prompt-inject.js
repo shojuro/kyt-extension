@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 import { classifyIntent } from '../lib/intent-classifier.js';
 
 // ── Inline config reading (no heavy imports for speed) ──────
@@ -110,6 +111,26 @@ async function main() {
   } catch (err) {
     process.stderr.write(`KYT hook: failed to parse stdin: ${err.message}\n`);
     process.exit(0);
+  }
+
+  // ── Catch-up: ingest missed sessions (once per session) ──
+  const sessionId = input.session_id || '';
+  const catchUpFlag = join(homedir(), '.kyt', `catch-up-${sessionId.slice(0, 8)}.flag`);
+  if (sessionId && !existsSync(catchUpFlag)) {
+    try {
+      const kytDir = join(homedir(), '.kyt');
+      if (!existsSync(kytDir)) mkdirSync(kytDir, { recursive: true });
+      writeFileSync(catchUpFlag, new Date().toISOString());
+      const scriptDir = dirname(fileURLToPath(import.meta.url));
+      const catchUpScript = join(scriptDir, 'catch-up-ingest.js');
+      if (existsSync(catchUpScript)) {
+        const child = spawn('node', [catchUpScript, sessionId], {
+          detached: true,
+          stdio: 'ignore',
+        });
+        child.unref();
+      }
+    } catch { /* non-critical */ }
   }
 
   const prompt = input.prompt;
