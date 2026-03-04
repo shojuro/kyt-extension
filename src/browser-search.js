@@ -502,15 +502,11 @@ async function searchSupabaseText(query, options = {}) {
 
     // Extract keywords: split on whitespace, filter short/stop words
     const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'but', 'with', 'about', 'me', 'my', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'do', 'does', 'did', 'have', 'has', 'had', 'be', 'been', 'being', 'what', 'which', 'who', 'when', 'where', 'how', 'that', 'this', 'tell']);
-    // Cap at 5 most distinctive keywords (longest first) to avoid 15+ sequential HTTP calls
-    const MAX_TEXT_SEARCH_KEYWORDS = 5;
     const keywords = query
       .toLowerCase()
       .replace(/[^\w\s-]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length >= 2 && !stopWords.has(w))
-      .sort((a, b) => b.length - a.length)
-      .slice(0, MAX_TEXT_SEARCH_KEYWORDS);
+      .filter(w => w.length >= 2 && !stopWords.has(w));
 
     if (keywords.length === 0) {
       console.log('   🔤 Supabase text search: no viable keywords from query');
@@ -550,44 +546,56 @@ async function searchSupabaseText(query, options = {}) {
       filterParams += `&source=eq.${source}`;
     }
 
-    // Search all keywords in PARALLEL (was sequential — 15 keywords × 2-3s = 30-45s!)
+    // Search all keywords in PARALLEL via ilike, deduplicate results
     const resultMap = new Map(); // message_id → result with hit count
+    const PER_KEYWORD_TIMEOUT = 5000; // 5s per keyword (was 8s sequential)
 
+    // Helper: fetch one keyword's results
+    const fetchKeyword = async (keyword, params) => {
+      const url = `${config.supabaseUrl}/rest/v1/messages?${params}&content=ilike.*${encodeURIComponent(keyword)}*`;
+      const response = await fetchWithTimeout(url, {
+        headers: {
+          'apikey': config.supabaseKey,
+          'Authorization': `Bearer ${config.supabaseKey}`
+        }
+      }, PER_KEYWORD_TIMEOUT);
+      return response;
+    };
+
+    // Launch all keyword fetches in parallel
     const keywordResults = await Promise.all(keywords.map(async (keyword) => {
       try {
-        const url = `${config.supabaseUrl}/rest/v1/messages?${filterParams}&content=ilike.*${encodeURIComponent(keyword)}*`;
-        const response = await fetchWithTimeout(url, {
-          headers: {
-            'apikey': config.supabaseKey,
-            'Authorization': `Bearer ${config.supabaseKey}`
+        let response = await fetchKeyword(keyword, filterParams);
+
+        // Retry without profile_id if column doesn't exist (migration pending)
+        if (!response.ok && response.status === 400 && textSearchProfileFilter) {
+          const errBody = await response.text();
+          if (errBody.includes('profile_id')) {
+            console.warn('⚠️ messages table missing profile_id column — retrying without (migration pending)');
+            _profileCompat.restUnavailable = true;
+            const fallbackParams = filterParams.replace(textSearchProfileFilter, '');
+            response = await fetchKeyword(keyword, fallbackParams);
           }
-        }, 8000);
+        }
 
         if (!response.ok) {
-          // Profile compat retry on first 400
-          if (response.status === 400 && textSearchProfileFilter && !_profileCompat.restUnavailable) {
-            const errBody = await response.text();
-            if (errBody.includes('profile_id')) {
-              console.warn('⚠️ messages table missing profile_id column (migration pending)');
-              _profileCompat.restUnavailable = true;
-            }
-          }
-          return { keyword, data: [] };
+          console.warn(`   ⚠️ Supabase text search for "${keyword}" failed: ${response.status}`);
+          return [];
         }
 
         const data = await response.json();
         if (data.length === 0) {
           console.log(`   🔤 No matches for "${keyword}" (userId: ${config.userId})`);
         }
-        return { keyword, data };
+        return data;
       } catch (keywordError) {
         console.warn(`   ⚠️ Supabase text search for "${keyword}" error: ${keywordError.message}`);
-        return { keyword, data: [] };
+        return [];
       }
     }));
 
-    // Merge results from all keyword searches
-    for (const { data } of keywordResults) {
+    // Merge all keyword results into resultMap with hit counting
+    for (const data of keywordResults) {
       for (const row of data) {
         const id = row.message_id;
         if (resultMap.has(id)) {
@@ -640,16 +648,12 @@ async function searchSupabaseChatTurnsText(query, options = {}) {
     const config = await getConfig();
 
     // Extract keywords: split on whitespace, filter short/stop words
-    // Cap at 5 most distinctive keywords (longest first) to avoid N sequential HTTP calls
     const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'but', 'with', 'about', 'me', 'my', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'do', 'does', 'did', 'have', 'has', 'had', 'be', 'been', 'being', 'what', 'which', 'who', 'when', 'where', 'how', 'that', 'this', 'tell']);
-    const MAX_TEXT_SEARCH_KEYWORDS = 5;
     const keywords = query
       .toLowerCase()
       .replace(/[^\w\s-]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length >= 2 && !stopWords.has(w))
-      .sort((a, b) => b.length - a.length)
-      .slice(0, MAX_TEXT_SEARCH_KEYWORDS);
+      .filter(w => w.length >= 2 && !stopWords.has(w));
 
     if (keywords.length === 0) {
       console.log('   🔤 chat_turns text search: no viable keywords from query');
@@ -683,39 +687,52 @@ async function searchSupabaseChatTurnsText(query, options = {}) {
     filterParams += '&or=(deflection.lt.0.70,deflection.is.null)';
     filterParams += '&or=(exclude_from_search.eq.false,exclude_from_search.is.null)';
 
-    // Search all keywords in PARALLEL (was sequential — N keywords × 2-3s each)
+    // Search all keywords in PARALLEL via ilike, deduplicate results
     const resultMap = new Map();
+    const PER_KEYWORD_TIMEOUT = 5000;
 
+    const fetchKeyword = async (keyword, params) => {
+      const url = `${config.supabaseUrl}/rest/v1/chat_turns?${params}&content=ilike.*${encodeURIComponent(keyword)}*`;
+      const response = await fetchWithTimeout(url, {
+        headers: {
+          'apikey': config.supabaseKey,
+          'Authorization': `Bearer ${config.supabaseKey}`
+        }
+      }, PER_KEYWORD_TIMEOUT);
+      return response;
+    };
+
+    // Launch all keyword fetches in parallel
     const keywordResults = await Promise.all(keywords.map(async (keyword) => {
       try {
-        const url = `${config.supabaseUrl}/rest/v1/chat_turns?${filterParams}&content=ilike.*${encodeURIComponent(keyword)}*`;
-        const response = await fetchWithTimeout(url, {
-          headers: {
-            'apikey': config.supabaseKey,
-            'Authorization': `Bearer ${config.supabaseKey}`
-          }
-        }, 8000);
+        let response = await fetchKeyword(keyword, filterParams);
 
-        if (!response.ok) {
-          if (response.status === 400 && textSearchProfileFilter && !_profileCompat.restUnavailable) {
-            const errBody = await response.text();
-            if (errBody.includes('profile_id')) {
-              console.warn('⚠️ chat_turns missing profile_id column (migration pending)');
-              _profileCompat.restUnavailable = true;
-            }
+        // Retry without profile_id if column doesn't exist
+        if (!response.ok && response.status === 400 && textSearchProfileFilter) {
+          const errBody = await response.text();
+          if (errBody.includes('profile_id')) {
+            console.warn('⚠️ chat_turns missing profile_id column — retrying without (migration pending)');
+            _profileCompat.restUnavailable = true;
+            const fallbackParams = filterParams.replace(textSearchProfileFilter, '');
+            response = await fetchKeyword(keyword, fallbackParams);
           }
-          return { keyword, data: [] };
         }
 
-        return { keyword, data: await response.json() };
+        if (!response.ok) {
+          console.warn(`   ⚠️ chat_turns text search for "${keyword}" failed: ${response.status}`);
+          return [];
+        }
+
+        const data = await response.json();
+        return data;
       } catch (keywordError) {
         console.warn(`   ⚠️ chat_turns text search for "${keyword}" error: ${keywordError.message}`);
-        return { keyword, data: [] };
+        return [];
       }
     }));
 
-    // Merge results from all keyword searches
-    for (const { data } of keywordResults) {
+    // Merge all keyword results into resultMap with hit counting
+    for (const data of keywordResults) {
       for (const row of data) {
         const id = row.id;
         if (resultMap.has(id)) {
