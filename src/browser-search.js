@@ -502,11 +502,14 @@ async function searchSupabaseText(query, options = {}) {
 
     // Extract keywords: split on whitespace, filter short/stop words
     const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'but', 'with', 'about', 'me', 'my', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'do', 'does', 'did', 'have', 'has', 'had', 'be', 'been', 'being', 'what', 'which', 'who', 'when', 'where', 'how', 'that', 'this', 'tell']);
+    // Cap at 5 most distinctive keywords (longest first) to limit parallel HTTP calls
     const keywords = query
       .toLowerCase()
       .replace(/[^\w\s-]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length >= 2 && !stopWords.has(w));
+      .filter(w => w.length >= 2 && !stopWords.has(w))
+      .sort((a, b) => b.length - a.length)
+      .slice(0, 5);
 
     if (keywords.length === 0) {
       console.log('   🔤 Supabase text search: no viable keywords from query');
@@ -649,11 +652,14 @@ async function searchSupabaseChatTurnsText(query, options = {}) {
 
     // Extract keywords: split on whitespace, filter short/stop words
     const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'but', 'with', 'about', 'me', 'my', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'do', 'does', 'did', 'have', 'has', 'had', 'be', 'been', 'being', 'what', 'which', 'who', 'when', 'where', 'how', 'that', 'this', 'tell']);
+    // Cap at 5 most distinctive keywords (longest first) to limit parallel HTTP calls
     const keywords = query
       .toLowerCase()
       .replace(/[^\w\s-]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length >= 2 && !stopWords.has(w));
+      .filter(w => w.length >= 2 && !stopWords.has(w))
+      .sort((a, b) => b.length - a.length)
+      .slice(0, 5);
 
     if (keywords.length === 0) {
       console.log('   🔤 chat_turns text search: no viable keywords from query');
