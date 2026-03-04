@@ -102,7 +102,7 @@ export async function queryMemory({ query, topK = 5, useHyde = true, platform = 
         : '';
     const plat = r.conversation_id?.startsWith('cc-') ? '[claude-code]' : (r.platform ? `[${r.platform}]` : '');
     const date = r.created_at ? new Date(r.created_at).toLocaleDateString() : '';
-    const entities = r.entities?.length ? `\n   Entities: ${r.entities.join(', ')}` : '';
+    const entities = r.entities?.length ? `\n   Entities: ${r.entities.map(e => typeof e === 'string' ? e : e.canonical_name).join(', ')}` : '';
     return `${i + 1}. ${plat} ${score} ${date}\n   ${r.content?.substring(0, 300)}${r.content?.length > 300 ? '...' : ''}${entities}`;
   }).join('\n\n');
 

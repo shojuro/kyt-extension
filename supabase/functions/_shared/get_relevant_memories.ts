@@ -46,6 +46,35 @@ function extractPlatformMention(message: string): string | null {
 }
 
 /**
+ * Apply platform-mismatch penalty to reranked results (Gap 3).
+ * When user asks about a specific platform, penalize items from other platforms.
+ * Mutates the array in place: re-sorts and removes items below threshold.
+ */
+function applyPlatformPenalty(
+    query: string,
+    results: CandidateWithScore[],
+    confidenceThreshold?: number,
+    requestId?: string,
+): void {
+    const targetPlatform = extractPlatformMention(query);
+    if (!targetPlatform || results.length === 0) return;
+
+    for (const c of results) {
+        if (c.platform && c.platform !== targetPlatform) {
+            c.rerank_score *= 0.3;
+        }
+    }
+    // Re-sort after penalty
+    results.sort((a, b) => b.rerank_score - a.rerank_score);
+    // Remove items that dropped below threshold
+    const threshold = confidenceThreshold ?? 0.40;
+    while (results.length > 0 && results[results.length - 1].rerank_score < threshold) {
+        results.pop();
+    }
+    Logger.info(`Platform-mismatch penalty applied for target="${targetPlatform}"`, { requestId });
+}
+
+/**
  * Filter self-referential results — retrieved content that echoes the query
  * provides no new information and causes circular retrieval.
  * Targets short content (<80 chars) with >70% word overlap with the query.
@@ -514,6 +543,25 @@ export async function getRelevantMemories(
 
     // Merge concept entity IDs into boost set (deduped)
     const boostEntityIdSet = new Set([...embeddingEntityIds, ...conceptEntityIds]);
+
+    // When query mentions a platform name (e.g. "Gemini"), exclude entities whose
+    // text matches the platform name — they're filters, not topics. Otherwise
+    // "Gemini" entity (87 mentions, all claude-code dev talk) dominates the boost
+    // and drowns out the actual topic entities like "Walter Payton".
+    const queryTargetPlatform = extractPlatformMention(query);
+    if (queryTargetPlatform) {
+        const platformNames = new Set([queryTargetPlatform, queryTargetPlatform.replace('-', ' ')]);
+        for (const entity of entities) {
+            const entityText = ((entity as any).entity_text || '').toLowerCase();
+            if (platformNames.has(entityText)) {
+                boostEntityIdSet.delete(entity.id);
+            }
+        }
+        if (boostEntityIdSet.size < embeddingEntityIds.length + conceptEntityIds.length) {
+            Logger.info(`Excluded platform entity from boost (target="${queryTargetPlatform}")`, { requestId });
+        }
+    }
+
     const boostEntityIds = Array.from(boostEntityIdSet);
 
     // ========================================================================
@@ -552,7 +600,15 @@ export async function getRelevantMemories(
     // STEP 3: Adaptive Short-Circuit Check
     // If high-confidence entity match, skip HyDE and use raw query only
     // ========================================================================
-    const entityConfidences = entities.map((e: any) => ({
+    // Exclude platform-name entities from confidence check — they shouldn't
+    // trigger the HyDE short-circuit (platform = filter, not topic)
+    const platformNames = queryTargetPlatform
+        ? new Set([queryTargetPlatform, queryTargetPlatform.replace('-', ' ')])
+        : new Set<string>();
+    const topicEntities = entities.filter((e: any) =>
+        !platformNames.has(((e as any).entity_text || '').toLowerCase())
+    );
+    const entityConfidences = topicEntities.map((e: any) => ({
         confidence: e.similarity || 0,
         entity_type: e.entity_type
     }));
@@ -580,6 +636,31 @@ export async function getRelevantMemories(
 
         const scFiltered = filterQueryEchoes(query, candidates);
         const shortCircuitResults = await rerankAndFilter(query, scFiltered, hfClient, requestId, topK);
+        applyPlatformPenalty(query, shortCircuitResults, confidenceThreshold, requestId);
+
+        // Platform-filtered rescue for short-circuit path
+        if (shortCircuitResults.length === 0 && queryTargetPlatform) {
+            Logger.info(`Platform rescue (SC): searching within "${queryTargetPlatform}" only`, { requestId });
+            const { data: rescueData, error: rescueError } = await supabase
+                .rpc("match_messages_with_gravity", {
+                    query_embedding: rawEmbedding,
+                    match_threshold: 0.35,
+                    match_count: topK,
+                    exclude_recent_seconds: 0,
+                    p_user_id: userId,
+                    boost_entity_ids: boostEntityIds,
+                    p_profile_id: resolvedProfileId,
+                    p_platform: queryTargetPlatform,
+                });
+            if (!rescueError && rescueData && rescueData.length > 0) {
+                const rescueCandidates = rescueData as Candidate[];
+                const rescueFiltered = filterQueryEchoes(query, rescueCandidates);
+                const rescueResults = await rerankAndFilter(query, rescueFiltered, hfClient, requestId, topK);
+                shortCircuitResults.push(...rescueResults);
+                Logger.info(`Platform rescue (SC): recovered ${rescueResults.length} items`, { requestId });
+            }
+        }
+
         await enrichWithEntities(supabase, shortCircuitResults, requestId);
         return shortCircuitResults;
     }
@@ -748,26 +829,41 @@ export async function getRelevantMemories(
     }
 
     // ========================================================================
-    // STEP 5d: Platform-mismatch penalty (Gap 3)
-    // When user asks about a specific platform (e.g. "what did I discuss on Gemini?"),
-    // penalize candidates from other platforms. This prevents dev conversations
-    // *about* Gemini (from claude-code) outranking actual Gemini user content.
-    // ========================================================================
-    const targetPlatform = extractPlatformMention(query);
-    if (targetPlatform) {
-        for (const c of echoFiltered) {
-            if (c.platform && c.platform !== targetPlatform) {
-                if (c.gravity_score != null) c.gravity_score *= 0.3;
-                if (c.rrf_score != null) c.rrf_score *= 0.3;
-            }
-        }
-        Logger.info(`Platform-mismatch penalty applied for target="${targetPlatform}"`, { requestId });
-    }
-
-    // ========================================================================
     // STEP 6: Rerank, BM25 Boost, Confidence Filter
     // ========================================================================
     const results = await rerankAndFilter(query, echoFiltered, hfClient, requestId, topK);
+
+    // ========================================================================
+    // STEP 6b: Platform-mismatch penalty (Gap 3) — AFTER reranking
+    // ========================================================================
+    applyPlatformPenalty(query, results, confidenceThreshold, requestId);
+
+    // ========================================================================
+    // STEP 6c: Platform-filtered rescue search
+    // When penalty killed all results but user explicitly asked about a platform,
+    // do a second vector search filtered to that platform only.
+    // ========================================================================
+    if (results.length === 0 && queryTargetPlatform) {
+        Logger.info(`Platform rescue: penalty killed all results, searching within "${queryTargetPlatform}" only`, { requestId });
+        const { data: rescueData, error: rescueError } = await supabase
+            .rpc("match_messages_with_gravity", {
+                query_embedding: rawEmbedding,
+                match_threshold: 0.35,  // Lower threshold for rescue
+                match_count: topK,
+                exclude_recent_seconds: 0,
+                p_user_id: userId,
+                boost_entity_ids: boostEntityIds,
+                p_profile_id: resolvedProfileId,
+                p_platform: queryTargetPlatform,
+            });
+        if (!rescueError && rescueData && rescueData.length > 0) {
+            const rescueCandidates = rescueData as Candidate[];
+            const rescueFiltered = filterQueryEchoes(query, rescueCandidates);
+            const rescueResults = await rerankAndFilter(query, rescueFiltered, hfClient, requestId, topK);
+            results.push(...rescueResults);
+            Logger.info(`Platform rescue: recovered ${rescueResults.length} items from "${queryTargetPlatform}"`, { requestId });
+        }
+    }
 
     // ========================================================================
     // STEP 7: Enrich results with entity canonical names
