@@ -4,7 +4,7 @@
  * Generates hypothetical questions for conversation-turn chunks.
  * Improves retrieval quality by indexing what users MIGHT ask about the content.
  *
- * Phase 8: HyDE Preprocessing (Final phase)
+ * LLM: Claude Haiku 4.5 via llm_completion edge function (migrated from OpenAI).
  *
  * Strategy:
  * - Run batch process on existing turn chunks (30-day history)
@@ -13,41 +13,30 @@
  * - Provide "WOW moment" - instant searchable history on download
  */
 
+import { callEdgeFunction } from './api-client.js';
+
 // ── In-memory rate limit tracker ────────────────────────────────────────
-// Prevents wasting service worker time on doomed OpenAI calls when rate-limited.
+// Prevents wasting service worker time on doomed API calls when rate-limited.
 // Resets on service worker restart (intentional — transient by design).
 let _hydeRateLimitedUntil = 0;
 let _hydeConsecutiveFailures = 0;
-const HYDE_COOLDOWN_MS = 60000;       // 1 min after first 429
+const HYDE_COOLDOWN_MS = 60000;       // 1 min after first failure
 const HYDE_MAX_COOLDOWN_MS = 300000;  // 5 min max backoff
 
 /**
  * Generate hypothetical questions for a conversation turn chunk
  *
- * Uses GPT-3.5-turbo to generate questions a user might ask about this content.
+ * Uses Claude Haiku 4.5 to generate questions a user might ask about this content.
  * These questions improve retrieval when users search for similar topics.
  *
  * @param {Object} turnChunk - Conversation turn chunk
  * @param {string} turnChunk.content - Turn content (formatted: "User: ...\nAssistant: ...")
  * @param {string[]} turnChunk.topics - Extracted topics
  * @param {string[]} turnChunk.speakers - Speakers in conversation
- * @param {string} apiKey - OpenAI API key
  * @param {number} questionCount - Number of questions to generate (default: 3)
  * @returns {Promise<Object>} Generation result
- *
- * @example
- * const result = await generateHypotheticalQuestions(
- *   {
- *     content: "User: How do I fix RLS?\nAssistant: Check your policy...",
- *     topics: ['rls', 'supabase', 'auth'],
- *     speakers: ['user', 'assistant']
- *   },
- *   apiKey,
- *   3
- * );
- * // result.questions: ["How to fix RLS?", "Supabase auth policy error", "RLS debugging"]
  */
-export async function generateHypotheticalQuestions(turnChunk, apiKey, questionCount = 3) {
+export async function generateHypotheticalQuestions(turnChunk, _unused, questionCount = 3) {
   try {
     // Check in-memory rate limit cooldown FIRST
     if (Date.now() < _hydeRateLimitedUntil) {
@@ -64,63 +53,35 @@ export async function generateHypotheticalQuestions(turnChunk, apiKey, questionC
       throw new Error('Invalid turn chunk: missing content');
     }
 
-    if (!apiKey) {
-      throw new Error('OpenAI API key required for HyDE preprocessing');
-    }
-
     // Build HyDE prompt
     const prompt = buildHyDEPrompt(turnChunk, questionCount);
 
     console.log(`🔮 Generating ${questionCount} hypothetical questions for chunk...`);
 
-    // Call OpenAI API
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: 'gpt-4.1-mini',
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a memory recall assistant. Generate search queries, conceptual labels, and recall phrases for a conversation. Think about how someone would search for this content months later — they\'ll remember the concept or analogy, not the exact words.'
-          },
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        temperature: 0.7, // Higher temperature for diverse questions
-        max_tokens: 250,  // Space for questions + concept labels + recall phrases
-        n: 1
-      })
-    });
+    // Call via edge function (no API key needed client-side)
+    const result = await callEdgeFunction('llm_completion', {
+      system: 'You are a memory recall assistant. Generate search queries, conceptual labels, and recall phrases for a conversation. Think about how someone would search for this content months later — they\'ll remember the concept or analogy, not the exact words.',
+      user: prompt,
+      temperature: 0.7,
+      max_tokens: 250,
+      operation: 'hyde_index',
+    }, { timeoutMs: 10000 });
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      const errorMsg = error.error?.message || response.statusText;
-
-      // Rate limit detection: engage cooldown to skip remaining chunks
-      if (response.status === 429) {
-        _hydeConsecutiveFailures++;
-        const cooldown = Math.min(
-          HYDE_COOLDOWN_MS * Math.pow(2, _hydeConsecutiveFailures - 1),
-          HYDE_MAX_COOLDOWN_MS
-        );
-        _hydeRateLimitedUntil = Date.now() + cooldown;
-        console.warn(`⚠️ HyDE rate-limited (429). Cooldown: ${cooldown / 1000}s. Skipping HyDE for remaining chunks.`);
-      }
-
-      throw new Error(`OpenAI API error: ${errorMsg}`);
+    if (result.error) {
+      // Rate limit detection: engage cooldown
+      _hydeConsecutiveFailures++;
+      const cooldown = Math.min(
+        HYDE_COOLDOWN_MS * Math.pow(2, _hydeConsecutiveFailures - 1),
+        HYDE_MAX_COOLDOWN_MS
+      );
+      _hydeRateLimitedUntil = Date.now() + cooldown;
+      throw new Error(`LLM completion error: ${result.error}`);
     }
 
     // Success — reset failure counter
     _hydeConsecutiveFailures = 0;
 
-    const data = await response.json();
-    const questionsText = data.choices[0].message.content.trim();
+    const questionsText = result.content?.trim() || '';
 
     // Parse questions (assumes LLM returns numbered list)
     const questions = parseQuestions(questionsText, questionCount);
@@ -130,7 +91,7 @@ export async function generateHypotheticalQuestions(turnChunk, apiKey, questionC
     return {
       success: true,
       questions: questions,
-      tokensUsed: data.usage?.total_tokens || 0
+      tokensUsed: 0 // Token count not returned from edge function
     };
 
   } catch (error) {
@@ -239,23 +200,14 @@ function parseQuestions(questionsText, expectedCount) {
  * Use this for processing 30-day history on extension download.
  *
  * @param {Object[]} turnChunks - Array of turn chunks from chat_turns table
- * @param {string} apiKey - OpenAI API key
+ * @param {string} _unused - Formerly apiKey, now unused (edge function handles auth)
  * @param {Object} options - Processing options
  * @param {number} options.questionCount - Questions per chunk (default: 3)
  * @param {number} options.batchSize - Chunks per batch (default: 10)
  * @param {number} options.delayMs - Delay between batches (default: 1000ms)
  * @returns {Promise<Object>} Processing result
- *
- * @example
- * const result = await batchProcessHyDE(turnChunks, apiKey, {
- *   questionCount: 3,
- *   batchSize: 10,
- *   delayMs: 1000
- * });
- * // result.processed: 120 chunks
- * // result.totalQuestions: 360 questions
  */
-export async function batchProcessHyDE(turnChunks, apiKey, options = {}) {
+export async function batchProcessHyDE(turnChunks, _unused, options = {}) {
   const {
     questionCount = 3,
     batchSize = 10,
@@ -278,7 +230,7 @@ export async function batchProcessHyDE(turnChunks, apiKey, options = {}) {
 
     // Process batch (sequential to avoid rate limits)
     for (const chunk of batch) {
-      const result = await generateHypotheticalQuestions(chunk, apiKey, questionCount);
+      const result = await generateHypotheticalQuestions(chunk, null, questionCount);
 
       if (result.success && result.questions.length > 0) {
         processedChunks.push({

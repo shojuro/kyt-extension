@@ -35,7 +35,6 @@ export async function getApiConfig() {
       userId: session.user?.id || result.user_id,
       authMode: 'jwt',
       // Legacy fields — not needed for edge mode, but some code paths read them
-      openaiKey: result.api_config?.openaiKey || null,
       huggingfaceKey: result.api_config?.huggingfaceKey || null,
       jinaKey: result.api_config?.jinaKey || null,
       disableQueryTransformation: result.api_config?.disableQueryTransformation ?? true,

@@ -446,7 +446,7 @@ export async function syncMessages(messagesToSync) {
     let embeddings;
     let embeddingsAvailable = false;
     try {
-      embeddings = await generateEmbeddings(texts, config.openaiKey);
+      embeddings = await generateEmbeddings(texts, null);
       embeddingsAvailable = true;
     } catch (embeddingError) {
       console.warn(`⚠️ Embeddings unavailable, syncing without: ${embeddingError.message}`);
@@ -493,7 +493,7 @@ export async function syncMessages(messagesToSync) {
       // Regenerate embeddings for filtered set
       const filteredTexts = deflectionFiltered.map(m => m.content);
       try {
-        embeddings = await generateEmbeddings(filteredTexts, config.openaiKey);
+        embeddings = await generateEmbeddings(filteredTexts, null);
         embeddingsAvailable = true;
       } catch (embeddingError) {
         console.warn(`⚠️ Embeddings unavailable after deflection filter: ${embeddingError.message}`);
@@ -590,7 +590,7 @@ export async function syncMessages(messagesToSync) {
       for (const chunk of turnChunks) {
         let questions = [];
         try {
-          const hydeResult = await generateHypotheticalQuestions(chunk, config.openaiKey, 5);
+          const hydeResult = await generateHypotheticalQuestions(chunk, null, 5);
           questions = hydeResult.success ? hydeResult.questions : [];
         } catch (hydeError) {
           console.warn('⚠️ HyDE generation failed for chunk (skipping questions):', hydeError.message);
@@ -626,7 +626,7 @@ export async function syncMessages(messagesToSync) {
       let turnEmbeddings;
       try {
         turnEmbeddings = turnTexts.length > 0
-          ? await generateEmbeddings(turnTexts, config.openaiKey)
+          ? await generateEmbeddings(turnTexts, null)
           : [];
       } catch (turnEmbedError) {
         console.warn(`⚠️ Turn embeddings unavailable, syncing without: ${turnEmbedError.message}`);
@@ -877,7 +877,7 @@ export async function backfillNullEmbeddings(options = {}) {
       const texts = messages.map(m => m.content);
       let embeddings;
       try {
-        embeddings = await generateEmbeddings(texts, config.openaiKey);
+        embeddings = await generateEmbeddings(texts, null);
       } catch (embeddingError) {
         console.error(`❌ Backfill embedding generation failed: ${embeddingError.message}`);
         // Circuit breaker likely tripped — stop backfill, let user retry later
@@ -1044,7 +1044,7 @@ export async function backfillNullChatTurnEmbeddings(options = {}) {
       const texts = rows.map(r => (r.contextual_content || r.content || '').trim() || ' ');
       let embeddings;
       try {
-        embeddings = await generateEmbeddings(texts, config.openaiKey);
+        embeddings = await generateEmbeddings(texts, null);
       } catch (embeddingError) {
         console.error(`❌ Chat turns embedding generation failed: ${embeddingError.message}`);
         return {
@@ -1130,7 +1130,7 @@ export async function backfillNullChatTurnEmbeddings(options = {}) {
  * @param {string} config.supabaseUrl - Supabase project URL
  * @param {string} config.supabaseKey - Supabase anon key
  * @param {string} config.supabaseKey - Supabase anon key
- * @param {string} config.openaiKey - OpenAI API key
+ * @param {string} null - OpenAI API key
  * @param {string} [config.userId] - Optional User ID (UUID)
  */
 export async function setApiConfig(config) {

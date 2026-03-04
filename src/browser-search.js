@@ -268,7 +268,7 @@ export async function searchMessages(query, options = {}) {
           recentTopics: recentTopics,
           searchContext: 'chat_history'
         },
-        config.openaiKey
+        null
       );
 
       if (transformResult.success && transformResult.transformed) {
@@ -280,7 +280,7 @@ export async function searchMessages(query, options = {}) {
     }
 
     // Generate query embedding (using transformed or original query)
-    const queryEmbedding = await generateQueryEmbedding(searchQuery, config.openaiKey);
+    const queryEmbedding = await generateQueryEmbedding(searchQuery, null);
 
     // Handle graceful degradation - if embedding fails, return empty results
     if (!queryEmbedding) {
@@ -1077,7 +1077,6 @@ export async function searchHybrid(query, options = {}) {
     enableSemantic = true,
     enableHyDE = false,       // Off by default until tested
     enableGraph = false,      // Off by default until entities are populated
-    openaiKey = null,
     role = null,
     source = null,
     maxTimestamp = 0
@@ -1124,11 +1123,11 @@ export async function searchHybrid(query, options = {}) {
 
       // Start HyDE generation in parallel with everything else (non-blocking)
       let hydePromise = null;
-      if (enableHyDE && openaiKey) {
+      if (enableHyDE) {
         const cbStatus = await hydeCB.isOpen();
         if (!cbStatus.open) {
           console.log(`   🔮 Starting HyDE document generation in parallel...`);
-          hydePromise = generateHyDEDocument(query, openaiKey).catch(() => null);
+          hydePromise = generateHyDEDocument(query).catch(() => null);
         } else {
           console.log(`   ⚡ HyDE circuit breaker open, skipping`);
         }

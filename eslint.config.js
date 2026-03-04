@@ -122,16 +122,6 @@ export default [
     },
   },
 
-  // ── Files using CJS-style module.exports in browser context ─────
-  {
-    files: ['src/context-injector.js'],
-    languageOptions: {
-      globals: {
-        module: 'readonly',
-      },
-    },
-  },
-
   // ── Node.js scripts: CLI, migrations, build scripts ─────────────
   {
     files: [

@@ -1,7 +1,7 @@
 /**
  * Entity Extractor Module - Relationship-Aware Version
  * Purpose: Extract named entities with relationships from conversation content
- * Framework: Uses OpenAI GPT-4o-mini for entity recognition
+ * Framework: Uses Claude Haiku 4.5 for entity recognition (migrated from GPT-4o-mini)
  * Date: 2025-11-25
  *
  * Key Feature: Relationship-aware canonical naming for disambiguation
@@ -36,13 +36,7 @@ export interface EntityExtractionData {
   speakers: string[];           // Participants in conversation
 }
 
-interface OpenAIResponse {
-  choices: Array<{
-    message: {
-      content: string;
-    };
-  }>;
-}
+import { AnthropicClient } from "./anthropic-client.ts";
 
 /**
  * System prompt for relationship-aware entity extraction
@@ -255,12 +249,16 @@ Return entities with their relationship to the user, and any user preferences de
 
 /**
  * Main entity extraction function
- * Calls OpenAI GPT-4o-mini to extract entities with relationships
+ * Calls Claude Haiku 4.5 to extract entities with relationships
  * Returns array of extracted entities with relationship-aware metadata
+ *
+ * Benefits of Haiku 4.5 over GPT-4o-mini for this task:
+ * - Prompt caching: 1600-word system prompt cached after first call (90% discount within 5min TTL)
+ * - Better instruction following for structured extraction
  */
 export async function extractEntities(
   data: EntityExtractionData,
-  openaiApiKey: string
+  anthropicApiKey: string
 ): Promise<{ entities: ExtractedEntity[], preferences: ExtractedPreference[] }> {
   // Input validation
   if (!data.content || data.content.trim().length === 0) {
@@ -271,48 +269,41 @@ export async function extractEntities(
     throw new Error('Speakers array cannot be empty');
   }
 
-  if (!openaiApiKey || openaiApiKey.trim().length === 0) {
-    throw new Error('OpenAI API key is required');
+  if (!anthropicApiKey || anthropicApiKey.trim().length === 0) {
+    throw new Error('Anthropic API key is required');
   }
 
   // Build extraction prompt
   const prompt = buildExtractionPrompt(data);
 
-  // Call OpenAI API with structured output
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${openaiApiKey}`
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: ENTITY_EXTRACTION_SYSTEM_PROMPT },
-        { role: 'user', content: prompt }
-      ],
-      temperature: 0.2,          // Low temperature for consistent extraction
-      max_tokens: 900,           // Sufficient for entity + concept + preference lists
-      response_format: { type: 'json_object' }  // Force JSON output
-    })
-  });
-
-  // Error handling for API failures
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`OpenAI API error (${response.status}): ${errorBody}`);
-  }
-
-  const result: OpenAIResponse = await response.json();
-
-  // Parse entity + preference extraction results
   try {
-    const content = result.choices[0]?.message?.content;
-    if (!content) {
-      return { entities: [], preferences: [] };
-    }
+    const client = new AnthropicClient(anthropicApiKey);
 
-    const parsed = JSON.parse(content);
+    const parsed = await client.generateJsonCompletion<{
+      entities?: Array<{
+        entity_text?: string;
+        normalized_name?: string;
+        entity_type?: string;
+        relationship?: string;
+        context_category?: string;
+      }>;
+      preferences?: Array<{
+        category?: string;
+        value?: string;
+        sentiment?: string;
+      }>;
+    }>(
+      ENTITY_EXTRACTION_SYSTEM_PROMPT,
+      prompt,
+      {
+        temperature: 0.2,
+        maxTokens: 900,
+        maxRetries: 2,
+        timeoutMs: 8000,
+        operation: 'entity_extraction',
+      }
+    );
+
     const rawEntities = Array.isArray(parsed.entities) ? parsed.entities : [];
 
     // Validate and normalize entities
@@ -338,8 +329,8 @@ export async function extractEntities(
     return { entities, preferences };
 
   } catch (error) {
-    // JSON parse error - return empty arrays instead of failing
-    console.warn('Entity extraction JSON parse failed:', error);
+    // Parse/API error - return empty arrays instead of failing
+    console.warn('Entity extraction failed:', (error as Error).message);
     return { entities: [], preferences: [] };
   }
 }

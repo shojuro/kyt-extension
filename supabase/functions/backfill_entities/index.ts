@@ -20,7 +20,7 @@ import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const openaiApiKey = Deno.env.get("OPENAI_API_KEY")!;
+const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY")!;
 const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY")!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -150,7 +150,7 @@ serve(async (req) => {
               content: row.content,
               speakers: row.speakers || ["User", "Assistant"],
             },
-            openaiApiKey
+            anthropicApiKey
           );
 
           // Save entities + mentions + relationships

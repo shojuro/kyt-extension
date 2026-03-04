@@ -6,10 +6,12 @@
  * and enables semantic search to find the actual stored content.
  *
  * Mirrors the server-side hyde-generator.ts in supabase/functions/_shared/.
+ *
+ * LLM: Claude Haiku 4.5 via llm_completion edge function (migrated from OpenAI).
  */
 
 import { createCircuitBreaker } from './embedding-circuit-breaker.js';
-import { fetchWithTimeout } from './utils/fetch.js';
+import { callEdgeFunction } from './api-client.js';
 
 // ── Circuit breaker for HyDE API calls ────────────────────────────────────
 const HYDE_CB_STORAGE_KEY = 'kyt_hyde_circuit_breaker';
@@ -38,61 +40,32 @@ Do NOT explain what you're doing. Just output the hypothetical conversation dire
  * Used to bridge vocabulary gaps between how users search and how content is stored.
  *
  * @param {string} query - User's search query (e.g., "the walking analogy")
- * @param {string} openaiKey - OpenAI API key
  * @returns {Promise<string|null>} Hypothetical conversation text, or null on failure
  */
-export async function generateHyDEDocument(query, openaiKey) {
-  if (!query || !openaiKey) return null;
+export async function generateHyDEDocument(query) {
+  if (!query) return null;
 
   try {
-    const response = await fetchWithTimeout(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${openaiKey}`
-        },
-        body: JSON.stringify({
-          model: 'gpt-4.1-mini',
-          messages: [
-            { role: 'system', content: HYDE_SYSTEM_PROMPT },
-            { role: 'user', content: `Search query: "${query}"\n\nIMPORTANT: The user's stored conversations are about software development, AI products, startups, and personal knowledge management. Interpret ambiguous terms in this context (e.g., "shipping" means releasing software, not mailing packages; "models" means AI/LLM models, not fashion models).\n\nGenerate a hypothetical conversation that this query might be trying to find:` }
-          ],
-          temperature: 0.7,
-          max_tokens: 300
-        })
-      },
-      HYDE_TIMEOUT_MS
-    );
+    const result = await Promise.race([
+      callEdgeFunction('llm_completion', {
+        system: HYDE_SYSTEM_PROMPT,
+        user: `Search query: "${query}"\n\nIMPORTANT: The user's stored conversations are about software development, AI products, startups, and personal knowledge management. Interpret ambiguous terms in this context (e.g., "shipping" means releasing software, not mailing packages; "models" means AI/LLM models, not fashion models).\n\nGenerate a hypothetical conversation that this query might be trying to find:`,
+        temperature: 0.7,
+        max_tokens: 300,
+        operation: 'hyde_search',
+      }, { timeoutMs: HYDE_TIMEOUT_MS }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('HyDE timed out')), HYDE_TIMEOUT_MS + 500))
+    ]);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      // Billing/quota 429: open circuit for 1 hour (no point retrying until user tops up)
-      if (response.status === 429 && (errorText.includes('quota') || errorText.includes('billing'))) {
-        const BILLING_COOLDOWN_MS = 3600000; // 1 hour
-        console.error(`🔌 HyDE billing/quota exceeded — circuit open for ${BILLING_COOLDOWN_MS / 60000}m`);
-        const currentState = await hydeCB.getState();
-        await hydeCB.updateState({
-          isOpen: true,
-          openedAt: Date.now(),
-          lastFailureCode: 429,
-          lastFailureMessage: errorText,
-          cooldownMs: BILLING_COOLDOWN_MS,
-          consecutiveFailures: currentState.consecutiveFailures + 1,
-          totalTrips: currentState.totalTrips + 1
-        });
-      } else {
-        await hydeCB.recordFailure(response.status, errorText);
-      }
-      console.warn(`⚠️ HyDE generation failed: ${response.status} - ${errorText}`);
+    if (result.error) {
+      console.warn(`⚠️ HyDE generation failed: ${result.error}`);
+      await hydeCB.recordFailure(500, result.error);
       return null;
     }
 
     await hydeCB.recordSuccess();
 
-    const data = await response.json();
-    const hydeDoc = data.choices?.[0]?.message?.content?.trim();
+    const hydeDoc = result.content?.trim();
 
     if (!hydeDoc || hydeDoc.length < 20) {
       console.warn('⚠️ HyDE generated empty or too-short document');
@@ -120,7 +93,7 @@ export async function generateHyDEDocument(query, openaiKey) {
 
   } catch (error) {
     // Record timeout as status 0
-    if (error.message?.includes('timed out')) {
+    if (error.message?.includes('timed out') || error.message?.includes('HyDE timed out')) {
       await hydeCB.recordFailure(0, error.message);
     }
     console.warn(`⚠️ HyDE generation error: ${error.message}`);

@@ -576,7 +576,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
                 recentTopics: recentTopics,
                 searchContext: 'chat_history'
               },
-              apiConfig.openaiKey
+              null
             );
           })(),
           3000,
@@ -659,9 +659,8 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
           bm25Threshold: 0.1,
           enableBM25: true,
           enableSemantic: apiAvailable,
-          enableHyDE: apiAvailable && !!apiConfig.openaiKey,
+          enableHyDE: apiAvailable,
           enableGraph: true,
-          openaiKey: apiConfig.openaiKey,
           role: null,
           source: null,
           maxTimestamp: maxTimestamp,
@@ -688,9 +687,8 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
             bm25Threshold: 0.1,
             enableBM25: true,
             enableSemantic: apiAvailable,
-            enableHyDE: apiAvailable && !!apiConfig.openaiKey,
+            enableHyDE: apiAvailable,
             enableGraph: true,
-            openaiKey: apiConfig.openaiKey,
             role: null,
             source: null,
             maxTimestamp: maxTimestamp,

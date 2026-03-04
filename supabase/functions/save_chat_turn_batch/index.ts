@@ -150,7 +150,7 @@ serve(async (req) => {
 
         // SLOW PATH: With AI processing (sequential for embedding/classification)
         const hfClient = new HuggingFaceClient(Deno.env.get('HUGGINGFACE_API_KEY')!);
-        const openaiKey = Deno.env.get('OPENAI_API_KEY')!;
+        const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY')!;
 
         const results = [];
 
@@ -206,17 +206,17 @@ serve(async (req) => {
                     console.log(`Skipping extraction: role=${turn.role}, is_injection=${turn.is_injection}`);
                 }
                 const [classification, entities, contextResult] = await Promise.allSettled([
-                    classifyMemory({ content: turn.content }, openaiKey),
+                    classifyMemory({ content: turn.content }, anthropicKey),
                     skipExtraction
                         ? Promise.resolve({ entities: [], preferences: [] })
-                        : extractEntities({ content: turn.content, speakers: [turn.role || 'user'] }, openaiKey),
+                        : extractEntities({ content: turn.content, speakers: [turn.role || 'user'] }, anthropicKey),
                     // Context generation — no surrounding chunks in inline path (single-turn batch)
                     generateChunkContext({
                         chunkContent: turn.content,
                         platform: normalizePlatform(turn.platform),
                         conversationId: turn.conversation_id,
                         timestamp: turn.timestamp ? new Date(turn.timestamp).toISOString() : undefined,
-                    }, openaiKey)
+                    }, anthropicKey)
                 ]);
 
                 const gravity = classification.status === 'fulfilled'

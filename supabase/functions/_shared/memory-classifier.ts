@@ -2,11 +2,12 @@
  * Memory Classifier Module
  * Purpose: Server-side classification of conversation memories for gravity scoring
  * Framework: Holmes-Rahe Life Change Scale (impact) + Aron's 36 Questions (intimacy)
- * Author: AI Engineer (Temporal Decay Feature - Worktree 2)
- * Date: 2025-11-24
+ * LLM: Claude Haiku 4.5 (migrated from GPT-4o-mini)
  *
  * SECURITY: All LLM API calls happen server-side. Never expose API keys to client.
  */
+
+import { AnthropicClient } from "./anthropic-client.ts";
 
 // Types
 export interface ClassificationResult {
@@ -21,22 +22,14 @@ export interface ClassifierPromptData {
   topics?: string[];         // Extracted topics (if available)
 }
 
-interface OpenAIResponse {
-  choices: Array<{
-    message: {
-      content: string;
-    };
-  }>;
-}
-
 /**
  * Main classification function
- * Calls OpenAI GPT-4o-mini to classify conversation memory
+ * Calls Claude Haiku 4.5 to classify conversation memory
  * Returns impact score (0-100) and intimacy level (0-3)
  */
 export async function classifyMemory(
   data: ClassifierPromptData,
-  openaiApiKey: string
+  anthropicApiKey: string
 ): Promise<ClassificationResult> {
   // Input validation
   if (!data.content || data.content.trim().length === 0) {
@@ -47,47 +40,30 @@ export async function classifyMemory(
     throw new Error('Speakers array cannot be empty');
   }
 
-  if (!openaiApiKey || openaiApiKey.trim().length === 0) {
-    throw new Error('OpenAI API key is required');
+  if (!anthropicApiKey || anthropicApiKey.trim().length === 0) {
+    throw new Error('Anthropic API key is required');
   }
 
   // Build classification prompt
   const prompt = buildClassifierPrompt(data);
 
-  // Call OpenAI API with structured output
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${openaiApiKey}`
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: getClassifierSystemPrompt() },
-        { role: 'user', content: prompt }
-      ],
-      temperature: 0.3,  // Low temperature for consistent classification
-      max_tokens: 300,   // Sufficient for classification + reasoning
-      response_format: { type: 'json_object' }  // Force JSON output
-    })
-  });
+  const client = new AnthropicClient(anthropicApiKey);
 
-  // Error handling for API failures
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`OpenAI API error (${response.status}): ${errorBody}`);
-  }
-
-  const result: OpenAIResponse = await response.json();
-
-  // Parse and validate classification result
-  let classification;
-  try {
-    classification = JSON.parse(result.choices[0].message.content);
-  } catch (e) {
-    throw new Error(`Failed to parse OpenAI response: ${e.message}`);
-  }
+  const classification = await client.generateJsonCompletion<{
+    impact?: number;
+    intimacy?: number;
+    reasoning?: string;
+  }>(
+    getClassifierSystemPrompt(),
+    prompt,
+    {
+      temperature: 0.3,
+      maxTokens: 300,
+      maxRetries: 2,
+      timeoutMs: 5000,
+      operation: 'memory_classification',
+    }
+  );
 
   // Validate and bound scores
   const impact_score = Math.max(0, Math.min(100, classification.impact || 0));
@@ -169,13 +145,13 @@ Provide impact score (0-100) and intimacy level (0-3) with brief reasoning.`;
  */
 export async function classifyMemoryBatch(
   memories: ClassifierPromptData[],
-  openaiApiKey: string
+  anthropicApiKey: string
 ): Promise<ClassificationResult[]> {
   const results: ClassificationResult[] = [];
 
   for (const memory of memories) {
     try {
-      const result = await classifyMemory(memory, openaiApiKey);
+      const result = await classifyMemory(memory, anthropicApiKey);
       results.push(result);
     } catch (error) {
       // On error, return default classification rather than failing entire batch

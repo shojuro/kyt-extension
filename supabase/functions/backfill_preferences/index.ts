@@ -20,7 +20,7 @@ import { extractEntities, savePreferences } from "../_shared/entity-extractor.ts
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const openaiApiKey = Deno.env.get("OPENAI_API_KEY")!;
+const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY")!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
@@ -113,7 +113,7 @@ serve(async (req) => {
               content: row.content,
               speakers: row.speakers || ["User", "Assistant"],
             },
-            openaiApiKey
+            anthropicApiKey
           );
 
           // Save preferences (use auth user_id to satisfy FK constraint)

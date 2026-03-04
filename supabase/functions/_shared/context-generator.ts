@@ -1,7 +1,7 @@
 /**
  * Context Generator Module - Contextual Retrieval for KYT Memory
  * Purpose: Generate LLM context summaries for conversation chunks before embedding.
- * Framework: Uses OpenAI GPT-4o-mini for context generation.
+ * Framework: Uses Claude Haiku 4.5 for context generation.
  * Date: 2026-02-22
  *
  * Implements Anthropic's Contextual Retrieval technique adapted for conversations:
@@ -14,6 +14,8 @@
  * query embeddings stay raw. DO NOT "fix" this — it's intentional per Anthropic's design.
  */
 
+import { AnthropicClient } from "./anthropic-client.ts";
+
 export interface ContextGeneratorInput {
   chunkContent: string;
   platform?: string;
@@ -25,14 +27,6 @@ export interface ContextGeneratorInput {
 interface ContextResult {
   contextPrefix: string;
   contextualContent: string;
-}
-
-interface OpenAIResponse {
-  choices: Array<{
-    message: {
-      content: string;
-    };
-  }>;
 }
 
 /**
@@ -101,50 +95,37 @@ Write a 1-3 sentence context summary for the chunk above:`;
  * Generate a context summary for a single conversation chunk.
  *
  * @param input - Chunk content + optional surrounding context
- * @param openaiApiKey - OpenAI API key
+ * @param anthropicApiKey - Anthropic API key
  * @returns Context result with prefix and full contextual content, or null on failure
  */
 export async function generateChunkContext(
   input: ContextGeneratorInput,
-  openaiApiKey: string
+  anthropicApiKey: string
 ): Promise<ContextResult | null> {
   if (!input.chunkContent || input.chunkContent.trim().length === 0) {
     return null;
   }
 
-  if (!openaiApiKey || openaiApiKey.trim().length === 0) {
-    console.warn('Context generator: missing OpenAI API key');
+  if (!anthropicApiKey || anthropicApiKey.trim().length === 0) {
+    console.warn('Context generator: missing Anthropic API key');
     return null;
   }
 
   const prompt = buildContextPrompt(input);
 
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${openaiApiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: CONTEXT_GENERATION_SYSTEM_PROMPT },
-          { role: 'user', content: prompt },
-        ],
+    const client = new AnthropicClient(anthropicApiKey);
+    const contextPrefix = await client.generateCompletion(
+      CONTEXT_GENERATION_SYSTEM_PROMPT,
+      prompt,
+      {
         temperature: 0.3,
-        max_tokens: 200,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.warn(`Context generator API error (${response.status}): ${errorBody}`);
-      return null;
-    }
-
-    const result: OpenAIResponse = await response.json();
-    const contextPrefix = result.choices[0]?.message?.content?.trim();
+        maxTokens: 200,
+        maxRetries: 2,
+        timeoutMs: 5000,
+        operation: 'context_generation',
+      }
+    );
 
     if (!contextPrefix || contextPrefix.length === 0) {
       return null;
@@ -165,19 +146,19 @@ export async function generateChunkContext(
  * Processes sequentially with configurable delay to respect rate limits.
  *
  * @param inputs - Array of chunk inputs
- * @param openaiApiKey - OpenAI API key
+ * @param anthropicApiKey - Anthropic API key
  * @param delayMs - Delay between API calls (default: 200ms)
  * @returns Array of results (null entries for failures)
  */
 export async function generateContextBatch(
   inputs: ContextGeneratorInput[],
-  openaiApiKey: string,
+  anthropicApiKey: string,
   delayMs: number = 200
 ): Promise<(ContextResult | null)[]> {
   const results: (ContextResult | null)[] = [];
 
   for (let i = 0; i < inputs.length; i++) {
-    const result = await generateChunkContext(inputs[i], openaiApiKey);
+    const result = await generateChunkContext(inputs[i], anthropicApiKey);
     results.push(result);
 
     // Rate limit delay between calls (skip after last)

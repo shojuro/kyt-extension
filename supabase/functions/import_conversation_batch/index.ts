@@ -221,12 +221,12 @@ interface ProcessedChunk extends TurnChunk {
  * Process chunks with batched HyDE generation
  *
  * @param chunks - Turn chunks to process
- * @param openaiKey - OpenAI API key for HyDE
+ * @param anthropicKey - Anthropic API key for HyDE
  * @returns Chunks with HyDE questions attached
  */
 async function batchProcessHyDE(
   chunks: TurnChunk[],
-  openaiKey: string
+  anthropicKey: string
 ): Promise<{ chunk: TurnChunk; hydeDoc: string | null }[]> {
   const results: { chunk: TurnChunk; hydeDoc: string | null }[] = [];
   const batches = chunkArray(chunks, HYDE_BATCH_SIZE);
@@ -241,7 +241,7 @@ async function batchProcessHyDE(
       try {
         // Generate HyDE for chunk content (first 500 chars as query)
         const query = chunk.content.substring(0, 500);
-        const hydeDoc = await generateHypotheticalDocument(query, openaiKey);
+        const hydeDoc = await generateHypotheticalDocument(query, anthropicKey);
         return { chunk, hydeDoc };
       } catch (e) {
         console.warn(`[import] HyDE failed for chunk, continuing:`, e.message);
@@ -311,7 +311,7 @@ async function batchProcessEmbeddings(
  */
 async function batchClassifyChunks(
   chunks: TurnChunk[],
-  openaiKey: string
+  anthropicKey: string
 ): Promise<{ impact_score: number; intimacy_level: number }[]> {
   const results: { impact_score: number; intimacy_level: number }[] = [];
 
@@ -325,7 +325,7 @@ async function batchClassifyChunks(
       try {
         const classification = await classifyMemory(
           { content: chunk.content },
-          openaiKey
+          anthropicKey
         );
         return {
           impact_score: classification?.impact_score || 0,
@@ -436,7 +436,7 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
           Deno.env.get('SUPABASE_URL')!,
           Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
         );
-        const openaiKey = Deno.env.get('OPENAI_API_KEY') || '';
+        const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY') || '';
         const hfKey = Deno.env.get('HUGGINGFACE_API_KEY') || '';
         const hfClient = new HuggingFaceClient(hfKey);
 
@@ -455,7 +455,7 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
         } else {
           // Stage 4: HyDE generation
           sendEvent({ stage: 'hyde', percent: 30, message: 'Generating HyDE documents...' });
-          const hydeResults = await batchProcessHyDE(chunks, openaiKey);
+          const hydeResults = await batchProcessHyDE(chunks, anthropicKey);
           sendEvent({ stage: 'hyde', percent: 45, message: `Generated ${hydeResults.filter(h => h.hydeDoc).length} HyDE documents` });
 
           // Stage 5: Embeddings
@@ -468,7 +468,7 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
 
           // Stage 6: Classification
           sendEvent({ stage: 'classifying', percent: 70, message: 'Classifying memories...' });
-          const classifications = await batchClassifyChunks(chunks, openaiKey);
+          const classifications = await batchClassifyChunks(chunks, anthropicKey);
           sendEvent({ stage: 'classifying', percent: 80, message: 'Classification complete' });
 
           // Combine results
@@ -700,7 +700,7 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
 
-    const openaiKey = Deno.env.get('OPENAI_API_KEY') || '';
+    const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY') || '';
     const hfKey = Deno.env.get('HUGGINGFACE_API_KEY') || '';
     const hfClient = new HuggingFaceClient(hfKey);
 
@@ -834,7 +834,7 @@ Deno.serve(async (req) => {
       console.log(`[import] Starting AI processing for ${chunksToProcess.length} chunks...`);
 
       // 3a. Generate HyDE documents (parallel batched)
-      const hydeResults = await batchProcessHyDE(chunksToProcess, openaiKey);
+      const hydeResults = await batchProcessHyDE(chunksToProcess, anthropicKey);
 
       // 3b. Prepare texts for embedding (chunk content + HyDE docs)
       const textsToEmbed: string[] = hydeResults.map(({ chunk, hydeDoc }) => {
@@ -846,7 +846,7 @@ Deno.serve(async (req) => {
       const embeddings = await batchProcessEmbeddings(textsToEmbed, hfClient);
 
       // 3d. Classify for gravity (impact + intimacy)
-      const classifications = await batchClassifyChunks(chunksToProcess, openaiKey);
+      const classifications = await batchClassifyChunks(chunksToProcess, anthropicKey);
 
       // 3e. Combine results
       processedChunks = chunksToProcess.map((chunk, idx) => ({

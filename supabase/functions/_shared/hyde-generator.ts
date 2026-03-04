@@ -3,12 +3,13 @@
  *
  * Generates hypothetical conversation documents that would answer a query.
  * Uses conversation format to match the stored chat_turns data.
+ * LLM: Claude Haiku 4.5 (migrated from OpenAI GPT-4o-mini)
  *
  * Key insight: The hypothetical document is semantically closer to actual
  * stored conversations than the raw query, improving retrieval quality.
  */
 
-import { OpenAIClient } from "./openai-client.ts";
+import { AnthropicClient } from "./anthropic-client.ts";
 import { Logger } from "./utils.ts";
 
 const HYDE_SYSTEM_PROMPT = `You are generating a hypothetical conversation that might exist in a user's ChatGPT or Claude chat history, captured by K.Y.T. (Know Your Thoughts), a personal conversation memory extension.
@@ -33,7 +34,7 @@ Rules:
  * Generate a hypothetical document for a query
  *
  * @param query - The search query
- * @param apiKey - OpenAI API key
+ * @param apiKey - Anthropic API key
  * @param requestId - Request ID for tracing
  * @returns Hypothetical conversation document or null on failure
  */
@@ -43,7 +44,7 @@ export async function generateHypotheticalDocument(
     requestId?: string
 ): Promise<string | null> {
     if (!apiKey) {
-        Logger.warn("OpenAI API key not configured, skipping HyDE", { requestId });
+        Logger.warn("Anthropic API key not configured, skipping HyDE", { requestId });
         return null;
     }
 
@@ -53,7 +54,7 @@ export async function generateHypotheticalDocument(
     }
 
     try {
-        const client = new OpenAIClient(apiKey);
+        const client = new AnthropicClient(apiKey);
 
         const userPrompt = `Search query: "${query}"
 
@@ -62,7 +63,13 @@ Generate a hypothetical conversation that would answer this query:`;
         const hydeDoc = await client.generateCompletion(
             HYDE_SYSTEM_PROMPT,
             userPrompt,
-            { temperature: 0.7, maxTokens: 300 },
+            {
+                temperature: 0.7,
+                maxTokens: 300,
+                maxRetries: 2,
+                timeoutMs: 8000,
+                operation: 'hyde_generation',
+            },
             requestId
         );
 
@@ -121,7 +128,7 @@ Generate a hypothetical conversation that would answer this query:`;
  * - On failure: { hydeDoc: null, usedHyde: false }
  *
  * @param query - The search query
- * @param apiKey - OpenAI API key
+ * @param apiKey - Anthropic API key
  * @param requestId - Request ID for tracing
  */
 export async function generateHyDEWithFallback(

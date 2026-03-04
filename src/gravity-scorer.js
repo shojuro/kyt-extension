@@ -1,15 +1,19 @@
 /**
  * KYT Gravity Scorer
- * 
+ *
  * Implements Priority 3: Gravity/Semantic Decay
- * 
+ *
  * Purpose:
  * Prioritize memories based on their emotional impact (Holmes-Rahe scale)
  * and apply a logarithmic time decay to ensure important memories stick around.
- * 
+ *
  * Formula:
  * Score = Impact / (log(Time + 2))^Gravity
+ *
+ * LLM: Claude Haiku 4.5 via llm_completion edge function (migrated from OpenAI).
  */
+
+import { callEdgeFunction } from './api-client.js';
 
 /**
  * Calculate Gravity Score
@@ -37,23 +41,12 @@ export function calculateGravityScore(impact, hoursPassed, gravity = 1.8) {
 /**
  * Classify Impact using LLM (Holmes-Rahe Scale)
  * @param {string} text - Memory content
- * @param {string} apiKey - OpenAI API Key
  * @returns {Promise<{score: number, reasoning: string}>} Impact score and reasoning
  */
-export async function classifyImpact(text, apiKey) {
+export async function classifyImpact(text) {
     try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-                model: 'gpt-4.1-mini', // Fast, cheap, separate RPD quota from 4o-mini
-                messages: [
-                    {
-                        role: 'system',
-                        content: `You are an expert psychologist specializing in the Holmes-Rahe Stress Scale.
+        const result = await callEdgeFunction('llm_completion', {
+            system: `You are an expert psychologist specializing in the Holmes-Rahe Stress Scale.
 Your task is to rate the "Life Impact" of a given user memory on a scale of 0-100.
 
 Guidelines:
@@ -63,28 +56,24 @@ Guidelines:
 - 10-29: Minor Hassles (Traffic, Vacation, Holidays, Minor violations)
 - 0-9: Trivial/Chatter (Weather, Greetings, Random thoughts)
 
-Return JSON only: { "score": number, "reasoning": "short explanation" }`
-                    },
-                    {
-                        role: 'user',
-                        content: text
-                    }
-                ],
-                temperature: 0.0,
-                response_format: { type: "json_object" }
-            })
-        });
+Return JSON only: { "score": number, "reasoning": "short explanation" }`,
+            user: text,
+            temperature: 0.0,
+            json_mode: true,
+            operation: 'gravity_scoring',
+        }, { timeoutMs: 8000 });
 
-        if (!response.ok) {
-            throw new Error(`OpenAI API error: ${response.statusText}`);
+        if (result.error) {
+            throw new Error(result.error);
         }
 
-        const data = await response.json();
-        const result = JSON.parse(data.choices[0].message.content);
+        const parsed = typeof result.content === 'string'
+            ? JSON.parse(result.content)
+            : result.content;
 
         return {
-            score: result.score,
-            reasoning: result.reasoning
+            score: parsed.score,
+            reasoning: parsed.reasoning
         };
 
     } catch (error) {

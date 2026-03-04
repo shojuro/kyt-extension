@@ -379,7 +379,7 @@ export async function getRelevantMemories(
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY")!;
-    const openaiApiKey = Deno.env.get("OPENAI_API_KEY");  // Optional for HyDE
+    const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY");  // Optional for HyDE
 
     if (!supabaseUrl || !supabaseServiceKey || !hfApiKey) {
         throw new Error("Missing required environment variables");
@@ -458,8 +458,8 @@ export async function getRelevantMemories(
     // ========================================================================
     const [entityResult, hydeResult, conceptEntityIds] = await Promise.all([
         searchEntities(supabase, rawEmbedding, userId, query, requestId, resolvedProfileId),
-        useHyde && openaiApiKey
-            ? generateHyDEWithFallback(query, openaiApiKey, requestId)
+        useHyde && anthropicApiKey
+            ? generateHyDEWithFallback(query, anthropicApiKey, requestId)
             : Promise.resolve({ hydeDoc: null, usedHyde: false }),
         detectConceptEntities(supabase, query, userId, requestId, resolvedProfileId)
     ]);

@@ -136,9 +136,9 @@ serve(async (req) => {
     }
 
     // 3. Get environment variables (SERVER-SIDE ONLY)
-    const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
-    if (!openaiApiKey) {
-      throw new Error('OPENAI_API_KEY environment variable not configured');
+    const anthropicApiKey = Deno.env.get('ANTHROPIC_API_KEY');
+    if (!anthropicApiKey) {
+      throw new Error('ANTHROPIC_API_KEY environment variable not configured');
     }
 
     // 4. Run gravity classification and entity extraction in parallel
@@ -148,12 +148,12 @@ serve(async (req) => {
         content: requestData.content,
         speakers: requestData.speakers,
         topics: requestData.topics
-      }, openaiApiKey),
+      }, anthropicApiKey),
 
       extractEntities({
         content: requestData.content,
         speakers: requestData.speakers
-      }, openaiApiKey)
+      }, anthropicApiKey)
     ]);
 
     // Handle results independently (fault isolation)
