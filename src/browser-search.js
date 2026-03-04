@@ -1168,6 +1168,9 @@ export async function searchHybrid(query, options = {}) {
       return true;
     });
 
+    // Cap local messages to 500 most recent for BM25 performance
+    localMessages = localMessages.slice(-500);
+
       const rankedLists = [];
 
       // Start HyDE generation → embedding → search as a single compound promise
