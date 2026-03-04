@@ -15,6 +15,7 @@ import {
   scoreQuestionStructure,
   scorePersonalReference,
   scoreTemporalReference,
+  scoreSynthesisIntent,
 } from '../../src/intent-classifier.js';
 
 // ===== Helper =====
@@ -488,5 +489,40 @@ describe('Return Shape', () => {
       expect(typeof r.reason).toBe('string');
       expect(r.reason.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ===== S7: Synthesis Intent =====
+describe('scoreSynthesisIntent', () => {
+  it('scores "connect" verb >= 0.8', () => {
+    expect(scoreSynthesisIntent('connect my weight loss goals with what I was reading')).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('scores "relate" verb >= 0.8', () => {
+    expect(scoreSynthesisIntent('relate my fitness to my reading list')).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('scores "synthesize" verb >= 0.8', () => {
+    expect(scoreSynthesisIntent('synthesize my notes from different platforms')).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('scores "compare" verb >= 0.8', () => {
+    expect(scoreSynthesisIntent('compare what I said on Gemini vs ChatGPT')).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('scores "personal goals" pattern >= 0.5', () => {
+    expect(scoreSynthesisIntent('tell me about my personal goals')).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it('scores "goals and interests" pattern >= 0.7', () => {
+    expect(scoreSynthesisIntent('what are my goals and interests')).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it('returns 0 for non-synthesis queries', () => {
+    expect(scoreSynthesisIntent('what is my favorite movie')).toBe(0);
+  });
+
+  it('returns 0 for simple recall queries', () => {
+    expect(scoreSynthesisIntent('what did I say about cooking')).toBe(0);
   });
 });

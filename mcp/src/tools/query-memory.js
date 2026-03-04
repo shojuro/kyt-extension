@@ -1,5 +1,7 @@
 import { callEdgeFunction, getUserId } from '../lib/supabase-client.js';
 import { getMemoryMode } from '../lib/config.js';
+import { scoreTemporalReference } from '../lib/intent-classifier.js';
+import { extractPlatformMention } from '../lib/platform-utils.js';
 
 export const QUERY_MEMORY_SCHEMA = {
   query: { type: 'string', description: 'Search query for cross-platform memory' },
@@ -45,7 +47,37 @@ export async function queryMemory({ query, topK = 5, useHyde = true, platform = 
     };
   }
 
-  const results = result.results || [];
+  let results = result.results || [];
+
+  // TEMPORAL + PLATFORM FALLBACK: When query mentions a specific platform with
+  // temporal intent and main search found nothing from that platform, fetch
+  // recent items directly via recentByPlatform.
+  const temporalScore = scoreTemporalReference(query.trim().toLowerCase());
+  const targetPlatform = extractPlatformMention(query.trim());
+  if (temporalScore >= 0.4 && targetPlatform) {
+    const hasTargetPlatformItems = results.some(r => {
+      const inferredPlatform = r.conversation_id?.startsWith('cc-') ? 'claude-code' : (r.platform || null);
+      return inferredPlatform === targetPlatform;
+    });
+
+    if (!hasTargetPlatformItems) {
+      try {
+        const recencyResult = await callEdgeFunction('search_memories', {
+          query: query.trim(),
+          userId,
+          recentByPlatform: targetPlatform,
+          topK: 3,
+        });
+        const recencyItems = recencyResult.results || [];
+        if (recencyItems.length > 0) {
+          const existingIds = new Set(results.map(r => r.id));
+          const newItems = recencyItems.filter(r => !existingIds.has(r.id));
+          // Prepend recency items so they appear first (most relevant for temporal queries)
+          results = [...newItems, ...results];
+        }
+      } catch { /* non-critical fallback */ }
+    }
+  }
 
   if (results.length === 0) {
     return {

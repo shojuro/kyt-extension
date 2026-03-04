@@ -23,6 +23,7 @@ type Candidate = {
     gravity_score?: number;
     entity_boost?: boolean;
     rrf_score?: number;  // Added by RRF merge
+    platform?: string;   // Source platform (gemini, chatgpt, claude, claude-code)
 };
 export type CandidateWithScore = Candidate & { rerank_score: number };
 
@@ -32,6 +33,16 @@ export interface SearchOptions {
     hydeWeight?: number;  // Default: 0.6
     fast?: boolean;       // Skip HyDE, reranking, entity search. ~200ms.
     confidenceThreshold?: number; // Override default 0.40 confidence filter
+}
+
+/**
+ * Extract platform mention from a user query (e.g. "on Gemini" → "gemini").
+ * Ported from src/context-retrieval.js — keep in sync.
+ */
+function extractPlatformMention(message: string): string | null {
+    const m = message.match(/\b(gemini|chatgpt|claude[- ]code|claude)\b/i);
+    if (!m) return null;
+    return m[1].toLowerCase().replace(/\s+/g, '-');
 }
 
 /**
@@ -132,6 +143,31 @@ async function vectorSearch(
 /**
  * Search for entities matching the query embedding, with text fallback
  */
+// Concept synonym expansion for server-side entity text search
+// Maps vague referential terms → domain-specific equivalents
+const CONCEPT_SYNONYMS: Record<string, string[]> = {
+    'nfl': ['football', 'player', 'quarterback'],
+    'football': ['nfl', 'player'],
+    'player': ['athlete'], 'players': ['athletes'],
+    'weight': ['diet', 'fitness', 'kg'],
+    'diet': ['weight', 'nutrition'],
+    'fitness': ['exercise', 'workout'],
+    'goal': ['target', 'objective'], 'goals': ['targets', 'objectives'],
+    'book': ['reading', 'author'], 'books': ['reading', 'authors'],
+    'level': ['mode', 'tier'], 'levels': ['modes', 'tiers'],
+    'tier': ['mode', 'level'], 'tiers': ['modes', 'levels'],
+};
+
+function expandQueryWithSynonyms(query: string): string {
+    const words = query.toLowerCase().split(/\s+/);
+    const expansions: string[] = [];
+    for (const word of words) {
+        const synonyms = CONCEPT_SYNONYMS[word];
+        if (synonyms) expansions.push(...synonyms);
+    }
+    return expansions.length > 0 ? query + ' ' + expansions.join(' ') : query;
+}
+
 async function searchEntities(
     supabase: any,
     embedding: number[],
@@ -140,54 +176,62 @@ async function searchEntities(
     requestId?: string,
     profileId?: string
 ): Promise<{ ids: string[]; entities: any[] }> {
-    const { data: entities, error } = await supabase
-        .rpc("search_entities_by_embedding", {
+    // Run embedding and text search in PARALLEL (Gap 2: entity bridging)
+    // Text search always runs — catches entities that embedding similarity misses
+    // (e.g., "NFL" has no vector similarity to "Walter Payton")
+    const expandedQuery = expandQueryWithSynonyms(queryText);
+
+    const [embeddingResult, textResult] = await Promise.allSettled([
+        supabase.rpc("search_entities_by_embedding", {
             query_embedding: embedding,
             match_threshold: 0.8,
             match_count: 5,
             p_user_id: userId,
             p_profile_id: profileId
-        });
-
-    if (error) {
-        Logger.warn("Entity search failed, continuing without entity boost", {
-            requestId,
-            error: error.message
-        });
-        // Fall through to text search below
-    }
-
-    const embeddingResults = entities || [];
-
-    // If embedding search found results, return them
-    if (embeddingResults.length > 0) {
-        const ids = embeddingResults.map((e: any) => e.id);
-        Logger.info(`Found ${ids.length} relevant entities via embedding`, { requestId });
-        return { ids, entities: embeddingResults };
-    }
-
-    // Fallback: text-based entity search (trigram + keyword)
-    Logger.info("Entity embedding search returned 0, falling back to text search", { requestId });
-    const { data: textEntities, error: textError } = await supabase
-        .rpc("search_entities_by_text", {
-            p_query_text: queryText,
+        }),
+        supabase.rpc("search_entities_by_text", {
+            p_query_text: expandedQuery,
             p_user_id: userId,
             p_match_count: 5,
             p_profile_id: profileId
-        });
+        }),
+    ]);
 
-    if (textError) {
-        Logger.warn("Entity text search also failed", { requestId, error: textError.message });
-        return { ids: [], entities: [] };
+    const embeddingEntities = embeddingResult.status === 'fulfilled' && !embeddingResult.value.error
+        ? (embeddingResult.value.data || [])
+        : [];
+    const textEntities = textResult.status === 'fulfilled' && !textResult.value.error
+        ? (textResult.value.data || [])
+        : [];
+
+    if (embeddingResult.status === 'rejected' || (embeddingResult.status === 'fulfilled' && embeddingResult.value.error)) {
+        const errMsg = embeddingResult.status === 'rejected' ? embeddingResult.reason?.message : embeddingResult.value.error?.message;
+        Logger.warn("Entity embedding search failed", { requestId, error: errMsg });
+    }
+    if (textResult.status === 'rejected' || (textResult.status === 'fulfilled' && textResult.value.error)) {
+        const errMsg = textResult.status === 'rejected' ? textResult.reason?.message : textResult.value.error?.message;
+        Logger.warn("Entity text search failed", { requestId, error: errMsg });
     }
 
-    const textResults = textEntities || [];
-    const ids = textResults.map((e: any) => e.id);
+    // Merge unique by id (embedding results first — higher confidence)
+    const seenIds = new Set<string>();
+    const merged: any[] = [];
+    for (const e of [...embeddingEntities, ...textEntities]) {
+        if (!seenIds.has(e.id)) {
+            seenIds.add(e.id);
+            merged.push(e);
+        }
+    }
+
+    const ids = merged.map((e: any) => e.id);
     if (ids.length > 0) {
-        Logger.info(`Found ${ids.length} entities via text fallback`, { requestId });
+        Logger.info(`Found ${ids.length} entities (${embeddingEntities.length} embedding + ${textEntities.length} text, ${ids.length} unique)`, { requestId });
+    }
+    if (expandedQuery !== queryText) {
+        Logger.info(`Entity query expanded: "${queryText}" → "${expandedQuery}"`, { requestId });
     }
 
-    return { ids, entities: textResults };
+    return { ids, entities: merged };
 }
 
 // ==========================================================================
@@ -701,6 +745,23 @@ export async function getRelevantMemories(
     const echoFiltered = filterQueryEchoes(query, candidates);
     if (echoFiltered.length < candidates.length) {
         Logger.info(`Query echo filter: removed ${candidates.length - echoFiltered.length} echo candidates`, { requestId });
+    }
+
+    // ========================================================================
+    // STEP 5d: Platform-mismatch penalty (Gap 3)
+    // When user asks about a specific platform (e.g. "what did I discuss on Gemini?"),
+    // penalize candidates from other platforms. This prevents dev conversations
+    // *about* Gemini (from claude-code) outranking actual Gemini user content.
+    // ========================================================================
+    const targetPlatform = extractPlatformMention(query);
+    if (targetPlatform) {
+        for (const c of echoFiltered) {
+            if (c.platform && c.platform !== targetPlatform) {
+                if (c.gravity_score != null) c.gravity_score *= 0.3;
+                if (c.rrf_score != null) c.rrf_score *= 0.3;
+            }
+        }
+        Logger.info(`Platform-mismatch penalty applied for target="${targetPlatform}"`, { requestId });
     }
 
     // ========================================================================

@@ -759,10 +759,25 @@ async function searchSupabaseChatTurnsText(query, options = {}) {
 // Maps vague referential terms → domain-specific equivalents
 // Only applied when embedding entity search returns 0 results
 const ENTITY_CONCEPT_SYNONYMS = new Map([
+  // Memory modes
   ['level',    ['mode', 'tier']],
   ['levels',   ['modes', 'tiers']],
   ['tier',     ['mode', 'level']],
   ['tiers',    ['modes', 'levels']],
+  // Sports
+  ['nfl',      ['football', 'player', 'quarterback']],
+  ['football', ['nfl', 'player']],
+  ['player',   ['athlete']],
+  ['players',  ['athletes']],
+  // Health & fitness
+  ['weight',   ['diet', 'fitness', 'kg']],
+  ['diet',     ['weight', 'nutrition']],
+  ['fitness',  ['exercise', 'workout']],
+  // General domains
+  ['goal',     ['target', 'objective']],
+  ['goals',    ['targets', 'objectives']],
+  ['book',     ['reading', 'author']],
+  ['books',    ['reading', 'authors']],
 ]);
 
 async function searchGraphWalk(query, options = {}) {

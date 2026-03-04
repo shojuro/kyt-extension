@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyIntent, scoreDirective, scoreMemoryReference, scoreContentDensity } from '../src/lib/intent-classifier.js';
+import { classifyIntent, scoreDirective, scoreMemoryReference, scoreContentDensity, scoreTemporalReference, scoreSynthesisIntent } from '../src/lib/intent-classifier.js';
+import { extractPlatformMention } from '../src/lib/platform-utils.js';
 
 describe('intent-classifier (MCP copy)', () => {
 
@@ -108,5 +109,87 @@ describe('intent-classifier (MCP copy)', () => {
   test('no_signal: short declarative "Python is great"', () => {
     const r = classifyIntent('Python is great');
     assert.equal(r.intent, 'SKIP');
+  });
+});
+
+// ── extractPlatformMention tests ─────────────────────────────
+
+describe('extractPlatformMention', () => {
+  test('extracts "gemini"', () => {
+    assert.equal(extractPlatformMention('what did I discuss on Gemini?'), 'gemini');
+  });
+
+  test('extracts "chatgpt"', () => {
+    assert.equal(extractPlatformMention('my ChatGPT conversations'), 'chatgpt');
+  });
+
+  test('extracts "claude-code" (space)', () => {
+    assert.equal(extractPlatformMention('in Claude Code session'), 'claude-code');
+  });
+
+  test('extracts "claude-code" (hyphen)', () => {
+    assert.equal(extractPlatformMention('from claude-code'), 'claude-code');
+  });
+
+  test('extracts "claude" (plain)', () => {
+    assert.equal(extractPlatformMention('I told Claude about it'), 'claude');
+  });
+
+  test('returns null for no platform', () => {
+    assert.equal(extractPlatformMention('what is my favorite movie?'), null);
+  });
+
+  test('case insensitive', () => {
+    assert.equal(extractPlatformMention('on GEMINI yesterday'), 'gemini');
+  });
+});
+
+// ── Temporal + platform detection combo tests ────────────────
+
+describe('temporal + platform detection', () => {
+  test('"what was the last thing I discussed on Gemini?" triggers both', () => {
+    const msg = 'what was the last thing I discussed on Gemini?';
+    assert.ok(scoreTemporalReference(msg.toLowerCase()) >= 0.4);
+    assert.equal(extractPlatformMention(msg), 'gemini');
+  });
+
+  test('"what did I discuss on Gemini?" has no temporal signal', () => {
+    const msg = 'what did I discuss on Gemini?';
+    assert.equal(scoreTemporalReference(msg.toLowerCase()), 0);
+  });
+
+  test('"I asked ChatGPT something recently" triggers both', () => {
+    const msg = 'I asked ChatGPT something recently';
+    assert.ok(scoreTemporalReference(msg.toLowerCase()) >= 0.4);
+    assert.equal(extractPlatformMention(msg), 'chatgpt');
+  });
+
+  test('"I requested a random list of 10 what?" has no platform', () => {
+    const msg = 'I requested a random list of 10 what?';
+    assert.equal(extractPlatformMention(msg), null);
+  });
+});
+
+// ── scoreSynthesisIntent tests ───────────────────────────────
+
+describe('scoreSynthesisIntent', () => {
+  test('"connect my goals with reading" >= 0.8', () => {
+    assert.ok(scoreSynthesisIntent('connect my weight loss goals with what I was reading') >= 0.8);
+  });
+
+  test('"relate fitness to reading" >= 0.8', () => {
+    assert.ok(scoreSynthesisIntent('relate my fitness to my reading list') >= 0.8);
+  });
+
+  test('"personal goals" >= 0.5', () => {
+    assert.ok(scoreSynthesisIntent('tell me about my personal goals') >= 0.5);
+  });
+
+  test('"goals and interests" >= 0.7', () => {
+    assert.ok(scoreSynthesisIntent('what are my goals and interests') >= 0.7);
+  });
+
+  test('non-synthesis returns 0', () => {
+    assert.equal(scoreSynthesisIntent('what is my favorite movie'), 0);
   });
 });

@@ -17,7 +17,7 @@ import { applyKeywordBoost } from './keyword-boost.js';
 import { filterByConfidence } from './confidence-filter.js';
 import { detectDeflection, applyDeflectionPenalty } from './assistant-quality-detector.js';
 import { searchViaEdgeFunction } from './edge-search.js';
-import { scoreTemporalReference } from './intent-classifier.js';
+import { scoreTemporalReference, scoreSynthesisIntent } from './intent-classifier.js';
 import { hydeCB } from './hyde-search-generator.js';
 import { isEmbeddingCircuitOpen } from './embedding-circuit-breaker.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
@@ -743,6 +743,29 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
       }
     }
 
+    // SYNTHESIS + PLATFORM FALLBACK: When query uses synthesis language ("connect",
+    // "relate") and mentions a platform, ensure platform-specific content is available
+    // for the LLM to bridge topics.
+    const synthesisScore = scoreSynthesisIntent(userMessage);
+    if (synthesisScore >= 0.5 && targetPlatform && !hasTargetPlatformItems) {
+      console.log(`🔗 Synthesis+platform fallback: "${userMessage.substring(0, 40)}..." → ${targetPlatform} (synthesis: ${synthesisScore})`);
+      try {
+        const synthItems = await searchViaEdgeFunction(userMessage, {
+          topK: 5,
+          recentByPlatform: targetPlatform,
+        });
+        if (synthItems.length > 0) {
+          const existingIds = new Set(contextItems.map(i => i.id));
+          const newItems = synthItems.filter(i => !existingIds.has(i.id));
+          contextItems = contextItems.concat(newItems);
+          console.log(`🔗 Synthesis fallback: added ${newItems.length} ${targetPlatform} items for multi-topic bridging`);
+          diagnostics.synthesisFallback = { platform: targetPlatform, added: newItems.length };
+        }
+      } catch (err) {
+        console.warn(`⚠️ Synthesis fallback failed: ${err.message}`);
+      }
+    }
+
     // Apply mild recency boost to help newer memories compete with semantically richer older ones
     if (contextItems.length > 1) {
       const HALF_LIFE_DAYS = 30;
@@ -908,6 +931,18 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
         console.log(`🔬 Diagnostic-content penalty: score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
       }
 
+      // Platform-mismatch penalty (0.3x) — when user asks about a specific platform,
+      // penalize items from other platforms. Prevents dev conversations *about* Gemini
+      // (from claude-code) outranking actual Gemini user content.
+      if (!queryIsAboutKYT && targetPlatform && scoreKey && item[scoreKey] != null) {
+        const itemPlatform = item.platform || item.source || null;
+        if (itemPlatform && itemPlatform !== targetPlatform) {
+          const before = item[scoreKey];
+          item[scoreKey] *= 0.3;
+          console.log(`🌐 Platform-mismatch penalty: ${itemPlatform} ≠ ${targetPlatform}, score ${before.toFixed(3)} → ${item[scoreKey].toFixed(3)} (ID: ${item.id || item.message_id || 'unknown'})`);
+        }
+      }
+
       // Echo penalty — assistant messages that echo stored data
       let echoContent = content;
       let echoIsAssistant = item.role === 'assistant';
@@ -961,7 +996,8 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
     // Apply MMR (Maximal Marginal Relevance) reranking
     if (filteredItems.length > 1) {
       const mmrConfig = contextConfig.mmrPreset || 'DIVERSITY';
-      const mmrLambda = 0.5;
+      // Dynamic MMR lambda: lower = more diversity for synthesis queries
+      const mmrLambda = synthesisScore >= 0.5 ? 0.35 : 0.5;
 
       console.log(`🎯 Applying MMR reranking (preset: ${mmrConfig}, λ=${mmrLambda})`);
 

@@ -211,3 +211,61 @@ describe('Temporal+platform fallback trigger logic', () => {
     // Condition not met → fallback would NOT fire
   });
 });
+
+// Replicate ENTITY_CONCEPT_SYNONYMS from browser-search.js for testing
+// (can't import browser-search.js here without Chrome API stubs)
+const ENTITY_CONCEPT_SYNONYMS = new Map([
+  ['level', ['mode', 'tier']], ['levels', ['modes', 'tiers']],
+  ['tier', ['mode', 'level']], ['tiers', ['modes', 'levels']],
+  ['nfl', ['football', 'player', 'quarterback']],
+  ['football', ['nfl', 'player']],
+  ['player', ['athlete']], ['players', ['athletes']],
+  ['weight', ['diet', 'fitness', 'kg']],
+  ['diet', ['weight', 'nutrition']],
+  ['fitness', ['exercise', 'workout']],
+  ['goal', ['target', 'objective']], ['goals', ['targets', 'objectives']],
+  ['book', ['reading', 'author']], ['books', ['reading', 'authors']],
+]);
+
+function expandQuery(query) {
+  const words = query.toLowerCase().split(/\s+/);
+  const expansions = [];
+  for (const word of words) {
+    const synonyms = ENTITY_CONCEPT_SYNONYMS.get(word);
+    if (synonyms) expansions.push(...synonyms);
+  }
+  return expansions.length > 0 ? query + ' ' + expansions.join(' ') : query;
+}
+
+describe('Entity concept synonym expansion (Gap 2)', () => {
+  it('expands "NFL players" with football, player, quarterback, athletes', () => {
+    const expanded = expandQuery('NFL players');
+    expect(expanded).toContain('football');
+    expect(expanded).toContain('quarterback');
+    expect(expanded).toContain('athletes');
+  });
+
+  it('expands "weight loss goals" with diet, fitness, targets', () => {
+    const expanded = expandQuery('weight loss goals');
+    expect(expanded).toContain('diet');
+    expect(expanded).toContain('fitness');
+    expect(expanded).toContain('targets');
+  });
+
+  it('expands "3 levels" with mode, tier', () => {
+    const expanded = expandQuery('3 levels');
+    expect(expanded).toContain('modes');
+    expect(expanded).toContain('tiers');
+  });
+
+  it('does NOT expand unknown terms', () => {
+    const expanded = expandQuery('favorite painting');
+    expect(expanded).toBe('favorite painting'); // no expansion
+  });
+
+  it('expands "books I read" with reading, authors', () => {
+    const expanded = expandQuery('books I read');
+    expect(expanded).toContain('reading');
+    expect(expanded).toContain('authors');
+  });
+});

@@ -19,7 +19,8 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
-import { classifyIntent } from '../lib/intent-classifier.js';
+import { classifyIntent, scoreTemporalReference } from '../lib/intent-classifier.js';
+import { extractPlatformMention } from '../lib/platform-utils.js';
 
 // ── Inline config reading (no heavy imports for speed) ──────
 
@@ -192,6 +193,22 @@ async function main() {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
 
+    // Temporal+platform detection: if user asks about a specific platform
+    // with temporal intent, use recentByPlatform for fast recency path
+    const searchBody = {
+      query: trimmed.substring(0, 500),
+      userId,
+      useHyde: false,
+      topK: 3,
+      fast: true,
+      confidenceThreshold: classification.confidenceThreshold || 0.40,
+    };
+    const temporalScore = scoreTemporalReference(trimmed.toLowerCase());
+    const targetPlatform = extractPlatformMention(trimmed);
+    if (temporalScore >= 0.4 && targetPlatform) {
+      searchBody.recentByPlatform = targetPlatform;
+    }
+
     const res = await fetch(`${supabaseUrl}/functions/v1/search_memories`, {
       method: 'POST',
       headers: {
@@ -199,14 +216,7 @@ async function main() {
         'Authorization': `Bearer ${token}`,
         'apikey': process.env.SUPABASE_ANON_KEY || token,
       },
-      body: JSON.stringify({
-        query: trimmed.substring(0, 500),
-        userId,
-        useHyde: false,
-        topK: 3,
-        fast: true,
-        confidenceThreshold: classification.confidenceThreshold || 0.40,
-      }),
+      body: JSON.stringify(searchBody),
       signal: controller.signal,
     });
 

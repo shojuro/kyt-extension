@@ -205,16 +205,36 @@ export function scoreTemporalReference(message) {
   const lower = message;
   let score = 0;
 
-  if (/\b(yesterday|last\s+(week|month|time|session)|earlier\s+today|this\s+morning|the\s+other\s+day)\b/i.test(lower)) {
+  if (/\b(yesterday|last\s+(week|month|time|session|thing|conversation)|earlier\s+today|this\s+morning|the\s+other\s+day|most\s+recent|latest)\b/i.test(lower)) {
     score = Math.max(score, 0.7);
   }
 
-  if (/\b(earlier|previously|before|ago|back\s+when|at\s+some\s+point|once)\b/i.test(lower)) {
+  if (/\b(earlier|previously|before|ago|back\s+when|at\s+some\s+point|once|recently|recent)\b/i.test(lower)) {
     score = Math.max(score, 0.4);
   }
 
   if (/\bremember\s+(when|that\s+time)\b/i.test(lower)) {
     score = Math.max(score, 0.8);
+  }
+
+  return score;
+}
+
+
+// S7: Synthesis Intent (0.0 – 1.0)
+
+export function scoreSynthesisIntent(message) {
+  const lower = message.toLowerCase();
+  let score = 0;
+
+  if (/\b(connect|relate|link|combine|synthesize|cross-reference|compare)\b/i.test(lower)) {
+    score = Math.max(score, 0.8);
+  }
+  if (/\b(personal|intellectual)\s+(goals?|interests?|topics?)\b/i.test(lower)) {
+    score = Math.max(score, 0.5);
+  }
+  if (/\b(goals?\s+and\s+interests?|interests?\s+and\s+goals?)\b/i.test(lower)) {
+    score = Math.max(score, 0.7);
   }
 
   return score;
