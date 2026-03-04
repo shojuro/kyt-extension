@@ -57,6 +57,7 @@ function filterQueryEchoes(query: string, candidates: Candidate[]): Candidate[] 
         // Only filter very short content that's likely just a user prompt
         if (contentNorm.length < 80) {
             const contentWords = new Set(contentNorm.split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w)));
+            if (contentWords.size < 3) return true; // too few content words for reliable echo detection
             const overlap = [...queryWords].filter(w => contentWords.has(w)).length;
             const overlapRatio = overlap / Math.max(queryWords.size, 1);
             if (overlapRatio > 0.7) return false; // >70% word overlap with query = echo

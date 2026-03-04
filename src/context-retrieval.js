@@ -734,6 +734,7 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
           const content = (item.content || '').toLowerCase().replace(/[^\w\s]/g, '');
           if (content.length < 80) {
             const cWords = new Set(content.split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w)));
+            if (cWords.size < 3) return true; // too few content words for reliable echo detection
             const overlap = [...qWords].filter(w => cWords.has(w)).length;
             if (overlap / Math.max(qWords.size, 1) > 0.7) {
               console.log(`🔇 Query echo filter: dropped "${(item.content || '').substring(0, 60)}..." (${overlap}/${qWords.size} word overlap)`);
@@ -946,6 +947,9 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
             if (item.source === 'cli' || item.source === 'terminal') {
               boost += 0.50;
             }
+            if (item.source === 'gemini') {
+              boost += 0.10;
+            }
             return boost;
           }
         }
@@ -1004,8 +1008,24 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
           // it means "retrieval unlikely to be useful" — respect that by NOT rescuing.
           // Rescue only fires at default threshold to catch near-misses (e.g. 0.38 vs 0.40).
           if (confidenceThreshold > defaultThreshold) {
-            console.log(`🚫 Low-confidence tier: skipping rescue — classifier raised threshold to ${confidenceThreshold} (highest: ${filterResult.highestScore.toFixed(3)})`);
-            filteredItems = [];
+            // Platform-aware rescue: when user explicitly asks about a platform, rescue top 2 items
+            // with a 0.25 floor — the classifier may have raised the threshold but cross-platform
+            // queries are inherently harder and deserve leniency.
+            const platformMention = /\b(gemini|chatgpt|claude|cross.?platform|other\s+(?:chat|conversation|platform))\b/i.test(userMessage);
+            if (platformMention && filterResult.highestScore >= 0.25) {
+              console.log(`🌐 Platform-aware rescue: "${userMessage.substring(0, 40)}..." mentions platform — rescuing top 2 (highest: ${filterResult.highestScore.toFixed(3)})`);
+              filteredItems = filteredItems
+                .sort((a, b) => {
+                  const scoreA = a.cross_encoder_score ?? a.weighted_score ?? 0;
+                  const scoreB = b.cross_encoder_score ?? b.weighted_score ?? 0;
+                  return scoreB - scoreA;
+                })
+                .slice(0, 2)
+                .map(item => ({ ...item, lowConfidence: true }));
+            } else {
+              console.log(`🚫 Low-confidence tier: skipping rescue — classifier raised threshold to ${confidenceThreshold} (highest: ${filterResult.highestScore.toFixed(3)})`);
+              filteredItems = [];
+            }
           } else if (filterResult.highestScore >= 0.10) {
             console.log(`📋 Low-confidence tier: keeping top 2 items (highest: ${filterResult.highestScore.toFixed(3)})`);
             filteredItems = filteredItems
