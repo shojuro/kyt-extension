@@ -1167,13 +1167,46 @@ export async function searchHybrid(query, options = {}) {
 
       const rankedLists = [];
 
-      // Start HyDE generation in parallel with everything else (non-blocking)
-      let hydePromise = null;
+      // Start HyDE generation → embedding → search as a single compound promise
+      // that runs concurrently with all other searches (not sequentially after them).
+      // Budget: 12s total for the entire HyDE chain (doc gen + embedding + Supabase RPC).
+      const HYDE_CHAIN_TIMEOUT_MS = 12000;
+      let hydeChainPromise = null;
       if (enableHyDE) {
         const cbStatus = await hydeCB.isOpen();
         if (!cbStatus.open) {
-          console.log(`   🔮 Starting HyDE document generation in parallel...`);
-          hydePromise = generateHyDEDocument(query).catch(() => null);
+          console.log(`   🔮 Starting HyDE chain in parallel (gen → embed → search, ${HYDE_CHAIN_TIMEOUT_MS / 1000}s budget)...`);
+          hydeChainPromise = Promise.race([
+            (async () => {
+              const hydeDoc = await generateHyDEDocument(query);
+              if (!hydeDoc) return [];
+              console.log(`   🔮 HyDE document ready, running semantic search with it...`);
+              const hydeResults = await searchMessages(hydeDoc, {
+                limit: limit * 2,
+                threshold: semanticThreshold,
+                skipTransformation: true,
+                minTimestamp: 0
+              });
+              // Apply maxTimestamp filter client-side
+              return hydeResults
+                .filter(r => {
+                  if (maxTimestamp > 0) {
+                    return (r.msg_timestamp || r.timestamp || 0) <= maxTimestamp;
+                  }
+                  return true;
+                })
+                .map(r => ({ ...r, message_id: r.message_id || r.id }));
+            })(),
+            new Promise(resolve =>
+              setTimeout(() => {
+                console.warn(`   ⚠️ HyDE chain timed out (${HYDE_CHAIN_TIMEOUT_MS / 1000}s budget)`);
+                resolve([]);
+              }, HYDE_CHAIN_TIMEOUT_MS)
+            )
+          ]).catch(err => {
+            console.warn(`   ⚠️ HyDE chain failed: ${err.message}`);
+            return [];
+          });
         } else {
           console.log(`   ⚡ HyDE circuit breaker open, skipping`);
         }
@@ -1227,7 +1260,7 @@ export async function searchHybrid(query, options = {}) {
       let semanticAvailable = false;
       if (enableGraph) console.log(`   🔗 Running graph walk (entity traversal)...`);
 
-      const [supabaseTextResults, semanticResults, graphWalkResults, chatTurnsTextResults] = await Promise.all([
+      const [supabaseTextResults, semanticResults, graphWalkResults, chatTurnsTextResults, hydeResults] = await Promise.all([
         enableBM25
           ? searchSupabaseText(query, { limit: limit * 2, role, source, maxTimestamp })
               .catch(err => { console.warn('Supabase text search failed:', err.message); return []; })
@@ -1250,11 +1283,13 @@ export async function searchHybrid(query, options = {}) {
         enableBM25
           ? searchSupabaseChatTurnsText(query, { limit: limit * 2, maxTimestamp })
               .catch(err => { console.warn('chat_turns text search failed:', err.message); return []; })
-          : Promise.resolve([])
+          : Promise.resolve([]),
+        // HyDE compound chain: doc gen → embedding → search (runs concurrently, 12s budget)
+        hydeChainPromise || Promise.resolve([])
       ]);
 
       // Per-strategy diagnostic counts
-      console.log(`📊 Search counts: BM25=${enableBM25 ? (rankedLists.length > 0 ? rankedLists[0].length : 0) : 'disabled'}, supabaseText=${supabaseTextResults.length}, chatTurnsText=${chatTurnsTextResults.length}, semantic=${semanticResults.length}, graph=${graphWalkResults?.length || 0}`);
+      console.log(`📊 Search counts: BM25=${enableBM25 ? (rankedLists.length > 0 ? rankedLists[0].length : 0) : 'disabled'}, supabaseText=${supabaseTextResults.length}, chatTurnsText=${chatTurnsTextResults.length}, semantic=${semanticResults.length}, graph=${graphWalkResults?.length || 0}, hyde=${hydeResults?.length || 0}`);
 
       // Process Supabase text results (messages table)
       if (supabaseTextResults.length > 0) {
@@ -1293,37 +1328,10 @@ export async function searchHybrid(query, options = {}) {
         rankedLists.push(normalizedSemanticResults);
       }
 
-      // Resolve HyDE document and run vector search if available
-      const hydeDoc = hydePromise ? await hydePromise : null;
-      if (hydeDoc) {
-        console.log(`   🔮 HyDE document ready, running semantic search with it...`);
-        try {
-          const hydeSemanticResults = await searchMessages(hydeDoc, {
-            limit: limit * 2,
-            threshold: semanticThreshold,
-            skipTransformation: true,
-            minTimestamp: 0
-          });
-
-          // Apply maxTimestamp filter client-side
-          const filteredHyde = hydeSemanticResults
-            .filter(r => {
-              if (maxTimestamp > 0) {
-                return (r.msg_timestamp || r.timestamp || 0) <= maxTimestamp;
-              }
-              return true;
-            })
-            .map(r => ({ ...r, message_id: r.message_id || r.id }));
-
-          if (filteredHyde.length > 0) {
-            console.log(`   ✅ HyDE search: ${filteredHyde.length} results`);
-            rankedLists.push(filteredHyde);
-          } else {
-            console.log(`   ⚠️ HyDE search: 0 results after filtering`);
-          }
-        } catch (hydeSearchErr) {
-          console.warn(`   ⚠️ HyDE search failed: ${hydeSearchErr.message}`);
-        }
+      // Add HyDE results (already resolved from Promise.all)
+      if (hydeResults && hydeResults.length > 0) {
+        console.log(`   ✅ HyDE search: ${hydeResults.length} results`);
+        rankedLists.push(hydeResults);
       }
 
       // Add graph walk results if available

@@ -698,6 +698,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
 
         const maxTimestamp = Date.now() - (contextConfig.excludeRecentSeconds * 1000);
 
+        const searchStart = performance.now();
         contextItems = await searchHybrid(queryToUse, {
           limit: contextConfig.candidatePoolSize,
           semanticThreshold: 0.50,
@@ -710,9 +711,11 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
           source: null,
           maxTimestamp: maxTimestamp,
         });
+        const searchMs = (performance.now() - searchStart).toFixed(0);
 
         diagnostics.legacyItems = contextItems.length;
-        console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search (pool: ${contextConfig.candidatePoolSize})`);
+        diagnostics.searchMs = Number(searchMs);
+        console.log(`✅ Context Retrieval: Found ${contextItems.length} items via Hybrid Search in ${searchMs}ms (pool: ${contextConfig.candidatePoolSize})`);
         console.log('📊 Search Strategy Breakdown:', JSON.stringify({
           routing: routingMode,
           query: queryToUse.substring(0, 80),
