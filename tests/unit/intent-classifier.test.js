@@ -280,9 +280,27 @@ describe('scorePersonalReference', () => {
     expect(scorePersonalReference('I built that last week')).toBeGreaterThanOrEqual(0.5);
   });
 
+  it('"I found/saw/learned/tried" scores >= 0.5', () => {
+    expect(scorePersonalReference('I found a great library')).toBeGreaterThanOrEqual(0.5);
+    expect(scorePersonalReference('I saw that error before')).toBeGreaterThanOrEqual(0.5);
+    expect(scorePersonalReference('I learned about CRDT last month')).toBeGreaterThanOrEqual(0.5);
+    expect(scorePersonalReference('I tried the new caching approach')).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it('past continuous "I was reading/working/thinking" scores >= 0.5', () => {
+    expect(scorePersonalReference('I was reading a book about distributed systems')).toBeGreaterThanOrEqual(0.5);
+    expect(scorePersonalReference('I was working on the auth module')).toBeGreaterThanOrEqual(0.5);
+    expect(scorePersonalReference('I was thinking about caching strategies')).toBeGreaterThanOrEqual(0.5);
+  });
+
   it('"we discussed/defined" scores >= 0.5', () => {
     expect(scorePersonalReference('we defined three levels')).toBeGreaterThanOrEqual(0.5);
     expect(scorePersonalReference('we agreed on this approach')).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it('demonstrative + personal "that book I" scores >= 0.4', () => {
+    expect(scorePersonalReference('that book I was reading')).toBeGreaterThanOrEqual(0.4);
+    expect(scorePersonalReference('that tool I mentioned before')).toBeGreaterThanOrEqual(0.4);
   });
 
   it('no personal reference scores 0', () => {
@@ -398,6 +416,16 @@ describe('Classification Logic', () => {
     // Short, non-directive, non-question — just a fragment
     const r = classify('well okay then');
     expect(r.intent).toBe('SKIP');
+  });
+
+  it('"What was that book...I was reading?" → QUERY personal_question 0.45', () => {
+    // Regression: this was misclassified as PASSIVE generic_question at 0.60
+    // because "I was reading" didn't register as personal
+    const r = classify('What was that book about distributed systems and data-intensive applications I was reading?');
+    expect(r.intent).toBe('QUERY');
+    expect(r.reason).toBe('personal_question');
+    expect(r.confidenceThreshold).toBe(0.45);
+    expect(r.scores.personal).toBeGreaterThanOrEqual(0.4);
   });
 });
 

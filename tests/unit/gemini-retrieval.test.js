@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { ECHO_STOP, echoOverlapRatio } from '../../src/context-retrieval.js';
+import { ECHO_STOP, echoOverlapRatio, extractPlatformMention } from '../../src/context-retrieval.js';
+import { scoreTemporalReference } from '../../src/intent-classifier.js';
 
 /**
  * Tests for Gemini retrieval quality fixes:
@@ -125,5 +126,88 @@ describe('Gemini MMR boost value', () => {
 
   it('gives claude items no boost', () => {
     expect(computeBoost({ source: 'claude' })).toBe(0.0);
+  });
+});
+
+describe('extractPlatformMention', () => {
+  it('detects gemini', () => {
+    expect(extractPlatformMention('what was the last thing I discussed on Gemini?')).toBe('gemini');
+  });
+
+  it('detects chatgpt', () => {
+    expect(extractPlatformMention('recall my ChatGPT conversation')).toBe('chatgpt');
+  });
+
+  it('detects claude', () => {
+    expect(extractPlatformMention('what did I tell Claude about my schedule')).toBe('claude');
+  });
+
+  it('detects claude-code (hyphenated)', () => {
+    expect(extractPlatformMention('my claude-code session')).toBe('claude-code');
+  });
+
+  it('detects claude code (space)', () => {
+    expect(extractPlatformMention('my Claude Code session')).toBe('claude-code');
+  });
+
+  it('returns null for generic queries', () => {
+    expect(extractPlatformMention('what is my favorite color')).toBeNull();
+  });
+
+  it('returns null for cross-platform mentions without specific platform', () => {
+    expect(extractPlatformMention('search all my conversations')).toBeNull();
+  });
+});
+
+describe('Temporal+platform fallback trigger logic', () => {
+  it('scoreTemporalReference scores "last thing" >= 0.4', () => {
+    expect(scoreTemporalReference('what was the last thing i discussed on gemini')).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it('scoreTemporalReference scores "most recent" >= 0.4', () => {
+    expect(scoreTemporalReference('most recent conversation')).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it('scoreTemporalReference scores "latest" >= 0.4', () => {
+    expect(scoreTemporalReference('latest discussion')).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it('scoreTemporalReference scores "recently" >= 0.4', () => {
+    expect(scoreTemporalReference('what did i recently discuss')).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it('scoreTemporalReference returns 0 for non-temporal query', () => {
+    expect(scoreTemporalReference('what is my favorite movie')).toBe(0);
+  });
+
+  it('fallback fires when temporal >= 0.4 + platform + no items from platform', () => {
+    const msg = 'what was the last thing I discussed on Gemini?';
+    const temporal = scoreTemporalReference(msg.toLowerCase());
+    const platform = extractPlatformMention(msg);
+    const items = [{ source: 'chatgpt' }, { source: 'claude' }]; // no gemini
+    const hasTarget = items.some(i => i.source === platform);
+
+    expect(temporal).toBeGreaterThanOrEqual(0.4);
+    expect(platform).toBe('gemini');
+    expect(hasTarget).toBe(false);
+    // All 3 conditions met → fallback would fire
+  });
+
+  it('fallback does NOT fire when items from target platform already exist', () => {
+    const msg = 'what was the last thing I discussed on Gemini?';
+    const platform = extractPlatformMention(msg);
+    const items = [{ source: 'gemini' }, { source: 'claude' }]; // has gemini
+    const hasTarget = items.some(i => i.source === platform);
+
+    expect(hasTarget).toBe(true);
+    // Condition not met → fallback would NOT fire
+  });
+
+  it('fallback does NOT fire for non-temporal queries even with platform', () => {
+    const msg = 'what did I discuss on Gemini about cooking?';
+    const temporal = scoreTemporalReference(msg.toLowerCase());
+
+    expect(temporal).toBe(0); // no temporal signal
+    // Condition not met → fallback would NOT fire
   });
 });

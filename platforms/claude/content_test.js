@@ -1088,14 +1088,20 @@ async function captureClaudeAssistantResponse(response, metadata) {
     }
   }
 
-  // Run SSR capture after DOM is ready
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => setTimeout(attemptSSRCapture, 500));
-  } else {
-    setTimeout(attemptSSRCapture, 500);
+  // Only run SSR capture on genuine page navigation, NOT on re-injection.
+  // Re-injection (extension reload) sets KYT_CLAUDE_INJECTED=false then re-runs this script.
+  // We detect re-injection by checking if a previous generation already ran SSR capture.
+  // This prevents 350+ SAVE_MESSAGE calls from flooding the service worker.
+  if (!window._kytSSRCaptureRan) {
+    window._kytSSRCaptureRan = true;
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => setTimeout(attemptSSRCapture, 500));
+    } else {
+      setTimeout(attemptSSRCapture, 500);
+    }
   }
 
-  // Intercept SPA navigation (Next.js client-side routing)
+  // SPA navigation always triggers SSR capture (user switched conversations)
   const _origPushState = history.pushState;
   history.pushState = function(...args) {
     _origPushState.apply(this, args);

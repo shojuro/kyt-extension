@@ -11,7 +11,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { getRelevantMemories, SearchOptions } from "../_shared/get_relevant_memories.ts";
+import { getRelevantMemories, getRecentByPlatform, SearchOptions } from "../_shared/get_relevant_memories.ts";
 import { Logger } from "../_shared/utils.ts";
 
 const corsHeaders = {
@@ -66,6 +66,24 @@ serve(async (req) => {
             Logger.warn("Missing query or userId", { requestId, query, userId });
             return new Response(JSON.stringify({ error: "Missing query or userId" }), {
                 status: 400,
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+        }
+
+        // Temporal + platform recency fallback: simple ORDER BY created_at DESC
+        if (body.recentByPlatform) {
+            Logger.info("Temporal+platform recency fallback", {
+                requestId, platform: body.recentByPlatform, userId
+            });
+            const profileId = bodyProfileId || userId;
+            const results = await getRecentByPlatform(
+                body.recentByPlatform, userId, topK, profileId
+            );
+            return new Response(JSON.stringify({
+                success: true,
+                results,
+                meta: { requestId, recentByPlatform: body.recentByPlatform },
+            }), {
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
         }

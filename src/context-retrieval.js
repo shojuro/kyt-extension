@@ -17,6 +17,7 @@ import { applyKeywordBoost } from './keyword-boost.js';
 import { filterByConfidence } from './confidence-filter.js';
 import { detectDeflection, applyDeflectionPenalty } from './assistant-quality-detector.js';
 import { searchViaEdgeFunction } from './edge-search.js';
+import { scoreTemporalReference } from './intent-classifier.js';
 import { hydeCB } from './hyde-search-generator.js';
 import { isEmbeddingCircuitOpen } from './embedding-circuit-breaker.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
@@ -130,6 +131,19 @@ export function echoMultiplier(contentLength) {
   if (contentLength < 300) return 0.50;
   if (contentLength <= 800) return 0.70;
   return 0.90;
+}
+
+/**
+ * Extract which platform is mentioned in a query (null if none or cross-platform).
+ * Normalizes claude-code to claude-code, all others to lowercase.
+ * @param {string} message
+ * @returns {string|null}
+ */
+export function extractPlatformMention(message) {
+  const m = message.match(/\b(gemini|chatgpt|claude[- ]code|claude)\b/i);
+  if (!m) return null;
+  const raw = m[1].toLowerCase().replace(/\s+/g, '-');
+  return raw; // 'gemini', 'chatgpt', 'claude-code', 'claude'
 }
 
 // ===== DEFENSIVE TIMEOUT HELPER =====
@@ -700,6 +714,33 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
     } catch (searchError) {
       console.error('❌ Context Retrieval failed:', searchError);
       contextItems = [];
+    }
+
+    // TEMPORAL + PLATFORM FALLBACK: When query mentions a specific platform with
+    // temporal intent and main search found nothing from that platform, fetch
+    // recent items directly via ORDER BY created_at DESC.
+    const temporalScore = scoreTemporalReference(userMessage.toLowerCase());
+    const targetPlatform = extractPlatformMention(userMessage);
+    const hasTargetPlatformItems = targetPlatform &&
+      contextItems.some(item => (item.source || item.platform) === targetPlatform);
+
+    if (temporalScore >= 0.4 && targetPlatform && !hasTargetPlatformItems) {
+      console.log(`🕐 Temporal+platform fallback: "${userMessage.substring(0, 40)}..." → ${targetPlatform} (temporal: ${temporalScore})`);
+      try {
+        const recencyItems = await searchViaEdgeFunction(userMessage, {
+          topK: 3,
+          recentByPlatform: targetPlatform,
+        });
+        if (recencyItems.length > 0) {
+          const existingIds = new Set(contextItems.map(i => i.id));
+          const newItems = recencyItems.filter(i => !existingIds.has(i.id));
+          contextItems = contextItems.concat(newItems);
+          console.log(`🕐 Temporal fallback: added ${newItems.length} recent ${targetPlatform} items`);
+          diagnostics.temporalFallback = { platform: targetPlatform, added: newItems.length };
+        }
+      } catch (err) {
+        console.warn(`⚠️ Temporal fallback failed: ${err.message}`);
+      }
     }
 
     // Apply mild recency boost to help newer memories compete with semantically richer older ones

@@ -841,3 +841,48 @@ async function rerankAndFilter(
 
     return filtered.slice(0, returnCount);
 }
+
+/**
+ * Simple platform-filtered recency query for temporal+platform fallback.
+ * Returns the N most recent chat_turns for a given platform, ordered by created_at DESC.
+ * No embeddings, no reranking — pure recency.
+ */
+export async function getRecentByPlatform(
+    platform: string,
+    userId: string,
+    limit: number = 3,
+    profileId?: string
+): Promise<CandidateWithScore[]> {
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    const { data, error } = await supabase
+        .from('chat_turns')
+        .select('id, content, contextual_content, platform, speakers, created_at, conversation_id')
+        .eq('platform', platform)
+        .eq('user_id', userId)
+        .not('content', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+    if (error) throw new Error(`getRecentByPlatform: ${error.message}`);
+
+    Logger.info(`getRecentByPlatform: ${(data || []).length} rows for platform="${platform}"`, {});
+
+    return (data || []).map((row: any, i: number) => ({
+        id: row.id,
+        content: row.content,
+        contextual_content: row.contextual_content,
+        platform: row.platform,
+        source: row.platform,
+        created_at: row.created_at,
+        speakers: row.speakers,
+        conversation_id: row.conversation_id,
+        // Synthetic scores: pass default 0.40 threshold, don't overpower semantic results
+        weighted_score: 0.50 - (i * 0.05),
+        rrf_score: 0.50 - (i * 0.05),
+        rerank_score: 0.50 - (i * 0.05),
+        temporal_recency_hit: true,
+    }));
+}

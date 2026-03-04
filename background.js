@@ -701,7 +701,12 @@ async function reInjectContentScripts() {
       try {
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          func: () => { window.KYT_CLAUDE_INJECTED = false; },
+          func: () => {
+            window.KYT_CLAUDE_INJECTED = false;
+            // Skip SSR capture on re-injection — messages are already in DB.
+            // Live capture (fetch interceptor) + SPA nav listeners still work.
+            window._kytSSRCaptureRan = true;
+          },
           world: 'MAIN'
         });
         await chrome.scripting.executeScript({

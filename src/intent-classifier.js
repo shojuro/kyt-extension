@@ -240,12 +240,22 @@ export function scorePersonalReference(message) {
   if (myCount >= 2) score = Math.max(score, 0.6);
   else if (myCount === 1) score = Math.max(score, 0.3);
 
-  if (/\bI\s+(said|told|mentioned|wrote|created|built|designed|chose|decided|started|finished)\b/i.test(lower)) {
+  if (/\bI\s+(said|told|mentioned|wrote|created|built|designed|chose|decided|started|finished|found|saw|bought|learned|tried|picked)\b/i.test(lower)) {
     score = Math.max(score, 0.5);
   }
 
-  if (/\bwe\s+(had|made|built|discussed|decided|agreed|defined|established)\b/i.test(lower)) {
+  // Past continuous: "I was reading/working/thinking/..."
+  if (/\bI\s+was\s+\w+ing\b/i.test(lower)) {
     score = Math.max(score, 0.5);
+  }
+
+  if (/\bwe\s+(had|made|built|discussed|decided|agreed|defined|established|were)\b/i.test(lower)) {
+    score = Math.max(score, 0.5);
+  }
+
+  // Demonstrative + personal pronoun: "that book I...", "that thing we..."
+  if (/\bthat\s+\w+\s+I\b/i.test(lower)) {
+    score = Math.max(score, 0.4);
   }
 
   return score;
@@ -263,11 +273,11 @@ export function scoreTemporalReference(message) {
   const lower = message;
   let score = 0;
 
-  if (/\b(yesterday|last\s+(week|month|time|session)|earlier\s+today|this\s+morning|the\s+other\s+day)\b/i.test(lower)) {
+  if (/\b(yesterday|last\s+(week|month|time|session|thing|conversation)|earlier\s+today|this\s+morning|the\s+other\s+day|most\s+recent|latest)\b/i.test(lower)) {
     score = Math.max(score, 0.7);
   }
 
-  if (/\b(earlier|previously|before|ago|back\s+when|at\s+some\s+point|once)\b/i.test(lower)) {
+  if (/\b(earlier|previously|before|ago|back\s+when|at\s+some\s+point|once|recently|recent)\b/i.test(lower)) {
     score = Math.max(score, 0.4);
   }
 

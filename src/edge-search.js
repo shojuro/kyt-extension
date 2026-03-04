@@ -27,6 +27,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
     useHyde = true,
     hydeWeight = 0.6,
     timeoutMs = 30000,
+    recentByPlatform = null,
   } = options;
 
   if (!query || query.trim().length === 0) {
@@ -42,16 +43,19 @@ export async function searchViaEdgeFunction(query, options = {}) {
     throw new Error('No authenticated user for edge search');
   }
 
+  const body = {
+    query,
+    userId,
+    profileId: userId,  // MVP: profile_id = user_id
+    useHyde,
+    hydeWeight,
+    topK,
+  };
+  if (recentByPlatform) body.recentByPlatform = recentByPlatform;
+
   const response = await callEdgeFunction(
     'search_memories',
-    {
-      query,
-      userId,
-      profileId: userId,  // MVP: profile_id = user_id
-      useHyde,
-      hydeWeight,
-      topK,
-    },
+    body,
     { timeoutMs },
   );
 
