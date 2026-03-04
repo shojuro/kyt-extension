@@ -324,16 +324,33 @@ export async function searchMessages(query, options = {}) {
 
     let url = `${config.supabaseUrl}/rest/v1/rpc/match_messages_v2`;
 
-    // Build query
-    let response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': config.supabaseKey,
-        'Authorization': `Bearer ${config.supabaseKey}`
-      },
-      body: JSON.stringify(rpcBody)
-    });
+    // Build query — with AbortController timeout to prevent Supabase's 30s
+    // statement_timeout from blocking the entire pipeline
+    const SEMANTIC_FETCH_TIMEOUT_MS = 10000;
+    const controller = new AbortController();
+    const fetchTimer = setTimeout(() => controller.abort(), SEMANTIC_FETCH_TIMEOUT_MS);
+
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': config.supabaseKey,
+          'Authorization': `Bearer ${config.supabaseKey}`
+        },
+        body: JSON.stringify(rpcBody),
+        signal: controller.signal
+      });
+    } catch (fetchErr) {
+      clearTimeout(fetchTimer);
+      if (fetchErr.name === 'AbortError') {
+        console.warn(`⚠️ Semantic search aborted (${SEMANTIC_FETCH_TIMEOUT_MS / 1000}s timeout)`);
+        return [];
+      }
+      throw fetchErr;
+    }
+    clearTimeout(fetchTimer);
 
     // Retry without p_profile_id if RPC signature mismatch (migration not applied)
     if (!response.ok && rpcBody.p_profile_id) {
@@ -342,15 +359,29 @@ export async function searchMessages(query, options = {}) {
         console.warn('⚠️ match_messages_v2 missing p_profile_id param — retrying without (migration pending)');
         _profileCompat.rpcUnavailable = true;
         delete rpcBody.p_profile_id;
-        response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': config.supabaseKey,
-            'Authorization': `Bearer ${config.supabaseKey}`
-          },
-          body: JSON.stringify(rpcBody)
-        });
+
+        const retryController = new AbortController();
+        const retryTimer = setTimeout(() => retryController.abort(), SEMANTIC_FETCH_TIMEOUT_MS);
+        try {
+          response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': config.supabaseKey,
+              'Authorization': `Bearer ${config.supabaseKey}`
+            },
+            body: JSON.stringify(rpcBody),
+            signal: retryController.signal
+          });
+        } catch (retryErr) {
+          clearTimeout(retryTimer);
+          if (retryErr.name === 'AbortError') {
+            console.warn(`⚠️ Semantic search retry aborted (${SEMANTIC_FETCH_TIMEOUT_MS / 1000}s timeout)`);
+            return [];
+          }
+          throw retryErr;
+        }
+        clearTimeout(retryTimer);
       } else {
         throw new Error(`Supabase search error: ${error.message || response.statusText}`);
       }

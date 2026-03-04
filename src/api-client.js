@@ -24,6 +24,7 @@ export async function callEdgeFunction(functionName, body, options = {}) {
   // 1. Resolve auth: prefer JWT session, fall back to legacy anon key
   let bearerToken;
   let supabaseUrl = SUPABASE_URL;
+  let usedLegacyKey = false;
 
   try {
     bearerToken = await getAccessToken();
@@ -34,6 +35,7 @@ export async function callEdgeFunction(functionName, body, options = {}) {
     if (config?.supabaseKey) {
       bearerToken = config.supabaseKey;
       if (config.supabaseUrl) supabaseUrl = config.supabaseUrl;
+      usedLegacyKey = true;
     } else {
       throw new Error('Not authenticated and no API keys configured');
     }
@@ -58,6 +60,12 @@ export async function callEdgeFunction(functionName, body, options = {}) {
 
   // 3. Handle errors
   if (res.status === 401) {
+    // Legacy anon key can't be refreshed — edge functions requiring JWT auth
+    // will always 401 with an anon key. Fail fast instead of attempting refresh.
+    if (usedLegacyKey) {
+      throw new Error(`Edge function ${functionName} requires JWT auth (anon key insufficient)`);
+    }
+
     // Token expired mid-flight — try one refresh + retry
     try {
       await refreshSession();

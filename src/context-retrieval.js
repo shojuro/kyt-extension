@@ -438,6 +438,37 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
   const startTime = performance.now();
   console.log(`🔍 getContextForInjection() called with query: "${userMessage.substring(0, 80)}${userMessage.length > 80 ? '...' : ''}"`);
 
+  // Overall pipeline timeout — must complete before content.js port timeout (26s).
+  // 22s gives 4s margin for message serialization + port communication.
+  const PIPELINE_TIMEOUT_MS = 22000;
+
+  try {
+    const pipelineResult = await Promise.race([
+      _runContextPipeline(userMessage, config, deps, startTime),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Pipeline timeout')), PIPELINE_TIMEOUT_MS)
+      )
+    ]);
+    return pipelineResult;
+  } catch (timeoutError) {
+    if (timeoutError.message === 'Pipeline timeout') {
+      const elapsed = performance.now() - startTime;
+      console.error(`❌ Pipeline timeout after ${(elapsed / 1000).toFixed(1)}s — returning empty to avoid port disconnect`);
+      return {
+        success: false,
+        error: 'Pipeline timeout',
+        items: [],
+        formattedContext: null,
+        elapsedMs: elapsed,
+        diagnostics: { pipelineTimeout: true },
+      };
+    }
+    throw timeoutError;
+  }
+}
+
+/** @private Inner pipeline — extracted so getContextForInjection can race it against a timeout. */
+async function _runContextPipeline(userMessage, config, deps, startTime) {
   try {
     // PHASE 1 FIX #2: Use cached API config (survives service worker sleep)
     const apiConfig = await getApiConfig();
