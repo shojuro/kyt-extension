@@ -50,7 +50,7 @@ const API_MAX_RETRIES = 2; // Max retries for transient failures
 // Jina reranker settings — capped at 5s to stay within 10s injection budget
 const JINA_TIMEOUT_MS = 5000;  // 5s timeout (was 15s, exceeded injection deadline)
 const MAX_RERANK_DOCS = 25;    // Send all merged results to Jina (was 10 — missed relevant items at rank 11+)
-const MAX_JINA_ATTEMPTS = 2;   // One retry on timeout for cold-start recovery
+const MAX_JINA_ATTEMPTS = 1;   // No retry — cold-start recovery not worth 5s on tight pipeline budget
 
 /**
  * Get API configuration from chrome.storage
@@ -691,7 +691,7 @@ async function searchSupabaseChatTurnsText(query, options = {}) {
     // Exclude questions and deflections
     filterParams += '&or=(is_question.eq.false,is_question.is.null)';
     filterParams += '&or=(deflection.lt.0.70,deflection.is.null)';
-    filterParams += '&or=(exclude_from_search.eq.false,exclude_from_search.is.null)';
+    // Note: exclude_from_search lives on the conversations table, not chat_turns
 
     // Search all keywords in PARALLEL via ilike, deduplicate results
     const resultMap = new Map();
@@ -1263,36 +1263,64 @@ export async function searchHybrid(query, options = {}) {
       let semanticAvailable = false;
       if (enableGraph) console.log(`   🔗 Running graph walk (entity traversal)...`);
 
+      // Budget timeout helper — each search arm gets a hard time cap.
+      // Prevents any single slow arm (e.g. embedding retry + RPC) from blocking
+      // the entire Promise.all beyond the pipeline's 22s deadline.
+      const searchAllStart = performance.now();
+      const SEMANTIC_BUDGET_MS = 12000;  // embedding (~0.5s) + RPC (10s abort) + margin
+      const TEXT_BUDGET_MS = 8000;       // 5 parallel keywords × 5s + overhead
+      const GRAPH_BUDGET_MS = 8000;      // entity search + RPC
+      const withBudget = (promise, ms, label) =>
+        Promise.race([
+          promise,
+          new Promise(resolve =>
+            setTimeout(() => {
+              console.warn(`   ⚠️ ${label} exceeded ${ms / 1000}s budget — returning empty`);
+              resolve([]);
+            }, ms)
+          )
+        ]);
+
       const [supabaseTextResults, semanticResults, graphWalkResults, chatTurnsTextResults, hydeResults] = await Promise.all([
         enableBM25
-          ? searchSupabaseText(query, { limit: limit * 2, role, source, maxTimestamp })
-              .catch(err => { console.warn('Supabase text search failed:', err.message); return []; })
+          ? withBudget(
+              searchSupabaseText(query, { limit: limit * 2, role, source, maxTimestamp }),
+              TEXT_BUDGET_MS, 'Supabase text search'
+            ).catch(err => { console.warn('Supabase text search failed:', err.message); return []; })
           : Promise.resolve([]),
         enableSemantic
-          ? searchMessages(query, {
-              limit: limit * 2,
-              threshold: semanticThreshold,
-              role,
-              source,
-              skipTransformation: true, // Phase 1 fix: no transformation for hybrid
-              minTimestamp: 0 // Disable server-side temporal filter; we filter client-side with maxTimestamp
-            }).catch(err => { console.warn('Semantic search failed:', err.message); return []; })
+          ? withBudget(
+              searchMessages(query, {
+                limit: limit * 2,
+                threshold: semanticThreshold,
+                role,
+                source,
+                skipTransformation: true, // Phase 1 fix: no transformation for hybrid
+                minTimestamp: 0 // Disable server-side temporal filter; we filter client-side with maxTimestamp
+              }),
+              SEMANTIC_BUDGET_MS, 'Semantic search'
+            ).catch(err => { console.warn('Semantic search failed:', err.message); return []; })
           : Promise.resolve([]),
         enableGraph
-          ? searchGraphWalk(query, { limit: limit * 2, maxTimestamp })
-              .catch(err => { console.warn('Graph walk failed:', err.message); return []; })
+          ? withBudget(
+              searchGraphWalk(query, { limit: limit * 2, maxTimestamp }),
+              GRAPH_BUDGET_MS, 'Graph walk'
+            ).catch(err => { console.warn('Graph walk failed:', err.message); return []; })
           : Promise.resolve([]),
         // chat_turns text search: catches Gemini/other platform content with null embeddings
         enableBM25
-          ? searchSupabaseChatTurnsText(query, { limit: limit * 2, maxTimestamp })
-              .catch(err => { console.warn('chat_turns text search failed:', err.message); return []; })
+          ? withBudget(
+              searchSupabaseChatTurnsText(query, { limit: limit * 2, maxTimestamp }),
+              TEXT_BUDGET_MS, 'chat_turns text search'
+            ).catch(err => { console.warn('chat_turns text search failed:', err.message); return []; })
           : Promise.resolve([]),
         // HyDE compound chain: doc gen → embedding → search (runs concurrently, 12s budget)
         hydeChainPromise || Promise.resolve([])
       ]);
 
+      const searchAllMs = (performance.now() - searchAllStart).toFixed(0);
       // Per-strategy diagnostic counts
-      console.log(`📊 Search counts: BM25=${enableBM25 ? (rankedLists.length > 0 ? rankedLists[0].length : 0) : 'disabled'}, supabaseText=${supabaseTextResults.length}, chatTurnsText=${chatTurnsTextResults.length}, semantic=${semanticResults.length}, graph=${graphWalkResults?.length || 0}, hyde=${hydeResults?.length || 0}`);
+      console.log(`📊 Search counts (Promise.all: ${searchAllMs}ms): BM25=${enableBM25 ? (rankedLists.length > 0 ? rankedLists[0].length : 0) : 'disabled'}, supabaseText=${supabaseTextResults.length}, chatTurnsText=${chatTurnsTextResults.length}, semantic=${semanticResults.length}, graph=${graphWalkResults?.length || 0}, hyde=${hydeResults?.length || 0}`);
 
       // Process Supabase text results (messages table)
       if (supabaseTextResults.length > 0) {
