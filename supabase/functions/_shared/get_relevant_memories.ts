@@ -14,7 +14,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { HuggingFaceClient, HFRerankResponse } from "./huggingface-client.ts";
 import { Logger } from "./utils.ts";
 import { generateHyDEWithFallback, shouldSkipHyDE } from "./hyde-generator.ts";
-import { mergeHydeAndRawResults, fallbackToRawResults } from "./rrf.ts";
+import { mergeHydeAndRawResults, fallbackToRawResults, reciprocalRankFusion } from "./rrf.ts";
+import { applyQualityPenalties } from "./quality-penalties.ts";
+import { deduplicateByContent, applyServerMMR, applyKeywordBoost as applyPostMMRKeywordBoost } from "./mmr.ts";
 
 type Candidate = {
     id: string;
@@ -33,6 +35,7 @@ export interface SearchOptions {
     hydeWeight?: number;  // Default: 0.6
     fast?: boolean;       // Skip HyDE, reranking, entity search. ~200ms.
     confidenceThreshold?: number; // Override default 0.40 confidence filter
+    mmrLambda?: number;   // MMR diversity/relevance trade-off (0.35 for synthesis, 0.5 default)
 }
 
 /**
@@ -440,6 +443,7 @@ export async function getRelevantMemories(
         hydeWeight = 0.6,
         fast = false,
         confidenceThreshold,
+        mmrLambda = 0.5,
     } = options;
 
     // MVP: profileId = userId (1:1). Future: multi-profile adds junction table.
@@ -512,8 +516,11 @@ export async function getRelevantMemories(
         }));
         const boosted = applyBm25Boost(query, scored);
 
+        // Apply quality penalties (fast path gets them too)
+        const penalized = applyQualityPenalties(boosted, { query, requestId });
+
         const threshold = confidenceThreshold ?? 0.40;
-        const filtered = boosted
+        const filtered = penalized
             .filter(c => c.rerank_score >= threshold)
             .slice(0, topK);
 
@@ -635,7 +642,18 @@ export async function getRelevantMemories(
         }
 
         const scFiltered = filterQueryEchoes(query, candidates);
-        const shortCircuitResults = await rerankAndFilter(query, scFiltered, hfClient, requestId, topK);
+        let shortCircuitResults = await rerankAndFilter(query, scFiltered, hfClient, requestId, topK, confidenceThreshold ?? 0.4);
+
+        // Apply quality penalties AFTER reranking, BEFORE MMR
+        shortCircuitResults = applyQualityPenalties(shortCircuitResults, { query, requestId });
+
+        // Content dedup → MMR → Keyword boost
+        shortCircuitResults = deduplicateByContent(shortCircuitResults);
+        if (shortCircuitResults.length > 1) {
+            shortCircuitResults = applyServerMMR(shortCircuitResults, { lambda: mmrLambda, maxResults: topK, requestId });
+            shortCircuitResults = applyPostMMRKeywordBoost(query, shortCircuitResults);
+        }
+
         applyPlatformPenalty(query, shortCircuitResults, confidenceThreshold, requestId);
 
         // Platform-filtered rescue for short-circuit path
@@ -697,34 +715,29 @@ export async function getRelevantMemories(
 
     if (hydeResults.length > 0) {
         if (graphResults.length > 0) {
-            // 3-way merge: reduce HyDE/raw weights to make room for graph
-            // Graph results provide conceptual connections vector search misses
+            // 3-way RRF merge via reciprocalRankFusion()
+            // Weights: HyDE 0.48, Raw 0.32, Graph 0.20 (graph carves out 20%)
             const graphWeight = 0.2;
             const adjustedHydeWeight = hydeWeight * (1 - graphWeight);  // 0.6 * 0.8 = 0.48
             const adjustedRawWeight = (1 - hydeWeight) * (1 - graphWeight);  // 0.4 * 0.8 = 0.32
 
-            // Use existing RRF merge for HyDE+raw, then add graph results
-            candidates = mergeHydeAndRawResults(hydeResults, rawResults, adjustedHydeWeight / (adjustedHydeWeight + adjustedRawWeight), requestId);
+            // Sort graph results by gravity_score descending for proper RRF ranking
+            const sortedGraph = [...graphResults].sort(
+                (a, b) => (b.gravity_score ?? 0) - (a.gravity_score ?? 0)
+            );
 
-            // Add graph results with dedup
-            const seenIds = new Set(candidates.map(c => c.id));
-            for (const g of graphResults) {
-                if (!seenIds.has(g.id)) {
-                    seenIds.add(g.id);
-                    candidates.push({
-                        ...g,
-                        rrf_score: graphWeight * (g.gravity_score || 0.5)
-                    });
-                } else {
-                    // Boost existing candidate's score with graph signal
-                    const existing = candidates.find(c => c.id === g.id);
-                    if (existing && existing.rrf_score != null) {
-                        existing.rrf_score += graphWeight * (g.gravity_score || 0.5);
-                    }
-                }
-            }
+            const fusedResults = reciprocalRankFusion([
+                { results: hydeResults, weight: adjustedHydeWeight },
+                { results: rawResults, weight: adjustedRawWeight },
+                { results: sortedGraph, weight: graphWeight },
+            ], 60, vectorSearchCount);
 
-            Logger.info("3-way merge: HyDE + Raw + Graph", {
+            candidates = fusedResults.map(fr => ({
+                ...fr.item,
+                rrf_score: fr.rrf_score,
+            }));
+
+            Logger.info("3-way RRF merge: HyDE + Raw + Graph", {
                 requestId,
                 hydeCount: hydeResults.length,
                 rawCount: rawResults.length,
@@ -743,16 +756,20 @@ export async function getRelevantMemories(
     } else {
         candidates = fallbackToRawResults(rawResults, requestId);
 
-        // Even without HyDE, graph results can contribute
+        // Even without HyDE, 2-way RRF with graph results
         if (graphResults.length > 0) {
-            const seenIds = new Set(candidates.map(c => c.id));
-            for (const g of graphResults) {
-                if (!seenIds.has(g.id)) {
-                    seenIds.add(g.id);
-                    candidates.push(g);
-                }
-            }
-            Logger.info("Added graph results to raw fallback", {
+            const sortedGraph = [...graphResults].sort(
+                (a, b) => (b.gravity_score ?? 0) - (a.gravity_score ?? 0)
+            );
+            const fusedResults = reciprocalRankFusion([
+                { results: candidates, weight: 0.8 },
+                { results: sortedGraph, weight: 0.2 },
+            ], 60, vectorSearchCount);
+            candidates = fusedResults.map(fr => ({
+                ...fr.item,
+                rrf_score: fr.rrf_score,
+            }));
+            Logger.info("2-way RRF merge: Raw + Graph", {
                 requestId,
                 rawCount: rawResults.length,
                 graphCount: graphResults.length,
@@ -831,15 +848,31 @@ export async function getRelevantMemories(
     // ========================================================================
     // STEP 6: Rerank, BM25 Boost, Confidence Filter
     // ========================================================================
-    const results = await rerankAndFilter(query, echoFiltered, hfClient, requestId, topK);
+    let results = await rerankAndFilter(query, echoFiltered, hfClient, requestId, topK, confidenceThreshold ?? 0.4);
 
     // ========================================================================
-    // STEP 6b: Platform-mismatch penalty (Gap 3) — AFTER reranking
+    // STEP 6b: Quality penalties — AFTER reranking, BEFORE platform penalty
+    // Deflection, meta-conversation, diagnostic, echo, bare question,
+    // recursion guard, recency multiplier
+    // ========================================================================
+    results = applyQualityPenalties(results, { query, requestId });
+
+    // ========================================================================
+    // STEP 6c: Content dedup → MMR → Keyword boost
+    // ========================================================================
+    results = deduplicateByContent(results);
+    if (results.length > 1) {
+        results = applyServerMMR(results, { lambda: mmrLambda, maxResults: topK, requestId });
+        results = applyPostMMRKeywordBoost(query, results);
+    }
+
+    // ========================================================================
+    // STEP 6d: Platform-mismatch penalty (Gap 3) — AFTER MMR
     // ========================================================================
     applyPlatformPenalty(query, results, confidenceThreshold, requestId);
 
     // ========================================================================
-    // STEP 6c: Platform-filtered rescue search
+    // STEP 6d: Platform-filtered rescue search
     // When penalty killed all results but user explicitly asked about a platform,
     // do a second vector search filtered to that platform only.
     // ========================================================================
@@ -955,7 +988,8 @@ async function rerankAndFilter(
     candidates: Candidate[],
     hfClient: HuggingFaceClient,
     requestId?: string,
-    returnCount: number = 5
+    returnCount: number = 5,
+    confidenceThreshold: number = 0.4
 ): Promise<CandidateWithScore[]> {
     if (candidates.length === 0) {
         return [];
@@ -983,10 +1017,8 @@ async function rerankAndFilter(
     // Apply BM25 + Entity Boost
     const boosted = applyBm25Boost(query, ordered);
 
-    // Confidence filter (>= 0.40) — lowered from 0.70 to let client-side
-    // adaptive filter handle the final threshold decision. The client has more
-    // context (semantic availability, Jina status) for threshold selection.
-    const filtered = boosted.filter((c) => c.rerank_score >= 0.4);
+    // Confidence filter — uses param (default 0.40, overridable via intent classification)
+    const filtered = boosted.filter((c) => c.rerank_score >= confidenceThreshold);
 
     Logger.info("Retrieval complete", {
         requestId,

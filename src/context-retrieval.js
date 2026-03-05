@@ -672,6 +672,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
         try {
           contextItems = await searchViaEdgeFunction(queryToUse, {
             topK: contextConfig.candidatePoolSize,
+            confidenceThreshold: contextConfig.confidenceThreshold || undefined,
           });
           diagnostics.edgeItems = contextItems.length;
           console.log(`✅ Context Retrieval (edge): Found ${contextItems.length} items (pool: ${contextConfig.candidatePoolSize}, inject cap: ${contextConfig.maxContextItems})`);
@@ -681,6 +682,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
             console.log('🔄 Retry (edge): retrying with original query...');
             contextItems = await searchViaEdgeFunction(userMessage, {
               topK: contextConfig.candidatePoolSize,
+              confidenceThreshold: contextConfig.confidenceThreshold || undefined,
             });
             console.log(`🔄 Retry (edge) result: ${contextItems.length} items`);
           }

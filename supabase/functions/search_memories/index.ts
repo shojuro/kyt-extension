@@ -39,6 +39,7 @@ serve(async (req) => {
             topK = 20,
             fast = false,       // Fast path: skip HyDE, reranking, entity search
             confidenceThreshold,  // Override default 0.40 confidence filter
+            mmrLambda,            // MMR diversity/relevance (0.35 synthesis, 0.5 default)
         } = body;
 
         // Extract user from JWT if present (authenticated mode)
@@ -103,6 +104,7 @@ serve(async (req) => {
             hydeWeight,
             fast,
             confidenceThreshold,
+            mmrLambda,
         };
 
         // Get relevant memories using the full Hybrid HyDE pipeline:

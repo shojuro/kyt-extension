@@ -28,6 +28,8 @@ export async function searchViaEdgeFunction(query, options = {}) {
     hydeWeight = 0.6,
     timeoutMs = 30000,
     recentByPlatform = null,
+    confidenceThreshold = undefined,
+    mmrLambda = undefined,
   } = options;
 
   if (!query || query.trim().length === 0) {
@@ -52,6 +54,8 @@ export async function searchViaEdgeFunction(query, options = {}) {
     topK,
   };
   if (recentByPlatform) body.recentByPlatform = recentByPlatform;
+  if (confidenceThreshold != null) body.confidenceThreshold = confidenceThreshold;
+  if (mmrLambda != null) body.mmrLambda = mmrLambda;
 
   const response = await callEdgeFunction(
     'search_memories',
