@@ -19,7 +19,7 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
-import { classifyIntent, scoreTemporalReference } from '../lib/intent-classifier.js';
+import { classifyIntent, scoreTemporalReference, scoreSynthesisIntent } from '../lib/intent-classifier.js';
 import { extractPlatformMention } from '../lib/platform-utils.js';
 
 // ── Inline config reading (no heavy imports for speed) ──────
@@ -207,6 +207,9 @@ async function main() {
     const targetPlatform = extractPlatformMention(trimmed);
     if (temporalScore >= 0.4 && targetPlatform) {
       searchBody.recentByPlatform = targetPlatform;
+    }
+    if (classification.scores?.synthesis > 0.4) {
+      searchBody.mmrLambda = 0.35;
     }
 
     const res = await fetch(`${supabaseUrl}/functions/v1/search_memories`, {

@@ -112,11 +112,6 @@ export function applyServerMMR(
     const minScore = Math.min(...candidates.map(c => c.rerank_score));
     const scoreRange = maxScore - minScore || 1;
 
-    // Check if embeddings are available
-    const hasEmbeddings = candidates.every(
-        c => Array.isArray((c as any).embedding) && (c as any).embedding.length > 0
-    );
-
     const selected: CandidateWithScore[] = [];
     const remaining = [...candidates];
 
@@ -135,14 +130,15 @@ export function applyServerMMR(
             const relevance = (candidate.rerank_score - minScore) / scoreRange;
 
             // Diversity: max similarity to any already-selected item
+            // Per-pair hybrid: use cosine when both have embeddings, else content similarity
             let maxSim = -Infinity;
             for (const sel of selected) {
                 let sim: number;
-                if (hasEmbeddings) {
-                    sim = cosineSimilarity(
-                        (candidate as any).embedding,
-                        (sel as any).embedding,
-                    );
+                const candidateEmb = (candidate as any).embedding;
+                const selEmb = (sel as any).embedding;
+                if (Array.isArray(candidateEmb) && candidateEmb.length > 0 &&
+                    Array.isArray(selEmb) && selEmb.length > 0) {
+                    sim = cosineSimilarity(candidateEmb, selEmb);
                 } else {
                     sim = contentSimilarity(candidate.content, sel.content);
                 }
@@ -164,7 +160,7 @@ export function applyServerMMR(
         selected.push(remaining.splice(bestIdx, 1)[0]);
     }
 
-    Logger.info(`MMR: selected ${selected.length}/${candidates.length} items (λ=${lambda}, embeddings=${hasEmbeddings})`, { requestId });
+    Logger.info(`MMR: selected ${selected.length}/${candidates.length} items (λ=${lambda}, embeddings=per-pair)`, { requestId });
 
     return selected;
 }

@@ -15,16 +15,95 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   detectPreferenceQuery,
   synthesizePreferenceItems,
-  applyRecencyResolution,
   detectIsQuestion,
   stripInjectionPrefix,
   INTERROGATIVE_RE,
-  ECHO_STOP,
-  KYT_META_PATTERNS,
-  KYT_QUERY_PATTERNS,
-  echoOverlapRatio,
-  echoMultiplier,
 } from '../../src/context-retrieval.js';
+
+// --- Server-side constants/functions (moved to quality-penalties.ts in Phase 1-3) ---
+// Inlined here so existing unit tests still verify the logic.
+
+const ECHO_STOP = new Set([
+  'the','and','for','with','from','that','this','have','has','what','when',
+  'where','which','who','how','why','are','was','were','been','being','can',
+  'could','should','would','will','not','but','about','into','than','then',
+  'them','they','your','you','our','its','his','her','their','does','did',
+  'top','best','most','need','needs','want','use','like','just','also',
+  'some','any','all','each','every','tell','know','think','make','take',
+]);
+
+const KYT_META_PATTERNS = [
+  /\bK\.?Y\.?T\.?\b.*\b(extension|plugin|add-?on)\b.*\b(working|broken|not working|crash|error|bug|fix|debug)\b/i,
+  /\b(extension|memory system|knowledge base)\b.*\b(broken|not working|crash|paused|down|error)\b/i,
+  /\bchrome\.?(runtime|storage|extension)\b.*\b(error|bug|crash|fail|broken|terminat|restart|debug)\b/i,
+  /\bservice worker\b.*\b(terminat|restart|error|log|crash|fail)\b/i,
+  /\bKYT_(?:MESSAGE|CONTEXT|BRIDGE|DEBUG)\b/,
+];
+
+const KYT_QUERY_PATTERNS = [
+  /\bK\.?Y\.?T\.?\b/i,
+  /\b(extension|chrome extension)\b.*\b(model|support|need|use|feature|work)/i,
+  /\bservice worker\b/i,
+];
+
+function echoOverlapRatio(query, content) {
+  const getWords = (text) =>
+    text.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/)
+      .filter(w => w.length > 2 && !ECHO_STOP.has(w));
+  const qWords = new Set(getWords(query));
+  if (qWords.size === 0) return 0;
+  const cWords = new Set(getWords(content));
+  const overlap = [...qWords].filter(w => cWords.has(w)).length;
+  return overlap / qWords.size;
+}
+
+function echoMultiplier(contentLength) {
+  if (contentLength < 300) return 0.50;
+  if (contentLength <= 800) return 0.70;
+  return 0.90;
+}
+
+function applyRecencyResolution(items) {
+  if (items.length <= 1) return items;
+  const entityGroups = new Map();
+  for (const item of items) {
+    const entities = (item.entities && item.entities.length > 0)
+      ? new Set(item.entities.map(e => (e.canonical_name || e).toLowerCase()))
+      : new Set();
+    for (const entity of entities) {
+      if (!entityGroups.has(entity)) entityGroups.set(entity, []);
+      entityGroups.get(entity).push(item);
+    }
+  }
+  const boosted = new Set();
+  const penalized = new Set();
+  const scoreKey = items[0]?.cross_encoder_score != null ? 'cross_encoder_score'
+      : items[0]?.distance != null ? 'distance' : 'weighted_score';
+  for (const [entity, group] of entityGroups) {
+    if (group.length < 2) continue;
+    group.sort((a, b) => {
+      const tA = new Date(a.msg_timestamp || a.timestamp || 0).getTime();
+      const tB = new Date(b.msg_timestamp || b.timestamp || 0).getTime();
+      return tB - tA;
+    });
+    const newest = group[0];
+    const older = group.slice(1);
+    const newestScore = newest[scoreKey] ?? 0;
+    const bestOlderScore = Math.max(...older.map(o => o[scoreKey] ?? 0));
+    if (bestOlderScore - newestScore > 0.2) continue;
+    if (!boosted.has(newest) && newest[scoreKey] != null) {
+      newest[scoreKey] = Math.min(1.0, newest[scoreKey] * 1.5);
+      boosted.add(newest);
+    }
+    for (const old of older) {
+      if (old[scoreKey] != null && !penalized.has(old)) {
+        old[scoreKey] *= 0.8;
+        penalized.add(old);
+      }
+    }
+  }
+  return items;
+}
 import { filterByConfidence } from '../../src/confidence-filter.js';
 import { applyKeywordBoost } from '../../src/keyword-boost.js';
 import { detectDeflection, applyDeflectionPenalty } from '../../src/assistant-quality-detector.js';

@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { ECHO_STOP, echoOverlapRatio, extractPlatformMention } from '../../src/context-retrieval.js';
+import { extractPlatformMention } from '../../src/context-retrieval.js';
+
+// ECHO_STOP moved server-side (quality-penalties.ts) — inlined here for unit tests
+const ECHO_STOP = new Set([
+  'the','and','for','with','from','that','this','have','has','what','when',
+  'where','which','who','how','why','are','was','were','been','being','can',
+  'could','should','would','will','not','but','about','into','than','then',
+  'them','they','your','you','our','its','his','her','their','does','did',
+  'top','best','most','need','needs','want','use','like','just','also',
+  'some','any','all','each','every','tell','know','think','make','take',
+]);
 import { scoreTemporalReference } from '../../src/intent-classifier.js';
 
 /**
