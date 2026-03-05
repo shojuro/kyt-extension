@@ -24,6 +24,7 @@ import { fetchWithTimeout } from './utils/fetch.js';
 import { normalizePlatform } from './utils/normalize-platform.js';
 import { callEdgeFunction } from './api-client.js';
 import { getActiveProfileId } from './profile-manager.js';
+import { refreshSession } from './auth/auth-service.js';
 
 // Defensive flag: set after first error indicating profile_id column doesn't exist on chat_turns.
 // Once set, all subsequent syncs skip profile_id for this SW lifecycle.
@@ -61,17 +62,16 @@ async function getConfig() {
     const storedUserId = result.user_id;
     config.userId = authUserId || storedUserId || null;
   }
-  // Use JWT access token for REST API auth when available
-  // TODO(auth): implement token refresh. Until then, the hardcoded user RLS
-  // policy in 20260221200000 is the actual auth path for chat_turns.
+  // Use JWT access token for REST API auth when available.
+  // Token refresh happens in refreshConfigToken() on 401.
   config.accessToken = result.auth_session?.access_token || null;
+  config.refreshToken = result.auth_session?.refresh_token || null;
   return config;
 }
 
 /**
  * Build auth headers for Supabase REST calls.
- * Uses JWT access_token when available (enables auth.uid() RLS policies),
- * falls back to anon key (relies on hardcoded-user RLS policy).
+ * Uses JWT access_token when available (enables auth.uid() RLS policies).
  */
 function getAuthHeaders(config) {
   return {
@@ -79,6 +79,49 @@ function getAuthHeaders(config) {
     'apikey': config.supabaseKey,
     'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`,
   };
+}
+
+/**
+ * Refresh the JWT in config by calling auth-service refreshSession().
+ * Updates config in-place and returns true on success.
+ */
+async function refreshConfigToken(config) {
+  if (!config.refreshToken) return false;
+  try {
+    const session = await refreshSession(config.refreshToken);
+    config.accessToken = session.access_token;
+    config.refreshToken = session.refresh_token;
+    return true;
+  } catch (err) {
+    console.warn('Token refresh failed during 401 retry:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Fetch with automatic 401 retry. On 401, refreshes JWT and retries once.
+ * @param {string} url
+ * @param {Object} config - API config (mutated on refresh)
+ * @param {Object} fetchOptions - fetch options (without auth headers)
+ * @returns {Promise<Response>}
+ */
+async function fetchWithAuthRetry(url, config, fetchOptions) {
+  const res = await fetch(url, {
+    ...fetchOptions,
+    headers: { ...getAuthHeaders(config), ...fetchOptions.headers },
+  });
+
+  if (res.status === 401) {
+    const refreshed = await refreshConfigToken(config);
+    if (refreshed) {
+      return fetch(url, {
+        ...fetchOptions,
+        headers: { ...getAuthHeaders(config), ...fetchOptions.headers },
+      });
+    }
+  }
+
+  return res;
 }
 
 /**
@@ -546,14 +589,15 @@ export async function syncMessages(messagesToSync) {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
 
-      const response = await fetch(`${config.supabaseUrl}/rest/v1/messages?on_conflict=message_id`, {
-        method: 'POST',
-        headers: {
-          ...getAuthHeaders(config),
-          'Prefer': 'resolution=merge-duplicates,return=representation'  // Add return=representation to see what was inserted
-        },
-        body: JSON.stringify(batch)
-      });
+      const response = await fetchWithAuthRetry(
+        `${config.supabaseUrl}/rest/v1/messages?on_conflict=message_id`,
+        config,
+        {
+          method: 'POST',
+          headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' },
+          body: JSON.stringify(batch)
+        }
+      );
 
       if (!response.ok) {
         const error = await response.json();
@@ -576,7 +620,11 @@ export async function syncMessages(messagesToSync) {
 
     // PHASE 5: Sync to chat_turns table (conversation-turn chunks)
     // Use userId from config or default to temp ID
-    const userId = config.userId || '00000000-0000-0000-0000-000000000000';
+    const userId = config.userId;
+    if (!userId) {
+      console.warn('⚠️ No userId available — skipping chat_turns sync');
+      return { success: true, synced: successCount, message: 'Messages synced, chat_turns skipped (no userId)' };
+    }
 
     console.log('📦 Creating conversation-turn chunks...');
     const turnChunks = messagesToTurnChunks(deflectionFiltered, userId);
@@ -652,14 +700,12 @@ export async function syncMessages(messagesToSync) {
       });
 
       // Insert to chat_turns table
-      let turnsResponse = await fetch(
+      let turnsResponse = await fetchWithAuthRetry(
         `${config.supabaseUrl}/rest/v1/chat_turns?on_conflict=user_id,conversation_id,platform,start_timestamp`,
+        config,
         {
           method: 'POST',
-          headers: {
-            ...getAuthHeaders(config),
-            'Prefer': 'resolution=ignore-duplicates,return=minimal'
-          },
+          headers: { 'Prefer': 'resolution=ignore-duplicates,return=minimal' },
           body: JSON.stringify(chunksWithEmbeddings)
         }
       );
@@ -674,14 +720,12 @@ export async function syncMessages(messagesToSync) {
             const { profile_id: _drop, ...rest } = c;
             return rest;
           });
-          turnsResponse = await fetch(
+          turnsResponse = await fetchWithAuthRetry(
             `${config.supabaseUrl}/rest/v1/chat_turns?on_conflict=user_id,conversation_id,platform,start_timestamp`,
+            config,
             {
               method: 'POST',
-              headers: {
-                ...getAuthHeaders(config),
-                'Prefer': 'resolution=ignore-duplicates,return=minimal'
-              },
+              headers: { 'Prefer': 'resolution=ignore-duplicates,return=minimal' },
               body: JSON.stringify(fallbackChunks)
             }
           );
