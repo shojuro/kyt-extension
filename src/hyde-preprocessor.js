@@ -4,7 +4,8 @@
  * Generates hypothetical questions for conversation-turn chunks.
  * Improves retrieval quality by indexing what users MIGHT ask about the content.
  *
- * LLM: Claude Haiku 4.5 via llm_completion edge function (migrated from OpenAI).
+ * LLM: GPT-4.1-mini via llm_completion edge function (cost optimization for dev).
+ * Production target: Claude Haiku 4.5. Swap provider param to 'anthropic' when ready.
  *
  * Strategy:
  * - Run batch process on existing turn chunks (30-day history)
@@ -62,6 +63,8 @@ export async function generateHypotheticalQuestions(turnChunk, _unused, question
     const result = await callEdgeFunction('llm_completion', {
       system: 'You are a memory recall assistant. Generate search queries, conceptual labels, and recall phrases for a conversation. Think about how someone would search for this content months later — they\'ll remember the concept or analogy, not the exact words.',
       user: prompt,
+      provider: 'openai',
+      model: 'gpt-4.1-mini',
       temperature: 0.7,
       max_tokens: 250,
       operation: 'hyde_index',

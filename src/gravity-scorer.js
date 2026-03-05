@@ -10,7 +10,8 @@
  * Formula:
  * Score = Impact / (log(Time + 2))^Gravity
  *
- * LLM: Claude Haiku 4.5 via llm_completion edge function (migrated from OpenAI).
+ * LLM: GPT-4.1-mini via llm_completion edge function (cost optimization for dev).
+ * Production target: Claude Haiku 4.5. Swap provider param to 'anthropic' when ready.
  */
 
 import { callEdgeFunction } from './api-client.js';
@@ -58,6 +59,8 @@ Guidelines:
 
 Return JSON only: { "score": number, "reasoning": "short explanation" }`,
             user: text,
+            provider: 'openai',
+            model: 'gpt-4.1-mini',
             temperature: 0.0,
             json_mode: true,
             operation: 'gravity_scoring',

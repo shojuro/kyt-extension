@@ -7,7 +7,8 @@
  *
  * Mirrors the server-side hyde-generator.ts in supabase/functions/_shared/.
  *
- * LLM: Claude Haiku 4.5 via llm_completion edge function (migrated from OpenAI).
+ * LLM: GPT-4.1-mini via llm_completion edge function (cost optimization for dev).
+ * Production target: Claude Haiku 4.5. Swap provider param to 'anthropic' when ready.
  */
 
 import { createCircuitBreaker } from './embedding-circuit-breaker.js';
@@ -50,6 +51,8 @@ export async function generateHyDEDocument(query) {
       callEdgeFunction('llm_completion', {
         system: HYDE_SYSTEM_PROMPT,
         user: `Search query: "${query}"\n\nIMPORTANT: The user's stored conversations are about software development, AI products, startups, and personal knowledge management. Interpret ambiguous terms in this context (e.g., "shipping" means releasing software, not mailing packages; "models" means AI/LLM models, not fashion models).\n\nGenerate a hypothetical conversation that this query might be trying to find:`,
+        provider: 'openai',
+        model: 'gpt-4.1-mini',
         temperature: 0.7,
         max_tokens: 300,
         operation: 'hyde_search',
