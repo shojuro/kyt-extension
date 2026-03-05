@@ -19,6 +19,24 @@ const corsHeaders = {
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// In-memory sliding window rate limiter (per edge function instance)
+const rateLimitMap = new Map<string, number[]>();
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_SEARCH = 30; // 30 searches/min per user
+
+function checkRateLimit(key: string, max: number): boolean {
+    const now = Date.now();
+    const timestamps = rateLimitMap.get(key) || [];
+    const recent = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+    if (recent.length >= max) {
+        rateLimitMap.set(key, recent);
+        return false;
+    }
+    recent.push(now);
+    rateLimitMap.set(key, recent);
+    return true;
+}
+
 serve(async (req) => {
     // Handle CORS preflight requests
     if (req.method === "OPTIONS") {
@@ -67,6 +85,15 @@ serve(async (req) => {
             Logger.warn("Missing query or userId", { requestId, query, userId });
             return new Response(JSON.stringify({ error: "Missing query or userId" }), {
                 status: 400,
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+        }
+
+        // Rate limit per userId
+        if (!checkRateLimit(userId, RATE_LIMIT_MAX_SEARCH)) {
+            Logger.warn("Rate limited", { requestId, userId });
+            return new Response(JSON.stringify({ error: "Rate limited (30/min)" }), {
+                status: 429,
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
         }

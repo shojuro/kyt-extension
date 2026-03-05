@@ -165,3 +165,18 @@ CREATE POLICY stripe_subscriptions_service_role ON stripe_subscriptions
 CREATE POLICY stripe_events_service_role ON stripe_events
   FOR ALL TO service_role
   USING (true) WITH CHECK (true);
+
+-- ============================================================================
+-- 5. STRIPE EVENTS: Add retry_count + dead_letter status
+-- Prevents infinite Stripe webhook retries on persistently failing events.
+-- ============================================================================
+
+ALTER TABLE stripe_events
+  ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;
+
+-- Expand status CHECK to include dead_letter
+ALTER TABLE stripe_events
+  DROP CONSTRAINT IF EXISTS stripe_events_status_check;
+ALTER TABLE stripe_events
+  ADD CONSTRAINT stripe_events_status_check
+  CHECK (status IN ('pending', 'processing', 'processed', 'failed', 'dead_letter'));

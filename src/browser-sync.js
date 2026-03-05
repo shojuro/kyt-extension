@@ -30,16 +30,6 @@ import { refreshSession } from './auth/auth-service.js';
 // Once set, all subsequent syncs skip profile_id for this SW lifecycle.
 let _syncProfileIdUnavailable = false;
 
-// Matryoshka truncation: Qwen3-Embedding-8B at 1024d for HNSW indexing
-// (pgvector 0.8.0 caps HNSW at 2000d; 4096d forced sequential scan)
-const EMBEDDING_DIMS = 1024;
-function truncateAndNormalize(embedding, dims) {
-  const truncated = embedding.slice(0, dims);
-  const norm = Math.sqrt(truncated.reduce((sum, val) => sum + val * val, 0));
-  if (norm === 0) return truncated;
-  return truncated.map(val => val / norm);
-}
-
 // SYNC LOCK: Prevent race conditions when multiple syncs happen in parallel
 let syncInProgress = false;
 
@@ -184,9 +174,8 @@ function batchByTokens(texts, maxTokensPerBatch = 8000) {
 }
 
 /**
- * Generate embeddings using Qwen3-Embedding-8B via HuggingFace Inference Providers
- * Produces 1024-dimensional embeddings (Matryoshka-truncated from 4096 for HNSW indexing)
- * Routes through HuggingFace's router to Scaleway backend (OpenAI-compatible format)
+ * Generate embeddings via server-side edge function (HF key stays server-side).
+ * Produces 1024-dimensional Matryoshka-truncated Qwen3 embeddings.
  *
  * @param {string[]} texts - Array of message content strings
  * @param {string} _apiKey - Unused (kept for backward compatibility)
@@ -200,114 +189,37 @@ async function generateEmbeddings(texts, _apiKey) {
     throw new Error(`Embedding circuit breaker open: ${circuitStatus.reason}`);
   }
 
-  // Get HuggingFace key from config
-  const config = await getConfig();
-  const HF_API_KEY = config.huggingfaceKey;
-
-  if (!HF_API_KEY) {
-    throw new Error('HuggingFace API key not configured. Please add it in extension setup.');
-  }
-
   const allEmbeddings = [];
-
-  // Batch by tokens (Qwen3 has similar limits)
   const batches = batchByTokens(texts, 4000);
 
-  // HuggingFace Inference Providers router endpoint (routes to Scaleway backend)
-  const HF_ROUTER_URL = 'https://router.huggingface.co/scaleway/v1/embeddings';
-
-  console.log(`📊 Generating Qwen3 embeddings via HuggingFace: ${batches.length} batches for ${texts.length} messages`);
+  console.log(`Generating embeddings via edge function: ${batches.length} batches for ${texts.length} messages`);
 
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
-    const batchTokens = batch.reduce((sum, text) => sum + estimateTokens(text), 0);
+    console.log(`   Batch ${i + 1}/${batches.length}: ${batch.length} texts`);
 
-    console.log(`📊 Batch ${i + 1}/${batches.length}: ${batch.length} messages (~${batchTokens} tokens)`);
+    try {
+      const result = await callEdgeFunction('generate_embeddings', {
+        texts: batch,
+      }, { timeoutMs: SYNC_API_TIMEOUT_MS });
 
-    // HuggingFace router uses OpenAI-compatible format
-    const response = await fetchWithTimeout(
-      HF_ROUTER_URL,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${HF_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'qwen3-embedding-8b',
-          input: batch
-        })
-      },
-      SYNC_API_TIMEOUT_MS
-    );
-
-    // Handle non-OK responses with circuit breaker
-    if (!response.ok) {
-      const errorText = await response.text();
-
-      // Record failure in circuit breaker
-      await recordEmbeddingFailure(response.status, errorText);
-
-      // For 429, attempt one retry after delay (if circuit hasn't tripped)
-      if (response.status === 429) {
-        console.warn(`   ⏳ Rate limited (429), waiting 10s and retrying...`);
-        await new Promise(resolve => setTimeout(resolve, 10000));
-
-        const retryResponse = await fetchWithTimeout(
-          HF_ROUTER_URL,
-          {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${HF_API_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              model: 'qwen3-embedding-8b',
-              input: batch
-            })
-          },
-          SYNC_API_TIMEOUT_MS * 2
-        );
-
-        if (!retryResponse.ok) {
-          const retryErrorText = await retryResponse.text();
-          await recordEmbeddingFailure(retryResponse.status, retryErrorText);
-          throw new Error(`HuggingFace API error on retry: ${retryResponse.status} - ${retryErrorText}`);
-        }
-
-        // Retry succeeded
-        await recordEmbeddingSuccess();
-        const retryData = await retryResponse.json();
-        const retryEmbeddings = retryData.data.map(item =>
-          truncateAndNormalize(item.embedding, EMBEDDING_DIMS)
-        );
-        allEmbeddings.push(...retryEmbeddings);
-        continue;
+      if (!result.embeddings || !Array.isArray(result.embeddings)) {
+        throw new Error('Unexpected response format from generate_embeddings');
       }
 
-      throw new Error(`HuggingFace API error: ${response.status} - ${errorText}`);
+      await recordEmbeddingSuccess();
+      allEmbeddings.push(...result.embeddings);
+    } catch (err) {
+      await recordEmbeddingFailure(0, err.message);
+      throw err;
     }
 
-    const responseData = await response.json();
-
-    // OpenAI-compatible format: { data: [{ embedding: [...] }, ...] }
-    if (responseData.data && Array.isArray(responseData.data)) {
-      const embeddings = responseData.data.map(item =>
-        truncateAndNormalize(item.embedding, EMBEDDING_DIMS)
-      );
-      allEmbeddings.push(...embeddings);
-    } else {
-      throw new Error('Unexpected embedding response format from HuggingFace');
-    }
-
-    // Rate limit protection
+    // Rate limit protection between batches
     if (i < batches.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
   }
 
-  // All batches succeeded - record success
-  await recordEmbeddingSuccess();
   return allEmbeddings;
 }
 

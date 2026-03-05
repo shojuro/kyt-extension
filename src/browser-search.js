@@ -22,6 +22,7 @@ import {
 import { fetchWithTimeout } from './utils/fetch.js';
 import { generateHyDEDocument, hydeCB } from './hyde-search-generator.js';
 import { getActiveProfileId } from './profile-manager.js';
+import { callEdgeFunction } from './api-client.js';
 
 // Defensive flags: set after first error indicating profile_id migrations aren't applied.
 // Once set, all subsequent calls skip profile_id params for this SW lifecycle.
@@ -29,15 +30,6 @@ const _profileCompat = {
   rpcUnavailable: false,   // p_profile_id param missing from RPCs
   restUnavailable: false,  // profile_id column missing from tables
 };
-
-// Matryoshka truncation: Qwen3-Embedding-8B at 1024d for HNSW indexing
-const EMBEDDING_DIMS = 1024;
-function truncateAndNormalize(embedding, dims) {
-  const truncated = embedding.slice(0, dims);
-  const norm = Math.sqrt(truncated.reduce((sum, val) => sum + val * val, 0));
-  if (norm === 0) return truncated;
-  return truncated.map(val => val / norm);
-}
 
 // Initialize expander
 const queryExpander = new QueryExpander();
@@ -74,112 +66,37 @@ async function getConfig() {
 }
 
 /**
- * Generate embedding for search query using Qwen3-Embedding-8B via Scaleway API
- * Uses timeout and retry logic to prevent Chrome message channel timeout
+ * Generate embedding for search query via server-side edge function.
+ * HF API key stays server-side. Returns 1024d Matryoshka-truncated embedding.
  * @param {string} query - Search query text
  * @param {string} _apiKey - Unused (kept for backward compatibility)
- * @returns {Promise<number[]|null>} 1024-dimensional embedding vector (Matryoshka-truncated), or null on failure
+ * @returns {Promise<number[]|null>} 1024-dimensional embedding vector, or null on failure
  */
 async function generateQueryEmbedding(query, _apiKey) {
-  // Check shared circuit breaker FIRST — skip instantly if open
+  // Check shared circuit breaker FIRST
   const circuitStatus = await isEmbeddingCircuitOpen();
   if (circuitStatus.open) {
-    console.warn(`⚠️ Embedding circuit breaker open, skipping search embedding: ${circuitStatus.reason}`);
+    console.warn(`Embedding circuit breaker open, skipping search embedding: ${circuitStatus.reason}`);
     return null;
   }
 
-  const config = await getConfig();
-  const HF_API_KEY = config.huggingfaceKey;
+  try {
+    const result = await callEdgeFunction('generate_embeddings', {
+      texts: [query],
+    }, { timeoutMs: API_TIMEOUT_MS });
 
-  if (!HF_API_KEY) {
-    console.warn('⚠️ HuggingFace API key not configured, skipping semantic search');
-    return null; // Graceful degradation instead of throwing
-  }
-
-  let lastError = null;
-
-  for (let attempt = 0; attempt <= API_MAX_RETRIES; attempt++) {
-    try {
-      if (attempt > 0) {
-        console.log(`   🔄 Retry ${attempt}/${API_MAX_RETRIES} for embedding generation...`);
-        await new Promise(resolve => setTimeout(resolve, API_RETRY_DELAY_MS));
-      }
-
-      // Use HuggingFace Router to Scaleway (accepts HF API key, OpenAI-compatible format)
-      const response = await fetchWithTimeout(
-        'https://router.huggingface.co/scaleway/v1/embeddings',
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${HF_API_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model: 'qwen3-embedding-8b',
-            input: query  // Scaleway uses 'input' not 'inputs'
-          })
-        },
-        API_TIMEOUT_MS
-      );
-
-      // Handle rate limiting (429)
-      if (response.status === 429) {
-        console.warn(`   ⏳ Rate limited (429), waiting before retry...`);
-        await recordEmbeddingFailure(429, 'Rate limited');
-        lastError = new Error('Rate limited, retry needed');
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        continue; // Retry
-      }
-
-      // Handle model loading (503) - retry
-      if (response.status === 503) {
-        const errorData = await response.json().catch(() => ({}));
-        const errorMsg = errorData.error || 'Model is loading';
-        console.warn(`   ⏳ Model loading (503): ${errorMsg}`);
-        await recordEmbeddingFailure(503, errorMsg);
-        lastError = new Error('Model is loading, retry needed');
-        continue; // Retry
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        await recordEmbeddingFailure(response.status, errorText);
-        throw new Error(`HF Router (Scaleway) API error: ${response.status} - ${errorText}`);
-      }
-
-      const responseData = await response.json();
-
-      // OpenAI-compatible format: { data: [{ embedding: [...4096 floats...] }] }
-      if (responseData.data && Array.isArray(responseData.data) && responseData.data[0]?.embedding) {
-        await recordEmbeddingSuccess();
-        return truncateAndNormalize(responseData.data[0].embedding, EMBEDDING_DIMS);
-      }
-
-      // Fallback: handle legacy format if present
-      if (Array.isArray(responseData) && Array.isArray(responseData[0])) {
-        await recordEmbeddingSuccess();
-        return truncateAndNormalize(responseData[0], EMBEDDING_DIMS);
-      }
-      if (Array.isArray(responseData)) {
-        await recordEmbeddingSuccess();
-        return truncateAndNormalize(responseData, EMBEDDING_DIMS);
-      }
-
-      throw new Error('Unexpected embedding response format from Scaleway');
-
-    } catch (error) {
-      lastError = error;
-      console.warn(`   ⚠️ Embedding attempt ${attempt + 1} failed: ${error.message}`);
-
-      // Don't retry on timeout or non-transient errors
-      if (error.message.includes('timed out') || error.message.includes('API error: 4')) {
-        break;
-      }
+    if (!result.embeddings || !Array.isArray(result.embeddings) || !result.embeddings[0]) {
+      console.warn('Unexpected response format from generate_embeddings');
+      return null;
     }
-  }
 
-  console.error(`❌ Embedding generation failed after ${API_MAX_RETRIES + 1} attempts: ${lastError?.message}`);
-  return null; // Graceful degradation - semantic search will be skipped
+    await recordEmbeddingSuccess();
+    return result.embeddings[0];
+  } catch (error) {
+    console.warn(`Embedding generation failed: ${error.message}`);
+    await recordEmbeddingFailure(0, error.message);
+    return null; // Graceful degradation
+  }
 }
 
 /**
@@ -193,28 +110,14 @@ export async function prewarmEmbeddingModel() {
     const circuitStatus = await isEmbeddingCircuitOpen();
     if (circuitStatus.open) return false;
 
-    const config = await getConfig();
-    if (!config.huggingfaceKey) return false;
+    // Pre-warm via edge function (HF key stays server-side)
+    const result = await callEdgeFunction('generate_embeddings', {
+      texts: ['warmup'],
+    }, { timeoutMs: API_TIMEOUT_MS });
 
-    const response = await fetchWithTimeout(
-      'https://router.huggingface.co/scaleway/v1/embeddings',
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${config.huggingfaceKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'qwen3-embedding-8b',
-          input: 'warmup'
-        })
-      },
-      API_TIMEOUT_MS
-    );
-
-    if (response.ok) {
+    if (result.embeddings) {
       await recordEmbeddingSuccess();
-      console.log('🔥 Embedding model pre-warmed successfully');
+      console.log('Embedding model pre-warmed successfully');
       return true;
     }
 

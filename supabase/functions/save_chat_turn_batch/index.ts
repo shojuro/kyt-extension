@@ -20,6 +20,24 @@ const corsHeaders = {
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// In-memory sliding window rate limiter
+const rateLimitMap = new Map<string, number[]>();
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_SAVE = 20; // 20 batch saves/min per user
+
+function checkRateLimit(key: string, max: number): boolean {
+    const now = Date.now();
+    const timestamps = rateLimitMap.get(key) || [];
+    const recent = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+    if (recent.length >= max) {
+        rateLimitMap.set(key, recent);
+        return false;
+    }
+    recent.push(now);
+    rateLimitMap.set(key, recent);
+    return true;
+}
+
 serve(async (req) => {
     // Handle CORS preflight requests
     if (req.method === 'OPTIONS') {
@@ -66,6 +84,15 @@ serve(async (req) => {
             } catch (jwtErr) {
                 console.warn('JWT extraction failed, using body user_id:', (jwtErr as Error).message);
             }
+        }
+
+        // Rate limit by user_id from first turn
+        const rateLimitKey = turns[0]?.user_id || req.headers.get('x-forwarded-for') || 'anonymous';
+        if (!checkRateLimit(rateLimitKey, RATE_LIMIT_MAX_SAVE)) {
+            return new Response(JSON.stringify({ error: 'Rate limited (20/min)' }), {
+                status: 429,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            });
         }
 
         // Question detection heuristic — duplicated from background.js INTERROGATIVE_RE

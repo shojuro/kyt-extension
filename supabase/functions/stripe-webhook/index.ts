@@ -274,13 +274,27 @@ Deno.serve(async (req) => {
   // 2. Idempotency check - has this event been processed?
   const { data: existingEvent } = await supabase
     .from('stripe_events')
-    .select('id, status')
+    .select('id, status, retry_count')
     .eq('stripe_event_id', event.id)
     .single()
 
   if (existingEvent?.status === 'processed') {
     console.log(`Event ${event.id} already processed, skipping`)
     return new Response(JSON.stringify({ ok: true, message: 'Already processed' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  // Cap retries: if this event has failed 5+ times, dead-letter it (return 200 to stop Stripe retries)
+  const MAX_RETRIES = 5
+  if (existingEvent?.status === 'failed' && (existingEvent as any).retry_count >= MAX_RETRIES) {
+    console.error(`Event ${event.id} failed ${(existingEvent as any).retry_count} times, dead-lettering`)
+    await supabase.from('stripe_events').update({
+      status: 'dead_letter',
+      error_message: `Gave up after ${(existingEvent as any).retry_count} retries`,
+    }).eq('stripe_event_id', event.id)
+    return new Response(JSON.stringify({ ok: true, message: 'Dead-lettered' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })
@@ -336,9 +350,11 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error(`Error processing event ${event.id}:`, error)
 
+    const retryCount = ((existingEvent as any)?.retry_count ?? 0) + 1
     await supabase.from('stripe_events').update({
       status: 'failed',
       error_message: (error as Error).message,
+      retry_count: retryCount,
     }).eq('stripe_event_id', event.id)
 
     // Return 500 so Stripe retries
