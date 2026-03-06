@@ -54,16 +54,23 @@ async function getConfig() {
     throw new Error('API configuration not found. Please set up API keys first.');
   }
   const config = result.api_config;
-  // Resolve userId: prefer auth session > stored user_id > config userId
-  // The sync path writes user_id to storage — search should use the same ID
-  if (!config.userId) {
-    const authUserId = result.auth_session?.user?.id;
-    const storedUserId = result.user_id;
-    config.userId = authUserId || storedUserId || null;
+  const session = result.auth_session;
+  const nowSec = Math.floor(Date.now() / 1000);
+  // IMPORTANT: When a valid JWT session exists, ALWAYS use its user_id.
+  // auth.uid() in RLS resolves from the JWT, so config.userId must match.
+  const authUserId = session?.user?.id;
+  const storedUserId = result.user_id;
+  if (session?.access_token && session.expires_at > nowSec && authUserId) {
+    config.userId = authUserId;
+  } else {
+    config.userId = config.userId || authUserId || storedUserId || null;
   }
-  console.log(`🔑 Search config: userId=${config.userId || 'NULL'}, source=${result.auth_session?.user?.id ? 'auth' : result.user_id ? 'stored' : 'none'}`);
+  // Store JWT for auth headers — RLS requires auth.uid() from Bearer token
+  config.accessToken = session?.access_token || null;
+  console.log(`🔑 Search config: userId=${config.userId || 'NULL'}, source=${session?.access_token && session.expires_at > nowSec ? 'jwt' : authUserId ? 'session' : storedUserId ? 'stored' : 'none'}, auth=${config.accessToken ? 'jwt' : 'anon'}`);
   return config;
 }
+
 
 /**
  * Generate embedding for search query via server-side edge function.
@@ -240,7 +247,7 @@ export async function searchMessages(query, options = {}) {
         headers: {
           'Content-Type': 'application/json',
           'apikey': config.supabaseKey,
-          'Authorization': `Bearer ${config.supabaseKey}`
+          'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
         },
         body: JSON.stringify(rpcBody),
         signal: controller.signal
@@ -271,7 +278,7 @@ export async function searchMessages(query, options = {}) {
             headers: {
               'Content-Type': 'application/json',
               'apikey': config.supabaseKey,
-              'Authorization': `Bearer ${config.supabaseKey}`
+              'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
             },
             body: JSON.stringify(rpcBody),
             signal: retryController.signal
@@ -325,7 +332,7 @@ export async function findSimilarMessages(messageId, limit = 5) {
       {
         headers: {
           'apikey': config.supabaseKey,
-          'Authorization': `Bearer ${config.supabaseKey}`
+          'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
         }
       }
     );
@@ -352,7 +359,7 @@ export async function findSimilarMessages(messageId, limit = 5) {
         headers: {
           'Content-Type': 'application/json',
           'apikey': config.supabaseKey,
-          'Authorization': `Bearer ${config.supabaseKey}`
+          'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
         },
         body: JSON.stringify({
           query_embedding: refMessage.embedding,
@@ -462,7 +469,7 @@ async function searchSupabaseText(query, options = {}) {
       const response = await fetchWithTimeout(url, {
         headers: {
           'apikey': config.supabaseKey,
-          'Authorization': `Bearer ${config.supabaseKey}`
+          'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
         }
       }, PER_KEYWORD_TIMEOUT);
       return response;
@@ -605,7 +612,7 @@ async function searchSupabaseChatTurnsText(query, options = {}) {
       const response = await fetchWithTimeout(url, {
         headers: {
           'apikey': config.supabaseKey,
-          'Authorization': `Bearer ${config.supabaseKey}`
+          'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
         }
       }, PER_KEYWORD_TIMEOUT);
       return response;
@@ -753,7 +760,7 @@ async function searchGraphWalk(query, options = {}) {
         headers: {
           'Content-Type': 'application/json',
           'apikey': config.supabaseKey,
-          'Authorization': `Bearer ${config.supabaseKey}`
+          'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
         },
         body: JSON.stringify(entityRpcBody)
       },
@@ -774,7 +781,7 @@ async function searchGraphWalk(query, options = {}) {
             headers: {
               'Content-Type': 'application/json',
               'apikey': config.supabaseKey,
-              'Authorization': `Bearer ${config.supabaseKey}`
+              'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
             },
             body: JSON.stringify(entityRpcBody)
           },
@@ -825,7 +832,7 @@ async function searchGraphWalk(query, options = {}) {
             headers: {
               'Content-Type': 'application/json',
               'apikey': config.supabaseKey,
-              'Authorization': `Bearer ${config.supabaseKey}`
+              'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
             },
             body: JSON.stringify(textRpcBody)
           },
@@ -844,7 +851,7 @@ async function searchGraphWalk(query, options = {}) {
               headers: {
                 'Content-Type': 'application/json',
                 'apikey': config.supabaseKey,
-                'Authorization': `Bearer ${config.supabaseKey}`
+                'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
               },
               body: JSON.stringify(textRpcBody)
             },
@@ -889,7 +896,7 @@ async function searchGraphWalk(query, options = {}) {
         headers: {
           'Content-Type': 'application/json',
           'apikey': config.supabaseKey,
-          'Authorization': `Bearer ${config.supabaseKey}`
+          'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
         },
         body: JSON.stringify(graphRpcBody)
       },
@@ -908,7 +915,7 @@ async function searchGraphWalk(query, options = {}) {
           headers: {
             'Content-Type': 'application/json',
             'apikey': config.supabaseKey,
-            'Authorization': `Bearer ${config.supabaseKey}`
+            'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`
           },
           body: JSON.stringify(graphRpcBody)
         },

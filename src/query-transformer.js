@@ -332,7 +332,7 @@ export async function fetchRecentTopicsFromSupabase(apiConfig, limit = 10) {
         method: 'GET',
         headers: {
           'apikey': apiConfig.supabaseKey,
-          'Authorization': `Bearer ${apiConfig.supabaseKey}`,
+          'Authorization': `Bearer ${apiConfig.accessToken || apiConfig.supabaseKey}`,
           'Content-Type': 'application/json'
         }
       }

@@ -309,7 +309,7 @@ export async function updateChatTurnsWithHyDE(processedChunks, config) {
           headers: {
             'Content-Type': 'application/json',
             'apikey': config.supabaseKey,
-            'Authorization': `Bearer ${config.supabaseKey}`,
+            'Authorization': `Bearer ${config.accessToken || config.supabaseKey}`,
             'Prefer': 'return=minimal'
           },
           body: JSON.stringify({

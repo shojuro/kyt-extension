@@ -843,21 +843,32 @@ chrome.runtime.onInstalled.addListener((details) => {
       console.log('🔌 HyDE circuit breaker reset on extension update');
     });
 
-    // One-time userId backfill
-    chrome.storage.local.get([AUTH_SESSION_KEY, 'user_id'], (stored) => {
-      if (!stored.user_id) {
-        const sessionUserId = stored[AUTH_SESSION_KEY]?.user?.id;
-        if (sessionUserId) {
-          chrome.storage.local.set({ user_id: sessionUserId }, () => {
-            console.log(`🔑 Persisted user_id from existing session: ${sessionUserId}`);
-          });
-        } else {
-          console.warn('⚠️ No user_id in session — user must sign in again');
+    // Refresh auth session on update (same as onStartup)
+    (async () => {
+      try {
+        const authed = await isAuthenticated();
+        if (authed) {
+          await refreshSession();
+          console.log('✅ Auth session refreshed on extension update');
         }
-      } else {
-        console.log(`🔑 user_id already persisted: ${stored.user_id}`);
+      } catch (err) {
+        console.warn('⚠️ Auth session refresh on update failed:', err.message);
       }
-    });
+
+      // userId sync: ensure stored user_id matches JWT session (authoritative)
+      const stored = await chrome.storage.local.get([AUTH_SESSION_KEY, 'user_id']);
+      const sessionUserId = stored[AUTH_SESSION_KEY]?.user?.id;
+      if (!sessionUserId) {
+        console.warn('⚠️ No user_id in session — user must sign in again');
+        return;
+      }
+      if (stored.user_id === sessionUserId) {
+        console.log(`🔑 user_id matches session: ${sessionUserId}`);
+      } else {
+        console.log(`🔑 Updating user_id: ${stored.user_id || 'NULL'} → ${sessionUserId} (session is authoritative)`);
+        await chrome.storage.local.set({ user_id: sessionUserId });
+      }
+    })();
 
     // Clear stale process_queue alarm
     chrome.alarms.clear('process_queue', (wasCleared) => {
