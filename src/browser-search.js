@@ -23,7 +23,6 @@ import { fetchWithTimeout } from './utils/fetch.js';
 import { generateHyDEDocument, hydeCB } from './hyde-search-generator.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { callEdgeFunction } from './api-client.js';
-import { getSession } from './auth/auth-service.js';
 
 // Defensive flags: set after first error indicating profile_id migrations aren't applied.
 // Once set, all subsequent calls skip profile_id params for this SW lifecycle.
@@ -50,24 +49,25 @@ const MAX_JINA_ATTEMPTS = 1;   // No retry — cold-start recovery not worth 5s 
  * @returns {Promise<Object>} Configuration object
  */
 async function getConfig() {
-  const result = await chrome.storage.local.get(['api_config', 'user_id']);
+  const result = await chrome.storage.local.get(['api_config', 'user_id', 'auth_session']);
   if (!result.api_config) {
     throw new Error('API configuration not found. Please set up API keys first.');
   }
   const config = result.api_config;
-
-  // Use getSession() which auto-refreshes expired tokens (same as callEdgeFunction path).
-  const session = await getSession();
-
-  if (session?.access_token) {
-    config.accessToken = session.access_token;
-    config.userId = session.user?.id || result.user_id || null;
-    console.log(`🔑 Search config: userId=${config.userId}, auth=jwt`);
+  const session = result.auth_session;
+  const nowSec = Math.floor(Date.now() / 1000);
+  // IMPORTANT: When a valid JWT session exists, ALWAYS use its user_id.
+  // auth.uid() in RLS resolves from the JWT, so config.userId must match.
+  const authUserId = session?.user?.id;
+  const storedUserId = result.user_id;
+  if (session?.access_token && session.expires_at > nowSec && authUserId) {
+    config.userId = authUserId;
   } else {
-    config.accessToken = null;
-    config.userId = config.userId || result.user_id || null;
-    console.warn(`🔑 Search config: userId=${config.userId || 'NULL'}, auth=anon (no valid session)`);
+    config.userId = config.userId || authUserId || storedUserId || null;
   }
+  // Store JWT for auth headers — RLS requires auth.uid() from Bearer token
+  config.accessToken = session?.access_token || null;
+  console.log(`🔑 Search config: userId=${config.userId || 'NULL'}, source=${session?.access_token && session.expires_at > nowSec ? 'jwt' : authUserId ? 'session' : storedUserId ? 'stored' : 'none'}, auth=${config.accessToken ? 'jwt' : 'anon'}`);
   return config;
 }
 

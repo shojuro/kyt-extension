@@ -24,7 +24,7 @@ import { fetchWithTimeout } from './utils/fetch.js';
 import { normalizePlatform } from './utils/normalize-platform.js';
 import { callEdgeFunction } from './api-client.js';
 import { getActiveProfileId } from './profile-manager.js';
-import { refreshSession, getSession } from './auth/auth-service.js';
+import { refreshSession } from './auth/auth-service.js';
 
 // Defensive flag: set after first error indicating profile_id column doesn't exist on chat_turns.
 // Once set, all subsequent syncs skip profile_id for this SW lifecycle.
@@ -41,28 +41,40 @@ const SYNC_API_TIMEOUT_MS = 30000; // 30 seconds for sync (batch operations need
  * @returns {Promise<Object>} Configuration object
  */
 async function getConfig() {
-  const result = await chrome.storage.local.get(['api_config', 'user_id']);
+  const result = await chrome.storage.local.get(['api_config', 'user_id', 'auth_session']);
   if (!result.api_config) {
     throw new Error('API configuration not found. Please set up API keys first.');
   }
   const config = result.api_config;
+  const session = result.auth_session;
+  const nowSec = Math.floor(Date.now() / 1000);
 
-  // Use getSession() which auto-refreshes expired tokens (same path as callEdgeFunction).
-  // Reading auth_session directly from storage skips refresh → expired JWT → RLS failure.
-  const session = await getSession();
-
-  if (session?.access_token) {
-    config.accessToken = session.access_token;
-    config.refreshToken = session.refresh_token;
-    // JWT user_id is authoritative — auth.uid() in RLS resolves from it
-    config.userId = session.user?.id || result.user_id || null;
-    console.log(`🔑 Sync config: userId=${config.userId}, auth=jwt`);
-  } else {
-    config.accessToken = null;
-    config.refreshToken = null;
-    config.userId = config.userId || result.user_id || null;
-    console.warn(`🔑 Sync config: userId=${config.userId}, auth=anon (no valid session)`);
+  // Proactive refresh if token expired or within 5min of expiry
+  if (session?.access_token && session.refresh_token &&
+      session.expires_at <= nowSec + 300) {
+    try {
+      const refreshed = await refreshSession(session.refresh_token);
+      config.accessToken = refreshed.access_token;
+      config.refreshToken = refreshed.refresh_token;
+      config.userId = refreshed.user?.id || result.user_id || null;
+      return config;
+    } catch (e) {
+      console.warn('Token refresh failed in getConfig:', e.message);
+    }
   }
+
+  // IMPORTANT: When a valid JWT session exists, ALWAYS use its user_id.
+  // auth.uid() in RLS resolves from the JWT, so config.userId must match.
+  // Legacy api_config.userId may differ (e.g. old test user) — override it.
+  const authUserId = session?.user?.id;
+  const storedUserId = result.user_id;
+  if (session?.access_token && session.expires_at > nowSec && authUserId) {
+    config.userId = authUserId;
+  } else {
+    config.userId = config.userId || authUserId || storedUserId || null;
+  }
+  config.accessToken = session?.access_token || null;
+  config.refreshToken = session?.refresh_token || null;
   return config;
 }
 
