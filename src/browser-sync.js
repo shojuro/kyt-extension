@@ -46,16 +46,31 @@ async function getConfig() {
     throw new Error('API configuration not found. Please set up API keys first.');
   }
   const config = result.api_config;
+  const session = result.auth_session;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  // Proactive refresh if token expired or within 5min of expiry
+  if (session?.access_token && session.refresh_token &&
+      session.expires_at <= nowSec + 300) {
+    try {
+      const refreshed = await refreshSession(session.refresh_token);
+      config.accessToken = refreshed.access_token;
+      config.refreshToken = refreshed.refresh_token;
+      config.userId = refreshed.user?.id || result.user_id || null;
+      return config;
+    } catch (e) {
+      console.warn('Token refresh failed in getConfig:', e.message);
+    }
+  }
+
   // Resolve userId: prefer auth session > stored user_id > config userId
   if (!config.userId) {
-    const authUserId = result.auth_session?.user?.id;
+    const authUserId = session?.user?.id;
     const storedUserId = result.user_id;
     config.userId = authUserId || storedUserId || null;
   }
-  // Use JWT access token for REST API auth when available.
-  // Token refresh happens in refreshConfigToken() on 401.
-  config.accessToken = result.auth_session?.access_token || null;
-  config.refreshToken = result.auth_session?.refresh_token || null;
+  config.accessToken = session?.access_token || null;
+  config.refreshToken = session?.refresh_token || null;
   return config;
 }
 
