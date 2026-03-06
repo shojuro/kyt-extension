@@ -26,7 +26,7 @@ import { prewarmEmbeddingModel } from './src/browser-search.js';
 import { queueProcessor } from './src/background/queue-processor.js';
 import { callEdgeFunction } from './src/api-client.js';
 import { HistoryImporter } from './src/history-import/index.js';
-import { refreshSession, isAuthenticated, AUTH_SESSION_KEY } from './src/auth/auth-service.js';
+import { refreshSession, isAuthenticated, AUTH_SESSION_KEY, AUTH_EXPIRED_KEY } from './src/auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
 import { detectDeflection } from './src/assistant-quality-detector.js';
 import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/embedding-circuit-breaker.js';
@@ -650,10 +650,7 @@ chrome.runtime.onStartup.addListener(async () => {
       console.log('🔄 Recovering pending sync from previous session');
       await chrome.storage.local.set({ kyt_sync_pending: false });
       try {
-        const syncResult = await syncToSupabase();
-        if (syncResult.success) {
-          console.log(`✅ Startup recovery sync: ${syncResult.synced} messages synced`);
-        }
+        await executeDebouncedSync();
       } catch (err) {
         console.warn('⚠️ Startup recovery sync failed:', err.message);
       }
@@ -915,16 +912,26 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
           console.log('⏰ Periodic sync: recovering pending debounced sync');
           await chrome.storage.local.set({ kyt_sync_pending: false });
         }
-        const syncResult = await syncToSupabase();
-        if (syncResult.success && syncResult.synced > 0) {
-          console.log(`✅ Periodic sync: ${syncResult.synced} messages synced`);
-        }
+        await executeDebouncedSync();
       } catch (error) {
         console.error('❌ Periodic sync error:', error);
       }
       break;
 
     case 'health_check': {
+      // Auth recovery: if session expired, attempt a refresh (user may have re-authenticated)
+      try {
+        const authFlags = await chrome.storage.local.get([AUTH_EXPIRED_KEY]);
+        if (authFlags[AUTH_EXPIRED_KEY] === true) {
+          console.log('🔑 Auth expired — attempting recovery refresh');
+          await refreshSession();  // Will call storeSession() which clears auth_expired
+          console.log('✅ Auth recovery succeeded');
+          chrome.storage.local.remove('kyt_sync_auth_failed');
+        }
+      } catch (authErr) {
+        console.warn('🔑 Auth recovery failed (will retry next health check):', authErr.message);
+      }
+
       const stats = await getStorageStats();
       if (stats) {
         console.log('📊 KYT Health Check:', {
