@@ -15,6 +15,8 @@ import { messagesToTurnChunks, type RawMessage, type TurnChunk } from '../_share
 import { generateHypotheticalDocument } from '../_shared/hyde-generator.ts';
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
 import { classifyMemory } from '../_shared/memory-classifier.ts';
+import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
+import { securityHeaders } from '../_shared/headers.ts';
 
 // =============================================================================
 // Constants
@@ -33,7 +35,10 @@ const MAX_CHUNKS_PER_CALL = 40; // Max chunks to AI-process per call (prevent 50
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  ...securityHeaders(),
 };
+
+const RATE_LIMIT_MAX_IMPORT = 5; // 5 imports/min per user (bulk operation)
 
 // =============================================================================
 // Helper Functions
@@ -675,6 +680,11 @@ Deno.serve(async (req) => {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
+    }
+
+    // Rate limit imports (bulk operation)
+    if (!checkRateLimit('import_conversation_batch', user_id, RATE_LIMIT_MAX_IMPORT)) {
+      return rateLimitResponse(corsHeaders);
     }
 
     if (messages.length > MAX_MESSAGES) {

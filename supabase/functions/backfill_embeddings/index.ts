@@ -2,6 +2,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
+import { securityHeaders } from "../_shared/headers.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -169,7 +170,7 @@ serve(async (req) => {
             processed: totalProcessedInRun,
             entities_processed: entitiesProcessed,
             lastId: lastProcessedId
-        }), { headers: { "Content-Type": "application/json" } });
+        }), { headers: { "Content-Type": "application/json", ...securityHeaders() } });
 
     } catch (error) {
         console.error("Backfill failed:", error);
@@ -182,6 +183,6 @@ serve(async (req) => {
             p_error: error.message
         });
 
-        return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: { "Content-Type": "application/json", ...securityHeaders() } });
     }
 });

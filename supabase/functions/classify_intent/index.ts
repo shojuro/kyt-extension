@@ -17,11 +17,16 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { AnthropicClient } from "../_shared/anthropic-client.ts";
 import { Logger } from "../_shared/utils.ts";
+import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
+import { securityHeaders } from "../_shared/headers.ts";
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    ...securityHeaders(),
 };
+
+const RATE_LIMIT_MAX_CLASSIFY = 60; // 60 classifications/min per user
 
 const SYSTEM_PROMPT = `Classify this message as MEMORY_QUERY or NO_RETRIEVAL.
 MEMORY_QUERY: User is asking about, referencing, or wanting to recall something from past conversations.
@@ -48,6 +53,12 @@ serve(async (req) => {
                 JSON.stringify({ error: "Unauthorized" }),
                 { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
+        }
+
+        // ── Rate limit ──
+        if (!checkRateLimit('classify_intent', user.id, RATE_LIMIT_MAX_CLASSIFY)) {
+            Logger.warn("Classify rate limited", { requestId, userId: user.id });
+            return rateLimitResponse(corsHeaders);
         }
 
         // ── Check API key ──

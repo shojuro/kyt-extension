@@ -26,11 +26,16 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { AnthropicClient } from "../_shared/anthropic-client.ts";
 import { Logger, CostMonitor } from "../_shared/utils.ts";
+import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
+import { securityHeaders } from "../_shared/headers.ts";
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    ...securityHeaders(),
 };
+
+const RATE_LIMIT_MAX_LLM = 10; // 10 LLM calls/min per user (costs real money)
 
 // ── OpenAI completion handler ──────────────────────────────────────────
 async function callOpenAI(
@@ -114,6 +119,12 @@ serve(async (req) => {
                 JSON.stringify({ error: "Unauthorized" }),
                 { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
+        }
+
+        // ── Rate limit ──
+        if (!checkRateLimit('llm_completion', user.id, RATE_LIMIT_MAX_LLM)) {
+            Logger.warn("LLM rate limited", { requestId, userId: user.id });
+            return rateLimitResponse(corsHeaders);
         }
 
         // ── Validate input ──

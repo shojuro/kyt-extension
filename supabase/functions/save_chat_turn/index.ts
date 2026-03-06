@@ -23,6 +23,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { classifyMemory, type ClassificationResult } from '../_shared/memory-classifier.ts';
 import { extractEntities, saveEntitiesWithMentions, savePreferences } from '../_shared/entity-extractor.ts';
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
+import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
+import { securityHeaders } from '../_shared/headers.ts';
 
 // Platform normalization (inline — Deno edge functions can't import from client src/)
 const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code', 'gemini']);
@@ -36,7 +38,10 @@ function normalizePlatform(p: string | undefined): Platform {
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  ...securityHeaders(),
 };
+
+const RATE_LIMIT_MAX_SAVE = 60; // 60 single saves/min per user
 
 // Initialize Supabase client at module level for connection pooling
 // Service role key bypasses RLS - filtering is done in queries
@@ -102,6 +107,12 @@ serve(async (req) => {
       } catch (jwtErr) {
         console.warn('JWT extraction failed, using body user_id:', (jwtErr as Error).message);
       }
+    }
+
+    // 1b. Rate limit by user or IP
+    const rateLimitKey = requestData.user_id || req.headers.get('x-forwarded-for') || 'anonymous';
+    if (!checkRateLimit('save_chat_turn', rateLimitKey, RATE_LIMIT_MAX_SAVE)) {
+      return rateLimitResponse(corsHeaders);
     }
 
     // 2. Validate required fields
