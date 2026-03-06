@@ -339,8 +339,18 @@
       try { inner = JSON.parse(innerStr); } catch (_) { continue; }
       if (!Array.isArray(inner)) continue;
 
-      const candidate = findLongestRawText(inner);
-      if (candidate) return candidate;
+      // Strategy 1: Collect and concatenate text fragments from leaf arrays
+      // (Gemini stores response text as arrays of short string segments)
+      const collected = collectTextFragments(inner);
+      if (collected) return collected;
+
+      // Strategy 2: Find a single long natural-language string
+      const natural = findLongestNaturalText(inner);
+      if (natural) return natural;
+
+      // Strategy 3: Fallback to raw longest (may include metadata, filtered later by isNaturalLanguage)
+      const raw = findLongestRawText(inner);
+      if (raw) return raw;
     }
     return null;
   }
@@ -398,6 +408,34 @@
     let longest = '';
     for (const item of val) {
       const found = findLongestNaturalText(item);
+      if (found.length > longest.length) longest = found;
+    }
+    return longest;
+  }
+
+  /**
+   * Collect and concatenate text fragments from leaf arrays.
+   * Gemini stores response text as arrays of SHORT string segments (often < 20 chars each).
+   * This function finds arrays whose elements are all short strings (text paragraphs),
+   * concatenates them, and returns the longest natural-language result.
+   */
+  function collectTextFragments(val, depth = 0) {
+    if (depth > 15) return '';
+    if (!Array.isArray(val)) return '';
+
+    // Check if this array is a "text leaf" — all elements are short strings
+    const allStrings = val.length > 0 && val.every(item => typeof item === 'string');
+    if (allStrings) {
+      const joined = val.join('');
+      if (joined.length >= 20 && isNaturalLanguage(joined)) {
+        return joined;
+      }
+    }
+
+    // Recurse into sub-arrays, collecting the longest concatenated result
+    let longest = '';
+    for (const item of val) {
+      const found = collectTextFragments(item, depth + 1);
       if (found.length > longest.length) longest = found;
     }
     return longest;
@@ -571,20 +609,80 @@
     const conversationId = parseResult.conversationId;
     this.addEventListener('load', function () {
       try {
-        if (this.responseText) {
-          const assistantText = extractAssistantResponse(this.responseText);
-          if (assistantText) {
-            console.log('📥 KYT Gemini: Assistant response captured via XHR (' + assistantText.length + ' chars)');
-            console.log('📥 Preview: "' + assistantText.substring(0, 200) + '"');
-            dispatchCapture(assistantText, 'assistant', 'xhr', conversationId);
-          } else {
-            console.warn('⚠️ KYT Gemini: No assistant text extracted from response');
+        const rt = this.responseText;
+        const respType = this.responseType;
+        const status = this.status;
+        console.log('🔍 KYT Gemini: XHR load event — status=' + status +
+                     ', responseType="' + respType + '"' +
+                     ', responseText=' + (rt ? rt.length + ' chars' : 'NULL/EMPTY'));
+
+        if (!rt) {
+          // Try response (blob/arraybuffer) as fallback
+          console.warn('⚠️ KYT Gemini: responseText empty, responseType=' + respType);
+          if (this.response && respType === 'arraybuffer') {
+            try {
+              const decoded = new TextDecoder('utf-8').decode(this.response);
+              console.log('🔍 KYT Gemini: Decoded arraybuffer response: ' + decoded.length + ' chars');
+              const assistantText = extractAssistantResponse(decoded);
+              if (assistantText) {
+                console.log('📥 KYT Gemini: Assistant response captured via XHR arraybuffer (' + assistantText.length + ' chars)');
+                dispatchCapture(assistantText, 'assistant', 'xhr', conversationId);
+              }
+            } catch (decErr) {
+              console.warn('⚠️ KYT Gemini: arraybuffer decode failed:', decErr.message);
+            }
+          }
+          return;
+        }
+
+        // Log first 300 chars for format inspection
+        console.log('🔍 KYT Gemini: Response prefix: "' + rt.substring(0, 300).replace(/\n/g, '\\n') + '"');
+
+        const assistantText = extractAssistantResponse(rt);
+        if (assistantText) {
+          console.log('📥 KYT Gemini: Assistant response captured via XHR (' + assistantText.length + ' chars)');
+          console.log('📥 Preview: "' + assistantText.substring(0, 200) + '"');
+          dispatchCapture(assistantText, 'assistant', 'xhr', conversationId);
+        } else {
+          console.warn('⚠️ KYT Gemini: No assistant text extracted from response');
+          // Dump diagnostic info about frames
+          let cleaned = rt;
+          if (cleaned.startsWith(")]}'")) {
+            const nlIdx = cleaned.indexOf('\n');
+            if (nlIdx >= 0) cleaned = cleaned.substring(nlIdx + 1);
+          }
+          const frames = parseLengthPrefixedFrames(cleaned);
+          console.log('🔍 KYT Gemini: Parsed ' + frames.length + ' frames from ' + rt.length + ' chars');
+          for (let fi = 0; fi < Math.min(frames.length, 5); fi++) {
+            const f = frames[fi];
+            const isArr = Array.isArray(f);
+            const hasWrbFr = isArr && Array.isArray(f[0]) && f.some(e => Array.isArray(e) && e[0] === 'wrb.fr');
+            console.log('🔍   Frame[' + fi + ']: isArray=' + isArr +
+                        ', length=' + (isArr ? f.length : 'N/A') +
+                        ', hasWrbFr=' + hasWrbFr +
+                        ', preview=' + JSON.stringify(f).substring(0, 200));
+          }
+          if (frames.length === 0) {
+            // Show raw content for manual inspection
+            console.log('🔍 KYT Gemini: Raw cleaned (first 500): "' + cleaned.substring(0, 500).replace(/\n/g, '\\n') + '"');
           }
         }
       } catch (e) {
-        console.error('⚠️ KYT Gemini: Response capture error:', e.message);
+        console.error('⚠️ KYT Gemini: Response capture error:', e.message, e.stack);
       }
     }, { once: true });
+
+    // Also listen for readystatechange as diagnostic (streaming responses may have data before load)
+    this.addEventListener('readystatechange', function () {
+      if (this.readyState === 3) { // LOADING — partial data available
+        try {
+          const partial = this.responseText;
+          if (partial && partial.length > 0) {
+            console.log('🔍 KYT Gemini: XHR readyState=3 (LOADING), partial response: ' + partial.length + ' chars');
+          }
+        } catch (_) {} // responseText may throw if responseType !== ''
+      }
+    });
 
     // Context injection: defer send until context resolves
     const xhr = this;

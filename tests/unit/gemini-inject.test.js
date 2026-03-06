@@ -169,8 +169,17 @@ function extractTextFromFrame(frame) {
     try { inner = JSON.parse(innerStr); } catch (_) { continue; }
     if (!Array.isArray(inner)) continue;
 
-    const candidate = findLongestRawText(inner);
-    if (candidate) return candidate;
+    // Strategy 1: Collect and concatenate text fragments from leaf arrays
+    const collected = collectTextFragments(inner);
+    if (collected) return collected;
+
+    // Strategy 2: Find a single long natural-language string
+    const natural = findLongestNaturalText(inner);
+    if (natural) return natural;
+
+    // Strategy 3: Fallback to raw longest
+    const raw = findLongestRawText(inner);
+    if (raw) return raw;
   }
   return null;
 }
@@ -211,6 +220,26 @@ function findLongestNaturalText(val) {
   let longest = '';
   for (const item of val) {
     const found = findLongestNaturalText(item);
+    if (found.length > longest.length) longest = found;
+  }
+  return longest;
+}
+
+function collectTextFragments(val, depth = 0) {
+  if (depth > 15) return '';
+  if (!Array.isArray(val)) return '';
+
+  const allStrings = val.length > 0 && val.every(item => typeof item === 'string');
+  if (allStrings) {
+    const joined = val.join('');
+    if (joined.length >= 20 && isNaturalLanguage(joined)) {
+      return joined;
+    }
+  }
+
+  let longest = '';
+  for (const item of val) {
+    const found = collectTextFragments(item, depth + 1);
     if (found.length > longest.length) longest = found;
   }
   return longest;
@@ -670,6 +699,74 @@ describe('findLongestNaturalText', () => {
     expect(findLongestNaturalText(42)).toBe('');
     expect(findLongestNaturalText(null)).toBe('');
     expect(findLongestNaturalText(true)).toBe('');
+  });
+});
+
+describe('collectTextFragments', () => {
+  it('concatenates short string fragments from a leaf array', () => {
+    // Simulates Gemini's fragmented text storage
+    const data = [null, null, null, null, [
+      [['That is a huge part', ' of what makes him so great', ' as a player']]
+    ]];
+    const result = collectTextFragments(data);
+    expect(result).toBe('That is a huge part of what makes him so great as a player');
+  });
+
+  it('handles single-element arrays with short text', () => {
+    const data = [[['This short text alone would be filtered']]];
+    const result = collectTextFragments(data);
+    expect(result).toBe('This short text alone would be filtered');
+  });
+
+  it('returns longest concatenated fragment across branches', () => {
+    const data = [
+      [['short', ' text']],
+      [['This is a much longer', ' concatenated text', ' that should win', ' the longest contest']]
+    ];
+    const result = collectTextFragments(data);
+    expect(result).toBe('This is a much longer concatenated text that should win the longest contest');
+  });
+
+  it('returns empty for non-array input', () => {
+    expect(collectTextFragments('string')).toBe('');
+    expect(collectTextFragments(42)).toBe('');
+    expect(collectTextFragments(null)).toBe('');
+  });
+
+  it('returns empty when concatenated result is too short', () => {
+    const data = [[['hi', ' yo']]];
+    expect(collectTextFragments(data)).toBe('');
+  });
+
+  it('skips arrays of non-text strings (IDs, numbers)', () => {
+    const data = [[['c_abc123def456', 'r_789012345678']]];
+    expect(collectTextFragments(data)).toBe('');
+  });
+
+  it('respects depth limit', () => {
+    // 16 levels deep should return empty
+    let nested = ['deep enough text to pass the threshold check'];
+    for (let i = 0; i < 17; i++) nested = [nested];
+    expect(collectTextFragments(nested)).toBe('');
+  });
+});
+
+describe('extractTextFromFrame — fragment collection', () => {
+  it('extracts text from wrb.fr frame with fragmented strings', () => {
+    const innerPayload = JSON.stringify([null, null, null, null, [
+      [['That is a huge part', ' of what makes him', ' truly legendary in NFL history']]
+    ]]);
+    const frame = [['wrb.fr', null, innerPayload]];
+    const result = extractTextFromFrame(frame);
+    expect(result).toBe('That is a huge part of what makes him truly legendary in NFL history');
+  });
+
+  it('prefers single long natural text over fragments', () => {
+    const longText = 'This is a complete single string that is long enough to be natural language text';
+    const innerPayload = JSON.stringify([[longText], [['short', ' fragments']]]);
+    const frame = [['wrb.fr', null, innerPayload]];
+    const result = extractTextFromFrame(frame);
+    expect(result).toBe(longText);
   });
 });
 
