@@ -75,6 +75,8 @@ async function getConfig() {
   }
   config.accessToken = session?.access_token || null;
   config.refreshToken = session?.refresh_token || null;
+
+  console.log(`🔑 Sync config: userId=${config.userId || 'NULL'}, auth=${config.accessToken ? 'jwt' : 'anon'}, sessionUser=${session?.user?.id || 'none'}, expires=${session?.expires_at ? new Date(session.expires_at * 1000).toISOString() : 'none'}`);
   return config;
 }
 
@@ -406,6 +408,16 @@ export async function syncMessages(messagesToSync) {
 
     // Get config
     const config = await getConfig();
+
+    // GUARD: Fail fast if no JWT — anon key always triggers RLS violation
+    if (!config.accessToken) {
+      console.error('🔒 Sync blocked: no JWT access token. User must sign in via setup.html');
+      return {
+        success: false,
+        synced: 0,
+        message: 'Not authenticated — sign in required'
+      };
+    }
 
     if (!messagesToSync || messagesToSync.length === 0) {
       return {
