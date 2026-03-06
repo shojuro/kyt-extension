@@ -6,8 +6,6 @@
  */
 
 import { syncToSupabase } from './browser-sync.js';
-import { syncViaEdgeFunction } from './edge-sync.js';
-import { getRoutingMode } from './auth-config.js';
 
 // ===== DEBOUNCED SYNC SCHEDULING =====
 // Replaces per-message immediate sync with batched debounce
@@ -54,66 +52,22 @@ export function scheduleDebouncedSync() {
 
 /**
  * Execute the actual sync (called by debounce/max-wait timers).
- * Uses edge functions for authenticated users, legacy direct API otherwise.
+ * Uses browser-sync.js which syncs to both messages + chat_turns tables.
  */
 export async function executeDebouncedSync() {
   try {
     console.log('🔄 Debounced sync triggered');
-    const mode = await getRoutingMode();
 
-    if (mode === 'edge') {
-      // Check rate limit backoff before attempting edge sync
-      const rlResult = await chrome.storage.local.get(['kyt_sync_rate_limited']);
-      const rl = rlResult.kyt_sync_rate_limited;
-      if (rl?.retryAfter && Date.now() < rl.retryAfter) {
-        const waitSec = Math.ceil((rl.retryAfter - Date.now()) / 1000);
-        console.log(`⏳ Edge sync rate-limited — retrying in ${waitSec}s`);
-        setTimeout(() => executeDebouncedSync(), rl.retryAfter - Date.now());
-        return;
-      }
-      // Clear stale rate limit flag
-      if (rl) {
-        chrome.storage.local.remove('kyt_sync_rate_limited');
-      }
-
-      // Edge function path: load messages and sync via server
-      // Use timestamp-based filtering (consistent with browser-sync.js getMessagesToSync)
-      const stored = await chrome.storage.local.get(['captured_messages', 'last_successful_sync_time']);
-      const messages = stored.captured_messages || [];
-      const now = Date.now();
-      const lastSyncTime = Math.min(stored.last_successful_sync_time || 0, now);
-
-      // Filter to messages captured after last successful sync
-      const unsynced = messages.filter((m) => {
-        if (!m.messageId) return false;
-        const messageTime = m.capturedAt ?? m.timestamp ?? 0;
-        return messageTime > lastSyncTime;
-      });
-      if (unsynced.length === 0) {
-        console.log('✅ Debounced sync: nothing to sync (all messages already synced)');
-        return;
-      }
-
-      console.log(`📦 Edge sync: ${unsynced.length} unsynced messages (since ${new Date(lastSyncTime).toISOString()})`);
-      const syncResult = await syncViaEdgeFunction(unsynced);
-      if (syncResult.success || syncResult.synced > 0) {
-        await chrome.storage.local.set({
-          last_successful_sync_time: Date.now(),
-        });
-        console.log(`✅ Debounced sync (edge): ${syncResult.synced} synced, ${syncResult.duplicates} dupes`);
-        // Clear auth failure flag on successful sync
-        chrome.storage.local.remove('kyt_sync_auth_failed');
-      } else {
-        console.warn('⚠️ Debounced sync (edge) failed:', syncResult.errors, 'errors');
-      }
+    // Always use legacy path (browser-sync.js) — it syncs to BOTH messages + chat_turns
+    // and handles its own timestamp-based dedup via getMessagesToSync().
+    // Edge path (save_chat_turn_batch) is disabled: it only syncs chat_turns and
+    // frequently times out due to server-side AI processing exceeding 30s.
+    const syncResult = await syncToSupabase();
+    if (syncResult.success) {
+      console.log(`✅ Debounced sync: ${syncResult.synced} messages synced (embeddings: ${syncResult.embeddingsGenerated ?? 'n/a'})`);
+      chrome.storage.local.remove('kyt_sync_auth_failed');
     } else {
-      // Legacy path
-      const syncResult = await syncToSupabase();
-      if (syncResult.success) {
-        console.log(`✅ Debounced sync: ${syncResult.synced} messages synced (embeddings: ${syncResult.embeddingsGenerated ?? 'n/a'})`);
-      } else {
-        console.warn('⚠️ Debounced sync failed:', syncResult.error);
-      }
+      console.warn('⚠️ Debounced sync failed:', syncResult.error || syncResult.message);
     }
   } catch (err) {
     console.warn('⚠️ Debounced sync error:', err.message);
