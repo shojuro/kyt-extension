@@ -44,6 +44,12 @@ import { getMemoryMode, updateBadge } from './src/memory-mode.js';
 
 self.HistoryImporter = HistoryImporter; // Expose for debugging
 
+// ===== GLOBAL ERROR HANDLER =====
+self.addEventListener('unhandledrejection', (event) => {
+  console.error('[KYT] Unhandled promise rejection:', event.reason);
+  totalErrors++;
+});
+
 let activeImporter = null;
 // Ref object so message-handlers can read/write activeImporter
 const activeImporterRef = { get current() { return activeImporter; }, set current(v) { activeImporter = v; } };
@@ -516,9 +522,34 @@ registerMessageHandler({
 
 // ===== LIFECYCLE: onSuspend =====
 chrome.runtime.onSuspend.addListener(() => {
-  console.log('⏸️ Service worker suspending - clearing config cache');
+  console.log('Service worker suspending');
   clearConfigCache();
+  // Persist volatile diagnostic state for KYT_DEBUG across SW restarts
+  chrome.storage.local.set({
+    kyt_last_suspend: Date.now(),
+    kyt_api_metrics: apiMetrics,
+  });
 });
+
+// ===== LIFECYCLE: onUpdateAvailable =====
+// Defer update until current operations complete (sync, backfill, import)
+let kytUpdatePending = false;
+
+chrome.runtime.onUpdateAvailable.addListener((details) => {
+  console.log(`[KYT] Update available: v${details.version}`);
+  kytUpdatePending = true;
+  maybeApplyUpdate();
+});
+
+function maybeApplyUpdate() {
+  if (!kytUpdatePending) return;
+  if (activeImporter?.importing) {
+    console.log('[KYT] Update deferred — import in progress');
+    return;
+  }
+  console.log('[KYT] Applying deferred update now');
+  chrome.runtime.reload();
+}
 
 // ===== LIFECYCLE: onInstalled (sync existing) =====
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -640,15 +671,21 @@ chrome.runtime.onStartup.addListener(async () => {
     console.log(`Restored lastSaveTime from storage: ${Math.floor((Date.now() - lastSaveTime) / 1000)}s ago`);
   }
 
+  // Clear stale locks from previous SW lifecycle (unconditional — even without auth config)
+  const hadPendingSync = result.kyt_sync_pending;
+  if (hadPendingSync) {
+    console.warn('Clearing stale sync lock from previous lifecycle');
+    await chrome.storage.local.set({ kyt_sync_pending: false });
+  }
+
   if (!hasAuth && !hasConfig) {
     console.warn('⚠️ No auth session or API config — sync will fail until user signs in or configures keys');
   } else {
     console.log(`✅ Config found (mode: ${hasAuth ? 'authenticated' : 'legacy'})`);
 
     // Recover pending sync from a previous service worker that was terminated mid-debounce
-    if (result.kyt_sync_pending) {
+    if (hadPendingSync) {
       console.log('🔄 Recovering pending sync from previous session');
-      await chrome.storage.local.set({ kyt_sync_pending: false });
       try {
         await executeDebouncedSync();
       } catch (err) {
@@ -965,6 +1002,26 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
           console.warn('⚠️ WARNING: No messages saved in 10+ minutes. User inactive or API broken?');
         }
       }
+
+      // Clean up orphan context injection keys (Gemini async pattern)
+      try {
+        const allKeys = await chrome.storage.local.get(null);
+        const orphanCtxKeys = Object.keys(allKeys).filter(
+          k => k.startsWith('kyt_ctx_') &&
+               allKeys[k]?.timestamp &&
+               (Date.now() - allKeys[k].timestamp > 5 * 60 * 1000)
+        );
+        if (orphanCtxKeys.length > 0) {
+          await chrome.storage.local.remove(orphanCtxKeys);
+          console.log(`Cleaned ${orphanCtxKeys.length} orphan context keys`);
+        }
+      } catch (e) {
+        console.warn('Context key cleanup failed:', e.message);
+      }
+
+      // Apply deferred extension update if pending
+      maybeApplyUpdate();
+
       break;
     }
 

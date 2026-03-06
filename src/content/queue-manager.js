@@ -210,6 +210,14 @@ export class MessageQueueManager {
 
             // Start recovery interval to retry pending messages when context is restored
             this.startRecoveryInterval();
+
+            // Flush pending messages when user navigates away or switches tabs
+            document.addEventListener('visibilitychange', () => {
+              if (document.visibilityState === 'hidden' && this.memoryQueue.size > 0) {
+                console.log(`[KYT Queue] Page hidden — flushing ${this.memoryQueue.size} pending messages`);
+                this.processQueue();
+              }
+            });
         } catch (error) {
             console.error('❌ [KYT Queue] Initialization failed:', error);
         }
