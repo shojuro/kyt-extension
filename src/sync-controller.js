@@ -62,6 +62,20 @@ export async function executeDebouncedSync() {
     const mode = await getRoutingMode();
 
     if (mode === 'edge') {
+      // Check rate limit backoff before attempting edge sync
+      const rlResult = await chrome.storage.local.get(['kyt_sync_rate_limited']);
+      const rl = rlResult.kyt_sync_rate_limited;
+      if (rl?.retryAfter && Date.now() < rl.retryAfter) {
+        const waitSec = Math.ceil((rl.retryAfter - Date.now()) / 1000);
+        console.log(`⏳ Edge sync rate-limited — retrying in ${waitSec}s`);
+        setTimeout(() => executeDebouncedSync(), rl.retryAfter - Date.now());
+        return;
+      }
+      // Clear stale rate limit flag
+      if (rl) {
+        chrome.storage.local.remove('kyt_sync_rate_limited');
+      }
+
       // Edge function path: load messages and sync via server
       const stored = await chrome.storage.local.get(['captured_messages', 'last_sync_status']);
       const messages = stored.captured_messages || [];
@@ -86,6 +100,8 @@ export async function executeDebouncedSync() {
           },
         });
         console.log(`✅ Debounced sync (edge): ${syncResult.synced} synced, ${syncResult.duplicates} dupes`);
+        // Clear auth failure flag on successful sync
+        chrome.storage.local.remove('kyt_sync_auth_failed');
       } else {
         console.warn('⚠️ Debounced sync (edge) failed:', syncResult.errors, 'errors');
       }
@@ -100,6 +116,12 @@ export async function executeDebouncedSync() {
     }
   } catch (err) {
     console.warn('⚠️ Debounced sync error:', err.message);
+    // Surface auth failures so UI/popup can detect and display the issue
+    if (err.message?.includes('Not authenticated') || err.message?.includes('No authenticated user')) {
+      chrome.storage.local.set({
+        kyt_sync_auth_failed: { timestamp: Date.now(), error: err.message },
+      });
+    }
   } finally {
     chrome.storage.local.set({ kyt_sync_pending: false });
   }

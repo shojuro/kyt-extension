@@ -12,6 +12,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../supabase-config.js';
 import { fetchWithTimeout } from '../utils/fetch.js';
 
 const AUTH_SESSION_KEY = 'auth_session';
+const AUTH_EXPIRED_KEY = 'auth_expired';
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000; // Refresh when <5 min left
 
 // ─── Helpers ─────────────────────────────────────────────────
@@ -49,7 +50,8 @@ async function storeSession(data) {
   };
   await chrome.storage.local.set({
     [AUTH_SESSION_KEY]: session,
-    user_id: data.user?.id,  // Persist independently — survives session expiry
+    [AUTH_EXPIRED_KEY]: false,  // Clear expired flag on fresh session
+    user_id: data.user?.id,    // Persist independently — survives session expiry
   });
   return session;
 }
@@ -120,7 +122,28 @@ export async function signIn(email, password) {
  * call makes sign-out instant + offline-safe.
  */
 export async function signOut() {
-  await chrome.storage.local.remove(AUTH_SESSION_KEY);
+  await chrome.storage.local.remove([AUTH_SESSION_KEY, AUTH_EXPIRED_KEY]);
+}
+
+/**
+ * Get auth status including expiry state.
+ * @returns {Promise<{authenticated: boolean, expired: boolean, userId: string|null}>}
+ */
+export async function getAuthStatus() {
+  const result = await chrome.storage.local.get([AUTH_SESSION_KEY, AUTH_EXPIRED_KEY]);
+  const session = result[AUTH_SESSION_KEY];
+  const expired = result[AUTH_EXPIRED_KEY] === true;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  if (session?.access_token && session.expires_at > nowSec) {
+    return { authenticated: true, expired: false, userId: session.user?.id || null };
+  }
+
+  return {
+    authenticated: false,
+    expired: expired || (session != null && session.expires_at <= nowSec),
+    userId: session?.user?.id || null,
+  };
 }
 
 /**
@@ -143,9 +166,11 @@ export async function getSession() {
       return await refreshSession(session.refresh_token);
     } catch (err) {
       console.warn('Auto-refresh failed:', err.message);
-      // If refresh fails and token is truly expired, clear session
+      // If refresh fails and token is truly expired, mark as expired
+      // but keep session data (user.id, email) for display purposes
       if (session.expires_at <= nowSec) {
-        await signOut();
+        await chrome.storage.local.set({ [AUTH_EXPIRED_KEY]: true });
+        console.warn('Auth session expired — set auth_expired flag (session data preserved)');
         return null;
       }
       // Token not yet expired — return as-is, caller can try again later
@@ -211,4 +236,4 @@ export async function isAuthenticated() {
   return session.expires_at > Math.floor(Date.now() / 1000);
 }
 
-export { AUTH_SESSION_KEY };
+export { AUTH_SESSION_KEY, AUTH_EXPIRED_KEY };
