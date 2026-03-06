@@ -77,27 +77,28 @@ export async function executeDebouncedSync() {
       }
 
       // Edge function path: load messages and sync via server
-      const stored = await chrome.storage.local.get(['captured_messages', 'last_sync_status']);
+      // Use timestamp-based filtering (consistent with browser-sync.js getMessagesToSync)
+      const stored = await chrome.storage.local.get(['captured_messages', 'last_successful_sync_time']);
       const messages = stored.captured_messages || [];
-      const syncStatus = stored.last_sync_status || { syncedMessageIds: [] };
-      const syncedSet = new Set(syncStatus.syncedMessageIds || []);
+      const now = Date.now();
+      const lastSyncTime = Math.min(stored.last_successful_sync_time || 0, now);
 
-      // Filter to unsynced messages
-      const unsynced = messages.filter((m) => !syncedSet.has(m.messageId));
+      // Filter to messages captured after last successful sync
+      const unsynced = messages.filter((m) => {
+        if (!m.messageId) return false;
+        const messageTime = m.capturedAt ?? m.timestamp ?? 0;
+        return messageTime > lastSyncTime;
+      });
       if (unsynced.length === 0) {
         console.log('✅ Debounced sync: nothing to sync (all messages already synced)');
         return;
       }
 
+      console.log(`📦 Edge sync: ${unsynced.length} unsynced messages (since ${new Date(lastSyncTime).toISOString()})`);
       const syncResult = await syncViaEdgeFunction(unsynced);
       if (syncResult.success || syncResult.synced > 0) {
-        // Mark synced
-        const newSyncedIds = [...syncedSet, ...unsynced.map((m) => m.messageId)].slice(-100);
         await chrome.storage.local.set({
-          last_sync_status: {
-            syncedMessageIds: newSyncedIds,
-            lastSyncTime: Date.now(),
-          },
+          last_successful_sync_time: Date.now(),
         });
         console.log(`✅ Debounced sync (edge): ${syncResult.synced} synced, ${syncResult.duplicates} dupes`);
         // Clear auth failure flag on successful sync
