@@ -92,7 +92,7 @@ export async function executeDebouncedSync() {
       const syncResult = await syncViaEdgeFunction(unsynced);
       if (syncResult.success || syncResult.synced > 0) {
         // Mark synced
-        const newSyncedIds = [...syncedSet, ...unsynced.map((m) => m.messageId)];
+        const newSyncedIds = [...syncedSet, ...unsynced.map((m) => m.messageId)].slice(-100);
         await chrome.storage.local.set({
           last_sync_status: {
             syncedMessageIds: newSyncedIds,
