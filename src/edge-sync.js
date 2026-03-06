@@ -71,6 +71,16 @@ export async function syncViaEdgeFunction(messages, options = {}) {
     } catch (err) {
       console.error('Edge sync batch error:', err.message);
       totalErrors += batch.length;
+
+      // Detect rate limiting and signal backoff
+      if (err.message?.includes('429') || err.message?.includes('rate limit')) {
+        const retryAfter = Date.now() + 60_000; // 60s default backoff
+        await chrome.storage.local.set({
+          kyt_sync_rate_limited: { retryAfter, setAt: Date.now() },
+        });
+        console.warn(`⚠️ Rate limited — backing off until ${new Date(retryAfter).toISOString()}`);
+        break; // Don't send remaining batches
+      }
     }
   }
 
