@@ -5,7 +5,7 @@
  * IMPORTANT (MV3): All imports must be static. No dynamic import().
  */
 
-import { AUTH_SESSION_KEY } from './auth/auth-service.js';
+import { AUTH_SESSION_KEY, getSession } from './auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 
 // ===== CONFIG CACHE =====
@@ -65,6 +65,15 @@ export async function getRoutingMode() {
   const session = result[AUTH_SESSION_KEY];
   if (session?.access_token && session.expires_at > Math.floor(Date.now() / 1000)) {
     return 'edge';
+  }
+  // Token expired — try refresh before falling back to legacy
+  if (session?.refresh_token) {
+    try {
+      const refreshed = await getSession();
+      if (refreshed?.access_token) return 'edge';
+    } catch (e) {
+      console.warn('Token refresh failed in getRoutingMode:', e.message);
+    }
   }
   if (result.api_config?.supabaseUrl && result.api_config?.supabaseKey) {
     return 'legacy';
