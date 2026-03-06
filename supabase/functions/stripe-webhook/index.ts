@@ -195,20 +195,39 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
     return
   }
 
-  // Mark subscription as canceled
-  const { error } = await supabase.from('stripe_subscriptions').update({
-    status: 'canceled',
-    canceled_at: new Date().toISOString(),
-  }).eq('stripe_subscription_id', subscription.id)
+  const periodEnd = subscription.current_period_end
+    ? new Date(subscription.current_period_end * 1000)
+    : new Date()
 
-  if (error) {
-    console.error('Error marking subscription canceled:', error)
-    throw error
+  if (periodEnd > new Date()) {
+    // Grace period — mark as canceled but keep tier until period ends
+    const { error } = await supabase.from('stripe_subscriptions').update({
+      status: 'canceled',
+      canceled_at: new Date().toISOString(),
+      // tier stays current until period_end
+    }).eq('stripe_subscription_id', subscription.id)
+
+    if (error) {
+      console.error('Error marking subscription canceled:', error)
+      throw error
+    }
+
+    console.log(`Subscription canceled but tier kept until ${periodEnd.toISOString()} for user ${subRecord.user_id}`)
+  } else {
+    // Period ended — downgrade now
+    const { error } = await supabase.from('stripe_subscriptions').update({
+      status: 'canceled',
+      canceled_at: new Date().toISOString(),
+    }).eq('stripe_subscription_id', subscription.id)
+
+    if (error) {
+      console.error('Error marking subscription canceled:', error)
+      throw error
+    }
+
+    await supabase.from('users').update({ tier: 'free' }).eq('id', subRecord.user_id)
+    console.log(`User ${subRecord.user_id} downgraded to free (subscription period ended)`)
   }
-
-  // Downgrade user to free tier
-  await supabase.from('users').update({ tier: 'free' }).eq('id', subRecord.user_id)
-  console.log(`User ${subRecord.user_id} downgraded to free (subscription canceled)`)
 }
 
 async function handleInvoicePaid(invoice: Stripe.Invoice) {
