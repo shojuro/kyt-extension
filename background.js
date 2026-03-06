@@ -760,6 +760,17 @@ chrome.runtime.onInstalled.addListener((details) => {
   getMemoryMode().then(updateBadge);
 
   if (details.reason === 'install') {
+    // Generate persistent UUID4 in chrome.storage.sync (survives reinstall on same browser profile)
+    chrome.storage.sync.get('kyt_device_id', (result) => {
+      if (!result.kyt_device_id) {
+        const deviceId = crypto.randomUUID();
+        chrome.storage.sync.set({ kyt_device_id: deviceId });
+        console.log('🆔 KYT: Generated persistent device ID:', deviceId.substring(0, 8) + '...');
+      } else {
+        console.log('🆔 KYT: Existing device ID found:', result.kyt_device_id.substring(0, 8) + '...');
+      }
+    });
+
     chrome.storage.local.set({
       captured_messages: [],
       error_log: [],
