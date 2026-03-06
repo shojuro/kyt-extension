@@ -84,6 +84,9 @@
       "all_frames": false
     }
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https://*.supabase.co https://router.huggingface.co https://api.jina.ai"
+  },
   "web_accessible_resources": [
     {
       "resources": [
