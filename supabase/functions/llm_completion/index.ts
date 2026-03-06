@@ -28,14 +28,13 @@ import { AnthropicClient } from "../_shared/anthropic-client.ts";
 import { Logger, CostMonitor } from "../_shared/utils.ts";
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
 import { securityHeaders } from "../_shared/headers.ts";
+import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     ...securityHeaders(),
 };
-
-const RATE_LIMIT_MAX_LLM = 10; // 10 LLM calls/min per user (costs real money)
 
 // ── OpenAI completion handler ──────────────────────────────────────────
 async function callOpenAI(
@@ -121,9 +120,11 @@ serve(async (req) => {
             );
         }
 
-        // ── Rate limit ──
-        if (!checkRateLimit('llm_completion', user.id, RATE_LIMIT_MAX_LLM)) {
-            Logger.warn("LLM rate limited", { requestId, userId: user.id });
+        // ── Rate limit (tier-aware) ──
+        const tier = await getUserTier(user.id);
+        const limits = getTierLimits(tier);
+        if (!checkRateLimit('llm_completion', user.id, limits.llmCallsPerMin)) {
+            Logger.warn("LLM rate limited", { requestId, userId: user.id, tier });
             return rateLimitResponse(corsHeaders);
         }
 

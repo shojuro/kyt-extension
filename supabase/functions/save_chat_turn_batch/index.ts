@@ -6,6 +6,7 @@ import { classifyMemory } from '../_shared/memory-classifier.ts';
 import { generateChunkContext } from '../_shared/context-generator.ts';
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
+import { getUserTier, getTierLimits } from '../_shared/tier-check.ts';
 
 const MAX_BATCH_SIZE = 50;
 
@@ -23,7 +24,7 @@ const corsHeaders = {
     ...securityHeaders(),
 };
 
-const RATE_LIMIT_MAX_SAVE = 20; // 20 batch saves/min per user
+// Default rate limit (overridden by tier-aware check when user_id available)
 
 serve(async (req) => {
     // Handle CORS preflight requests
@@ -75,7 +76,9 @@ serve(async (req) => {
 
         // Rate limit by user_id from first turn
         const rateLimitKey = turns[0]?.user_id || req.headers.get('x-forwarded-for') || 'anonymous';
-        if (!checkRateLimit('save_chat_turn_batch', rateLimitKey, RATE_LIMIT_MAX_SAVE)) {
+        const tier = await getUserTier(rateLimitKey);
+        const limits = getTierLimits(tier);
+        if (!checkRateLimit('save_chat_turn_batch', rateLimitKey, limits.savesPerMin)) {
             return rateLimitResponse(corsHeaders);
         }
 

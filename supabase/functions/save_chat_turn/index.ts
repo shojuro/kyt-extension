@@ -25,6 +25,7 @@ import { extractEntities, saveEntitiesWithMentions, savePreferences } from '../_
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
+import { getUserTier, getTierLimits } from '../_shared/tier-check.ts';
 
 // Platform normalization (inline — Deno edge functions can't import from client src/)
 const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code', 'gemini']);
@@ -41,7 +42,7 @@ const corsHeaders = {
   ...securityHeaders(),
 };
 
-const RATE_LIMIT_MAX_SAVE = 60; // 60 single saves/min per user
+// Rate limit uses tier-aware savesPerMin from tier-check.ts
 
 // Initialize Supabase client at module level for connection pooling
 // Service role key bypasses RLS - filtering is done in queries
@@ -109,9 +110,11 @@ serve(async (req) => {
       }
     }
 
-    // 1b. Rate limit by user or IP
+    // 1b. Rate limit by user or IP (tier-aware)
     const rateLimitKey = requestData.user_id || req.headers.get('x-forwarded-for') || 'anonymous';
-    if (!checkRateLimit('save_chat_turn', rateLimitKey, RATE_LIMIT_MAX_SAVE)) {
+    const tier = await getUserTier(rateLimitKey);
+    const limits = getTierLimits(tier);
+    if (!checkRateLimit('save_chat_turn', rateLimitKey, limits.savesPerMin)) {
       return rateLimitResponse(corsHeaders);
     }
 

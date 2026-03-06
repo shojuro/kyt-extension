@@ -19,6 +19,7 @@ import { AnthropicClient } from "../_shared/anthropic-client.ts";
 import { Logger } from "../_shared/utils.ts";
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
 import { securityHeaders } from "../_shared/headers.ts";
+import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -26,7 +27,7 @@ const corsHeaders = {
     ...securityHeaders(),
 };
 
-const RATE_LIMIT_MAX_CLASSIFY = 60; // 60 classifications/min per user
+// Rate limit uses tier-aware llmCallsPerMin from tier-check.ts
 
 const SYSTEM_PROMPT = `Classify this message as MEMORY_QUERY or NO_RETRIEVAL.
 MEMORY_QUERY: User is asking about, referencing, or wanting to recall something from past conversations.
@@ -55,9 +56,11 @@ serve(async (req) => {
             );
         }
 
-        // ── Rate limit ──
-        if (!checkRateLimit('classify_intent', user.id, RATE_LIMIT_MAX_CLASSIFY)) {
-            Logger.warn("Classify rate limited", { requestId, userId: user.id });
+        // ── Rate limit (tier-aware) ──
+        const tier = await getUserTier(user.id);
+        const limits = getTierLimits(tier);
+        if (!checkRateLimit('classify_intent', user.id, limits.llmCallsPerMin)) {
+            Logger.warn("Classify rate limited", { requestId, userId: user.id, tier });
             return rateLimitResponse(corsHeaders);
         }
 

@@ -15,14 +15,13 @@ import { getRelevantMemories, getRecentByPlatform, SearchOptions } from "../_sha
 import { Logger } from "../_shared/utils.ts";
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
 import { securityHeaders } from "../_shared/headers.ts";
+import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     ...securityHeaders(),
 };
-
-const RATE_LIMIT_MAX_SEARCH = 30; // 30 searches/min per user
 
 serve(async (req) => {
     // Handle CORS preflight requests
@@ -76,9 +75,11 @@ serve(async (req) => {
             });
         }
 
-        // Rate limit per userId
-        if (!checkRateLimit('search_memories', userId, RATE_LIMIT_MAX_SEARCH)) {
-            Logger.warn("Rate limited", { requestId, userId });
+        // Rate limit per userId (tier-aware)
+        const tier = await getUserTier(userId);
+        const limits = getTierLimits(tier);
+        if (!checkRateLimit('search_memories', userId, limits.searchesPerMin)) {
+            Logger.warn("Rate limited", { requestId, userId, tier });
             return rateLimitResponse(corsHeaders);
         }
 

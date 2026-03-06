@@ -17,6 +17,7 @@ import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
 import { classifyMemory } from '../_shared/memory-classifier.ts';
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
+import { getUserTier, getTierLimits } from '../_shared/tier-check.ts';
 
 // =============================================================================
 // Constants
@@ -38,7 +39,7 @@ const corsHeaders = {
   ...securityHeaders(),
 };
 
-const RATE_LIMIT_MAX_IMPORT = 5; // 5 imports/min per user (bulk operation)
+// Rate limit uses tier-aware importsPerDay from tier-check.ts (applied per-min for simplicity)
 
 // =============================================================================
 // Helper Functions
@@ -682,8 +683,10 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Rate limit imports (bulk operation)
-    if (!checkRateLimit('import_conversation_batch', user_id, RATE_LIMIT_MAX_IMPORT)) {
+    // Rate limit imports (tier-aware, bulk operation)
+    const tier = await getUserTier(user_id);
+    const limits = getTierLimits(tier);
+    if (!checkRateLimit('import_conversation_batch', user_id, limits.importsPerDay)) {
       return rateLimitResponse(corsHeaders);
     }
 
