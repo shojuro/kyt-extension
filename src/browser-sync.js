@@ -63,11 +63,15 @@ async function getConfig() {
     }
   }
 
-  // Resolve userId: prefer auth session > stored user_id > config userId
-  if (!config.userId) {
-    const authUserId = session?.user?.id;
-    const storedUserId = result.user_id;
-    config.userId = authUserId || storedUserId || null;
+  // IMPORTANT: When a valid JWT session exists, ALWAYS use its user_id.
+  // auth.uid() in RLS resolves from the JWT, so config.userId must match.
+  // Legacy api_config.userId may differ (e.g. old test user) — override it.
+  const authUserId = session?.user?.id;
+  const storedUserId = result.user_id;
+  if (session?.access_token && session.expires_at > nowSec && authUserId) {
+    config.userId = authUserId;
+  } else {
+    config.userId = config.userId || authUserId || storedUserId || null;
   }
   config.accessToken = session?.access_token || null;
   config.refreshToken = session?.refresh_token || null;

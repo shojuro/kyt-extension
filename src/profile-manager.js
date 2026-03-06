@@ -16,17 +16,22 @@ const ACTIVE_PROFILE_KEY = 'kyt_active_profile_id';
  * @returns {Promise<string|null>}
  */
 export async function getActiveProfileId() {
-  // Check cache first
-  const cached = await chrome.storage.local.get([ACTIVE_PROFILE_KEY]);
-  if (cached[ACTIVE_PROFILE_KEY]) {
-    return cached[ACTIVE_PROFILE_KEY];
+  const result = await chrome.storage.local.get([ACTIVE_PROFILE_KEY, 'auth_session', 'user_id']);
+  const cached = result[ACTIVE_PROFILE_KEY];
+  const sessionUserId = result.auth_session?.user?.id;
+
+  // If a JWT session exists, its user_id is authoritative (must match auth.uid() for RLS).
+  // Invalidate cache if it differs (e.g. user switched accounts).
+  if (sessionUserId && cached && cached !== sessionUserId) {
+    await chrome.storage.local.set({ [ACTIVE_PROFILE_KEY]: sessionUserId });
+    return sessionUserId;
   }
 
-  // Fall back to userId from auth session or stored user_id
-  const result = await chrome.storage.local.get(['auth_session', 'user_id']);
-  const userId = result.auth_session?.user?.id || result.user_id || null;
+  if (cached) return cached;
 
-  // Cache it
+  // Fall back to userId from auth session or stored user_id
+  const userId = sessionUserId || result.user_id || null;
+
   if (userId) {
     await chrome.storage.local.set({ [ACTIVE_PROFILE_KEY]: userId });
   }
