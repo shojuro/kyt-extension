@@ -13,31 +13,17 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
 import { Logger } from "../_shared/utils.ts";
+import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
+import { securityHeaders } from "../_shared/headers.ts";
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    ...securityHeaders(),
 };
 
 const MAX_BATCH = 50;
-
-// Simple in-memory sliding window rate limiter (per edge function instance)
-const rateLimitMap = new Map<string, number[]>();
-const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 60;
-
-function checkRateLimit(key: string): boolean {
-    const now = Date.now();
-    const timestamps = rateLimitMap.get(key) || [];
-    const recent = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
-    if (recent.length >= RATE_LIMIT_MAX) {
-        rateLimitMap.set(key, recent);
-        return false;
-    }
-    recent.push(now);
-    rateLimitMap.set(key, recent);
-    return true;
-}
 
 serve(async (req) => {
     if (req.method === "OPTIONS") {
@@ -65,12 +51,9 @@ serve(async (req) => {
 
         // Rate limit by userId or IP
         const rateLimitKey = userId || req.headers.get("x-forwarded-for") || "anonymous";
-        if (!checkRateLimit(rateLimitKey)) {
+        if (!checkRateLimit('generate_embeddings', rateLimitKey, RATE_LIMIT_MAX)) {
             Logger.warn("Rate limited", { requestId, key: rateLimitKey });
-            return new Response(JSON.stringify({ error: "Rate limited (60/min)" }), {
-                status: 429,
-                headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
+            return rateLimitResponse(corsHeaders);
         }
 
         const hfKey = Deno.env.get("HUGGINGFACE_API_KEY");

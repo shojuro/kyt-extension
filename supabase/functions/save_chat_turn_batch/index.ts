@@ -4,6 +4,8 @@ import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
 import { extractEntities, saveEntitiesWithMentions, savePreferences } from '../_shared/entity-extractor.ts';
 import { classifyMemory } from '../_shared/memory-classifier.ts';
 import { generateChunkContext } from '../_shared/context-generator.ts';
+import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
+import { securityHeaders } from '../_shared/headers.ts';
 
 const MAX_BATCH_SIZE = 50;
 
@@ -18,25 +20,10 @@ function normalizePlatform(p: string | undefined): Platform {
 const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    ...securityHeaders(),
 };
 
-// In-memory sliding window rate limiter
-const rateLimitMap = new Map<string, number[]>();
-const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_SAVE = 20; // 20 batch saves/min per user
-
-function checkRateLimit(key: string, max: number): boolean {
-    const now = Date.now();
-    const timestamps = rateLimitMap.get(key) || [];
-    const recent = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
-    if (recent.length >= max) {
-        rateLimitMap.set(key, recent);
-        return false;
-    }
-    recent.push(now);
-    rateLimitMap.set(key, recent);
-    return true;
-}
 
 serve(async (req) => {
     // Handle CORS preflight requests
@@ -88,11 +75,8 @@ serve(async (req) => {
 
         // Rate limit by user_id from first turn
         const rateLimitKey = turns[0]?.user_id || req.headers.get('x-forwarded-for') || 'anonymous';
-        if (!checkRateLimit(rateLimitKey, RATE_LIMIT_MAX_SAVE)) {
-            return new Response(JSON.stringify({ error: 'Rate limited (20/min)' }), {
-                status: 429,
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-            });
+        if (!checkRateLimit('save_chat_turn_batch', rateLimitKey, RATE_LIMIT_MAX_SAVE)) {
+            return rateLimitResponse(corsHeaders);
         }
 
         // Question detection heuristic — duplicated from background.js INTERROGATIVE_RE
