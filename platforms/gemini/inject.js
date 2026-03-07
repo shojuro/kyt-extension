@@ -423,10 +423,17 @@
     if (depth > 15) return '';
     if (!Array.isArray(val)) return '';
 
-    // Check if this array is a "text leaf" — all elements are short strings
+    // Check if this array is a "text leaf" — all elements are strings
     const allStrings = val.length > 0 && val.every(item => typeof item === 'string');
     if (allStrings) {
+      // Quality gate: at least half the fragments must look like words (contain spaces)
+      // This filters out arrays of URLs, IDs, or single tokens that happen to concatenate
+      const wordyFragments = val.filter(s => /\s/.test(s) || (s.length > 2 && /^[a-zA-Z]/.test(s) && !/^https?:\/\//.test(s)));
+      if (wordyFragments.length < val.length * 0.5) return '';
+
       const joined = val.join('');
+      // Reject if result contains infrastructure URLs (gstatic, googleapis = Google UI metadata)
+      if (/https?:\/\/(www\.)?(gstatic|googleapis|google)\.\w+/.test(joined)) return '';
       if (joined.length >= 20 && isNaturalLanguage(joined)) {
         return joined;
       }

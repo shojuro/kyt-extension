@@ -231,7 +231,11 @@ function collectTextFragments(val, depth = 0) {
 
   const allStrings = val.length > 0 && val.every(item => typeof item === 'string');
   if (allStrings) {
+    const wordyFragments = val.filter(s => /\s/.test(s) || (s.length > 2 && /^[a-zA-Z]/.test(s) && !/^https?:\/\//.test(s)));
+    if (wordyFragments.length < val.length * 0.5) return '';
+
     const joined = val.join('');
+    if (/https?:\/\/(www\.)?(gstatic|googleapis|google)\.\w+/.test(joined)) return '';
     if (joined.length >= 20 && isNaturalLanguage(joined)) {
       return joined;
     }
@@ -740,6 +744,16 @@ describe('collectTextFragments', () => {
 
   it('skips arrays of non-text strings (IDs, numbers)', () => {
     const data = [[['c_abc123def456', 'r_789012345678']]];
+    expect(collectTextFragments(data)).toBe('');
+  });
+
+  it('rejects arrays containing Google infrastructure URLs', () => {
+    const data = [[['Personalization in progress', 'https://www.gstatic.com/some/resource.png']]];
+    expect(collectTextFragments(data)).toBe('');
+  });
+
+  it('rejects arrays where most fragments are URLs', () => {
+    const data = [[['https://example.com/foo', 'https://example.com/bar', 'click here']]];
     expect(collectTextFragments(data)).toBe('');
   });
 
