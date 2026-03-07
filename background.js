@@ -1286,6 +1286,17 @@ globalThis.KYT_DEBUG = {
     console.log(`✅ Re-included conversation ${conversationId}: ${d1.length} chat_turns, ${d2.length} messages`);
     return { chat_turns: d1.length, messages: d2.length };
   },
+  forceSyncAll: async () => {
+    // Reset last_successful_sync_time to 0 so ALL local messages become sync candidates.
+    // The DB-side dedup (queryExistingIds) prevents actual duplicates.
+    const before = await chrome.storage.local.get('last_successful_sync_time');
+    await chrome.storage.local.set({ last_successful_sync_time: 0 });
+    console.log(`🔄 Reset last_successful_sync_time from ${before.last_successful_sync_time} to 0`);
+    console.log('🔄 Triggering immediate sync of all local messages...');
+    const result = await syncToSupabase();
+    console.log('🔄 Force sync result:', result);
+    return result;
+  },
   // Diagnostic: read pipeline progress from storage (console drops logs in SW)
   contextDiag: async function() {
     const r = await chrome.storage.local.get('kyt_context_diag');
@@ -1323,6 +1334,7 @@ console.log('   - KYT_DEBUG.backfillChatTurnEmbeddings(platform?) - Backfill nul
 console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
 console.log('   - KYT_DEBUG.backfillContextual() - Generate context summaries + re-embed');
 console.log('   - KYT_DEBUG.backfillPostImport() - Full post-import chain (contextual → entities)');
+console.log('   - KYT_DEBUG.forceSyncAll() - Reset sync timestamp and sync ALL local messages (deduped)');
 console.log('   - KYT_DEBUG.excludeConversation(id) - Hide a conversation from search (reversible)');
 console.log('   - KYT_DEBUG.includeConversation(id) - Un-hide a conversation from search');
 console.log('   Note: chrome.runtime.sendMessage() from service worker to itself does not work');
