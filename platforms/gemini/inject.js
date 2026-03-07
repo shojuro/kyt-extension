@@ -258,23 +258,41 @@
     // Parse length-prefixed frames (NOT line-by-line split)
     const frames = parseLengthPrefixedFrames(cleaned);
 
-    // Extract text from wrb.fr frames, strip injection blocks, pick best natural text
-    let bestText = '';
+    // Extract text from ALL wrb.fr frames and concatenate.
+    // Gemini streaming splits the response across many frames, each with a small
+    // text fragment. We must collect them all, not just pick the longest.
+    const textParts = [];
+    let longestSingle = '';
     for (const frame of frames) {
       const raw = extractTextFromFrame(frame);
-      if (!raw || raw.length < 20) continue;
+      if (!raw || raw.length < 5) continue;
 
-      // Strip injection blocks first (response may echo injected context)
+      // Strip injection blocks (response may echo injected context)
       const stripped = stripInjectionBlock(raw);
-      const candidate = stripped && stripped.length >= 20 ? stripped : raw;
+      const candidate = stripped && stripped.length >= 5 ? stripped : raw;
 
-      if (candidate.length > bestText.length && isNaturalLanguage(candidate)) {
-        bestText = candidate;
+      if (isNaturalLanguage(candidate) || candidate.length >= 20) {
+        textParts.push(candidate);
+      }
+      if (candidate.length > longestSingle.length && isNaturalLanguage(candidate)) {
+        longestSingle = candidate;
       }
     }
 
-    if (bestText.length < 10) return null;
-    return bestText;
+    // If we collected multiple frame texts, concatenate them (streaming assembly)
+    if (textParts.length > 1) {
+      const combined = textParts.join(' ');
+      // Strip injection from combined result too (block may span frames)
+      const strippedCombined = stripInjectionBlock(combined);
+      const result = strippedCombined && strippedCombined.length >= 20 ? strippedCombined : combined;
+      if (result.length >= 20 && isNaturalLanguage(result)) {
+        return result;
+      }
+    }
+
+    // Fallback: single best frame (non-streaming or single-frame response)
+    if (longestSingle.length >= 10) return longestSingle;
+    return null;
   }
 
   /**

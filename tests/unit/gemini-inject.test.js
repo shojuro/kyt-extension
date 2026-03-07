@@ -104,23 +104,41 @@ function extractAssistantResponse(responseText) {
 
   const frames = parseLengthPrefixedFrames(cleaned);
 
-  // Extract text from wrb.fr frames, strip injection blocks, pick best natural text
-  let bestText = '';
+  // Extract text from ALL wrb.fr frames and concatenate.
+  // Gemini streaming splits the response across many frames, each with a small
+  // text fragment. We must collect them all, not just pick the longest.
+  const textParts = [];
+  let longestSingle = '';
   for (const frame of frames) {
     const raw = extractTextFromFrame(frame);
-    if (!raw || raw.length < 20) continue;
+    if (!raw || raw.length < 5) continue;
 
-    // Strip injection blocks first (response may echo injected context)
+    // Strip injection blocks (response may echo injected context)
     const stripped = stripInjectionBlock(raw);
-    const candidate = stripped && stripped.length >= 20 ? stripped : raw;
+    const candidate = stripped && stripped.length >= 5 ? stripped : raw;
 
-    if (candidate.length > bestText.length && isNaturalLanguage(candidate)) {
-      bestText = candidate;
+    if (isNaturalLanguage(candidate) || candidate.length >= 20) {
+      textParts.push(candidate);
+    }
+    if (candidate.length > longestSingle.length && isNaturalLanguage(candidate)) {
+      longestSingle = candidate;
     }
   }
 
-  if (bestText.length < 10) return null;
-  return bestText;
+  // If we collected multiple frame texts, concatenate them (streaming assembly)
+  if (textParts.length > 1) {
+    const combined = textParts.join(' ');
+    // Strip injection from combined result too (block may span frames)
+    const strippedCombined = stripInjectionBlock(combined);
+    const result = strippedCombined && strippedCombined.length >= 20 ? strippedCombined : combined;
+    if (result.length >= 20 && isNaturalLanguage(result)) {
+      return result;
+    }
+  }
+
+  // Fallback: single best frame (non-streaming or single-frame response)
+  if (longestSingle.length >= 10) return longestSingle;
+  return null;
 }
 
 function parseLengthPrefixedFrames(text) {
@@ -832,6 +850,36 @@ describe('extractAssistantResponse', () => {
     const response = makeMultiFrameResponse([metaFrame, contentFrame]);
     const result = extractAssistantResponse(response);
     expect(result).toBe('The real Gemini assistant response with many natural language words');
+  });
+
+  it('concatenates text from multiple streaming frames', () => {
+    // Simulates Gemini streaming: response split across 3 wrb.fr frames
+    const frame1Inner = JSON.stringify([['Walter Payton was a legendary running back who played for the Chicago Bears']]);
+    const frame1 = [['wrb.fr', 'stream1', frame1Inner]];
+    const frame2Inner = JSON.stringify([['He was known as Sweetness and held the all time rushing record for many years']]);
+    const frame2 = [['wrb.fr', 'stream2', frame2Inner]];
+    const frame3Inner = JSON.stringify([['Payton was inducted into the Pro Football Hall of Fame in nineteen ninety three']]);
+    const frame3 = [['wrb.fr', 'stream3', frame3Inner]];
+    const response = makeMultiFrameResponse([frame1, frame2, frame3]);
+    const result = extractAssistantResponse(response);
+    // Should concatenate all 3 frame texts, not just pick the longest one
+    expect(result).toContain('Walter Payton was a legendary');
+    expect(result).toContain('Sweetness');
+    expect(result).toContain('Hall of Fame');
+    expect(result.length).toBeGreaterThan(200);
+  });
+
+  it('concatenates fragment-array frames across streaming', () => {
+    // Each frame has text stored as array of short string fragments
+    const frame1Inner = JSON.stringify([[['The ', 'answer ', 'to your ', 'question is ', 'actually quite ', 'interesting and complex']]]);
+    const frame1 = [['wrb.fr', 'a', frame1Inner]];
+    const frame2Inner = JSON.stringify([[['because ', 'it involves ', 'many different ', 'factors that ', 'interact in ', 'surprising ways']]]);
+    const frame2 = [['wrb.fr', 'b', frame2Inner]];
+    const response = makeMultiFrameResponse([frame1, frame2]);
+    const result = extractAssistantResponse(response);
+    expect(result).toContain('answer');
+    expect(result).toContain('surprising ways');
+    expect(result.length).toBeGreaterThan(60);
   });
 });
 
