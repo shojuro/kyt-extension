@@ -129,14 +129,25 @@ function extractAssistantResponse(responseText) {
     }
   }
 
-  // If we collected multiple frame texts, concatenate them (streaming assembly)
+  // Deduplicate progressive streaming: Gemini may send cumulative frames where
+  // each frame contains all previous text plus new text. Remove any part that
+  // is a substring of a longer part (progressive overlap).
   if (textParts.length > 1) {
-    const combined = textParts.join(' ');
-    // Strip injection from combined result too (block may span frames)
-    const strippedCombined = stripInjectionBlock(combined);
-    const result = strippedCombined && strippedCombined.length >= 20 ? strippedCombined : combined;
-    if (result.length >= 20 && isNaturalLanguage(result)) {
-      return result;
+    const deduped = textParts.filter((part, i) =>
+      !textParts.some((other, j) => j !== i && other.length > part.length && other.includes(part))
+    );
+
+    if (deduped.length === 1) {
+      // All other frames were substrings of the longest — progressive streaming
+      const result = stripInjectionBlock(deduped[0]);
+      const final2 = result && result.length >= 20 ? result : deduped[0];
+      if (final2.length >= 20 && isNaturalLanguage(final2)) return final2;
+    } else if (deduped.length > 1) {
+      // Multiple non-overlapping parts — true multi-frame (delta streaming)
+      const combined = deduped.join(' ');
+      const strippedCombined = stripInjectionBlock(combined);
+      const result = strippedCombined && strippedCombined.length >= 20 ? strippedCombined : combined;
+      if (result.length >= 20 && isNaturalLanguage(result)) return result;
     }
   }
 
@@ -871,6 +882,25 @@ describe('extractAssistantResponse', () => {
     expect(result).toContain('Sweetness');
     expect(result).toContain('Hall of Fame');
     expect(result.length).toBeGreaterThan(200);
+  });
+
+  it('deduplicates progressive streaming frames (cumulative text)', () => {
+    // Gemini progressive streaming: each frame has ALL text so far
+    const frame1Inner = JSON.stringify([['While your stored conversations contain some relevant context']]);
+    const frame1 = [['wrb.fr', 'p1', frame1Inner]];
+    const frame2Inner = JSON.stringify([['While your stored conversations contain some relevant context about this topic and more details here']]);
+    const frame2 = [['wrb.fr', 'p2', frame2Inner]];
+    const frame3Inner = JSON.stringify([['While your stored conversations contain some relevant context about this topic and more details here including additional information that makes this the longest frame']]);
+    const frame3 = [['wrb.fr', 'p3', frame3Inner]];
+    const response = makeMultiFrameResponse([frame1, frame2, frame3]);
+    const result = extractAssistantResponse(response);
+    // Should return the longest frame only (not duplicated concatenation)
+    expect(result).toContain('While your stored conversations');
+    expect(result).toContain('longest frame');
+    // Should NOT have duplicated text
+    const firstOccurrence = result.indexOf('While your stored');
+    const secondOccurrence = result.indexOf('While your stored', firstOccurrence + 1);
+    expect(secondOccurrence).toBe(-1);
   });
 
   it('concatenates fragment-array frames across streaming', () => {

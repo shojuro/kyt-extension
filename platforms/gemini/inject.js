@@ -283,14 +283,25 @@
       }
     }
 
-    // If we collected multiple frame texts, concatenate them (streaming assembly)
+    // Deduplicate progressive streaming: Gemini may send cumulative frames where
+    // each frame contains all previous text plus new text. Remove any part that
+    // is a substring of a longer part (progressive overlap).
     if (textParts.length > 1) {
-      const combined = textParts.join(' ');
-      // Strip injection from combined result too (block may span frames)
-      const strippedCombined = stripInjectionBlock(combined);
-      const result = strippedCombined && strippedCombined.length >= 20 ? strippedCombined : combined;
-      if (result.length >= 20 && isNaturalLanguage(result)) {
-        return result;
+      const deduped = textParts.filter((part, i) =>
+        !textParts.some((other, j) => j !== i && other.length > part.length && other.includes(part))
+      );
+
+      if (deduped.length === 1) {
+        // All other frames were substrings of the longest — progressive streaming
+        const result = stripInjectionBlock(deduped[0]);
+        const final = result && result.length >= 20 ? result : deduped[0];
+        if (final.length >= 20 && isNaturalLanguage(final)) return final;
+      } else if (deduped.length > 1) {
+        // Multiple non-overlapping parts — true multi-frame (delta streaming)
+        const combined = deduped.join(' ');
+        const strippedCombined = stripInjectionBlock(combined);
+        const result = strippedCombined && strippedCombined.length >= 20 ? strippedCombined : combined;
+        if (result.length >= 20 && isNaturalLanguage(result)) return result;
       }
     }
 
