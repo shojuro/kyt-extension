@@ -117,11 +117,15 @@ function extractAssistantResponse(responseText) {
     const stripped = stripInjectionBlock(raw);
     const candidate = stripped && stripped.length >= 5 ? stripped : raw;
 
-    if (isNaturalLanguage(candidate) || candidate.length >= 20) {
-      textParts.push(candidate);
+    // Strip leading base64-like tokens (auth/session tokens embedded in response)
+    const cleanCandidate = candidate.replace(/^[A-Za-z0-9_\-+=\/]{20,}\s+/, '');
+    const final = cleanCandidate.length >= 5 ? cleanCandidate : candidate;
+
+    if (isNaturalLanguage(final)) {
+      textParts.push(final);
     }
-    if (candidate.length > longestSingle.length && isNaturalLanguage(candidate)) {
-      longestSingle = candidate;
+    if (final.length > longestSingle.length && isNaturalLanguage(final)) {
+      longestSingle = final;
     }
   }
 
@@ -880,6 +884,33 @@ describe('extractAssistantResponse', () => {
     expect(result).toContain('answer');
     expect(result).toContain('surprising ways');
     expect(result.length).toBeGreaterThan(60);
+  });
+});
+
+describe('extractAssistantResponse — base64 token stripping', () => {
+  it('strips leading base64 tokens from frame text', () => {
+    // Token like "ZU__qGt1-tnjG6mx7Bp7NVBB5xcF42qAqykMONoz8Ww" followed by actual text
+    const innerPayload = JSON.stringify([
+      'ZU__qGt1-tnjG6mx7Bp7NVBB5xcF42qAqykMONoz8Ww If you want the most expensive and effectual sniper rifle available to private citizens, here are the options'
+    ]);
+    const frame = [['wrb.fr', null, innerPayload]];
+    const json = JSON.stringify(frame);
+    const response = ")]}'\n" + (json.length + 1) + '\n' + json + '\n';
+    const result = extractAssistantResponse(response);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain('ZU__qGt1');
+    expect(result).toContain('most expensive');
+  });
+
+  it('rejects frame with only base64 token (no natural text)', () => {
+    const innerPayload = JSON.stringify([
+      'ZU__qGt1-tnjG6mx7Bp7NVBB5xcF42qAqykMONoz8Ww'
+    ]);
+    const frame = [['wrb.fr', null, innerPayload]];
+    const json = JSON.stringify(frame);
+    const response = ")]}'\n" + (json.length + 1) + '\n' + json + '\n';
+    const result = extractAssistantResponse(response);
+    expect(result).toBeNull();
   });
 });
 

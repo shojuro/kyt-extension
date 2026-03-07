@@ -734,7 +734,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
           content: item.content,
           role: item.role || 'unknown',
           platform: item.source === 'cli' ? 'terminal' : (item.platform || 'chatgpt'),
-          timestamp: new Date(item.msg_timestamp || item.timestamp).toISOString(),
+          timestamp: (() => { const d = new Date(item.msg_timestamp || item.timestamp); return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString(); })(),
           similarity: item.cross_encoder_score != null
             ? item.cross_encoder_score
             : item.distance != null

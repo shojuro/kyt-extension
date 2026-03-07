@@ -271,11 +271,15 @@
       const stripped = stripInjectionBlock(raw);
       const candidate = stripped && stripped.length >= 5 ? stripped : raw;
 
-      if (isNaturalLanguage(candidate) || candidate.length >= 20) {
-        textParts.push(candidate);
+      // Strip leading base64-like tokens (auth/session tokens embedded in response)
+      const cleanCandidate = candidate.replace(/^[A-Za-z0-9_\-+=\/]{20,}\s+/, '');
+      const final = cleanCandidate.length >= 5 ? cleanCandidate : candidate;
+
+      if (isNaturalLanguage(final)) {
+        textParts.push(final);
       }
-      if (candidate.length > longestSingle.length && isNaturalLanguage(candidate)) {
-        longestSingle = candidate;
+      if (final.length > longestSingle.length && isNaturalLanguage(final)) {
+        longestSingle = final;
       }
     }
 
