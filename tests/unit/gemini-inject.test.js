@@ -242,6 +242,10 @@ function isNaturalLanguage(str) {
   const trimmed = str.trimStart();
   if (/^[\[{]/.test(trimmed) || /^-?\d+$/.test(trimmed)) return false;
   if (/^(c_|r_|rc_|af\.)/.test(trimmed)) return false;
+  if (/https?:\/\/[^\s]{20,}/.test(str)) return false;
+  if (/retrieve_personal_data|personalization in progress/i.test(str)) return false;
+  const identifiers = words.filter(w => /^[a-z]+[A-Z]|_[a-z]/.test(w));
+  if (identifiers.length > words.length * 0.5) return false;
   return true;
 }
 
@@ -860,6 +864,25 @@ describe('isNaturalLanguage', () => {
     expect(isNaturalLanguage(null)).toBe(false);
     expect(isNaturalLanguage(undefined)).toBe(false);
     expect(isNaturalLanguage('')).toBe(false);
+  });
+
+  it('rejects strings with embedded long URLs (UI metadata)', () => {
+    expect(isNaturalLanguage('Personalization in progresshttps://www.gstatic.com/images/branding/productlogos/gemini_2025_blue/v1/192px.svgretrieve_personal_data')).toBe(false);
+    expect(isNaturalLanguage('Loading content from https://example.com/very/long/path/to/resource/here')).toBe(false);
+  });
+
+  it('rejects Gemini UI metadata patterns', () => {
+    expect(isNaturalLanguage('retrieve_personal_data is being processed now')).toBe(false);
+    expect(isNaturalLanguage('Personalization in progress please wait for loading')).toBe(false);
+  });
+
+  it('rejects identifier-heavy strings', () => {
+    expect(isNaturalLanguage('processData handleRequest initWorker cleanUp')).toBe(false);
+    expect(isNaturalLanguage('user_name api_key session_token refresh_id')).toBe(false);
+  });
+
+  it('accepts normal text that happens to contain short URLs', () => {
+    expect(isNaturalLanguage('Check out http://ex.co for more details today')).toBe(true);
   });
 });
 

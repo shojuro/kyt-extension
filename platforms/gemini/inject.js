@@ -403,6 +403,13 @@
     const trimmed = str.trimStart();
     if (/^[\[{]/.test(trimmed) || /^-?\d+$/.test(trimmed)) return false;
     if (/^(c_|r_|rc_|af\.)/.test(trimmed)) return false;
+    // Reject strings with embedded URLs (UI metadata like "Personalization in progress<url>")
+    if (/https?:\/\/[^\s]{20,}/.test(str)) return false;
+    // Reject Gemini UI metadata patterns
+    if (/retrieve_personal_data|personalization in progress/i.test(str)) return false;
+    // Reject strings where most "words" are camelCase/snake_case identifiers
+    const identifiers = words.filter(w => /^[a-z]+[A-Z]|_[a-z]/.test(w));
+    if (identifiers.length > words.length * 0.5) return false;
     return true;
   }
 
@@ -810,6 +817,13 @@
 
   function dispatchCapture(content, role, captureMethod, conversationId) {
     if (!content || typeof content !== 'string' || content.trim().length < 2) return;
+
+    // Final safety net: reject raw JSON arrays/objects that slipped through extraction
+    const t = content.trimStart();
+    if (/^[\[{]/.test(t) && (t.includes('"c_') || t.includes('"r_') || t.includes('"rc_'))) return;
+
+    // Reject Gemini UI metadata (loading states, image URLs, RPC artifacts)
+    if (/^[A-Za-z ]{5,30}https?:\/\//.test(t)) return;
 
     if (!deduplicator.shouldCapture(content, captureMethod)) return;
 
