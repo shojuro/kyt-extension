@@ -46,6 +46,28 @@ export interface QualityPenaltyOptions {
 // Pattern Constants (ported from src/context-retrieval.js)
 // ============================================================================
 
+/**
+ * Claude Code tooling artifacts — hard drop.
+ * These are system/tooling messages ingested from Claude Code sessions
+ * that have zero information value for retrieval.
+ */
+const CLAUDE_CODE_ARTIFACT_PATTERNS: RegExp[] = [
+    /^<(?:local-command-caveat|command-name|command-message|command-args|system-reminder|task-notification|antml:)/,
+    /^Prompt is too long$/,
+    /^Let me (?:search|try|check|look) (?:your|a|for|if|what)/i,
+    /^(?:Let me|I'll) (?:read|load|find|run|open|search) /i,
+    /^(?:Found|No|Searching|Looking|Checking|Loading)\b.{0,30}$/,
+    /^Tool (?:loaded|result|called)/i,
+];
+
+/**
+ * Low-information-density content — hard drop.
+ * Very short content with no substantive words. Catches assistant
+ * filler like "Mhm.", "Sounds good.", "Dev plan.", "Clear option".
+ */
+const LOW_INFO_MAX_CHARS = 40;
+const LOW_INFO_MIN_WORDS = 4; // content must have at least 4 words to survive if short
+
 /** Meta-conversation patterns: KYT/extension operational chatter */
 const KYT_META_PATTERNS: RegExp[] = [
     /\bK\.?Y\.?T\.?\b.*\b(extension|plugin|add-?on)\b.*\b(working|broken|not working|crash|error|bug|fix|debug)\b/i,
@@ -445,6 +467,41 @@ function filterMetaFlagged(items: ScoredCandidate[], requestId?: string): Scored
     });
 }
 
+/**
+ * 9. Claude Code artifact filter (hard drop)
+ * Drops ingested Claude Code system/tooling messages that have zero
+ * information value: XML protocol tags, short system responses, tool output.
+ */
+function filterClaudeCodeArtifacts(items: ScoredCandidate[], requestId?: string): ScoredCandidate[] {
+    return items.filter(item => {
+        const content = (item.content || '').trim();
+        if (CLAUDE_CODE_ARTIFACT_PATTERNS.some(p => p.test(content))) {
+            Logger.info(`Claude Code artifact filter: dropped "${content.substring(0, 50)}..."`, { requestId });
+            return false;
+        }
+        return true;
+    });
+}
+
+/**
+ * 10. Low-information-density filter (hard drop)
+ * Drops very short content (< 40 chars) with fewer than 4 words.
+ * Catches filler like "Mhm.", "Dev plan.", "Sounds good.", "Clear option".
+ */
+function filterLowInformationDensity(items: ScoredCandidate[], requestId?: string): ScoredCandidate[] {
+    return items.filter(item => {
+        const content = (item.content || '').trim();
+        if (content.length <= LOW_INFO_MAX_CHARS) {
+            const wordCount = content.split(/\s+/).filter(w => w.length > 0).length;
+            if (wordCount < LOW_INFO_MIN_WORDS) {
+                Logger.info(`Low-info filter: dropped "${content}" (${wordCount} words, ${content.length} chars)`, { requestId });
+                return false;
+            }
+        }
+        return true;
+    });
+}
+
 // ============================================================================
 // Main Entry Point
 // ============================================================================
@@ -455,12 +512,14 @@ function filterMetaFlagged(items: ScoredCandidate[], requestId?: string): Scored
  * Order matters:
  * 1. Recursion guard (hard drop polluted items first)
  * 2. Meta flag filter (hard drop DB-flagged meta items)
- * 3. Deflection penalty + hard drop (0.145x–0.73x)
- * 4. Meta-conversation penalty (0.3x)
- * 5. Diagnostic penalty (0.5x)
- * 6. Echo penalty (0.5x–0.9x)
- * 7. Bare question filter (hard drop)
- * 8. Recency multiplier (mild time boost)
+ * 3. Claude Code artifact filter (hard drop tooling noise)
+ * 4. Low-information-density filter (hard drop ultra-short filler)
+ * 5. Deflection penalty + hard drop (0.145x–0.73x)
+ * 6. Meta-conversation penalty (0.3x)
+ * 7. Diagnostic penalty (0.5x)
+ * 8. Echo penalty (0.5x–0.9x)
+ * 9. Bare question filter (hard drop)
+ * 10. Recency multiplier (mild time boost)
  *
  * @returns Filtered items with adjusted rerank_scores
  */
@@ -476,6 +535,8 @@ export function applyQualityPenalties(
     // Hard drops first
     let result = applyRecursionGuard(items, requestId);
     result = filterMetaFlagged(result, requestId);
+    result = filterClaudeCodeArtifacts(result, requestId);
+    result = filterLowInformationDensity(result, requestId);
     result = applyDeflectionPenalty(result, requestId);
 
     // Score penalties (mutate in place)
@@ -514,6 +575,9 @@ export const __testing__ = {
     applyRecursionGuard,
     applyRecencyMultiplier,
     filterMetaFlagged,
+    filterClaudeCodeArtifacts,
+    filterLowInformationDensity,
+    CLAUDE_CODE_ARTIFACT_PATTERNS,
     KYT_META_PATTERNS,
     KYT_QUERY_PATTERNS,
     RETRIEVAL_DIAGNOSTIC_PATTERNS,
