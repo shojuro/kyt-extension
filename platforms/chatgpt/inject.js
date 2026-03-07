@@ -28,6 +28,43 @@
 
   logToBackground('Inject script initialized');
 
+  /**
+   * Extract clean text from ChatGPT message content parts.
+   * Handles: plain strings, audio_transcription JSON strings/objects, mixed parts.
+   * Skips: audio_asset_pointer, audio_video_asset_pointer, binary metadata.
+   */
+  function extractTextFromParts(parts) {
+    if (!Array.isArray(parts) || parts.length === 0) return null;
+    const texts = [];
+    for (const part of parts) {
+      if (typeof part === 'string') {
+        // Check if it's a JSON-encoded audio transcription
+        if (part.startsWith('{') && part.includes('content_type')) {
+          try {
+            const obj = JSON.parse(part);
+            if (obj.content_type === 'audio_transcription' && obj.text) {
+              texts.push(obj.text);
+              continue;
+            }
+            // Skip non-text content types (audio_asset_pointer, etc.)
+            if (obj.content_type && obj.content_type !== 'text') continue;
+          } catch (_) {}
+        }
+        // Plain text string
+        if (part.trim().length > 0) texts.push(part);
+      } else if (part && typeof part === 'object') {
+        // Object-form audio transcription
+        if (part.content_type === 'audio_transcription' && part.text) {
+          texts.push(part.text);
+        } else if (part.content_type === 'text' && part.text) {
+          texts.push(part.text);
+        }
+        // Skip audio_asset_pointer and other non-text objects
+      }
+    }
+    return texts.length > 0 ? texts.join('\n\n') : null;
+  }
+
   // CONFIGURATION: Fetch-based capture enabled for V3 compatibility
   // We use this to capture the conversation tree from POST /conversation response
   const ENABLE_FETCH_CAPTURE = true;
@@ -224,7 +261,8 @@
         let role = lastMessage?.author?.role || lastMessage?.role || 'user'; // Default to 'user' (DB constraint)
 
         if (lastMessage?.content?.parts && Array.isArray(lastMessage.content.parts)) {
-          content = lastMessage.content.parts[0];
+          content = extractTextFromParts(lastMessage.content.parts);
+          if (!content) content = lastMessage.content.parts[0]; // fallback to raw
         } else if (typeof lastMessage?.content === 'string') {
           content = lastMessage.content;
         }
@@ -347,7 +385,8 @@
       let userContent = null;
 
       if (lastMessage?.content?.parts && Array.isArray(lastMessage.content.parts)) {
-        userContent = lastMessage.content.parts[0];
+        userContent = extractTextFromParts(lastMessage.content.parts);
+        if (!userContent) userContent = lastMessage.content.parts[0]; // fallback
       } else if (typeof lastMessage?.content === 'string') {
         userContent = lastMessage.content;
       }
@@ -785,9 +824,10 @@
           } else if (data.payload?.payload?.text) {
             // Deeply nested payload
             transcriptText = data.payload.payload.text;
-          } else if (data.payload?.payload?.content?.parts?.[0]) {
+          } else if (data.payload?.payload?.content?.parts) {
             // Conversation turn structure
-            transcriptText = data.payload.payload.content.parts[0];
+            transcriptText = extractTextFromParts(data.payload.payload.content.parts) ||
+                             data.payload.payload.content.parts[0];
           }
 
           // OpenAI Realtime API formats (new voice protocol)

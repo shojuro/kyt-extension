@@ -230,6 +230,27 @@ async function _saveMessageCore(messageData) {
       throw new Error('Invalid message content: expected non-empty string');
     }
 
+    // Clean audio transcription JSON — extract text from ChatGPT voice messages
+    if (messageData.content.includes('"audio_transcription"') && messageData.content.startsWith('{')) {
+      try {
+        const lines = messageData.content.split('\n');
+        const texts = [];
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('{')) continue;
+          try {
+            const obj = JSON.parse(trimmed);
+            if (obj.content_type === 'audio_transcription' && obj.text) {
+              texts.push(obj.text);
+            }
+          } catch (_) {}
+        }
+        if (texts.length > 0) {
+          messageData.content = texts.join('\n\n');
+        }
+      } catch (_) {}
+    }
+
     const result = await chrome.storage.local.get(['captured_messages', 'kyt_stats']);
     const messages = result.captured_messages || [];
     const stats = {
