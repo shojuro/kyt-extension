@@ -44,6 +44,8 @@ serve(async (req) => {
             fast = false,       // Fast path: skip HyDE, reranking, entity search
             confidenceThreshold,  // Override default 0.40 confidence filter
             mmrLambda,            // MMR diversity/relevance (0.35 synthesis, 0.5 default)
+            recentTopics,         // Recent topic words for implicit query enrichment
+            conversationWindow,   // Recent messages from current conversation for coreference resolution
         } = body;
 
         // Extract user from JWT if present (authenticated mode)
@@ -117,6 +119,8 @@ serve(async (req) => {
             fast,
             confidenceThreshold,
             mmrLambda,
+            recentTopics: recentTopics || undefined,
+            conversationWindow: conversationWindow || undefined,
         };
 
         // Get relevant memories using the full Hybrid HyDE pipeline:

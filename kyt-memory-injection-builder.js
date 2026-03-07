@@ -328,10 +328,30 @@ export function buildMemoryInjection(result, configOverrides = {}) {
             return tB - tA; // newest first
         });
 
-        sortedItems.forEach((item, index) => {
-            parts.push(formatItem(item, index + 1));
-            parts.push(''); // Spacing between items
-        });
+        // Faceted grouping: when items span multiple platforms AND
+        // the query is a synthesis/comparison type, group by platform
+        // so the LLM can compare across sources.
+        const platforms = new Set(sortedItems.map(i => i.platform || 'unknown'));
+        const isSynthesis = result.queryType === 'SYNTHESIS' || (configOverrides.facetedGrouping && platforms.size > 1);
+
+        if (isSynthesis && platforms.size > 1) {
+            let itemIndex = 1;
+            for (const platform of platforms) {
+                const platformItems = sortedItems.filter(i => (i.platform || 'unknown') === platform);
+                if (platformItems.length === 0) continue;
+                parts.push(`── ${platform.toUpperCase()} ──`);
+                parts.push('');
+                for (const item of platformItems) {
+                    parts.push(formatItem(item, itemIndex++));
+                    parts.push('');
+                }
+            }
+        } else {
+            sortedItems.forEach((item, index) => {
+                parts.push(formatItem(item, index + 1));
+                parts.push(''); // Spacing between items
+            });
+        }
     } else {
         parts.push('(No relevant items found)');
         parts.push('');

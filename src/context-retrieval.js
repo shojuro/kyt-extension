@@ -21,6 +21,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
 import { getActiveProfileId } from './profile-manager.js';
+import { getRecentTopics } from './recent-topic-cache.js';
 
 /**
  * Extract which platform is mentioned in a query (null if none or cross-platform).
@@ -292,7 +293,8 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
       excludeRecentSeconds: config?.excludeRecentSeconds || 120, // CONTEXT POLLUTION FIX: Exclude last 2 minutes
       confidenceThreshold: config?.confidenceThreshold || null, // Intent classifier override (PASSIVE → 0.60)
       debugMode: config?.debugMode || false,
-      disableQueryTransformation: config?.disableQueryTransformation ?? apiConfig.disableQueryTransformation ?? false
+      disableQueryTransformation: config?.disableQueryTransformation ?? apiConfig.disableQueryTransformation ?? false,
+      conversationWindow: config?.conversationWindow || null, // Recent messages from current conversation
     };
 
     // ===== PIPELINE DIAGNOSTICS =====
@@ -468,6 +470,22 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
       }
     }
 
+    // ===== RECENT TOPIC ENRICHMENT (implicit/vague query boost) =====
+    // When the query is short/vague and has temporal language, enrich with
+    // recently discussed topics to ground the retrieval.
+    let recentTopicBoost = null;
+    try {
+      const temporalHint = scoreTemporalReference(userMessage.toLowerCase());
+      const wordCount = userMessage.trim().split(/\s+/).length;
+      if (wordCount <= 6 || temporalHint >= 0.3) {
+        const topics = await getRecentTopics(targetPlatform);
+        if (topics.length > 0) {
+          recentTopicBoost = topics.slice(0, 5);
+          diagnostics.recentTopicBoost = recentTopicBoost;
+        }
+      }
+    } catch (_) {}
+
     let contextItems = [];
 
     try {
@@ -483,6 +501,8 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
           contextItems = await searchViaEdgeFunction(queryToUse, {
             topK: contextConfig.candidatePoolSize,
             confidenceThreshold: contextConfig.confidenceThreshold || undefined,
+            recentTopics: recentTopicBoost || undefined,
+            conversationWindow: contextConfig.conversationWindow || undefined,
           });
           diagnostics.edgeItems = contextItems.length;
           console.log(`✅ Context Retrieval (edge): Found ${contextItems.length} items (pool: ${contextConfig.candidatePoolSize}, inject cap: ${contextConfig.maxContextItems})`);
@@ -743,13 +763,14 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
           source_type: item.source || 'conversation'
         })),
         latencyMs: elapsedTime,
-        queryType: transformationMetadata.transformed ? 'HYBRID' : 'SEMANTIC',
+        queryType: synthesisScore >= 0.5 ? 'SYNTHESIS' : (transformationMetadata.transformed ? 'HYBRID' : 'SEMANTIC'),
         queryOriginal: userMessage,
         queryTransformed: transformationMetadata.transformed ? transformationMetadata.optimized : null
       };
 
       formattedContext = buildMemoryInjection(retrievalResult, {
-        debugMode: contextConfig.debugMode || false
+        debugMode: contextConfig.debugMode || false,
+        facetedGrouping: synthesisScore >= 0.5,
       });
 
       console.log('✅ Memory Injection Protocol: Injection block built with', filteredItems.length, 'items');

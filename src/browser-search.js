@@ -882,7 +882,7 @@ async function searchGraphWalk(query, options = {}) {
       p_entity_ids: entityIds,
       p_user_id: userId,
       p_max_results: limit,
-      p_max_depth: 2,
+      p_max_depth: 3,
       p_max_intermediate: 20,
     };
     if (!_profileCompat.rpcUnavailable && graphProfileId) {

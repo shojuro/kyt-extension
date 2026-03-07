@@ -256,6 +256,29 @@
     }
   });
 
+  // === CONVERSATION WINDOW SCRAPER ===
+  // Scrapes the last N messages from the ChatGPT DOM for conversation context.
+  // Used to resolve implicit references ("that thing", "continue with it").
+  function scrapeConversationWindow(maxMessages = 5) {
+    try {
+      const messages = [];
+      // ChatGPT renders messages in [data-message-author-role] elements
+      const messageEls = document.querySelectorAll('[data-message-author-role]');
+      const recent = Array.from(messageEls).slice(-maxMessages * 2); // user+assistant pairs
+      for (const el of recent) {
+        const role = el.getAttribute('data-message-author-role');
+        const textEl = el.querySelector('.markdown, .whitespace-pre-wrap');
+        const text = textEl?.textContent?.trim();
+        if (text && text.length > 0 && text.length < 500) {
+          messages.push({ role: role || 'unknown', content: text.substring(0, 200) });
+        }
+      }
+      return messages.slice(-maxMessages);
+    } catch (e) {
+      return [];
+    }
+  }
+
   // === CONTEXT REQUEST HANDLER ===
   // Page context cannot call OpenAI/Supabase directly (CSP blocks)
   // So we forward to background script which has no CSP restrictions
@@ -340,7 +363,9 @@
         }));
       });
 
-      port.postMessage({ requestId, userMessage, config });
+      // Scrape recent conversation messages for implicit query resolution
+      const conversationWindow = scrapeConversationWindow(5);
+      port.postMessage({ requestId, userMessage, config, conversationWindow });
     } catch (error) {
       if (error.message && error.message.includes('Extension context invalidated')) {
         console.warn('⚠️ KYT ChatGPT Content: Extension was reloaded - please refresh page');

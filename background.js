@@ -30,6 +30,7 @@ import { refreshSession, isAuthenticated, AUTH_SESSION_KEY, AUTH_EXPIRED_KEY } f
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
 import { detectDeflection } from './src/assistant-quality-detector.js';
 import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/embedding-circuit-breaker.js';
+import { updateRecentTopics } from './src/recent-topic-cache.js';
 
 // Extracted modules
 import { getApiConfig, clearConfigCache } from './src/auth-config.js';
@@ -327,6 +328,9 @@ async function _saveMessageCore(messageData) {
     totalMessagesSaved++;
     lastSaveTime = Date.now();
     chrome.storage.local.set({ kyt_last_save_time: lastSaveTime });
+
+    // Update recent topic cache (fire-and-forget)
+    updateRecentTopics(messageData.content, messageData.role, messageData.platform || messageData.source || 'unknown').catch(() => {});
 
     console.log(`✅ KYT Background: Message saved (total: ${messages.length})`);
     console.log(`   Content: "${messageData.content.substring(0, 50)}..."`);

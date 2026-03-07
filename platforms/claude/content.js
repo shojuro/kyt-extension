@@ -39,6 +39,26 @@
     });
   });
 
+  // === CONVERSATION WINDOW SCRAPER ===
+  function scrapeConversationWindow(maxMessages = 5) {
+    try {
+      const messages = [];
+      // Claude renders messages in [data-is-streaming] parent containers
+      const messageEls = document.querySelectorAll('[class*="Message"], .prose, [data-testid*="message"]');
+      const recent = Array.from(messageEls).slice(-maxMessages * 2);
+      for (const el of recent) {
+        const isHuman = el.closest('[data-testid="human-message"], .human-message') !== null;
+        const text = el.textContent?.trim();
+        if (text && text.length > 0 && text.length < 500) {
+          messages.push({ role: isHuman ? 'user' : 'assistant', content: text.substring(0, 200) });
+        }
+      }
+      return messages.slice(-maxMessages);
+    } catch (e) {
+      return [];
+    }
+  }
+
   // === CONTEXT REQUEST HANDLER ===
   // Page context cannot call OpenAI/Supabase directly (CSP blocks)
   // So we forward to background script which has no CSP restrictions
@@ -47,11 +67,13 @@
     console.log('🔍 KYT Claude Content: Context request from page context');
 
     try {
+      const conversationWindow = scrapeConversationWindow(5);
       // Forward to background script (no CSP restrictions there!)
       const response = await chrome.runtime.sendMessage({
         type: 'GET_CONTEXT',
         userMessage: userMessage,
-        config: config
+        config: config,
+        conversationWindow: conversationWindow
       });
 
       // Send response back to page context

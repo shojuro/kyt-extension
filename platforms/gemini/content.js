@@ -115,6 +115,30 @@
   });
 
   // ═══════════════════════════════════════════════════════════════════════
+  // CONVERSATION WINDOW SCRAPER
+  // ═══════════════════════════════════════════════════════════════════════
+
+  function scrapeConversationWindow(maxMessages = 5) {
+    try {
+      const messages = [];
+      // Gemini renders messages in message-content elements or model-response/user-query
+      const turns = document.querySelectorAll('message-content, .conversation-turn, [data-content-type]');
+      const recent = Array.from(turns).slice(-maxMessages * 2);
+      for (const el of recent) {
+        const isUser = el.closest('.user-query, [data-is-user]') !== null ||
+                       el.getAttribute('data-content-type') === 'user';
+        const text = el.textContent?.trim();
+        if (text && text.length > 0 && text.length < 500) {
+          messages.push({ role: isUser ? 'user' : 'assistant', content: text.substring(0, 200) });
+        }
+      }
+      return messages.slice(-maxMessages);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // CONTEXT INJECTION — Port-based GET_CONTEXT (same as ChatGPT)
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -187,10 +211,12 @@
         });
       });
 
+      const conversationWindow = scrapeConversationWindow(5);
       port.postMessage({
         requestId: requestId,
         userMessage: detail.userMessage,
-        config: detail.config || {}
+        config: detail.config || {},
+        conversationWindow: conversationWindow
       });
 
     } catch (error) {

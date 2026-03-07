@@ -227,6 +227,11 @@ async function handleGetContextAsync(message, getContextForInjection) {
       config.confidenceThreshold = classification.confidenceThreshold;
     }
 
+    // Pass conversation window context for implicit query resolution
+    if (message.conversationWindow && Array.isArray(message.conversationWindow)) {
+      config.conversationWindow = message.conversationWindow;
+    }
+
     diag.steps.push('pipeline_start');
     await diagSave();
     const contextData = await Promise.race([

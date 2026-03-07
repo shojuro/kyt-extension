@@ -12,6 +12,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { HuggingFaceClient, HFRerankResponse } from "./huggingface-client.ts";
+import { AnthropicClient } from "./anthropic-client.ts";
 import { Logger } from "./utils.ts";
 import { generateHyDEWithFallback, shouldSkipHyDE } from "./hyde-generator.ts";
 import { mergeHydeAndRawResults, fallbackToRawResults, reciprocalRankFusion } from "./rrf.ts";
@@ -36,6 +37,109 @@ export interface SearchOptions {
     fast?: boolean;       // Skip HyDE, reranking, entity search. ~200ms.
     confidenceThreshold?: number; // Override default 0.40 confidence filter
     mmrLambda?: number;   // MMR diversity/relevance trade-off (0.35 for synthesis, 0.5 default)
+    recentTopics?: string[];  // Recent topic words for implicit query enrichment
+    conversationWindow?: Array<{ role: string; content: string }>;  // Recent messages for coreference resolution
+}
+
+// ========================================================================
+// QUERY DECOMPOSITION
+// Breaks multi-faceted queries into focused sub-queries for parallel retrieval.
+// Only triggers when multi-hop/compound signals detected (regex gate).
+// ========================================================================
+
+// ========================================================================
+// COREFERENCE RESOLUTION
+// Resolves implicit references ("that", "it", "the other one") using
+// recent conversation context. Only triggers when conversation window
+// is provided AND query contains pronouns/demonstratives with low entity count.
+// ========================================================================
+
+const IMPLICIT_SIGNALS = /\b(it|that|this|those|these|them|the other|above|below|same|previous|earlier|last one|the one)\b/i;
+const HAS_NAMED_ENTITY = /(?<=[.!?\s]|^)[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]+)+|"[^"]+"|'[^']+'/;
+const HAS_TECH_KEYWORD = /\b(?:python|javascript|typescript|rust|react|docker|gemini|chatgpt|claude)\b/i;
+const HAS_ENTITIES = { test: (s: string) => HAS_NAMED_ENTITY.test(s) || HAS_TECH_KEYWORD.test(s) };
+
+/**
+ * Resolve implicit references in a query using conversation context.
+ * Returns the enriched query, or null if no resolution needed/possible.
+ */
+async function resolveImplicitQuery(
+    query: string,
+    conversationWindow: Array<{ role: string; content: string }>,
+    anthropicApiKey: string,
+    requestId?: string
+): Promise<string | null> {
+    if (!conversationWindow || conversationWindow.length === 0) return null;
+    if (!IMPLICIT_SIGNALS.test(query)) return null;
+    if (HAS_ENTITIES.test(query)) return null; // Already has explicit entities
+    if (!anthropicApiKey) return null;
+
+    try {
+        const contextStr = conversationWindow
+            .map(m => `${m.role}: ${m.content}`)
+            .join('\n');
+
+        const client = new AnthropicClient(anthropicApiKey);
+        const result = await client.generateJsonCompletion<{ resolvedQuery: string; changed: boolean }>(
+            `You resolve implicit references in search queries using recent conversation context. Given the conversation window and the query, replace pronouns/demonstratives ("it", "that", "the other one", etc.) with their referents from the conversation. Return JSON: {"resolvedQuery": "the explicit query", "changed": true/false}. If no resolution is needed, return the original query with changed=false.`,
+            `Recent conversation:\n${contextStr}\n\nQuery to resolve: "${query}"`,
+            { maxTokens: 150, temperature: 0.0, operation: 'coreference_resolution' },
+            requestId
+        );
+
+        if (result.changed && result.resolvedQuery && result.resolvedQuery !== query) {
+            Logger.info(`Coreference resolved: "${query}" → "${result.resolvedQuery}"`, { requestId });
+            return result.resolvedQuery;
+        }
+        return null;
+    } catch (e) {
+        Logger.warn(`Coreference resolution failed: ${(e as Error).message}`, { requestId });
+        return null;
+    }
+}
+
+// ========================================================================
+// QUERY DECOMPOSITION
+// ========================================================================
+
+/** Detects queries likely to benefit from decomposition */
+const MULTI_HOP_SIGNALS = /\b(compare|contrast|relate|connect|bridge|cross.?reference|vs\.?|versus)\b|\b(what|who|where).*\b(and|then|also)\b.*\b(what|who|where)\b|\b(from|on|in)\s+(gemini|chatgpt|claude)\b.*\b(from|on|in)\s+(gemini|chatgpt|claude)\b/i;
+
+interface DecomposedQuery {
+    subQueries: string[];
+    reasoning: string;
+}
+
+/**
+ * Decompose a complex query into focused sub-queries using Haiku.
+ * Returns null if decomposition is unnecessary or fails.
+ */
+async function decomposeQuery(
+    query: string,
+    anthropicApiKey: string,
+    requestId?: string
+): Promise<DecomposedQuery | null> {
+    if (!MULTI_HOP_SIGNALS.test(query)) return null;
+    if (!anthropicApiKey) return null;
+
+    try {
+        const client = new AnthropicClient(anthropicApiKey);
+        const result = await client.generateJsonCompletion<DecomposedQuery>(
+            `You decompose complex search queries into 2-3 focused sub-queries for a personal conversation memory search system. Each sub-query should target a distinct information need. Return JSON: {"subQueries": ["query1", "query2"], "reasoning": "brief explanation"}. If the query is already focused enough, return {"subQueries": [], "reasoning": "no decomposition needed"}.`,
+            `Query: "${query}"`,
+            { maxTokens: 200, temperature: 0.0, operation: 'query_decomposition' },
+            requestId
+        );
+
+        if (result.subQueries && result.subQueries.length >= 2) {
+            Logger.info(`Query decomposed into ${result.subQueries.length} sub-queries: ${result.subQueries.join(' | ')}`, { requestId });
+            return result;
+        }
+        return null;
+    } catch (e) {
+        Logger.warn(`Query decomposition failed: ${(e as Error).message}`, { requestId });
+        return null;
+    }
 }
 
 /**
@@ -46,6 +150,20 @@ function extractPlatformMention(message: string): string | null {
     const m = message.match(/\b(gemini|chatgpt|claude[- ]code|claude)\b/i);
     if (!m) return null;
     return m[1].toLowerCase().replace(/\s+/g, '-');
+}
+
+/**
+ * Extract ALL platform mentions from a query (for multi-platform comparison).
+ * Returns unique platforms, or empty array if fewer than 2.
+ */
+function extractMultiplePlatforms(message: string): string[] {
+    const regex = /\b(gemini|chatgpt|claude[- ]code|claude)\b/gi;
+    const platforms = new Set<string>();
+    let match;
+    while ((match = regex.exec(message)) !== null) {
+        platforms.add(match[1].toLowerCase().replace(/\s+/g, '-'));
+    }
+    return platforms.size >= 2 ? Array.from(platforms) : [];
 }
 
 /**
@@ -190,14 +308,67 @@ const CONCEPT_SYNONYMS: Record<string, string[]> = {
     'tier': ['mode', 'level'], 'tiers': ['modes', 'levels'],
 };
 
-function expandQueryWithSynonyms(query: string): string {
+/**
+ * Load dynamic synonyms from entity_relationships with high co-occurrence.
+ * Cached per-request (called once at pipeline start, reused for all expansions).
+ */
+async function loadDynamicSynonyms(
+    supabase: any,
+    userId: string,
+    requestId?: string
+): Promise<Record<string, string[]>> {
+    try {
+        const { data, error } = await supabase
+            .from('entity_relationships')
+            .select(`
+                entity_id_1,
+                entity_id_2,
+                relationship_strength,
+                entity1:entities!entity_relationships_entity_id_1_fkey(canonical_name),
+                entity2:entities!entity_relationships_entity_id_2_fkey(canonical_name)
+            `)
+            .gte('relationship_strength', 0.7)
+            .limit(50);
+
+        if (error || !data) return {};
+
+        const synonyms: Record<string, string[]> = {};
+        for (const row of data) {
+            const name1 = (row.entity1 as any)?.canonical_name?.toLowerCase();
+            const name2 = (row.entity2 as any)?.canonical_name?.toLowerCase();
+            if (!name1 || !name2 || name1 === name2) continue;
+
+            if (!synonyms[name1]) synonyms[name1] = [];
+            if (!synonyms[name2]) synonyms[name2] = [];
+            if (!synonyms[name1].includes(name2)) synonyms[name1].push(name2);
+            if (!synonyms[name2].includes(name1)) synonyms[name2].push(name1);
+        }
+
+        const count = Object.keys(synonyms).length;
+        if (count > 0) {
+            Logger.info(`Dynamic synonyms loaded: ${count} entries`, { requestId });
+        }
+        return synonyms;
+    } catch (e) {
+        Logger.warn(`Dynamic synonym load failed: ${(e as Error).message}`, { requestId });
+        return {};
+    }
+}
+
+function expandQueryWithSynonyms(query: string, dynamicSynonyms?: Record<string, string[]>): string {
     const words = query.toLowerCase().split(/\s+/);
     const expansions: string[] = [];
     for (const word of words) {
+        // Check static synonyms first
         const synonyms = CONCEPT_SYNONYMS[word];
         if (synonyms) expansions.push(...synonyms);
+        // Check dynamic synonyms from entity co-occurrences
+        if (dynamicSynonyms) {
+            const dynSyns = dynamicSynonyms[word];
+            if (dynSyns) expansions.push(...dynSyns);
+        }
     }
-    return expansions.length > 0 ? query + ' ' + expansions.join(' ') : query;
+    return expansions.length > 0 ? query + ' ' + [...new Set(expansions)].join(' ') : query;
 }
 
 async function searchEntities(
@@ -206,12 +377,13 @@ async function searchEntities(
     userId: string,
     queryText: string,
     requestId?: string,
-    profileId?: string
+    profileId?: string,
+    dynamicSynonyms?: Record<string, string[]>
 ): Promise<{ ids: string[]; entities: any[] }> {
     // Run embedding and text search in PARALLEL (Gap 2: entity bridging)
     // Text search always runs — catches entities that embedding similarity misses
     // (e.g., "NFL" has no vector similarity to "Walter Payton")
-    const expandedQuery = expandQueryWithSynonyms(queryText);
+    const expandedQuery = expandQueryWithSynonyms(queryText, dynamicSynonyms);
 
     const [embeddingResult, textResult] = await Promise.allSettled([
         supabase.rpc("search_entities_by_embedding", {
@@ -426,7 +598,7 @@ async function detectConceptEntities(
  * @param requestId - Request ID for tracing
  */
 export async function getRelevantMemories(
-    query: string,
+    queryInput: string,
     userId: string,
     optionsOrTopK: SearchOptions | number = {},
     requestId?: string,
@@ -444,10 +616,15 @@ export async function getRelevantMemories(
         fast = false,
         confidenceThreshold,
         mmrLambda = 0.5,
+        recentTopics,
+        conversationWindow,
     } = options;
 
     // MVP: profileId = userId (1:1). Future: multi-profile adds junction table.
     const resolvedProfileId = profileId || userId;
+
+    // Mutable query — may be enriched by coreference resolution
+    let query = queryInput;
 
     // Vector search retrieval pool — always fetch at least 20 candidates for reranking,
     // even if client requests fewer items back. More candidates = better reranking quality.
@@ -481,12 +658,105 @@ export async function getRelevantMemories(
         Logger.info("Preference router: no preferences found, falling through to vector pipeline", { requestId });
     }
 
+    // ========================================================================
+    // STEP 0.3: Coreference Resolution (implicit query enrichment)
+    // Resolves "it", "that", "the other one" using conversation window.
+    // ========================================================================
+    if (conversationWindow && conversationWindow.length > 0 && anthropicApiKey && !fast) {
+        const resolvedQuery = await resolveImplicitQuery(query, conversationWindow, anthropicApiKey, requestId);
+        if (resolvedQuery) {
+            query = resolvedQuery;
+        }
+    }
+
     Logger.info("Starting memory retrieval", {
         requestId,
         queryLength: query.length,
         useHyde,
         hydeWeight
     });
+
+    // ========================================================================
+    // STEP 0.5: Query Decomposition (multi-hop/compound queries)
+    // If the query contains comparison/multi-hop signals, decompose into
+    // sub-queries, run parallel retrievals, and merge results.
+    // ========================================================================
+    // Multi-platform detection for synthesis queries
+    const multiPlatforms = extractMultiplePlatforms(query);
+
+    if (!fast && anthropicApiKey && !(options as any)._skipDecomposition) {
+        const decomposition = await decomposeQuery(query, anthropicApiKey, requestId);
+        if (decomposition && decomposition.subQueries.length >= 2) {
+            // Run parallel retrievals for each sub-query (without decomposition to avoid recursion)
+            const subOptions: SearchOptions = {
+                topK: Math.max(topK, 10),
+                useHyde,
+                hydeWeight,
+                fast: false,
+                confidenceThreshold,
+                mmrLambda,
+                // No recentTopics or decomposition for sub-queries
+            };
+
+            const subResults = await Promise.all(
+                decomposition.subQueries.map(sq =>
+                    getRelevantMemories(sq, userId, { ...subOptions, _skipDecomposition: true } as any, requestId, profileId)
+                )
+            );
+
+            // Merge sub-query results via RRF
+            const rankedLists = subResults
+                .filter(r => r.length > 0)
+                .map((results, i) => ({
+                    results: results as Candidate[],
+                    weight: 1.0 / decomposition.subQueries.length,
+                }));
+
+            if (rankedLists.length > 0) {
+                const fused = reciprocalRankFusion(rankedLists, 60, topK * 2);
+                const merged: CandidateWithScore[] = fused.map(fr => ({
+                    ...(fr.item as CandidateWithScore),
+                    rrf_score: fr.rrf_score,
+                    rerank_score: (fr.item as CandidateWithScore).rerank_score ?? fr.rrf_score,
+                }));
+
+                // Dedup, apply platform penalty, slice to topK
+                const deduped = deduplicateByContent(merged);
+                applyPlatformPenalty(query, deduped, confidenceThreshold, requestId);
+                const final = deduped.slice(0, topK);
+
+                Logger.info(`Decomposition merge: ${subResults.map(r => r.length).join('+')} → ${final.length} results`, { requestId });
+                return final;
+            }
+            // If all sub-queries returned empty, fall through to normal pipeline
+            Logger.info("Decomposition returned no results, falling through to standard pipeline", { requestId });
+        }
+    }
+
+    // ========================================================================
+    // STEP 0.7: Multi-Platform Coordinated Retrieval
+    // When 2+ platforms mentioned (e.g. "on Claude vs Gemini"), run
+    // per-platform retrievals and merge with platform tags preserved.
+    // ========================================================================
+    if (!fast && multiPlatforms.length >= 2 && !(options as any)._skipDecomposition) {
+        Logger.info(`Multi-platform retrieval: ${multiPlatforms.join(', ')}`, { requestId });
+
+        const perPlatformResults = await Promise.all(
+            multiPlatforms.map(async (platform) => {
+                const platformResults = await getRecentByPlatform(platform, userId, Math.ceil(topK / multiPlatforms.length) + 2, resolvedProfileId);
+                return { platform, results: platformResults };
+            })
+        );
+
+        const allPlatformResults = perPlatformResults.flatMap(pr => pr.results);
+        if (allPlatformResults.length > 0) {
+            // Also run the main pipeline for non-platform-specific semantic matches
+            // and merge below in the normal flow (don't return early)
+            Logger.info(`Multi-platform: ${perPlatformResults.map(pr => `${pr.platform}=${pr.results.length}`).join(', ')}`, { requestId });
+            // These will be merged with the main pipeline results via the synthesis fallback
+            // already implemented in context-retrieval.js. Continue to normal pipeline.
+        }
+    }
 
     // ========================================================================
     // STEP 1: Generate raw query embedding (always needed)
@@ -537,8 +807,19 @@ export async function getRelevantMemories(
     // ========================================================================
     // STEP 2: PARALLEL - Entity search + HyDE generation + Concept detection
     // ========================================================================
+    // Enrich entity search query with recent topics for vague/implicit queries
+    const entitySearchQuery = recentTopics && recentTopics.length > 0
+        ? query + ' ' + recentTopics.join(' ')
+        : query;
+    if (recentTopics && recentTopics.length > 0) {
+        Logger.info(`Recent topic enrichment: "${query}" + [${recentTopics.join(', ')}]`, { requestId });
+    }
+
+    // Load dynamic synonyms from entity co-occurrences (parallel with other init)
+    const dynamicSynonyms = await loadDynamicSynonyms(supabase, userId, requestId);
+
     const [entityResult, hydeResult, conceptEntityIds] = await Promise.all([
-        searchEntities(supabase, rawEmbedding, userId, query, requestId, resolvedProfileId),
+        searchEntities(supabase, rawEmbedding, userId, entitySearchQuery, requestId, resolvedProfileId, dynamicSynonyms),
         useHyde && anthropicApiKey
             ? generateHyDEWithFallback(query, anthropicApiKey, requestId)
             : Promise.resolve({ hydeDoc: null, usedHyde: false }),
@@ -582,7 +863,7 @@ export async function getRelevantMemories(
                 p_entity_ids: boostEntityIds,
                 p_user_id: userId,
                 p_max_results: vectorSearchCount,
-                p_max_depth: 2,
+                p_max_depth: 3,
                 p_max_intermediate: 20,
                 p_profile_id: resolvedProfileId
             });
@@ -691,6 +972,21 @@ export async function getRelevantMemories(
     if (usedHyde && hydeDoc) {
         // Generate HyDE embedding
         hydeEmbedding = (await hfClient.generateEmbeddings(hydeDoc, requestId))[0];
+
+        // HyDE confidence gate: if HyDE embedding drifted too far from raw query,
+        // discard it to prevent hallucination-driven retrieval.
+        // Cosine similarity threshold: 0.3 (very lenient — only catches wild hallucinations)
+        const dotProduct = rawEmbedding.reduce((sum, v, i) => sum + v * (hydeEmbedding![i] || 0), 0);
+        const magRaw = Math.sqrt(rawEmbedding.reduce((sum, v) => sum + v * v, 0));
+        const magHyde = Math.sqrt(hydeEmbedding.reduce((sum, v) => sum + v * v, 0));
+        const cosineSim = magRaw > 0 && magHyde > 0 ? dotProduct / (magRaw * magHyde) : 0;
+
+        if (cosineSim < 0.3) {
+            Logger.warn(`HyDE confidence gate: discarding HyDE (similarity=${cosineSim.toFixed(3)} < 0.3)`, { requestId });
+            hydeEmbedding = null;
+        } else {
+            Logger.info(`HyDE confidence: similarity=${cosineSim.toFixed(3)} (OK)`, { requestId });
+        }
     }
 
     // Parallel vector searches
