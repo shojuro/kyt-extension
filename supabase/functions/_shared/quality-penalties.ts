@@ -61,12 +61,44 @@ const CLAUDE_CODE_ARTIFACT_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Low-information-density content — hard drop.
- * Very short content with no substantive words. Catches assistant
- * filler like "Mhm.", "Sounds good.", "Dev plan.", "Clear option".
+ * Raw JSON metadata — hard drop.
+ * ChatGPT audio asset pointer JSON and similar API metadata that leaked
+ * through before client-side filtering was added. Already in DB.
  */
-const LOW_INFO_MAX_CHARS = 40;
-const LOW_INFO_MIN_WORDS = 4; // content must have at least 4 words to survive if short
+const RAW_JSON_METADATA_PATTERNS: RegExp[] = [
+    /\"content_type\"\s*:\s*\"[^"]*asset_pointer/,
+    /\"expiry_datetime\"\s*:/,
+    /\"frames_asset_pointers\"\s*:/,
+];
+
+/**
+ * Substance scoring thresholds and patterns.
+ * Replaces the old blunt LOW_INFO filter (< 40 chars, < 4 words) which
+ * would incorrectly drop "I love Molly" (3 words, deeply personal).
+ */
+const SUBSTANCE_SHORT_THRESHOLD = 80;   // chars
+const SUBSTANCE_MEDIUM_THRESHOLD = 200; // chars
+
+/** High-substance patterns — content worth keeping even if short */
+const HIGH_SUBSTANCE_PATTERNS: RegExp[] = [
+    /\bI\s+(?:love|hate|prefer|miss|need|want|wish|adore|despise)\b/i,
+    /\bI\s+(?:decided|chose|picked|committed|resolved|quit|started|stopped)\b/i,
+    /\bI'?m\s+(?:scared|grateful|thankful|afraid|proud|ashamed|excited|worried|anxious|happy|sad)\b/i,
+    /\bmy\s+(?:wife|husband|partner|dad|mom|father|mother|son|daughter|brother|sister|friend|dog|cat|family)\b/i,
+    /\b(?:favorite|favourite|best|worst)\b/i,
+    /\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})+\b/,  // Named entity heuristic (2+ capitalized words)
+    /\b(?:always|never)\s+\w+/i,
+    /\b(?:diagnosed|prescription|medication|therapy|treatment)\b/i,
+];
+
+/** Low-substance patterns — meta-conversational filler */
+const LOW_SUBSTANCE_PATTERNS: RegExp[] = [
+    /^(?:thoughts|sounds?\s+good|agreed|exactly|right|correct|yeah|yep|nope|sure|ok(?:ay)?|got\s+it|makes?\s+sense|fair\s+enough|understood|noted|interesting|cool|nice|great|perfect|alright|fine|absolutely|definitely|certainly|indeed|precisely)\b[.!?]*$/i,
+    /\b(?:let\s+me|running|deploying|checking|loading|processing|building|compiling|installing)\b/i,
+    /\bthoughts\b.*\bshare\s+them\b/i,
+    /^(?:mhm|hmm|hm|uh-?huh|mm-?hmm)[.!?]*$/i,
+    /^[A-Z][a-z]+\s+(?:plan|option|choice|step|note|idea|thought)[.!?]*$/i,  // "Dev plan.", "Clear option."
+];
 
 /** Meta-conversation patterns: KYT/extension operational chatter */
 const KYT_META_PATTERNS: RegExp[] = [
@@ -484,20 +516,88 @@ function filterClaudeCodeArtifacts(items: ScoredCandidate[], requestId?: string)
 }
 
 /**
- * 10. Low-information-density filter (hard drop)
- * Drops very short content (< 40 chars) with fewer than 4 words.
- * Catches filler like "Mhm.", "Dev plan.", "Sounds good.", "Clear option".
+ * 10. Raw JSON metadata filter (hard drop)
+ * Drops ChatGPT audio asset pointer JSON and similar API metadata
+ * that was captured before client-side filtering existed.
  */
-function filterLowInformationDensity(items: ScoredCandidate[], requestId?: string): ScoredCandidate[] {
+function filterRawJsonMetadata(items: ScoredCandidate[], requestId?: string): ScoredCandidate[] {
     return items.filter(item => {
         const content = (item.content || '').trim();
-        if (content.length <= LOW_INFO_MAX_CHARS) {
-            const wordCount = content.split(/\s+/).filter(w => w.length > 0).length;
-            if (wordCount < LOW_INFO_MIN_WORDS) {
-                Logger.info(`Low-info filter: dropped "${content}" (${wordCount} words, ${content.length} chars)`, { requestId });
-                return false;
+        if (!content.startsWith('{')) return true;
+        if (RAW_JSON_METADATA_PATTERNS.some(p => p.test(content))) {
+            Logger.info(`Raw JSON metadata filter: dropped "${content.substring(0, 60)}..."`, { requestId });
+            return false;
+        }
+        return true;
+    });
+}
+
+/**
+ * 11. Substance scorer (drop/penalty)
+ * Replaces the old blunt low-info filter. Uses DB-computed impact_score
+ * and intimacy_level when available, falls back to regex heuristics.
+ *
+ * - Short (≤ 80 chars): high substance → keep; low substance or < 3 words → drop
+ * - Medium (81-200 chars): low substance without high substance → 0.5x penalty
+ * - Long (> 200 chars): always pass through
+ */
+function applySubstancePenalty(items: ScoredCandidate[], requestId?: string): ScoredCandidate[] {
+    return items.filter(item => {
+        const content = (item.content || '').trim();
+        if (content.length === 0) {
+            Logger.info(`Substance filter: dropped empty content`, { requestId });
+            return false;
+        }
+
+        const len = content.length;
+
+        // Long content always passes
+        if (len > SUBSTANCE_MEDIUM_THRESHOLD) return true;
+
+        const wordCount = content.split(/\s+/).filter(w => w.length > 0).length;
+        const impactScore = (item as any).impact_score as number | undefined;
+        const intimacyLevel = (item as any).intimacy_level as number | undefined;
+
+        const hasHighSubstance = HIGH_SUBSTANCE_PATTERNS.some(p => p.test(content));
+        const hasLowSubstance = LOW_SUBSTANCE_PATTERNS.some(p => p.test(content));
+
+        // Layer 1: DB scores (when available)
+        if (impactScore != null && intimacyLevel != null) {
+            if (intimacyLevel >= 2 || impactScore >= 50) {
+                // High personal significance — boost short content, always keep
+                if (len <= SUBSTANCE_SHORT_THRESHOLD) {
+                    item.rerank_score *= 1.2;
+                    Logger.info(`Substance boost: "${content.substring(0, 40)}..." (impact=${impactScore}, intimacy=${intimacyLevel})`, { requestId });
+                }
+                return true;
+            }
+            if (intimacyLevel === 0 && impactScore < 10 && len <= SUBSTANCE_SHORT_THRESHOLD) {
+                // Low personal significance + short — check regex override, else drop if too few words
+                if (hasHighSubstance) return true;
+                if (wordCount < 4) {
+                    Logger.info(`Substance filter (DB): dropped "${content}" (impact=${impactScore}, intimacy=${intimacyLevel}, ${wordCount} words)`, { requestId });
+                    return false;
+                }
             }
         }
+
+        // Layer 2: Regex heuristics (null DB scores or ambiguous)
+        if (len <= SUBSTANCE_SHORT_THRESHOLD) {
+            if (hasHighSubstance) return true;
+            if (hasLowSubstance || wordCount < 3) {
+                Logger.info(`Substance filter: dropped "${content}" (${wordCount} words, ${len} chars, lowSubstance=${hasLowSubstance})`, { requestId });
+                return false;
+            }
+            return true;
+        }
+
+        // Medium range (81-200 chars)
+        if (hasLowSubstance && !hasHighSubstance) {
+            const before = item.rerank_score;
+            item.rerank_score *= 0.5;
+            Logger.info(`Substance penalty: "${content.substring(0, 50)}..." score ${before.toFixed(3)} → ${item.rerank_score.toFixed(3)}`, { requestId });
+        }
+
         return true;
     });
 }
@@ -513,13 +613,14 @@ function filterLowInformationDensity(items: ScoredCandidate[], requestId?: strin
  * 1. Recursion guard (hard drop polluted items first)
  * 2. Meta flag filter (hard drop DB-flagged meta items)
  * 3. Claude Code artifact filter (hard drop tooling noise)
- * 4. Low-information-density filter (hard drop ultra-short filler)
- * 5. Deflection penalty + hard drop (0.145x–0.73x)
- * 6. Meta-conversation penalty (0.3x)
- * 7. Diagnostic penalty (0.5x)
- * 8. Echo penalty (0.5x–0.9x)
- * 9. Bare question filter (hard drop)
- * 10. Recency multiplier (mild time boost)
+ * 4. Raw JSON metadata filter (hard drop audio asset pointers)
+ * 5. Substance scorer (drop/penalty — replaces old low-info filter)
+ * 6. Deflection penalty + hard drop (0.145x–0.73x)
+ * 7. Meta-conversation penalty (0.3x)
+ * 8. Diagnostic penalty (0.5x)
+ * 9. Echo penalty (0.5x–0.9x)
+ * 10. Bare question filter (hard drop)
+ * 11. Recency multiplier (mild time boost)
  *
  * @returns Filtered items with adjusted rerank_scores
  */
@@ -536,7 +637,8 @@ export function applyQualityPenalties(
     let result = applyRecursionGuard(items, requestId);
     result = filterMetaFlagged(result, requestId);
     result = filterClaudeCodeArtifacts(result, requestId);
-    result = filterLowInformationDensity(result, requestId);
+    result = filterRawJsonMetadata(result, requestId);
+    result = applySubstancePenalty(result, requestId);
     result = applyDeflectionPenalty(result, requestId);
 
     // Score penalties (mutate in place)
@@ -576,8 +678,12 @@ export const __testing__ = {
     applyRecencyMultiplier,
     filterMetaFlagged,
     filterClaudeCodeArtifacts,
-    filterLowInformationDensity,
+    filterRawJsonMetadata,
+    applySubstancePenalty,
     CLAUDE_CODE_ARTIFACT_PATTERNS,
+    RAW_JSON_METADATA_PATTERNS,
+    HIGH_SUBSTANCE_PATTERNS,
+    LOW_SUBSTANCE_PATTERNS,
     KYT_META_PATTERNS,
     KYT_QUERY_PATTERNS,
     RETRIEVAL_DIAGNOSTIC_PATTERNS,

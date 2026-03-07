@@ -27,6 +27,8 @@ type Candidate = {
     entity_boost?: boolean;
     rrf_score?: number;  // Added by RRF merge
     platform?: string;   // Source platform (gemini, chatgpt, claude, claude-code)
+    impact_score?: number;     // Holmes-Rahe: 0-100, from memory-classifier.ts
+    intimacy_level?: number;   // Aron's 36 Questions: 0-3, from memory-classifier.ts
 };
 export type CandidateWithScore = Candidate & { rerank_score: number };
 
