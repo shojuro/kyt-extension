@@ -1,9 +1,9 @@
 /**
  * KYT Memory Extension — Gemini Inject Script (MAIN World)
  *
- * Runs in page context to intercept XHR/fetch for StreamGenerate requests.
- * Captures ONLY live messages (user sends + assistant responses).
- * NO history-load interception. NO batchexecute RPC parsing for messages.
+ * Runs in page context to intercept XHR/fetch for:
+ * 1. StreamGenerate — live messages (user sends + assistant responses)
+ * 2. batchexecute history loads — mobile/past conversations opened on web
  *
  * Architecture:
  *   MAIN world (this file) → CustomEvent → ISOLATED world (content.js) → chrome.runtime → background.js
@@ -482,6 +482,222 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // HISTORY-LOAD DETECTION & EXTRACTION
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // Known system-only RPCs — never carry conversation history
+  const SYSTEM_ONLY_RPCS = new Set([
+    'L5adhe', 'GPRiHf', 'bYBfhb', 'aKUX7e', 'LCWRX',
+    'jQ1olc', 'MkEWBc', 'ESY5D', 'otAQ7b', 'MaZiqc',
+    'aPya6c', 'cYRIkd', 'maGuAc', 'K4WWud', 'ozz5Z',
+    'CNgdBe', 'qpEbW', 'o30O0e', 'ku4Jyf', 'DYBcR',
+  ]);
+
+  const _capturedConversationIds = new Set();
+  const HISTORY_CAPTURE_START = Date.now();
+  const HISTORY_CAPTURE_INIT_MS = 5000; // Skip captures during initial page load
+
+  /**
+   * Detect if a POST request is a Gemini conversation-history load (batchexecute).
+   * Returns { rpcId, conversationIdHint } or false.
+   */
+  function isGeminiHistoryLoad(urlString, bodyString) {
+    if (!isGeminiDomain(urlString)) return false;
+    if (!bodyString || typeof bodyString !== 'string') return false;
+    if (!bodyString.includes('f.req=') && !bodyString.includes('f.req%')) return false;
+
+    try {
+      const params = new URLSearchParams(bodyString);
+      const fReq = params.get('f.req');
+      if (!fReq) return false;
+
+      let outer;
+      try { outer = JSON.parse(fReq); } catch (_) { return false; }
+      if (typeof outer === 'string') {
+        try { outer = JSON.parse(outer); } catch (_) { return false; }
+      }
+      if (!Array.isArray(outer)) return false;
+
+      // StreamGenerate format: [null, "json_payload"] — NOT a history load
+      if (outer[0] === null && typeof outer[1] === 'string') return false;
+
+      // batchexecute: [[["rpcId", "jsonArgs", null, "generic"], ...]]
+      if (!Array.isArray(outer[0])) return false;
+
+      for (const rpc of outer[0]) {
+        if (!Array.isArray(rpc)) continue;
+        const rpcId = rpc[0];
+        const rpcArgs = rpc[1];
+        if (typeof rpcArgs !== 'string') continue;
+        if (SYSTEM_ONLY_RPCS.has(rpcId)) continue;
+
+        // Look for conversation ID patterns in args
+        const convIdMatch = rpcArgs.match(/"(c_[0-9a-f]{8,})"/) ||
+                            rpcArgs.match(/"([0-9a-f]{20,})"/);
+        if (convIdMatch && rpcArgs.length <= 2000) {
+          return { rpcId, conversationIdHint: convIdMatch[1] };
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /**
+   * DFS to collect all strings from a nested structure.
+   */
+  function findAllStrings(obj, maxDepth = 10) {
+    const strings = [];
+    function walk(val, depth) {
+      if (depth > maxDepth) return;
+      if (typeof val === 'string' && val.length > 3) {
+        strings.push(val);
+      } else if (Array.isArray(val)) {
+        for (const item of val) walk(item, depth + 1);
+      } else if (val && typeof val === 'object') {
+        for (const v of Object.values(val)) walk(v, depth + 1);
+      }
+    }
+    walk(obj, 0);
+    return strings.sort((a, b) => b.length - a.length);
+  }
+
+  /**
+   * Extract conversation messages from a Gemini batchexecute history-load response.
+   * Parses wrb.fr frames → double-encoded JSON → conversation turn structure.
+   */
+  function extractConversationMessages(responseText) {
+    if (!responseText || typeof responseText !== 'string') return [];
+
+    // Strip anti-XSSI prefix
+    let cleaned = responseText;
+    if (cleaned.startsWith(")]}'")) {
+      const nlIdx = cleaned.indexOf('\n');
+      if (nlIdx >= 0) cleaned = cleaned.substring(nlIdx + 1);
+    }
+
+    // Use byte-accurate frame parser
+    const frames = parseLengthPrefixedFrames(cleaned);
+    let innerConversationData = null;
+
+    for (const frame of frames) {
+      if (!Array.isArray(frame)) continue;
+      for (const entry of (Array.isArray(frame[0]) ? frame : [frame])) {
+        if (!Array.isArray(entry) || entry[0] !== 'wrb.fr') continue;
+        if (typeof entry[2] !== 'string') continue;
+        try { innerConversationData = JSON.parse(entry[2]); } catch (_) {}
+      }
+    }
+
+    if (!innerConversationData || !Array.isArray(innerConversationData)) {
+      return extractConversationMessagesFallback(cleaned, frames);
+    }
+
+    // Walk conversation turn structure
+    const messages = [];
+    let turns = innerConversationData;
+    // Unwrap: [[turns...]] → [turns...]
+    if (Array.isArray(turns[0]) && Array.isArray(turns[0][0]) && Array.isArray(turns[0][0][0])) {
+      turns = turns[0];
+    }
+
+    for (const turn of turns) {
+      if (!Array.isArray(turn)) continue;
+
+      // User message: turn[2][0][0]
+      try {
+        if (Array.isArray(turn[2]) && Array.isArray(turn[2][0])) {
+          const userText = turn[2][0][0];
+          if (typeof userText === 'string' && userText.trim().length > 0) {
+            messages.push({ content: userText.trim(), role: 'user' });
+          }
+        }
+      } catch (_) {}
+
+      // Assistant response: turn[3][0][0][1][0]
+      try {
+        if (Array.isArray(turn[3]) && Array.isArray(turn[3][0]) && Array.isArray(turn[3][0][0])) {
+          const textArr = turn[3][0][0][1];
+          if (Array.isArray(textArr) && typeof textArr[0] === 'string' && textArr[0].trim().length > 0) {
+            messages.push({ content: textArr[0].trim(), role: 'assistant' });
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Last resort: heuristic string extraction
+    if (messages.length === 0) {
+      return extractConversationMessagesFallback(cleaned, frames, innerConversationData);
+    }
+
+    return messages;
+  }
+
+  /**
+   * Fallback: extract messages by finding all long natural-language strings.
+   */
+  function extractConversationMessagesFallback(cleaned, frames, innerData) {
+    const allStrs = innerData
+      ? findAllStrings(innerData, 20)
+      : frames.flatMap(f => findAllStrings(f, 15));
+
+    const contentStrs = allStrs.filter(s => {
+      if (s.length < 20) return false;
+      if (/^(r_|rc_|c_|af\.)/.test(s)) return false;
+      if (/^[0-9a-f]{16,}$/i.test(s)) return false;
+      if (/^https?:\/\//.test(s)) return false;
+      if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) return false;
+      return isNaturalLanguage(s);
+    });
+
+    const messages = [];
+    const seen = new Set();
+    for (let i = 0; i < contentStrs.length; i++) {
+      const t = contentStrs[i].trim();
+      if (seen.has(t)) continue;
+      seen.add(t);
+      messages.push({ content: t, role: i % 2 === 0 ? 'user' : 'assistant' });
+    }
+    return messages;
+  }
+
+  /**
+   * Capture all messages from a history-load response and dispatch events.
+   */
+  function captureConversationHistory(responseText, metadata) {
+    const messages = extractConversationMessages(responseText);
+    if (messages.length === 0) return;
+
+    const isInitPhase = (Date.now() - HISTORY_CAPTURE_START) < HISTORY_CAPTURE_INIT_MS;
+    if (isInitPhase) return; // Skip captures during initial page load
+
+    const conversationId = metadata.conversationIdHint || 'history_' + Date.now();
+
+    // Skip if we already captured this conversation
+    if (_capturedConversationIds.has(conversationId)) return;
+    _capturedConversationIds.add(conversationId);
+
+    console.log('📜 KYT Gemini: History load — ' + messages.length + ' messages from ' + conversationId);
+
+    const baseTimestamp = Date.now() - messages.length * 1000;
+    let captured = 0;
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      const cleanContent = stripInjectionBlock(msg.content);
+      if (!cleanContent || cleanContent.length < 2) continue;
+
+      // Skip base64/binary payloads
+      if (cleanContent.length > 40 && !cleanContent.includes(' ') && /^[A-Za-z0-9+/=]+$/.test(cleanContent)) continue;
+
+      if (!deduplicator.shouldCapture(cleanContent, 'history')) continue;
+
+      dispatchCapture(cleanContent, msg.role, 'history', conversationId);
+      captured++;
+    }
+
+    console.log('📜 KYT Gemini: Captured ' + captured + '/' + messages.length + ' from ' + conversationId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // INJECTION BLOCK STRIPPING
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -628,12 +844,29 @@
   };
 
   XMLHttpRequest.prototype.send = function (body) {
-    // Only intercept POST to StreamGenerate on gemini.google.com
-    if (this.__kytMethod !== 'POST' ||
-        !isGeminiDomain(this.__kytUrl) ||
-        !isStreamGenerate(this.__kytUrl)) {
+    // Only intercept POST to gemini.google.com
+    if (this.__kytMethod !== 'POST' || !isGeminiDomain(this.__kytUrl)) {
       return originalXHRSend.apply(this, arguments);
     }
+
+    // Path 2: History-load detection (batchexecute with conversation ID)
+    if (!isStreamGenerate(this.__kytUrl)) {
+      const bodyStr = bodyToString(body);
+      const historyInfo = isGeminiHistoryLoad(this.__kytUrl, bodyStr);
+      if (historyInfo) {
+        this.addEventListener('load', function () {
+          try {
+            const rt = this.responseText;
+            if (rt && rt.length > 50) {
+              captureConversationHistory(rt, historyInfo);
+            }
+          } catch (_) {}
+        }, { once: true });
+      }
+      return originalXHRSend.apply(this, arguments);
+    }
+
+    // Path 1: StreamGenerate (live message capture + context injection)
 
     const bodyStr = bodyToString(body);
     const parseResult = parseFReq(bodyStr);
@@ -704,11 +937,32 @@
   window.fetch = async function (input, init) {
     const url = resolveUrl(typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input)));
 
-    // Only intercept POST to StreamGenerate on gemini.google.com
+    // Only intercept POST to gemini.google.com
     const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
-    if (method !== 'POST' || !isGeminiDomain(url) || !isStreamGenerate(url)) {
+    if (method !== 'POST' || !isGeminiDomain(url)) {
       return originalFetch.apply(this, arguments);
     }
+
+    // Path 2: History-load detection (batchexecute via fetch)
+    if (!isStreamGenerate(url)) {
+      let historyBodyStr = null;
+      if (init?.body) historyBodyStr = await bodyToStringAsync(init.body);
+      else if (input instanceof Request) {
+        try { historyBodyStr = await input.clone().text(); } catch (_) {}
+      }
+      const historyInfo = isGeminiHistoryLoad(url, historyBodyStr);
+      if (historyInfo) {
+        const response = await originalFetch.apply(this, arguments);
+        try {
+          const rt = await response.clone().text();
+          if (rt && rt.length > 50) captureConversationHistory(rt, historyInfo);
+        } catch (_) {}
+        return response;
+      }
+      return originalFetch.apply(this, arguments);
+    }
+
+    // Path 1: StreamGenerate (live message capture + context injection)
 
     // Read body
     let bodyStr = null;
@@ -771,5 +1025,5 @@
     };
   };
 
-  console.log('✅ KYT Gemini: inject.js loaded (live-capture only, no history interception)');
+  console.log('✅ KYT Gemini: inject.js loaded (live capture + history-load interception)');
 })();
