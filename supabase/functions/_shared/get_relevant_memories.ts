@@ -153,20 +153,6 @@ function extractPlatformMention(message: string): string | null {
 }
 
 /**
- * Extract ALL platform mentions from a query (for multi-platform comparison).
- * Returns unique platforms, or empty array if fewer than 2.
- */
-function extractMultiplePlatforms(message: string): string[] {
-    const regex = /\b(gemini|chatgpt|claude[- ]code|claude)\b/gi;
-    const platforms = new Set<string>();
-    let match;
-    while ((match = regex.exec(message)) !== null) {
-        platforms.add(match[1].toLowerCase().replace(/\s+/g, '-'));
-    }
-    return platforms.size >= 2 ? Array.from(platforms) : [];
-}
-
-/**
  * Apply platform-mismatch penalty to reranked results (Gap 3).
  * When user asks about a specific platform, penalize items from other platforms.
  * Mutates the array in place: re-sorts and removes items below threshold.
@@ -663,7 +649,10 @@ export async function getRelevantMemories(
     // Resolves "it", "that", "the other one" using conversation window.
     // ========================================================================
     if (conversationWindow && conversationWindow.length > 0 && anthropicApiKey && !fast) {
+        const corefStart = performance.now();
         const resolvedQuery = await resolveImplicitQuery(query, conversationWindow, anthropicApiKey, requestId);
+        const corefMs = Math.round(performance.now() - corefStart);
+        Logger.info(`Coreference resolution: ${corefMs}ms`, { requestId });
         if (resolvedQuery) {
             query = resolvedQuery;
         }
@@ -681,11 +670,11 @@ export async function getRelevantMemories(
     // If the query contains comparison/multi-hop signals, decompose into
     // sub-queries, run parallel retrievals, and merge results.
     // ========================================================================
-    // Multi-platform detection for synthesis queries
-    const multiPlatforms = extractMultiplePlatforms(query);
-
     if (!fast && anthropicApiKey && !(options as any)._skipDecomposition) {
+        const decompStart = performance.now();
         const decomposition = await decomposeQuery(query, anthropicApiKey, requestId);
+        const decompMs = Math.round(performance.now() - decompStart);
+        Logger.info(`Query decomposition: ${decompMs}ms`, { requestId });
         if (decomposition && decomposition.subQueries.length >= 2) {
             // Run parallel retrievals for each sub-query (without decomposition to avoid recursion)
             const subOptions: SearchOptions = {
@@ -730,31 +719,6 @@ export async function getRelevantMemories(
             }
             // If all sub-queries returned empty, fall through to normal pipeline
             Logger.info("Decomposition returned no results, falling through to standard pipeline", { requestId });
-        }
-    }
-
-    // ========================================================================
-    // STEP 0.7: Multi-Platform Coordinated Retrieval
-    // When 2+ platforms mentioned (e.g. "on Claude vs Gemini"), run
-    // per-platform retrievals and merge with platform tags preserved.
-    // ========================================================================
-    if (!fast && multiPlatforms.length >= 2 && !(options as any)._skipDecomposition) {
-        Logger.info(`Multi-platform retrieval: ${multiPlatforms.join(', ')}`, { requestId });
-
-        const perPlatformResults = await Promise.all(
-            multiPlatforms.map(async (platform) => {
-                const platformResults = await getRecentByPlatform(platform, userId, Math.ceil(topK / multiPlatforms.length) + 2, resolvedProfileId);
-                return { platform, results: platformResults };
-            })
-        );
-
-        const allPlatformResults = perPlatformResults.flatMap(pr => pr.results);
-        if (allPlatformResults.length > 0) {
-            // Also run the main pipeline for non-platform-specific semantic matches
-            // and merge below in the normal flow (don't return early)
-            Logger.info(`Multi-platform: ${perPlatformResults.map(pr => `${pr.platform}=${pr.results.length}`).join(', ')}`, { requestId });
-            // These will be merged with the main pipeline results via the synthesis fallback
-            // already implemented in context-retrieval.js. Continue to normal pipeline.
         }
     }
 
