@@ -28,7 +28,7 @@ const RAW_JSON_METADATA_PATTERNS = [
 
 function isRawJsonMetadata(content) {
     const trimmed = content.trim();
-    if (!trimmed.startsWith('{')) return false;
+    if (!trimmed.includes('{')) return false;
     return RAW_JSON_METADATA_PATTERNS.some(p => p.test(trimmed));
 }
 
@@ -154,6 +154,11 @@ describe('Raw JSON metadata filter', () => {
     it('drops frames_asset_pointers metadata', () => {
         const frames = '{"frames_asset_pointers":["file-a","file-b"],"content_type":"video"}';
         expect(isRawJsonMetadata(frames)).toBe(true);
+    });
+
+    it('drops User:-prefixed audio asset pointer JSON', () => {
+        const prefixed = 'User: {"content_type":"audio_transcription","text":"hello"}\n{"expiry_datetime":"2026-09-03","content_type":"real_time_user_audio_video_asset_pointer","asset_pointer":"file-abc"}';
+        expect(isRawJsonMetadata(prefixed)).toBe(true);
     });
 
     it('keeps normal text mentioning "content_type"', () => {

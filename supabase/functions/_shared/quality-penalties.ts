@@ -523,7 +523,8 @@ function filterClaudeCodeArtifacts(items: ScoredCandidate[], requestId?: string)
 function filterRawJsonMetadata(items: ScoredCandidate[], requestId?: string): ScoredCandidate[] {
     return items.filter(item => {
         const content = (item.content || '').trim();
-        if (!content.startsWith('{')) return true;
+        // Guard: only run regex on content containing '{' (raw JSON or prefixed with User:/Assistant:)
+        if (!content.includes('{')) return true;
         if (RAW_JSON_METADATA_PATTERNS.some(p => p.test(content))) {
             Logger.info(`Raw JSON metadata filter: dropped "${content.substring(0, 60)}..."`, { requestId });
             return false;
