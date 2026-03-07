@@ -203,13 +203,21 @@ function filterQueryEchoes(query: string, candidates: Candidate[]): Candidate[] 
 
     return candidates.filter(c => {
         const contentNorm = (c.content || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
-        // Only filter very short content that's likely just a user prompt
+        const contentWords = new Set(contentNorm.split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w)));
+        if (contentWords.size < 3) return true; // too few content words for reliable echo detection
+
         if (contentNorm.length < 80) {
-            const contentWords = new Set(contentNorm.split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w)));
-            if (contentWords.size < 3) return true; // too few content words for reliable echo detection
+            // Short content: high overlap = echo (user prompt re-captured)
             const overlap = [...queryWords].filter(w => contentWords.has(w)).length;
             const overlapRatio = overlap / Math.max(queryWords.size, 1);
-            if (overlapRatio > 0.7) return false; // >70% word overlap with query = echo
+            if (overlapRatio > 0.7) return false;
+        } else {
+            // Long content: check if it contains the verbatim query as a substring.
+            // This catches assistant responses that quote/discuss the query itself
+            // (meta-echo: "You asked about X" → captured → retrieved for query "X").
+            if (queryNorm.length >= 10 && contentNorm.includes(queryNorm)) {
+                return false;
+            }
         }
         return true;
     });
@@ -264,7 +272,7 @@ async function vectorSearch(
             query_embedding: embedding,
             match_threshold: 0.5,
             match_count: topK,
-            exclude_recent_seconds: 0,
+            exclude_recent_seconds: 120,
             p_user_id: userId,
             boost_entity_ids: boostEntityIds,
             p_profile_id: profileId
@@ -911,7 +919,7 @@ export async function getRelevantMemories(
                     query_embedding: rawEmbedding,
                     match_threshold: 0.35,
                     match_count: topK,
-                    exclude_recent_seconds: 0,
+                    exclude_recent_seconds: 120,
                     p_user_id: userId,
                     boost_entity_ids: boostEntityIds,
                     p_profile_id: resolvedProfileId,
@@ -1145,7 +1153,7 @@ export async function getRelevantMemories(
                 query_embedding: rawEmbedding,
                 match_threshold: 0.35,  // Lower threshold for rescue
                 match_count: topK,
-                exclude_recent_seconds: 0,
+                exclude_recent_seconds: 120,
                 p_user_id: userId,
                 boost_entity_ids: boostEntityIds,
                 p_profile_id: resolvedProfileId,

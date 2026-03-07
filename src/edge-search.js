@@ -28,6 +28,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
     hydeWeight = 0.6,
     timeoutMs = 30000,
     recentByPlatform = null,
+    fast = false,
     confidenceThreshold = undefined,
     mmrLambda = undefined,
     recentTopics = undefined,
@@ -54,6 +55,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
     useHyde,
     hydeWeight,
     topK,
+    fast,
   };
   if (recentByPlatform) body.recentByPlatform = recentByPlatform;
   if (confidenceThreshold != null) body.confidenceThreshold = confidenceThreshold;

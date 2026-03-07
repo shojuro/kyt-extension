@@ -500,6 +500,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
         try {
           contextItems = await searchViaEdgeFunction(queryToUse, {
             topK: contextConfig.candidatePoolSize,
+            fast: true,
             confidenceThreshold: contextConfig.confidenceThreshold || undefined,
             recentTopics: recentTopicBoost || undefined,
             conversationWindow: contextConfig.conversationWindow || undefined,
@@ -512,6 +513,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
             console.log('🔄 Retry (edge): retrying with original query...');
             contextItems = await searchViaEdgeFunction(userMessage, {
               topK: contextConfig.candidatePoolSize,
+              fast: true,
               confidenceThreshold: contextConfig.confidenceThreshold || undefined,
             });
             console.log(`🔄 Retry (edge) result: ${contextItems.length} items`);
