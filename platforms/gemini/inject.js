@@ -85,6 +85,156 @@
   const deduplicator = new MessageDeduplicator();
 
   // ═══════════════════════════════════════════════════════════════════════
+  // BATCHEXECUTE PARAMETER SNIFFER — Captures live bl + RPC IDs
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Sniffs batchexecute request parameters from real Gemini traffic.
+   * inject.js intercepts ALL XHR/fetch — we watch for batchexecute POSTs
+   * and extract the `bl` param (from URL) and RPC IDs (from f.req body).
+   *
+   * These are exposed via window.__kytGeminiCapturedParams so the
+   * history import fetcher can use live values instead of hardcoded ones.
+   */
+  const capturedParams = {
+    bl: null,                    // Latest bl= value from any batchexecute URL
+    blCapturedAt: 0,
+    at: null,                    // XSRF/anti-forgery token from batchexecute body
+    atCapturedAt: 0,
+    rpcIds: new Map(),           // rpcId → { lastSeen, responseHint }
+    conversationListRpcId: null, // Best-guess RPC for conversation list
+    conversationDetailRpcId: null, // Best-guess RPC for conversation detail
+  };
+
+  /**
+   * Extract bl and RPC IDs from a batchexecute request.
+   * Called from both XHR and fetch interceptors on every POST to batchexecute.
+   */
+  function sniffBatchExecuteParams(urlString, bodyString) {
+    try {
+      const url = new URL(resolveUrl(urlString));
+
+      // Capture bl parameter from URL query string
+      const bl = url.searchParams.get('bl');
+      if (bl && bl.length > 10) {
+        capturedParams.bl = bl;
+        capturedParams.blCapturedAt = Date.now();
+      }
+
+      // Extract RPC IDs and XSRF token from f.req body
+      if (!bodyString) return;
+      let params;
+      try { params = new URLSearchParams(bodyString); } catch (_) { return; }
+
+      // Capture `at` XSRF token (Google anti-forgery, required for batchexecute)
+      const at = params.get('at');
+      if (at && at.length > 5) {
+        capturedParams.at = at;
+        capturedParams.atCapturedAt = Date.now();
+      }
+
+      const fReq = params.get('f.req');
+      if (!fReq) return;
+
+      let outer;
+      try { outer = JSON.parse(fReq); } catch (_) { return; }
+      if (typeof outer === 'string') {
+        try { outer = JSON.parse(outer); } catch (_) { return; }
+      }
+
+      // StreamGenerate format [null, "..."] — skip, not batchexecute
+      if (!Array.isArray(outer) || (outer[0] === null && typeof outer[1] === 'string')) return;
+
+      // batchexecute: [[["rpcId", "args", null, "generic"], ...]]
+      if (!Array.isArray(outer[0])) return;
+
+      for (const rpc of outer[0]) {
+        if (!Array.isArray(rpc) || typeof rpc[0] !== 'string') continue;
+        const rpcId = rpc[0];
+        const rpcArgs = typeof rpc[1] === 'string' ? rpc[1] : '';
+
+        capturedParams.rpcIds.set(rpcId, {
+          lastSeen: Date.now(),
+          argsPreview: rpcArgs.substring(0, 100),
+        });
+
+        // Heuristic: conversation detail RPC has a c_<hex> conversation ID in args
+        if (/c_[0-9a-f]{8,}/.test(rpcArgs) && rpcArgs.length < 500) {
+          capturedParams.conversationDetailRpcId = rpcId;
+        }
+      }
+
+      // Also capture rpcids from URL params (Google puts the primary RPC ID there)
+      const urlRpcIds = url.searchParams.get('rpcids');
+      if (urlRpcIds) {
+        for (const id of urlRpcIds.split(',')) {
+          const trimmed = id.trim();
+          if (trimmed && !SYSTEM_ONLY_RPCS.has(trimmed)) {
+            capturedParams.rpcIds.set(trimmed, {
+              lastSeen: Date.now(),
+              argsPreview: '(from URL rpcids param)',
+            });
+          }
+        }
+      }
+    } catch (_) {
+      // Non-fatal — sniffing is best-effort
+    }
+  }
+
+  /**
+   * Called when we get a batchexecute response that contains conversation list data.
+   * Associates the RPC ID with "conversation list" functionality.
+   */
+  function markConversationListRpc(rpcId) {
+    if (rpcId) {
+      capturedParams.conversationListRpcId = rpcId;
+    }
+  }
+
+  /**
+   * Try to extract the XSRF `at` token from the page's embedded data.
+   * Google embeds it as WIZ_global_data.SNlM0e in a <script> tag on page load.
+   * This is a fallback for when no batchexecute POST has been intercepted yet.
+   */
+  function sniffAtTokenFromPage() {
+    try {
+      // Method 1: WIZ_global_data (used by Gemini/Bard)
+      if (window.WIZ_global_data && window.WIZ_global_data.SNlM0e) {
+        const at = window.WIZ_global_data.SNlM0e;
+        if (at && at.length > 5) {
+          capturedParams.at = at;
+          capturedParams.atCapturedAt = Date.now();
+          return;
+        }
+      }
+
+      // Method 2: Search page source for SNlM0e pattern
+      const scripts = document.querySelectorAll('script[data-id="_gd"]');
+      for (const s of scripts) {
+        const match = s.textContent.match(/SNlM0e.*?"([^"]+)"/);
+        if (match && match[1]) {
+          capturedParams.at = match[1];
+          capturedParams.atCapturedAt = Date.now();
+          return;
+        }
+      }
+    } catch (_) {
+      // Non-fatal
+    }
+  }
+
+  // Try to capture `at` token from page on load (before any batchexecute fires)
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    sniffAtTokenFromPage();
+  } else {
+    document.addEventListener('DOMContentLoaded', sniffAtTokenFromPage, { once: true });
+  }
+
+  // Expose captured params to tab-fetch queries
+  window.__kytGeminiCapturedParams = capturedParams;
+
+  // ═══════════════════════════════════════════════════════════════════════
   // URL HELPERS
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -863,6 +1013,11 @@
       return originalXHRSend.apply(this, arguments);
     }
 
+    // Sniff batchexecute params from ALL non-StreamGenerate POSTs
+    if (!isStreamGenerate(this.__kytUrl) && this.__kytUrl.includes('batchexecute')) {
+      sniffBatchExecuteParams(this.__kytUrl, bodyToString(body));
+    }
+
     // Path 2: History-load detection (batchexecute with conversation ID)
     if (!isStreamGenerate(this.__kytUrl)) {
       const bodyStr = bodyToString(body);
@@ -873,6 +1028,36 @@
             const rt = this.responseText;
             if (rt && rt.length > 50) {
               captureConversationHistory(rt, historyInfo);
+            }
+          } catch (_) {}
+        }, { once: true });
+      }
+
+      // Sniff for conversation-list responses (many c_ IDs = sidebar load)
+      if (!historyInfo) {
+        const xhrForSniff = this;
+        this.addEventListener('load', function () {
+          try {
+            const rt = xhrForSniff.responseText;
+            if (rt && rt.length > 200) {
+              const cIdMatches = rt.match(/c_[0-9a-f]{8,}/g);
+              if (cIdMatches && cIdMatches.length >= 3) {
+                // This response had 3+ conversation IDs — likely the sidebar list
+                const bStr = bodyToString(body);
+                if (bStr) {
+                  try {
+                    const p = new URLSearchParams(bStr);
+                    const fr = p.get('f.req');
+                    if (fr) {
+                      let o = JSON.parse(fr);
+                      if (typeof o === 'string') o = JSON.parse(o);
+                      if (Array.isArray(o) && Array.isArray(o[0]) && Array.isArray(o[0][0])) {
+                        markConversationListRpc(o[0][0][0]);
+                      }
+                    }
+                  } catch (_) {}
+                }
+              }
             }
           } catch (_) {}
         }, { once: true });
@@ -957,6 +1142,14 @@
       return originalFetch.apply(this, arguments);
     }
 
+    // Sniff batchexecute params from ALL non-StreamGenerate POSTs
+    if (!isStreamGenerate(url) && url.includes('batchexecute')) {
+      let sniffBody = null;
+      if (init?.body) sniffBody = bodyToString(init.body);
+      else if (input instanceof Request) { try { sniffBody = await input.clone().text(); } catch (_) {} }
+      if (sniffBody) sniffBatchExecuteParams(url, sniffBody);
+    }
+
     // Path 2: History-load detection (batchexecute via fetch)
     if (!isStreamGenerate(url)) {
       let historyBodyStr = null;
@@ -1036,6 +1229,15 @@
     return {
       deduplicator: deduplicator.getStats(),
       pendingContextRequests: pendingContextRequests.size,
+      capturedParams: {
+        bl: capturedParams.bl,
+        blCapturedAt: capturedParams.blCapturedAt ? new Date(capturedParams.blCapturedAt).toISOString() : null,
+        at: capturedParams.at ? `${capturedParams.at.substring(0, 8)}...` : null,
+        atCapturedAt: capturedParams.atCapturedAt ? new Date(capturedParams.atCapturedAt).toISOString() : null,
+        conversationListRpcId: capturedParams.conversationListRpcId,
+        conversationDetailRpcId: capturedParams.conversationDetailRpcId,
+        knownRpcIds: Object.fromEntries(capturedParams.rpcIds),
+      },
     };
   };
 

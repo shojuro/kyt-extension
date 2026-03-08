@@ -25,6 +25,8 @@ export class GeminiFetcher {
     constructor(rateLimiter) {
         this.rateLimiter = rateLimiter;
         this.baseUrl = 'https://gemini.google.com';
+        /** @type {{ bl: string|null, at: string|null, conversationListRpcId: string|null, conversationDetailRpcId: string|null }} */
+        this.liveParams = { bl: null, at: null, conversationListRpcId: null, conversationDetailRpcId: null };
     }
 
     /**
@@ -40,7 +42,124 @@ export class GeminiFetcher {
      * @param {function(number): void} [onTotal]
      * @returns {Promise<Message[]>}
      */
+    /**
+     * Capture live batchexecute parameters (bl, RPC IDs) from the Gemini tab.
+     *
+     * The inject.js script sniffs these from real Gemini traffic and exposes
+     * them via window.__kytGeminiCapturedParams. We query this via tab-fetch
+     * to get current values instead of hardcoding stale ones.
+     *
+     * If no params have been captured yet (user hasn't interacted with Gemini),
+     * we trigger a page reload to force the sidebar to load and capture params.
+     */
+    async captureLiveParams() {
+        try {
+            const tabs = await chrome.tabs.query({ url: ['https://gemini.google.com/*'] });
+            if (!tabs || tabs.length === 0) {
+                console.log('[GeminiFetcher] No Gemini tab found for param capture');
+                return;
+            }
+
+            const execResult = await chrome.scripting.executeScript({
+                target: { tabId: tabs[0].id },
+                world: 'MAIN',
+                func: () => {
+                    const p = window.__kytGeminiCapturedParams;
+                    if (!p) return null;
+                    return {
+                        bl: p.bl,
+                        at: p.at,
+                        conversationListRpcId: p.conversationListRpcId,
+                        conversationDetailRpcId: p.conversationDetailRpcId,
+                        rpcCount: p.rpcIds ? p.rpcIds.size : 0,
+                        blAge: p.blCapturedAt ? Date.now() - p.blCapturedAt : null,
+                        atAge: p.atCapturedAt ? Date.now() - p.atCapturedAt : null,
+                    };
+                },
+                args: [],
+            });
+
+            const params = execResult?.[0]?.result;
+            if (params?.bl && params?.at) {
+                console.log('[GeminiFetcher] Captured live params:', JSON.stringify(params));
+                this.liveParams.bl = params.bl;
+                this.liveParams.at = params.at;
+                this.liveParams.conversationListRpcId = params.conversationListRpcId;
+                this.liveParams.conversationDetailRpcId = params.conversationDetailRpcId;
+            } else if (params?.bl && !params?.at) {
+                console.log('[GeminiFetcher] Have bl but missing at token — triggering sidebar load...');
+                this.liveParams.bl = params.bl;
+                this.liveParams.conversationListRpcId = params.conversationListRpcId;
+                this.liveParams.conversationDetailRpcId = params.conversationDetailRpcId;
+                await this.triggerSidebarLoad(tabs[0].id);
+            } else {
+                console.log('[GeminiFetcher] No captured params yet — triggering sidebar load...');
+                await this.triggerSidebarLoad(tabs[0].id);
+            }
+        } catch (error) {
+            console.warn('[GeminiFetcher] Failed to capture live params:', error.message);
+        }
+    }
+
+    /**
+     * Trigger a Gemini page navigation to force sidebar data to load,
+     * which will cause inject.js to capture the bl and RPC params.
+     * Waits briefly for the params to be captured.
+     */
+    async triggerSidebarLoad(tabId) {
+        try {
+            // Navigate to Gemini home (triggers sidebar conversation list load)
+            await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: () => {
+                    // If we're already on gemini.google.com, reload to trigger sidebar fetch
+                    if (window.location.hostname === 'gemini.google.com') {
+                        window.location.href = 'https://gemini.google.com/app';
+                    }
+                },
+                args: [],
+            });
+
+            // Wait for sidebar batchexecute calls to fire and be captured
+            await new Promise(r => setTimeout(r, 4000));
+
+            // Re-read captured params
+            const execResult = await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: () => {
+                    const p = window.__kytGeminiCapturedParams;
+                    if (!p) return null;
+                    return {
+                        bl: p.bl,
+                        at: p.at,
+                        conversationListRpcId: p.conversationListRpcId,
+                        conversationDetailRpcId: p.conversationDetailRpcId,
+                    };
+                },
+                args: [],
+            });
+
+            const params = execResult?.[0]?.result;
+            if (params?.bl) {
+                console.log('[GeminiFetcher] Captured params after sidebar load:', JSON.stringify(params));
+                this.liveParams.bl = params.bl;
+                this.liveParams.at = params.at;
+                this.liveParams.conversationListRpcId = params.conversationListRpcId;
+                this.liveParams.conversationDetailRpcId = params.conversationDetailRpcId;
+            } else {
+                console.warn('[GeminiFetcher] Still no params after sidebar load');
+            }
+        } catch (error) {
+            console.warn('[GeminiFetcher] triggerSidebarLoad failed:', error.message);
+        }
+    }
+
     async fetchAllConversations(maxAgeDays, resumeFromId, onProgress, onBatch, onTotal) {
+        // Step 0: Capture live batchexecute params from Gemini tab
+        await this.captureLiveParams();
+
         // Step 1: Get conversation list from Gemini's sidebar API
         const conversations = await this.fetchConversationList();
 
@@ -117,10 +236,12 @@ export class GeminiFetcher {
             //
             // The Gemini web app exposes conversations via:
             // POST /_/BardChatUi/data/batchexecute with the conversation list RPC
-            const reqBody = this.buildBatchExecuteBody('GIm1Qd', '[]');
+            const listRpcId = this.liveParams.conversationListRpcId || 'GIm1Qd';
+            console.log(`[GeminiFetcher] Using conversation list RPC: ${listRpcId}, bl: ${this.liveParams.bl || '(hardcoded fallback)'}`);
+            const reqBody = this.buildBatchExecuteBody(listRpcId, '[]');
 
             const response = await fetchFromTab('gemini.google.com',
-                `${this.baseUrl}/_/BardChatUi/data/batchexecute?${this.getBatchExecuteParams()}`,
+                `${this.baseUrl}/_/BardChatUi/data/batchexecute?${this.getBatchExecuteParams(listRpcId)}`,
                 {
                     method: 'POST',
                     headers: {
@@ -140,11 +261,61 @@ export class GeminiFetcher {
             }
 
             const text = typeof response.body === 'string' ? response.body : response.text();
-            return this.parseConversationList(text);
+            const conversations = this.parseConversationList(text);
+            if (conversations.length > 0) return conversations;
 
+            // If batchexecute returned no conversations, try DOM scrape fallback
+            console.log('[GeminiFetcher] batchexecute returned 0 conversations, trying DOM scrape...');
+            return this.scrapeConversationListFromDOM();
         } catch (error) {
-            console.error('[GeminiFetcher] Failed to fetch conversation list:', error);
-            throw error;
+            console.error('[GeminiFetcher] batchexecute failed, trying DOM scrape fallback:', error.message);
+            return this.scrapeConversationListFromDOM();
+        }
+    }
+
+    /**
+     * Fallback: Scrape conversation list from the Gemini page's sidebar DOM.
+     * This works regardless of batchexecute format changes since the sidebar
+     * is always rendered with conversation links.
+     *
+     * @returns {Promise<Array<{id: string, title: string, updatedAt: number}>>}
+     */
+    async scrapeConversationListFromDOM() {
+        try {
+            const tabs = await chrome.tabs.query({ url: ['https://gemini.google.com/*'] });
+            if (!tabs || tabs.length === 0) {
+                throw new Error('No Gemini tab found');
+            }
+
+            const execResult = await chrome.scripting.executeScript({
+                target: { tabId: tabs[0].id },
+                world: 'MAIN',
+                func: () => {
+                    const conversations = [];
+                    // Gemini sidebar conversation links contain /app/<conversation_id>
+                    const links = document.querySelectorAll('a[href*="/app/"]');
+                    for (const link of links) {
+                        const href = link.getAttribute('href') || '';
+                        const match = href.match(/\/app\/(c_[0-9a-f]+)/);
+                        if (match) {
+                            const id = match[1];
+                            const title = link.textContent?.trim() || 'Untitled';
+                            if (!conversations.some(c => c.id === id)) {
+                                conversations.push({ id, title, updatedAt: null });
+                            }
+                        }
+                    }
+                    return conversations;
+                },
+                args: [],
+            });
+
+            const conversations = execResult?.[0]?.result || [];
+            console.log(`[GeminiFetcher] DOM scrape found ${conversations.length} conversations`);
+            return conversations;
+        } catch (error) {
+            console.error('[GeminiFetcher] DOM scrape failed:', error.message);
+            throw new Error('Could not fetch Gemini conversations via API or DOM. Please use Google Takeout export instead.');
         }
     }
 
@@ -160,11 +331,12 @@ export class GeminiFetcher {
 
         try {
             // Fetch conversation detail via batchexecute with the conversation load RPC
+            const detailRpcId = this.liveParams.conversationDetailRpcId || 'hNvQHb';
             const innerArgs = JSON.stringify([conversationId]);
-            const reqBody = this.buildBatchExecuteBody('hNvQHb', innerArgs);
+            const reqBody = this.buildBatchExecuteBody(detailRpcId, innerArgs);
 
             const response = await fetchFromTab('gemini.google.com',
-                `${this.baseUrl}/_/BardChatUi/data/batchexecute?${this.getBatchExecuteParams()}`,
+                `${this.baseUrl}/_/BardChatUi/data/batchexecute?${this.getBatchExecuteParams(detailRpcId)}`,
                 {
                     method: 'POST',
                     headers: {
@@ -208,15 +380,24 @@ export class GeminiFetcher {
         const envelope = JSON.stringify([[
             [rpcId, args, null, 'generic']
         ]]);
-        return `f.req=${encodeURIComponent(envelope)}&`;
+        let body = `f.req=${encodeURIComponent(envelope)}&`;
+        // Include XSRF token if captured — required by Google's batchexecute endpoint
+        if (this.liveParams.at) {
+            body += `at=${encodeURIComponent(this.liveParams.at)}&`;
+        }
+        return body;
     }
 
     /**
      * Get standard batchexecute URL parameters.
+     * Uses live-captured bl value when available, falls back to hardcoded.
+     * @param {string} [rpcId] - Primary RPC ID for this request
      * @returns {string}
      */
-    getBatchExecuteParams() {
-        return 'rpcids=GIm1Qd&source-path=%2F&bl=boq_assistant-bard-web-server_20260301.00_p0&hl=en&_reqid=0&rt=c';
+    getBatchExecuteParams(rpcId) {
+        const bl = this.liveParams.bl || 'boq_assistant-bard-web-server_20260301.00_p0';
+        const rpcids = rpcId || 'GIm1Qd';
+        return `rpcids=${encodeURIComponent(rpcids)}&source-path=%2F&bl=${encodeURIComponent(bl)}&hl=en&_reqid=0&rt=c`;
     }
 
     /**
