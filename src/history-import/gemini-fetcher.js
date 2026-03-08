@@ -160,8 +160,15 @@ export class GeminiFetcher {
         // Step 0: Capture live batchexecute params from Gemini tab
         await this.captureLiveParams();
 
-        // Step 1: Get conversation list from Gemini's sidebar API
-        const conversations = await this.fetchConversationList();
+        // Step 1: Get conversation list — DOM scrape first (reliable),
+        // batchexecute as fallback (RPC IDs rotate with Google deploys)
+        let conversations = await this.scrapeConversationListFromDOM().catch(() => []);
+        if (!conversations || conversations.length === 0) {
+            console.log('[GeminiFetcher] DOM scrape returned 0, trying batchexecute...');
+            conversations = await this.fetchConversationList();
+        } else {
+            console.log(`[GeminiFetcher] DOM scrape found ${conversations.length} conversations`);
+        }
 
         if (!conversations || conversations.length === 0) {
             throw new Error('Could not fetch Gemini conversations. Please log in to gemini.google.com and try again.');
@@ -227,50 +234,35 @@ export class GeminiFetcher {
     async fetchConversationList() {
         await this.rateLimiter.acquire();
 
+        const listRpcId = this.liveParams.conversationListRpcId || 'GIm1Qd';
+        console.log(`[GeminiFetcher] Trying batchexecute conversation list, RPC: ${listRpcId}, bl: ${this.liveParams.bl || '(hardcoded)'}`);
+
         try {
-            console.log('[GeminiFetcher] Fetching conversation list via tab...');
-
-            // Gemini loads conversation list from the main page HTML or via
-            // a batchexecute RPC. The simplest approach: fetch the conversations
-            // page and parse the embedded data, or use the activity endpoint.
-            //
-            // The Gemini web app exposes conversations via:
-            // POST /_/BardChatUi/data/batchexecute with the conversation list RPC
-            const listRpcId = this.liveParams.conversationListRpcId || 'GIm1Qd';
-            console.log(`[GeminiFetcher] Using conversation list RPC: ${listRpcId}, bl: ${this.liveParams.bl || '(hardcoded fallback)'}`);
             const reqBody = this.buildBatchExecuteBody(listRpcId, '[]');
-
             const response = await fetchFromTab('gemini.google.com',
                 `${this.baseUrl}/_/BardChatUi/data/batchexecute?${this.getBatchExecuteParams(listRpcId)}`,
                 {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: reqBody,
                     timeoutMs: 30000,
                 }
             );
 
-            if (!response.ok) {
-                console.error(`[GeminiFetcher] Conversation list failed: ${response.status}`);
-                if (response.status === 401 || response.status === 403) {
-                    throw new Error('Not logged in to Gemini. Please log in to gemini.google.com and try again.');
-                }
-                return [];
+            if (response.ok) {
+                const text = typeof response.body === 'string' ? response.body : response.text();
+                const conversations = this.parseConversationList(text);
+                if (conversations.length > 0) return conversations;
+            } else {
+                console.warn(`[GeminiFetcher] batchexecute list returned ${response.status}`);
             }
-
-            const text = typeof response.body === 'string' ? response.body : response.text();
-            const conversations = this.parseConversationList(text);
-            if (conversations.length > 0) return conversations;
-
-            // If batchexecute returned no conversations, try DOM scrape fallback
-            console.log('[GeminiFetcher] batchexecute returned 0 conversations, trying DOM scrape...');
-            return this.scrapeConversationListFromDOM();
         } catch (error) {
-            console.error('[GeminiFetcher] batchexecute failed, trying DOM scrape fallback:', error.message);
-            return this.scrapeConversationListFromDOM();
+            console.warn('[GeminiFetcher] batchexecute list failed:', error.message);
         }
+
+        // batchexecute failed or returned 0 — fall back to DOM scrape
+        console.log('[GeminiFetcher] Falling back to DOM scrape for conversation list...');
+        return this.scrapeConversationListFromDOM();
     }
 
     /**
@@ -329,8 +321,8 @@ export class GeminiFetcher {
     async fetchConversationDetail(conversationId, title) {
         await this.rateLimiter.acquire();
 
+        // Try batchexecute first (fast, no navigation)
         try {
-            // Fetch conversation detail via batchexecute with the conversation load RPC
             const detailRpcId = this.liveParams.conversationDetailRpcId || 'hNvQHb';
             const innerArgs = JSON.stringify([conversationId]);
             const reqBody = this.buildBatchExecuteBody(detailRpcId, innerArgs);
@@ -347,21 +339,142 @@ export class GeminiFetcher {
                 }
             );
 
-            if (!response.ok) {
-                console.error(`[GeminiFetcher] Conversation ${conversationId} failed: ${response.status}`);
-                if (response.status === 429) {
-                    console.log('[GeminiFetcher] Rate limited, waiting 5s...');
-                    await new Promise(r => setTimeout(r, 5000));
-                    return this.fetchConversationDetail(conversationId, title);
-                }
+            if (response.ok) {
+                const text = typeof response.body === 'string' ? response.body : response.text();
+                const messages = this.parseConversationDetail(text, conversationId, title);
+                if (messages.length > 0) return messages;
+            }
+
+            if (response.status === 429) {
+                console.log('[GeminiFetcher] Rate limited, waiting 5s...');
+                await new Promise(r => setTimeout(r, 5000));
+                return this.fetchConversationDetail(conversationId, title);
+            }
+
+            console.warn(`[GeminiFetcher] batchexecute ${response.status} for ${conversationId}, trying DOM scrape...`);
+        } catch (error) {
+            console.warn(`[GeminiFetcher] batchexecute failed for ${conversationId}:`, error.message);
+        }
+
+        // Fallback: Navigate to the conversation page and scrape messages from DOM
+        return this.scrapeConversationDetailFromDOM(conversationId, title);
+    }
+
+    /**
+     * Scrape a conversation's messages by navigating to its page.
+     * Gemini renders conversation turns in the DOM — we extract text
+     * from the rendered message elements.
+     *
+     * @param {string} conversationId
+     * @param {string} title
+     * @returns {Promise<Message[]>}
+     */
+    async scrapeConversationDetailFromDOM(conversationId, title) {
+        try {
+            const tabs = await chrome.tabs.query({ url: ['https://gemini.google.com/*'] });
+            if (!tabs || tabs.length === 0) {
+                console.error('[GeminiFetcher] No Gemini tab for DOM scrape');
                 return [];
             }
 
-            const text = typeof response.body === 'string' ? response.body : response.text();
-            return this.parseConversationDetail(text, conversationId, title);
+            const tabId = tabs[0].id;
+
+            // Navigate to the conversation
+            await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: (convUrl) => { window.location.href = convUrl; },
+                args: [`https://gemini.google.com/app/${conversationId}`],
+            });
+
+            // Wait for conversation to load (Gemini SPA renders asynchronously)
+            await new Promise(r => setTimeout(r, 3000));
+
+            // Scrape the rendered messages
+            const execResult = await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: () => {
+                    const messages = [];
+
+                    // Gemini renders turns in alternating user/model containers.
+                    // User messages: elements with data-message-author-role="user"
+                    // Model messages: elements with data-message-author-role="model"
+                    // Fallback: query-chip containers (user) and response containers (model)
+
+                    // Strategy 1: data-message-author-role attributes
+                    const roleMsgs = document.querySelectorAll('[data-message-author-role]');
+                    if (roleMsgs.length > 0) {
+                        for (const el of roleMsgs) {
+                            const role = el.getAttribute('data-message-author-role');
+                            const text = el.innerText?.trim();
+                            if (text && text.length > 0) {
+                                messages.push({
+                                    role: role === 'model' ? 'assistant' : 'user',
+                                    text,
+                                });
+                            }
+                        }
+                        return messages;
+                    }
+
+                    // Strategy 2: Gemini's turn-based DOM structure
+                    // User turns often have a specific class; model turns follow
+                    const turns = document.querySelectorAll('.conversation-turn, .turn-container, [class*="turn"]');
+                    if (turns.length > 0) {
+                        for (const turn of turns) {
+                            const text = turn.innerText?.trim();
+                            if (!text || text.length < 2) continue;
+                            // Heuristic: check for model indicators
+                            const isModel = turn.querySelector('[class*="model"], [class*="response"], .markdown-main-panel') !== null;
+                            messages.push({
+                                role: isModel ? 'assistant' : 'user',
+                                text,
+                            });
+                        }
+                        return messages;
+                    }
+
+                    // Strategy 3: Query chip (user) + response (model) pairs
+                    const queryChips = document.querySelectorAll('.query-chip-container, .user-query, [class*="query"]');
+                    const responses = document.querySelectorAll('.model-response-text, .response-container, .markdown-main-panel');
+                    const maxLen = Math.max(queryChips.length, responses.length);
+                    for (let i = 0; i < maxLen; i++) {
+                        if (i < queryChips.length) {
+                            const text = queryChips[i].innerText?.trim();
+                            if (text) messages.push({ role: 'user', text });
+                        }
+                        if (i < responses.length) {
+                            const text = responses[i].innerText?.trim();
+                            if (text) messages.push({ role: 'assistant', text });
+                        }
+                    }
+                    return messages;
+                },
+                args: [],
+            });
+
+            const scraped = execResult?.[0]?.result || [];
+            if (scraped.length === 0) {
+                console.warn(`[GeminiFetcher] DOM scrape found 0 messages for ${conversationId}`);
+                return [];
+            }
+
+            console.log(`[GeminiFetcher] DOM scrape found ${scraped.length} messages for ${conversationId}`);
+
+            // Convert to Message format
+            return scraped.map((msg, i) => ({
+                id: `${conversationId}_dom_${i}`,
+                conversationId,
+                conversationTitle: title || 'Untitled',
+                content: msg.text,
+                role: msg.role,
+                timestamp: Date.now() - (scraped.length - i) * 60000,
+                platform: 'gemini',
+            }));
 
         } catch (error) {
-            console.error(`[GeminiFetcher] Failed to fetch conversation ${conversationId}:`, error);
+            console.error(`[GeminiFetcher] DOM scrape failed for ${conversationId}:`, error.message);
             return [];
         }
     }
