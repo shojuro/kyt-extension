@@ -279,12 +279,36 @@ export class GeminiFetcher {
                 throw new Error('No Gemini tab found');
             }
 
+            const tabId = tabs[0].id;
+
+            // Ensure we're on the main page (sidebar is visible there)
+            await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: () => {
+                    // Navigate to main app page if not there (sidebar shows conversation list)
+                    if (!window.location.pathname.startsWith('/app')) {
+                        window.location.href = 'https://gemini.google.com/app';
+                    }
+                },
+                args: [],
+            });
+            await new Promise(r => setTimeout(r, 3000));
+
+            // Scrape conversation links from the sidebar
             const execResult = await chrome.scripting.executeScript({
-                target: { tabId: tabs[0].id },
+                target: { tabId },
                 world: 'MAIN',
                 func: () => {
                     const conversations = [];
-                    // Gemini sidebar conversation links contain /app/<conversation_id>
+
+                    // Find the sidebar/nav container
+                    const sidebar = document.querySelector('nav[role="navigation"]')
+                        || document.querySelector('[data-test-id="chat-history"]')
+                        || document.querySelector('aside')
+                        || document.querySelector('nav');
+
+                    // Strategy 1: Links with /app/c_ conversation IDs
                     const links = document.querySelectorAll('a[href*="/app/"]');
                     for (const link of links) {
                         const href = link.getAttribute('href') || '';
@@ -297,6 +321,35 @@ export class GeminiFetcher {
                             }
                         }
                     }
+
+                    if (conversations.length > 0) return conversations;
+
+                    // Strategy 2: Sidebar buttons/divs with conversation references
+                    if (sidebar) {
+                        const items = sidebar.querySelectorAll('a, button, div[role="button"], [role="listitem"]');
+                        for (const item of items) {
+                            const href = item.getAttribute('href') || '';
+                            const dataId = item.getAttribute('data-conversation-id')
+                                || item.getAttribute('data-id') || '';
+                            const title = item.textContent?.trim() || '';
+
+                            // Skip navigation items
+                            if (!title || title.length < 2 || /^(New|Start|Menu|Settings|Home|Gems)/i.test(title)) continue;
+
+                            let id = '';
+                            const hrefMatch = href.match(/(c_[0-9a-f]+)/);
+                            if (hrefMatch) {
+                                id = hrefMatch[1];
+                            } else if (dataId.startsWith('c_')) {
+                                id = dataId;
+                            }
+
+                            if (id && !conversations.some(c => c.id === id)) {
+                                conversations.push({ id, title, updatedAt: null });
+                            }
+                        }
+                    }
+
                     return conversations;
                 },
                 args: [],
@@ -321,42 +374,10 @@ export class GeminiFetcher {
     async fetchConversationDetail(conversationId, title) {
         await this.rateLimiter.acquire();
 
-        // Try batchexecute first (fast, no navigation)
-        try {
-            const detailRpcId = this.liveParams.conversationDetailRpcId || 'hNvQHb';
-            const innerArgs = JSON.stringify([conversationId]);
-            const reqBody = this.buildBatchExecuteBody(detailRpcId, innerArgs);
-
-            const response = await fetchFromTab('gemini.google.com',
-                `${this.baseUrl}/_/BardChatUi/data/batchexecute?${this.getBatchExecuteParams(detailRpcId)}`,
-                {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                    body: reqBody,
-                    timeoutMs: 30000,
-                }
-            );
-
-            if (response.ok) {
-                const text = typeof response.body === 'string' ? response.body : response.text();
-                const messages = this.parseConversationDetail(text, conversationId, title);
-                if (messages.length > 0) return messages;
-            }
-
-            if (response.status === 429) {
-                console.log('[GeminiFetcher] Rate limited, waiting 5s...');
-                await new Promise(r => setTimeout(r, 5000));
-                return this.fetchConversationDetail(conversationId, title);
-            }
-
-            console.warn(`[GeminiFetcher] batchexecute ${response.status} for ${conversationId}, trying DOM scrape...`);
-        } catch (error) {
-            console.warn(`[GeminiFetcher] batchexecute failed for ${conversationId}:`, error.message);
-        }
-
-        // Fallback: Navigate to the conversation page and scrape messages from DOM
+        // DOM scrape is the primary strategy — batchexecute RPC IDs rotate
+        // with Google deploys and reliably 400. DOM scraping is slower (requires
+        // navigation + render) but uses stable custom elements (<user-query>,
+        // <model-response>) that haven't changed.
         return this.scrapeConversationDetailFromDOM(conversationId, title);
     }
 
@@ -387,22 +408,116 @@ export class GeminiFetcher {
                 args: [`https://gemini.google.com/app/${conversationId}`],
             });
 
-            // Wait for conversation to load (Gemini SPA renders asynchronously)
-            await new Promise(r => setTimeout(r, 3000));
+            // Wait for conversation to render (Gemini SPA, async rendering)
+            await new Promise(r => setTimeout(r, 3500));
 
-            // Scrape the rendered messages
+            // Scroll up to load earlier messages (Gemini lazy-loads conversation history)
+            await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: async () => {
+                    const scroller = document.querySelector('infinite-scroller')
+                        || document.querySelector('.chat-history-scroll-container')
+                        || document.querySelector('#chat-history')
+                        || document.querySelector('main');
+                    if (!scroller) return;
+
+                    let lastCount = 0;
+                    let stableRounds = 0;
+                    for (let i = 0; i < 20 && stableRounds < 3; i++) {
+                        scroller.scrollTo({ top: 0, behavior: 'auto' });
+                        await new Promise(r => setTimeout(r, 800));
+                        const count = document.querySelectorAll('user-query, model-response').length;
+                        if (count === lastCount) stableRounds++;
+                        else { stableRounds = 0; lastCount = count; }
+                    }
+                },
+                args: [],
+            });
+
+            // Wait for final DOM stabilization
+            await new Promise(r => setTimeout(r, 1000));
+
+            // Extract messages using Gemini's actual custom elements
             const execResult = await chrome.scripting.executeScript({
                 target: { tabId },
                 world: 'MAIN',
                 func: () => {
                     const messages = [];
 
-                    // Gemini renders turns in alternating user/model containers.
-                    // User messages: elements with data-message-author-role="user"
-                    // Model messages: elements with data-message-author-role="model"
-                    // Fallback: query-chip containers (user) and response containers (model)
+                    // ═══ Strategy 1: Gemini custom web components ═══
+                    // Gemini uses <user-query> and <model-response> custom elements.
+                    // User text lives in .query-text-line / .query-text / p children.
+                    // Model text lives in <message-content> → .markdown → p, li children.
+                    const userQueries = document.querySelectorAll('user-query, USER-QUERY');
+                    const modelResponses = document.querySelectorAll('model-response, MODEL-RESPONSE');
 
-                    // Strategy 1: data-message-author-role attributes
+                    if (userQueries.length > 0 || modelResponses.length > 0) {
+                        // Extract user messages
+                        userQueries.forEach((uq, idx) => {
+                            const textEls = uq.querySelectorAll('.query-text-line, .query-text, p');
+                            const seen = new Set();
+                            let text = '';
+                            textEls.forEach(el => {
+                                const t = el.textContent?.trim();
+                                if (t && !seen.has(t) && !t.includes('Opens in a new window')) {
+                                    seen.add(t);
+                                    text += t + ' ';
+                                }
+                            });
+                            // Fallback: use full innerText if sub-selectors found nothing
+                            if (!text.trim()) text = uq.innerText?.trim() || '';
+                            if (text.trim()) {
+                                messages.push({ role: 'user', text: text.trim(), idx });
+                            }
+                        });
+
+                        // Extract model responses
+                        modelResponses.forEach((mr, idx) => {
+                            const msgContent = mr.querySelector('message-content, MESSAGE-CONTENT');
+                            const markdown = msgContent?.querySelector('.markdown')
+                                || msgContent?.querySelector('.response-content')
+                                || msgContent;
+
+                            let text = '';
+                            if (markdown) {
+                                // Extract paragraphs and list items preserving structure
+                                const blocks = markdown.querySelectorAll('p, li, pre, h1, h2, h3, h4');
+                                const seen = new Set();
+                                blocks.forEach(b => {
+                                    const t = b.textContent?.trim();
+                                    if (t && t.length > 2 && !seen.has(t)) {
+                                        seen.add(t);
+                                        text += (b.tagName === 'LI' ? '• ' : '') + t + '\n';
+                                    }
+                                });
+                            }
+                            // Fallback: full innerText
+                            if (!text.trim()) text = mr.innerText?.trim() || '';
+                            // Clean up noise
+                            text = text
+                                .replace(/Read documents\s*/gi, '')
+                                .replace(/Response finalized\s*/gi, '')
+                                .replace(/\n{3,}/g, '\n\n')
+                                .trim();
+                            if (text && text.length > 5) {
+                                messages.push({ role: 'assistant', text, idx });
+                            }
+                        });
+
+                        // Interleave by index (user[0], model[0], user[1], model[1], ...)
+                        const interleaved = [];
+                        const userByIdx = messages.filter(m => m.role === 'user');
+                        const modelByIdx = messages.filter(m => m.role === 'assistant');
+                        const maxLen = Math.max(userByIdx.length, modelByIdx.length);
+                        for (let i = 0; i < maxLen; i++) {
+                            if (i < userByIdx.length) interleaved.push(userByIdx[i]);
+                            if (i < modelByIdx.length) interleaved.push(modelByIdx[i]);
+                        }
+                        return interleaved;
+                    }
+
+                    // ═══ Strategy 2: data-message-author-role attributes ═══
                     const roleMsgs = document.querySelectorAll('[data-message-author-role]');
                     if (roleMsgs.length > 0) {
                         for (const el of roleMsgs) {
@@ -418,35 +533,18 @@ export class GeminiFetcher {
                         return messages;
                     }
 
-                    // Strategy 2: Gemini's turn-based DOM structure
-                    // User turns often have a specific class; model turns follow
-                    const turns = document.querySelectorAll('.conversation-turn, .turn-container, [class*="turn"]');
-                    if (turns.length > 0) {
-                        for (const turn of turns) {
-                            const text = turn.innerText?.trim();
-                            if (!text || text.length < 2) continue;
-                            // Heuristic: check for model indicators
-                            const isModel = turn.querySelector('[class*="model"], [class*="response"], .markdown-main-panel') !== null;
-                            messages.push({
-                                role: isModel ? 'assistant' : 'user',
-                                text,
-                            });
-                        }
-                        return messages;
-                    }
-
-                    // Strategy 3: Query chip (user) + response (model) pairs
-                    const queryChips = document.querySelectorAll('.query-chip-container, .user-query, [class*="query"]');
-                    const responses = document.querySelectorAll('.model-response-text, .response-container, .markdown-main-panel');
-                    const maxLen = Math.max(queryChips.length, responses.length);
+                    // ═══ Strategy 3: Generic fallback — any .query-text + .markdown ═══
+                    const queries = document.querySelectorAll('.query-text-line, .query-text');
+                    const resps = document.querySelectorAll('message-content .markdown');
+                    const maxLen = Math.max(queries.length, resps.length);
                     for (let i = 0; i < maxLen; i++) {
-                        if (i < queryChips.length) {
-                            const text = queryChips[i].innerText?.trim();
-                            if (text) messages.push({ role: 'user', text });
+                        if (i < queries.length) {
+                            const t = queries[i].textContent?.trim();
+                            if (t) messages.push({ role: 'user', text: t });
                         }
-                        if (i < responses.length) {
-                            const text = responses[i].innerText?.trim();
-                            if (text) messages.push({ role: 'assistant', text });
+                        if (i < resps.length) {
+                            const t = resps[i].innerText?.trim();
+                            if (t) messages.push({ role: 'assistant', text: t });
                         }
                     }
                     return messages;
