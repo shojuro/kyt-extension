@@ -1,5 +1,6 @@
 import { RateLimiter } from './rate-limiter.js';
 import { handleError } from './error-handlers.js';
+import { fetchFromTab } from './tab-fetch.js';
 
 /**
  * @typedef {import('./types.js').Message} Message
@@ -43,25 +44,17 @@ export class ClaudeFetcher {
         console.log('[ClaudeFetcher] Getting organization ID...');
         await this.rateLimiter.acquire();
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
-
-            console.log('[ClaudeFetcher] Fetching organizations...');
-            const response = await fetch(
-                `${this.baseUrl}/organizations`,
-                {
-                    credentials: 'include',
-                    signal: controller.signal
-                }
-            );
-            clearTimeout(timeoutId);
+            console.log('[ClaudeFetcher] Fetching organizations via tab...');
+            const response = await fetchFromTab('claude.ai', `${this.baseUrl}/organizations`, {
+                timeoutMs: 30000,
+            });
 
             if (!response.ok) {
                 console.error(`[ClaudeFetcher] Failed to fetch organizations: ${response.status} ${response.statusText}`);
                 return null;
             }
 
-            const orgs = await response.json();
+            const orgs = response.json();
             console.log(`[ClaudeFetcher] Found ${orgs.length} organizations`);
 
             if (orgs && orgs.length > 0) {
@@ -93,26 +86,18 @@ export class ClaudeFetcher {
         let processedCount = 0;
 
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout for list
-
-            console.log(`[ClaudeFetcher] Fetching conversations for org ${orgId}...`);
-            const response = await fetch(
+            console.log(`[ClaudeFetcher] Fetching conversations for org ${orgId} via tab...`);
+            const response = await fetchFromTab('claude.ai',
                 `${this.baseUrl}/organizations/${orgId}/chat_conversations`,
-                {
-                    credentials: 'include',
-                    signal: controller.signal
-                }
+                { timeoutMs: 60000 }
             );
-            clearTimeout(timeoutId);
 
             if (!response.ok) {
                 console.error(`[ClaudeFetcher] Failed to fetch conversation list: ${response.status}`);
-                await handleError(response); // Will throw if critical
-                return [];
+                throw new Error(`Failed to fetch conversation list: ${response.status}`);
             }
 
-            const conversations = await response.json();
+            const conversations = response.json();
             console.log(`[ClaudeFetcher] Found ${conversations.length} conversations`);
 
             if (onTotal) {
@@ -175,25 +160,22 @@ export class ClaudeFetcher {
         await this.rateLimiter.acquire();
 
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
-
-            const response = await fetch(
+            const response = await fetchFromTab('claude.ai',
                 `${this.baseUrl}/organizations/${orgId}/chat_conversations/${convId}`,
-                {
-                    credentials: 'include',
-                    signal: controller.signal
-                }
+                { timeoutMs: 30000 }
             );
-            clearTimeout(timeoutId);
 
             if (!response.ok) {
-                const resolution = await handleError(response, { conversationId: convId });
-                if (resolution.shouldRetry) return this.fetchConversationDetail(orgId, convId, title);
+                console.error(`[ClaudeFetcher] Conversation ${convId} failed: ${response.status}`);
+                if (response.status === 429) {
+                    // Rate limited — wait and retry once
+                    await new Promise(r => setTimeout(r, 5000));
+                    return this.fetchConversationDetail(orgId, convId, title);
+                }
                 return [];
             }
 
-            const data = await response.json();
+            const data = response.json();
             return this.parseConversation(data, title);
 
         } catch (error) {

@@ -49,4 +49,8 @@ export class RateLimiter {
     static forClaude() {
         return new RateLimiter({ requestsPerMinute: 20, burstSize: 3 });
     }
+
+    static forGemini() {
+        return new RateLimiter({ requestsPerMinute: 20, burstSize: 3 });
+    }
 }

@@ -639,10 +639,13 @@ export function registerMessageHandler(deps) {
             const config = await getApiConfig();
 
             if (activeImporterRef.current) {
-              await activeImporterRef.current.cancelImport();
+              sendResponse({ success: false, error: 'Import already in progress' });
+              return;
             }
 
             activeImporterRef.current = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId);
+
+            let fallbackTriggered = false;
 
             activeImporterRef.current.startImport(
               message.platform,
@@ -653,6 +656,13 @@ export function registerMessageHandler(deps) {
                 }).catch(() => {});
               },
               async () => {
+                // Notify modal to show ZIP upload UI
+                fallbackTriggered = true;
+                chrome.runtime.sendMessage({
+                  type: 'IMPORT_FALLBACK_REQUIRED',
+                  platform: message.platform,
+                  reason: 'API import failed. Please upload a ZIP export instead.'
+                }).catch(() => {});
                 return null;
               }
             ).then(result => {
@@ -660,9 +670,15 @@ export function registerMessageHandler(deps) {
               activeImporterRef.current = null;
               // Trigger post-import backfill chain
               chrome.alarms.create('backfillContextual', { delayInMinutes: 1 });
+              chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 1.5 });
               chrome.alarms.create('postImportBackfill', { delayInMinutes: 3 });
-              console.log('⏰ Post-import backfill alarms scheduled (contextual: 1min, orchestrator: 3min)');
+              console.log('⏰ Post-import backfill alarms scheduled (contextual: 1min, embeddings: 1.5min, orchestrator: 3min)');
             }).catch(error => {
+              if (fallbackTriggered) {
+                // Don't send error — modal is showing fallback ZIP upload UI
+                activeImporterRef.current = null;
+                return;
+              }
               sendResponse({ success: false, error: error.message });
               activeImporterRef.current = null;
             });
@@ -716,8 +732,9 @@ export function registerMessageHandler(deps) {
 
             // Trigger post-import backfill chain
             chrome.alarms.create('backfillContextual', { delayInMinutes: 1 });
+            chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 1.5 });
             chrome.alarms.create('postImportBackfill', { delayInMinutes: 3 });
-            console.log('⏰ Post-import backfill alarms scheduled (contextual: 1min, orchestrator: 3min)');
+            console.log('⏰ Post-import backfill alarms scheduled (contextual: 1min, embeddings: 1.5min, orchestrator: 3min)');
 
             sendResponse({
               success: true,

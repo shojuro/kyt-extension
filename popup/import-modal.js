@@ -40,6 +40,7 @@ function cacheElements() {
     elements.btnSkipImport = document.getElementById('btn-skip-import');
     elements.btnChatGPT = document.getElementById('btn-chatgpt');
     elements.btnClaude = document.getElementById('btn-claude');
+    elements.btnGemini = document.getElementById('btn-gemini');
     elements.btnStart = document.getElementById('btn-start');
     elements.btnCancel = document.getElementById('btn-cancel');
     elements.btnBackToPlatforms = document.getElementById('btn-back-to-platforms');
@@ -105,6 +106,7 @@ function setupListeners() {
     // Platform selection
     elements.btnChatGPT.addEventListener('click', () => selectPlatform('chatgpt'));
     elements.btnClaude.addEventListener('click', () => selectPlatform('claude'));
+    elements.btnGemini.addEventListener('click', () => selectPlatform('gemini'));
 
     elements.btnStart.addEventListener('click', startImport);
     elements.btnCancel.addEventListener('click', () => {
@@ -250,7 +252,7 @@ async function checkFirstInstall() {
 
 async function loadCompletedPlatforms() {
     try {
-        for (const platform of ['chatgpt', 'claude']) {
+        for (const platform of ['chatgpt', 'claude', 'gemini']) {
             const response = await chrome.runtime.sendMessage({
                 type: 'CHECK_IMPORT_STATUS',
                 platform
@@ -258,6 +260,13 @@ async function loadCompletedPlatforms() {
 
             if (response.success && response.status?.hasCompletedImport) {
                 completedPlatforms.add(platform);
+            } else if (response.success && response.status?.hasInProgressImport) {
+                // Resume showing import progress for the in-progress platform
+                selectedPlatform = platform;
+                isImporting = true;
+                setState(STATES.IMPORTING);
+                updateProgress(response.status.progress);
+                return; // Skip PLATFORM_SELECT — show active import
             }
         }
         updatePlatformButtons();
@@ -362,6 +371,20 @@ function updatePlatformButtons() {
         elements.btnClaude.classList.toggle('btn-primary', selectedPlatform === 'claude');
         elements.btnClaude.classList.toggle('btn-secondary', selectedPlatform !== 'claude');
     }
+
+    // Gemini button
+    if (completedPlatforms.has('gemini')) {
+        elements.btnGemini.textContent = 'Gemini ✓';
+        elements.btnGemini.classList.add('btn-complete');
+        elements.btnGemini.classList.remove('btn-primary', 'btn-secondary');
+    } else if (isImporting && selectedPlatform !== 'gemini') {
+        elements.btnGemini.classList.add('btn-inactive');
+    } else {
+        elements.btnGemini.textContent = 'Gemini';
+        elements.btnGemini.classList.remove('btn-complete', 'btn-inactive');
+        elements.btnGemini.classList.toggle('btn-primary', selectedPlatform === 'gemini');
+        elements.btnGemini.classList.toggle('btn-secondary', selectedPlatform !== 'gemini');
+    }
 }
 
 function selectPlatform(platform) {
@@ -448,7 +471,8 @@ function showFallbackUI(platform, reason) {
     // Set reason text
     const reasonMap = {
         'chatgpt': 'You\'re not logged into ChatGPT.',
-        'claude': 'You\'re not logged into Claude.'
+        'claude': 'You\'re not logged into Claude.',
+        'gemini': 'You\'re not logged into Gemini.'
     };
     elements.fallbackReason.textContent = reason || reasonMap[platform] || 'Automatic import unavailable.';
 
@@ -474,6 +498,14 @@ function getExportInstructions(platform) {
             <li>Scroll to "Export Data"</li>
             <li>Click "Create Export" and wait</li>
             <li>Download the ZIP file when ready</li>
+            <li>Upload the ZIP file here</li>
+        `;
+    } else if (platform === 'gemini') {
+        return `
+            <li>Go to <a href="https://takeout.google.com/" target="_blank">Google Takeout</a></li>
+            <li>Click "Deselect all", then select only "Gemini Apps"</li>
+            <li>Click "Next step" → "Create export"</li>
+            <li>Wait for the email, then download the ZIP</li>
             <li>Upload the ZIP file here</li>
         `;
     }

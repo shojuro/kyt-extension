@@ -20,7 +20,7 @@
 export interface ExtractedEntity {
   entity_text: string;         // Original text: "Jennifer"
   normalized_name: string;     // Lowercase, no special chars: "jennifer"
-  entity_type: 'PERSON' | 'ORG' | 'LOCATION' | 'PROJECT' | 'TECH' | 'MISC' | 'CONCEPT' | 'ANALOGY' | 'THEME';
+  entity_type: 'PERSON' | 'ORG' | 'LOCATION' | 'PROJECT' | 'TECH' | 'MISC' | 'CONCEPT' | 'ANALOGY' | 'THEME' | 'TOPIC';
   relationship: string;        // "trainer", "sister", "colleague", "unknown"
   context_category: string;    // "fitness", "family", "work", "general"
 }
@@ -47,7 +47,7 @@ const ENTITY_EXTRACTION_SYSTEM_PROMPT = `Extract named entities AND abstract con
 For each entity, provide:
 1. Original text (how it appeared)
 2. Normalized name (lowercase, no special chars, underscores for spaces)
-3. Entity type: PERSON, ORG, LOCATION, PROJECT, TECH, MISC, CONCEPT, ANALOGY, THEME
+3. Entity type: PERSON, ORG, LOCATION, PROJECT, TECH, MISC, CONCEPT, ANALOGY, THEME, TOPIC
 4. Relationship to user (if detectable from context)
 5. Context category (work, family, health, etc.)
 
@@ -62,6 +62,7 @@ Entity type definitions:
 - CONCEPT: Abstract ideas or principles discussed ("incremental learning", "progressive complexity", "sunk cost")
 - ANALOGY: Metaphors, comparisons, or illustrative stories used ("walking analogy for learning", "child taking steps")
 - THEME: Recurring life themes or philosophies ("parenting philosophy", "growth mindset", "resilience")
+- TOPIC: Broad subject areas or domains the conversation is about ("health", "career", "music", "parenting", "NFL history", "programming languages", "home improvement"). Extract 1-3 TOPIC entities per message to categorize its subject matter. Use short, general labels (1-3 words).
 
 Relationship vocabulary:
 - Family: parent, sibling, spouse, child, relative
@@ -132,6 +133,13 @@ Return ONLY valid JSON (no markdown):
       "entity_type": "ANALOGY",
       "relationship": "illustrates",
       "context_category": "parenting"
+    },
+    {
+      "entity_text": "education",
+      "normalized_name": "education",
+      "entity_type": "TOPIC",
+      "relationship": "discussed",
+      "context_category": "general"
     }
   ],
   "preferences": [
@@ -351,7 +359,7 @@ function normalizeEntityName(text: string): string {
  * Validate and normalize entity type
  * Ensures type matches schema enum values
  */
-function validateEntityType(type: string): 'PERSON' | 'ORG' | 'LOCATION' | 'PROJECT' | 'TECH' | 'MISC' | 'CONCEPT' | 'ANALOGY' | 'THEME' {
+function validateEntityType(type: string): 'PERSON' | 'ORG' | 'LOCATION' | 'PROJECT' | 'TECH' | 'MISC' | 'CONCEPT' | 'ANALOGY' | 'THEME' | 'TOPIC' {
   const upperType = (type || '').toUpperCase();
 
   // Map common variations
@@ -363,6 +371,7 @@ function validateEntityType(type: string): 'PERSON' | 'ORG' | 'LOCATION' | 'PROJ
   if (upperType === 'CONCEPT') return 'CONCEPT';
   if (upperType === 'ANALOGY' || upperType === 'METAPHOR') return 'ANALOGY';
   if (upperType === 'THEME') return 'THEME';
+  if (upperType === 'TOPIC' || upperType === 'SUBJECT' || upperType === 'CATEGORY') return 'TOPIC';
 
   return 'MISC';
 }
@@ -618,7 +627,7 @@ function classifyRelationshipType(entityA: ExtractedEntity, entityB: ExtractedEn
   const familyRelations = new Set(['parent', 'sibling', 'spouse', 'child', 'relative', 'mother', 'father', 'sister', 'brother', 'daughter', 'son', 'wife', 'husband']);
   const workRelations = new Set(['colleague', 'boss', 'employee', 'client', 'partner', 'coworker']);
   const serviceRelations = new Set(['trainer', 'doctor', 'therapist', 'teacher', 'nanny', 'coach', 'mentor', 'advisor']);
-  const conceptTypes = new Set(['CONCEPT', 'ANALOGY', 'THEME']);
+  const conceptTypes = new Set(['CONCEPT', 'ANALOGY', 'THEME', 'TOPIC']);
 
   // Check if either entity has a family relationship
   if (entityA.entity_type === 'PERSON' || entityB.entity_type === 'PERSON') {

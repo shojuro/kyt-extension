@@ -1089,11 +1089,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     case 'backfillContextual':
       try {
         console.log('⏰ Contextual backfill alarm fired');
-        const ctxResult = await callEdgeFunction('backfill_contextual', { limit: 15 });
+        const ctxResult = await callEdgeFunction('backfill_contextual', { limit: 20 }, { timeoutMs: 120000 });
         if (ctxResult.context_generated > 0) {
-          console.log(`✅ Contextual backfill: ${ctxResult.context_generated} turns contextualized`);
-          if (ctxResult.processed >= 15) {
-            chrome.alarms.create('backfillContextual', { delayInMinutes: 5 });
+          console.log(`✅ Contextual backfill: ${ctxResult.context_generated} turns contextualized, ${ctxResult.remaining} remaining`);
+          if (ctxResult.remaining > 0) {
+            chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
           }
         } else {
           console.log('✅ Contextual backfill: no rows remaining');
@@ -1107,7 +1107,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     case 'backfillEntities':
       try {
         console.log('⏰ Entity backfill alarm fired');
-        const entResult = await callEdgeFunction('backfill_entities', { fast_mode: true, max_rows: 50 });
+        const entResult = await callEdgeFunction('backfill_entities', { fast_mode: true, max_rows: 50 }, { timeoutMs: 120000 });
         console.log(`✅ Entity backfill: ${entResult.processed} processed, ${entResult.entities_created} entities, ${entResult.remaining} remaining`);
         if (entResult.remaining > 0) {
           chrome.alarms.create('backfillEntities', { delayInMinutes: 3 });
@@ -1122,7 +1122,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       try {
         console.log('⏰ Post-import backfill orchestrator fired');
         // Check if contextual backfill still has work
-        const ctxCheck = await callEdgeFunction('backfill_contextual', { limit: 1 });
+        const ctxCheck = await callEdgeFunction('backfill_contextual', { limit: 1 }, { timeoutMs: 120000 });
         if (ctxCheck.context_generated > 0 || ctxCheck.processed > 0) {
           console.log('📝 Contextual backfill still has work — rescheduling post-import in 3min');
           chrome.alarms.create('backfillContextual', { delayInMinutes: 1 });
@@ -1265,10 +1265,10 @@ globalThis.KYT_DEBUG = {
   },
   backfillEmbeddings: () => backfillNullEmbeddings().then(console.log),
   backfillChatTurnEmbeddings: (platform) => backfillNullChatTurnEmbeddings({ platform }).then(console.log),
-  backfillEntities: (force = false) => callEdgeFunction('backfill_entities', { force_reextract: force })
+  backfillEntities: (force = false) => callEdgeFunction('backfill_entities', { force_reextract: force }, { timeoutMs: 120000 })
     .then(result => { console.log('🔗 Entity backfill result:', result); return result; })
     .catch(err => { console.error('❌ Entity backfill failed:', err.message); return { success: false, error: err.message }; }),
-  backfillContextual: (limit = 15) => callEdgeFunction('backfill_contextual', { limit })
+  backfillContextual: (limit = 20) => callEdgeFunction('backfill_contextual', { limit }, { timeoutMs: 120000 })
     .then(result => { console.log('📝 Contextual backfill result:', result); return result; })
     .catch(err => { console.error('❌ Contextual backfill failed:', err.message); return { success: false, error: err.message }; }),
   backfillPostImport: () => {
@@ -1276,6 +1276,40 @@ globalThis.KYT_DEBUG = {
     chrome.alarms.create('backfillContextual', { delayInMinutes: 0.1 });
     chrome.alarms.create('postImportBackfill', { delayInMinutes: 1 });
     return 'Post-import backfill chain started (contextual → entities)';
+  },
+  backfillImported: async () => {
+    console.log('🚀 Starting full post-import backfill...');
+    // 1. Contextual first (generates context + embeds — most valuable)
+    let ctxResult;
+    try {
+      ctxResult = await callEdgeFunction('backfill_contextual', { limit: 20 }, { timeoutMs: 120000 });
+      console.log(`📝 Contextual: ${ctxResult.context_generated} contextualized, ${ctxResult.processed} processed, ${ctxResult.errors} errors, ${ctxResult.remaining} remaining`);
+    } catch (err) {
+      console.error('❌ Contextual backfill failed:', err.message);
+      ctxResult = { context_generated: 0, remaining: -1, error: err.message };
+    }
+    // 2. Raw embeddings for rows contextual didn't reach (no double work)
+    let embResult;
+    try {
+      embResult = await backfillNullChatTurnEmbeddings();
+      console.log(`🔢 Embeddings: ${embResult.backfilled || 0} rows backfilled`);
+    } catch (err) {
+      console.error('❌ Embedding backfill failed:', err.message);
+      embResult = { backfilled: 0, error: err.message };
+    }
+    // 3. Entities (independent of embedding state)
+    let entResult;
+    try {
+      entResult = await callEdgeFunction('backfill_entities', { fast_mode: true, max_rows: 50 }, { timeoutMs: 120000 });
+      console.log(`🔗 Entities: ${entResult.processed} processed, ${entResult.remaining} remaining`);
+    } catch (err) {
+      console.error('❌ Entity backfill failed:', err.message);
+      entResult = { processed: 0, remaining: -1, error: err.message };
+    }
+    // Schedule follow-ups for remaining work
+    if (ctxResult.remaining > 0) chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
+    if (entResult.remaining > 0) chrome.alarms.create('backfillEntities', { delayInMinutes: 1 });
+    return { contextual: ctxResult, embeddings: embResult, entities: entResult };
   },
   excludeConversation: async (conversationId) => {
     const config = await getConfig();
@@ -1359,6 +1393,7 @@ console.log('   - KYT_DEBUG.backfillChatTurnEmbeddings(platform?) - Backfill nul
 console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
 console.log('   - KYT_DEBUG.backfillContextual() - Generate context summaries + re-embed');
 console.log('   - KYT_DEBUG.backfillPostImport() - Full post-import chain (contextual → entities)');
+console.log('   - KYT_DEBUG.backfillImported() - Full post-import backfill: contextual → embeddings → entities');
 console.log('   - KYT_DEBUG.forceSyncAll() - Reset sync timestamp and sync ALL local messages (deduped)');
 console.log('   - KYT_DEBUG.excludeConversation(id) - Hide a conversation from search (reversible)');
 console.log('   - KYT_DEBUG.includeConversation(id) - Un-hide a conversation from search');

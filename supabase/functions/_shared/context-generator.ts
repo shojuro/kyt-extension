@@ -122,7 +122,7 @@ export async function generateChunkContext(
         temperature: 0.3,
         maxTokens: 200,
         maxRetries: 2,
-        timeoutMs: 5000,
+        timeoutMs: 15000,
         operation: 'context_generation',
       }
     );

@@ -31,8 +31,9 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const hfClient = new HuggingFaceClient(hfApiKey);
 
 const BATCH_SIZE = 5;
-const MAX_ROWS = 15;  // ~10s per row (fetch + GPT-4o-mini + re-embed), 150s Supabase limit
+const MAX_ROWS = 20;  // ~3-5s per row (Haiku 4.5 + surrounding chunk fetch + re-embed), concurrency 3 → ~50s for 20 rows
 const BATCH_DELAY_MS = 500;
+const CONCURRENCY = 3;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -113,6 +114,47 @@ serve(async (req) => {
   }
 
   try {
+    // Diagnostic mode: test_api=true → make a single Anthropic call and return the result/error
+    let bodyParsed: any = {};
+    try { bodyParsed = await req.clone().json(); } catch {}
+    if (bodyParsed?.test_api) {
+      console.log("test_api mode: testing Anthropic API key...");
+      const keyPreview = anthropicApiKey ? `${anthropicApiKey.substring(0, 15)}...${anthropicApiKey.slice(-4)}` : "MISSING";
+      console.log(`ANTHROPIC_API_KEY preview: ${keyPreview}`);
+      // Direct raw Anthropic API call (bypasses error swallowing)
+      try {
+        const rawResponse = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "x-api-key": anthropicApiKey,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "claude-haiku-4-5-20251001",
+            // Also try: "claude-3-5-haiku-20241022"
+            system: "You are a test. Reply with exactly: OK",
+            messages: [{ role: "user", content: "test" }],
+            max_tokens: 10,
+          }),
+        });
+        const rawBody = await rawResponse.text();
+        return new Response(JSON.stringify({
+          success: rawResponse.ok,
+          key_preview: keyPreview,
+          status: rawResponse.status,
+          status_text: rawResponse.statusText,
+          body: rawBody.substring(0, 500),
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      } catch (apiErr) {
+        return new Response(JSON.stringify({
+          success: false,
+          key_preview: keyPreview,
+          error: (apiErr as Error).message,
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+    }
+
     console.log("Starting backfill_contextual...");
 
     // Pre-pass: mark questions and deflections as already contextualized so they
@@ -184,103 +226,118 @@ serve(async (req) => {
         `Batch ${batch + 1}: processing ${rows.length} chat_turns`
       );
 
-      for (const row of rows) {
-        try {
-          if (!row.content || !row.user_id) {
-            // Mark as processed to skip in future runs
-            await supabase
-              .from("chat_turns")
-              .update({
-                context_generated: true,
-                context_generated_at: new Date().toISOString(),
-              })
-              .eq("id", row.id);
-            totalProcessed++;
-            continue;
-          }
+      // Process rows concurrently in groups of CONCURRENCY
+      let hitRateLimit = false;
 
-          // Fetch surrounding chunks for topic context
-          const surroundingChunks = await fetchSurroundingChunks(
-            row.conversation_id,
-            row.user_id,
-            row.id,
-            row.start_timestamp || 0
-          );
-
-          // Generate context summary via GPT-4o-mini
-          const contextResult = await generateChunkContext(
-            {
-              chunkContent: row.content,
-              platform: row.platform,
-              conversationId: row.conversation_id,
-              timestamp: row.start_timestamp
-                ? new Date(row.start_timestamp).toISOString()
-                : undefined,
-              surroundingChunks,
-            },
-            anthropicApiKey
-          );
-
-          if (contextResult) {
-            totalContextGenerated++;
-
-            // Re-embed with contextualized content
-            // ASYMMETRIC EMBEDDING: stored chunks get context prefix,
-            // query embeddings stay raw. DO NOT "fix" this.
-            try {
-              const [newEmbedding] = await hfClient.generateEmbeddings(
-                contextResult.contextualContent
-              );
-
-              // Update row with context + new embedding
-              await supabase
-                .from("chat_turns")
-                .update({
-                  contextual_content: contextResult.contextualContent,
-                  embedding: newEmbedding,
-                  context_generated: true,
-                  context_generated_at: new Date().toISOString(),
-                })
-                .eq("id", row.id);
-
-              totalReembedded++;
-            } catch (embedErr) {
-              // Context generated but embedding failed — save context anyway
-              console.warn(
-                `Re-embedding failed for ${row.id}: ${(embedErr as Error).message}`
-              );
-              await supabase
-                .from("chat_turns")
-                .update({
-                  contextual_content: contextResult.contextualContent,
-                  context_generated: true,
-                  context_generated_at: new Date().toISOString(),
-                })
-                .eq("id", row.id);
-            }
-          } else {
-            // Context generation failed — mark as processed to avoid infinite retry
-            // The row keeps its existing raw embedding
-            console.warn(`Context generation returned null for ${row.id}`);
-            await supabase
-              .from("chat_turns")
-              .update({
-                context_generated: true,
-                context_generated_at: new Date().toISOString(),
-              })
-              .eq("id", row.id);
-          }
-
+      async function processOneRow(row: any): Promise<void> {
+        if (!row.content || !row.user_id) {
+          // Mark as processed to skip in future runs
+          await supabase
+            .from("chat_turns")
+            .update({
+              context_generated: true,
+              context_generated_at: new Date().toISOString(),
+            })
+            .eq("id", row.id);
           totalProcessed++;
-          console.log(
-            `  Row ${row.id}: context=${contextResult ? "yes" : "no"}, surrounding=${surroundingChunks.length} chunks`
-          );
-        } catch (rowErr) {
-          errors++;
-          console.error(
-            `  Row ${row.id} failed: ${(rowErr as Error).message}`
-          );
-          // Don't mark as processed — will retry on next run
+          return;
+        }
+
+        // Fetch surrounding chunks for topic context
+        const surroundingChunks = await fetchSurroundingChunks(
+          row.conversation_id,
+          row.user_id,
+          row.id,
+          row.start_timestamp || 0
+        );
+
+        // Generate context summary via Haiku 4.5
+        const contextResult = await generateChunkContext(
+          {
+            chunkContent: row.content,
+            platform: row.platform,
+            conversationId: row.conversation_id,
+            timestamp: row.start_timestamp
+              ? new Date(row.start_timestamp).toISOString()
+              : undefined,
+            surroundingChunks,
+          },
+          anthropicApiKey
+        );
+
+        if (!contextResult) {
+          // Context generation failed — DO NOT mark as processed.
+          // Leave context_generated=false so the row retries on the next run
+          // (e.g. after fixing the Anthropic API key).
+          console.warn(`Context generation returned null for ${row.id} — will retry`);
+          totalProcessed++;
+          return;
+        }
+
+        if (contextResult) {
+          totalContextGenerated++;
+
+          // Re-embed with contextualized content
+          // ASYMMETRIC EMBEDDING: stored chunks get context prefix,
+          // query embeddings stay raw. DO NOT "fix" this.
+          try {
+            const [newEmbedding] = await hfClient.generateEmbeddings(
+              contextResult.contextualContent
+            );
+
+            // Update row with context + new embedding
+            await supabase
+              .from("chat_turns")
+              .update({
+                contextual_content: contextResult.contextualContent,
+                embedding: newEmbedding,
+                context_generated: true,
+                context_generated_at: new Date().toISOString(),
+              })
+              .eq("id", row.id);
+
+            totalReembedded++;
+          } catch (embedErr) {
+            // Context generated but embedding failed — save context anyway
+            console.warn(
+              `Re-embedding failed for ${row.id}: ${(embedErr as Error).message}`
+            );
+            await supabase
+              .from("chat_turns")
+              .update({
+                contextual_content: contextResult.contextualContent,
+                context_generated: true,
+                context_generated_at: new Date().toISOString(),
+              })
+              .eq("id", row.id);
+          }
+        }
+
+        totalProcessed++;
+        console.log(
+          `  Row ${row.id}: context=${contextResult ? "yes" : "no"}, surrounding=${surroundingChunks.length} chunks`
+        );
+      }
+
+      // Process in concurrent groups of CONCURRENCY, fall back to sequential on rate limit
+      for (let i = 0; i < rows.length; i += hitRateLimit ? 1 : CONCURRENCY) {
+        const chunk = hitRateLimit ? [rows[i]] : rows.slice(i, i + CONCURRENCY);
+        const results = await Promise.allSettled(chunk.map(processOneRow));
+
+        for (let j = 0; j < results.length; j++) {
+          if (results[j].status === "rejected") {
+            const err = (results[j] as PromiseRejectedResult).reason;
+            errors++;
+            const rowId = chunk[j]?.id || "unknown";
+            console.error(`  Row ${rowId} failed: ${(err as Error).message}`);
+            // Check for rate limit — drop to sequential for remaining rows
+            const errMsg = (err as Error).message?.toLowerCase() || "";
+            if (errMsg.includes("429") || errMsg.includes("rate") || errMsg.includes("too many")) {
+              console.warn("  Rate limit detected — switching to sequential processing");
+              hitRateLimit = true;
+            }
+            // Don't mark as processed — will retry on next run
+          }
         }
       }
 

@@ -547,7 +547,7 @@ async function detectConceptEntities(
     requestId?: string,
     profileId?: string
 ): Promise<string[]> {
-    const conceptTypes = new Set(["CONCEPT", "ANALOGY", "THEME"]);
+    const conceptTypes = new Set(["CONCEPT", "ANALOGY", "THEME", "TOPIC"]);
 
     try {
         const { data: textEntities, error } = await supabase

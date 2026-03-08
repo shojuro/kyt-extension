@@ -1,5 +1,6 @@
 import { RateLimiter } from './rate-limiter.js';
 import { handleError } from './error-handlers.js';
+import { fetchFromTab } from './tab-fetch.js';
 
 /**
  * @typedef {import('./types.js').Message} Message
@@ -31,18 +32,19 @@ export class ChatGPTFetcher {
     async getAccessToken() {
         if (this.accessToken) return this.accessToken;
 
-        console.log('[ChatGPTFetcher] Getting access token from session...');
+        console.log('[ChatGPTFetcher] Getting access token from session via tab...');
         try {
-            const response = await fetch('https://chatgpt.com/api/auth/session', {
-                credentials: 'include'
-            });
+            const response = await fetchFromTab('chatgpt.com',
+                'https://chatgpt.com/api/auth/session',
+                { timeoutMs: 15000 }
+            );
 
             if (!response.ok) {
                 console.error(`[ChatGPTFetcher] Session request failed: ${response.status}`);
                 return null;
             }
 
-            const data = await response.json();
+            const data = response.json();
             if (data.accessToken) {
                 this.accessToken = data.accessToken;
                 console.log('[ChatGPTFetcher] Got access token');
@@ -87,29 +89,30 @@ export class ChatGPTFetcher {
             await this.rateLimiter.acquire();
 
             try {
-                console.log(`[ChatGPTFetcher] Fetching conversations (offset=${offset}, limit=${limit})...`);
-                const response = await fetch(
+                console.log(`[ChatGPTFetcher] Fetching conversations (offset=${offset}, limit=${limit}) via tab...`);
+                const response = await fetchFromTab('chatgpt.com',
                     `${this.baseUrl}/conversations?offset=${offset}&limit=${limit}&order=updated`,
                     {
-                        credentials: 'include',
-                        headers: {
-                            'Authorization': `Bearer ${token}`
-                        }
+                        headers: { 'Authorization': `Bearer ${token}` },
+                        timeoutMs: 30000,
                     }
                 );
                 console.log(`[ChatGPTFetcher] Response status: ${response.status}`);
 
                 if (!response.ok) {
-                    const resolution = await handleError(response);
-                    if (resolution.shouldRetry) continue;
-                    // Throw error on auth failure to trigger fallback mechanism
-                    if (resolution.requiresReauth || response.status === 401 || response.status === 403) {
-                        throw new Error(resolution.message || `Authentication failed (${response.status}). Please log in to ChatGPT and try again.`);
+                    console.error(`[ChatGPTFetcher] Conversation list failed: ${response.status}`);
+                    if (response.status === 429) {
+                        console.log('[ChatGPTFetcher] Rate limited, waiting 60s...');
+                        await new Promise(r => setTimeout(r, 60000));
+                        continue;
+                    }
+                    if (response.status === 401 || response.status === 403) {
+                        throw new Error(`Authentication failed (${response.status}). Please log in to ChatGPT and try again.`);
                     }
                     break;
                 }
 
-                const data = await response.json();
+                const data = response.json();
                 const conversations = data.items || [];
                 console.log(`[ChatGPTFetcher] Got ${conversations.length} conversations (total: ${data.total || 'unknown'})`);
 
@@ -191,23 +194,24 @@ export class ChatGPTFetcher {
         await this.rateLimiter.acquire();
 
         try {
-            const response = await fetch(
+            const response = await fetchFromTab('chatgpt.com',
                 `${this.baseUrl}/conversation/${conversationId}`,
                 {
-                    credentials: 'include',
-                    headers: {
-                        'Authorization': `Bearer ${this.accessToken}`
-                    }
+                    headers: { 'Authorization': `Bearer ${this.accessToken}` },
+                    timeoutMs: 30000,
                 }
             );
 
             if (!response.ok) {
-                const resolution = await handleError(response, { conversationId });
-                if (resolution.shouldRetry) return this.fetchConversationDetail(conversationId, title); // Simple retry
-                return []; // Skip this conversation on error
+                console.error(`[ChatGPTFetcher] Conversation ${conversationId} failed: ${response.status}`);
+                if (response.status === 429) {
+                    await new Promise(r => setTimeout(r, 5000));
+                    return this.fetchConversationDetail(conversationId, title);
+                }
+                return [];
             }
 
-            const data = await response.json();
+            const data = response.json();
             return this.parseConversation(data, title);
 
         } catch (error) {

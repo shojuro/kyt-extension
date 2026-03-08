@@ -1,5 +1,5 @@
 /**
- * @typedef {'chatgpt' | 'claude'} Platform
+ * @typedef {'chatgpt' | 'claude' | 'gemini'} Platform
  */
 
 /**

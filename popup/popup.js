@@ -11,6 +11,7 @@ const sessionMessages = document.getElementById('sessionMessages');
 const lastCaptureTime = document.getElementById('lastCaptureTime');
 const chatgptPlatform = document.getElementById('chatgptPlatform');
 const claudePlatform = document.getElementById('claudePlatform');
+const geminiPlatform = document.getElementById('geminiPlatform');
 const apiStatus = document.getElementById('apiStatus');
 const hfKeyStatus = document.getElementById('hfKeyStatus');
 const transformStatus = document.getElementById('transformStatus');
@@ -130,9 +131,11 @@ async function loadStats() {
       // Has messages but not currently on platform
       chatgptPlatform.textContent = '💡 Open chatgpt.com to see live stats';
       claudePlatform.textContent = '💡 Open claude.ai to see live stats';
+      geminiPlatform.textContent = '💡 Open gemini.google.com to see live stats';
     } else {
       chatgptPlatform.textContent = stats.platform === 'chatgpt' ? '✅ Detected' : '❌ Not Detected';
       claudePlatform.textContent = stats.platform === 'claude' ? '✅ Detected' : '❌ Not Detected';
+      geminiPlatform.textContent = stats.platform === 'gemini' ? '✅ Detected' : '❌ Not Detected';
     }
 
   } catch (error) {

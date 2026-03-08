@@ -49,6 +49,8 @@ export async function validateExportFile(file, platform) {
     // 4. Platform-specific validation
     if (platform === 'chatgpt') {
         return validateChatGPTExport(zip, file.size);
+    } else if (platform === 'gemini') {
+        return validateGeminiExport(zip, file.size);
     } else {
         return validateClaudeExport(zip, file.size);
     }
@@ -115,6 +117,50 @@ function validateClaudeExport(zip, fileSize) {
     return {
         valid: false,
         error: 'Not a valid Claude export. Expected conversations.json file.'
+    };
+}
+
+/**
+ * Validate Gemini (Google Takeout) export
+ * @param {JSZip} zip
+ * @param {number} fileSize
+ * @returns {ValidationResult}
+ */
+function validateGeminiExport(zip, fileSize) {
+    // Google Takeout puts data under "Takeout/Gemini Apps/" or similar
+    const possiblePaths = [
+        'Takeout/Gemini Apps',
+        'Gemini Apps',
+        'Takeout/Google Gemini',
+        'Google Gemini',
+    ];
+
+    for (const path of possiblePaths) {
+        const folder = zip.folder(path);
+        if (folder) {
+            let hasContent = false;
+            folder.forEach(() => { hasContent = true; });
+            if (hasContent) {
+                return { valid: true, fileSize };
+            }
+        }
+    }
+
+    // Also accept any ZIP with JSON files containing Gemini-like data
+    let hasJsonFiles = false;
+    zip.forEach((path) => {
+        if (path.endsWith('.json') && !path.startsWith('__MACOSX')) {
+            hasJsonFiles = true;
+        }
+    });
+
+    if (hasJsonFiles) {
+        return { valid: true, fileSize };
+    }
+
+    return {
+        valid: false,
+        error: 'Not a valid Gemini export. Expected Google Takeout ZIP with "Gemini Apps" folder. Go to takeout.google.com to export.'
     };
 }
 

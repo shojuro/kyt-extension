@@ -1,5 +1,6 @@
 import { ChatGPTFetcher } from './chatgpt-fetcher.js';
 import { ClaudeFetcher } from './claude-fetcher.js';
+import { GeminiFetcher } from './gemini-fetcher.js';
 import { parseZipExport } from './zip-parser.js';
 import { RateLimiter } from './rate-limiter.js';
 import { ProgressTracker } from './progress-tracker.js';
@@ -137,9 +138,14 @@ export class HistoryImporter {
             onProgress(this.progressTracker.getProgress());
 
             // Try API first
-            const fetcher = platform === 'chatgpt'
-                ? new ChatGPTFetcher(RateLimiter.forChatGPT())
-                : new ClaudeFetcher(RateLimiter.forClaude());
+            let fetcher;
+            if (platform === 'chatgpt') {
+                fetcher = new ChatGPTFetcher(RateLimiter.forChatGPT());
+            } else if (platform === 'gemini') {
+                fetcher = new GeminiFetcher(RateLimiter.forGemini());
+            } else {
+                fetcher = new ClaudeFetcher(RateLimiter.forClaude());
+            }
 
             const cutoffDate = Date.now() - (90 * 24 * 60 * 60 * 1000);
             let totalImported = 0;
@@ -274,34 +280,47 @@ export class HistoryImporter {
         const url = `${this.supabaseUrl}/functions/v1/import_conversation_batch`;
         console.log(`[HistoryImporter] Importing ${messages.length} messages via Edge Function`);
 
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'apikey': this.supabaseKey,
-                'Authorization': `Bearer ${this.supabaseKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                messages: messages.map(m => ({
-                    id: m.id,
-                    content: m.content,
-                    role: m.role,
-                    timestamp: m.timestamp,
-                    conversation_id: m.conversationId,
-                    platform: platform
-                })),
-                user_id: this.userId,
-                platform: platform,
-                resume_token: resumeToken
-            })
-        });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s timeout
 
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`Import failed: ${error}`);
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'apikey': this.supabaseKey,
+                    'Authorization': `Bearer ${this.supabaseKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    messages: messages.map(m => ({
+                        id: m.id,
+                        content: m.content,
+                        role: m.role,
+                        timestamp: m.timestamp,
+                        conversation_id: m.conversationId,
+                        platform: platform
+                    })),
+                    user_id: this.userId,
+                    platform: platform,
+                    resume_token: resumeToken
+                }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                const error = await response.text();
+                throw new Error(`Import failed: ${error}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                throw new Error('Import batch timed out after 120s');
+            }
+            throw error;
         }
-
-        return await response.json();
     }
 
     /**
