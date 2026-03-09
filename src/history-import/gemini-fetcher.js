@@ -1062,9 +1062,116 @@ export class GeminiFetcher {
                 func: () => {
                     const messages = [];
 
+                    // ── Helper: extract timestamp from ARIA/title/tooltip attributes ──
+                    // Gemini hides timestamps in ARIA labels for accessibility.
+                    // Formats: "Message sent at 10:45 AM", "2 days ago",
+                    //          "May 22, 2025 at 3:15 PM", "Yesterday at 2:30 PM"
+                    function extractAriaTimestamp(el) {
+                        if (!el) return null;
+
+                        // Search the element and its ancestors/children for aria-label/title
+                        const candidates = [el];
+                        if (el.parentElement) candidates.push(el.parentElement);
+                        if (el.parentElement?.parentElement) candidates.push(el.parentElement.parentElement);
+                        // Also check children with aria-label
+                        el.querySelectorAll('[aria-label], [title], [data-timestamp], [data-time]').forEach(c => candidates.push(c));
+
+                        for (const candidate of candidates) {
+                            const ariaLabel = candidate.getAttribute?.('aria-label')
+                                || candidate.getAttribute?.('title')
+                                || candidate.getAttribute?.('data-timestamp')
+                                || candidate.getAttribute?.('data-time')
+                                || '';
+
+                            if (!ariaLabel) continue;
+
+                            // Direct epoch in data attribute
+                            if (/^\d{10,13}$/.test(ariaLabel.trim())) {
+                                const n = parseInt(ariaLabel.trim(), 10);
+                                return n < 10000000000 ? n * 1000 : n;
+                            }
+
+                            // Full date-time: "May 22, 2025 at 3:15 PM" or "March 5, 2026, 10:45 AM"
+                            const fullDateMatch = ariaLabel.match(
+                                /(\w+ \d{1,2},?\s*\d{4})\s*(?:at\s*)?(\d{1,2}:\d{2}\s*[AP]M)/i
+                            );
+                            if (fullDateMatch) {
+                                const d = new Date(`${fullDateMatch[1]} ${fullDateMatch[2]}`);
+                                if (!isNaN(d.getTime())) return d.getTime();
+                            }
+
+                            // ISO 8601
+                            const isoMatch = ariaLabel.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+                            if (isoMatch) {
+                                const d = new Date(isoMatch[0]);
+                                if (!isNaN(d.getTime())) return d.getTime();
+                            }
+
+                            // "sent at HH:MM AM/PM" (today)
+                            const sentAtMatch = ariaLabel.match(/(?:sent|received|created)\s+at\s+(\d{1,2}:\d{2}\s*[AP]M)/i);
+                            if (sentAtMatch) {
+                                const today = new Date();
+                                const d = new Date(`${today.toDateString()} ${sentAtMatch[1]}`);
+                                if (!isNaN(d.getTime())) return d.getTime();
+                            }
+
+                            // "X days/hours/minutes ago"
+                            const agoMatch = ariaLabel.match(/(\d+)\s*(minute|hour|day|week|month)s?\s*ago/i);
+                            if (agoMatch) {
+                                const n = parseInt(agoMatch[1], 10);
+                                const unit = agoMatch[2].toLowerCase();
+                                const ms = { minute: 60000, hour: 3600000, day: 86400000, week: 604800000, month: 2592000000 };
+                                return Date.now() - n * (ms[unit] || 86400000);
+                            }
+
+                            // "Yesterday at HH:MM"
+                            const yesterdayMatch = ariaLabel.match(/yesterday\s+at\s+(\d{1,2}:\d{2}\s*[AP]M)/i);
+                            if (yesterdayMatch) {
+                                const d = new Date();
+                                d.setDate(d.getDate() - 1);
+                                const t = new Date(`${d.toDateString()} ${yesterdayMatch[1]}`);
+                                if (!isNaN(t.getTime())) return t.getTime();
+                            }
+                        }
+
+                        return null;
+                    }
+
                     // ═══ Strategy 1: Gemini custom web components ═══
                     const userQueries = document.querySelectorAll('user-query, USER-QUERY');
                     const modelResponses = document.querySelectorAll('model-response, MODEL-RESPONSE');
+
+                    // Diagnostic: scan for ANY aria-label or title attributes in conversation area
+                    const convArea = document.querySelector('infinite-scroller') || document.querySelector('main') || document.body;
+                    const ariaEls = convArea.querySelectorAll('[aria-label], [title], [data-timestamp], [data-time]');
+                    const ariaTimestampHits = [];
+                    ariaEls.forEach(el => {
+                        const label = el.getAttribute('aria-label') || el.getAttribute('title') || '';
+                        if (label && /\d/.test(label) && (
+                            /sent|received|ago|at \d|AM|PM|\d{4}/i.test(label)
+                        )) {
+                            ariaTimestampHits.push({ tag: el.tagName, label: label.substring(0, 100) });
+                        }
+                    });
+                    if (ariaTimestampHits.length > 0) {
+                        console.log(`[KYT extract] Found ${ariaTimestampHits.length} ARIA timestamp candidates:`);
+                        ariaTimestampHits.slice(0, 5).forEach(h => console.log(`  <${h.tag}> aria-label="${h.label}"`));
+                    } else {
+                        console.log(`[KYT extract] No ARIA timestamp attributes found (scanned ${ariaEls.length} elements)`);
+                        // Broader diagnostic: dump ALL aria-labels in conversation area
+                        const allAria = [];
+                        convArea.querySelectorAll('[aria-label]').forEach(el => {
+                            const label = el.getAttribute('aria-label');
+                            if (label && label.length > 3 && label.length < 200) {
+                                allAria.push(`<${el.tagName.toLowerCase()}> "${label.substring(0, 80)}"`);
+                            }
+                        });
+                        if (allAria.length > 0) {
+                            console.log(`[KYT extract] All aria-labels in conv area (${allAria.length}):`);
+                            allAria.slice(0, 10).forEach(a => console.log(`  ${a}`));
+                            if (allAria.length > 10) console.log(`  ... and ${allAria.length - 10} more`);
+                        }
+                    }
 
                     // Diagnostic logging
                     console.log(`[KYT extract] user-query: ${userQueries.length}, model-response: ${modelResponses.length}`);
@@ -1079,7 +1186,7 @@ export class GeminiFetcher {
                     }
 
                     if (userQueries.length > 0 || modelResponses.length > 0) {
-                        // Extract user messages
+                        // Extract user messages with ARIA timestamps
                         userQueries.forEach((uq, idx) => {
                             const textEls = uq.querySelectorAll('.query-text-line, .query-text, p');
                             const seen = new Set();
@@ -1093,11 +1200,12 @@ export class GeminiFetcher {
                             });
                             if (!text.trim()) text = uq.innerText?.trim() || '';
                             if (text.trim()) {
-                                messages.push({ role: 'user', text: text.trim(), idx });
+                                const ariaTs = extractAriaTimestamp(uq);
+                                messages.push({ role: 'user', text: text.trim(), idx, ariaTs });
                             }
                         });
 
-                        // Extract model responses
+                        // Extract model responses with ARIA timestamps
                         modelResponses.forEach((mr, idx) => {
                             const msgContent = mr.querySelector('message-content, MESSAGE-CONTENT');
                             const markdown = msgContent?.querySelector('.markdown')
@@ -1123,7 +1231,8 @@ export class GeminiFetcher {
                                 .replace(/\n{3,}/g, '\n\n')
                                 .trim();
                             if (text && text.length > 5) {
-                                messages.push({ role: 'assistant', text, idx });
+                                const ariaTs = extractAriaTimestamp(mr);
+                                messages.push({ role: 'assistant', text, idx, ariaTs });
                             }
                         });
 
@@ -1170,26 +1279,33 @@ export class GeminiFetcher {
             console.log(`[GeminiFetcher] Extracted ${scraped.length} messages from "${title}"`);
 
             // Timestamp resolution priority:
-            // 1. Exact per-turn timestamps from XHR batchexecute response (best)
-            // 2. Approximate timestamp from sidebar group heading (month-level)
-            // 3. Date.now() fallback (worst — everything looks like today)
-            //
-            // turnTimestamps are per-turn (one per user+assistant pair).
-            // DOM messages alternate user/assistant, so turn index = floor(msgIdx / 2).
+            // 1. Per-message ARIA timestamps from DOM (best — exact per message)
+            // 2. Exact per-turn timestamps from API batchexecute response
+            // 3. Approximate timestamp from sidebar group heading (month-level)
+            // 4. Date.now() fallback (worst — everything looks like today)
             const baseTime = approxTimestamp || Date.now();
             const hasExactTimestamps = Array.isArray(turnTimestamps) && turnTimestamps.some(t => t != null);
+            const hasAriaTimestamps = scraped.some(m => m.ariaTs != null);
+
+            if (hasAriaTimestamps) {
+                const ariaCount = scraped.filter(m => m.ariaTs != null).length;
+                console.log(`[GeminiFetcher] Using ARIA timestamps: ${ariaCount}/${scraped.length} messages have exact times`);
+            }
 
             return scraped.map((msg, i) => {
                 let timestamp;
-                if (hasExactTimestamps) {
-                    // Map message index to turn index (2 messages per turn: user + assistant)
+
+                // Priority 1: ARIA timestamp from DOM
+                if (msg.ariaTs) {
+                    timestamp = msg.ariaTs;
+                }
+                // Priority 2: API turn timestamps
+                else if (hasExactTimestamps) {
                     const turnIdx = Math.floor(i / 2);
                     const turnTs = turnIdx < turnTimestamps.length ? turnTimestamps[turnIdx] : null;
                     if (turnTs) {
-                        // User message gets exact timestamp, assistant gets +1s
                         timestamp = msg.role === 'assistant' ? turnTs + 1000 : turnTs;
                     } else {
-                        // This turn had no timestamp — interpolate from neighbors
                         const prevTs = turnTimestamps.slice(0, turnIdx).reverse().find(t => t != null);
                         const nextTs = turnTimestamps.slice(turnIdx + 1).find(t => t != null);
                         if (prevTs && nextTs) {
@@ -1199,10 +1315,12 @@ export class GeminiFetcher {
                         }
                         timestamp += (msg.role === 'assistant' ? 1000 : 0);
                     }
-                } else {
-                    // No exact timestamps — use group heading or fallback
+                }
+                // Priority 3/4: Group heading or Date.now()
+                else {
                     timestamp = baseTime + i * 60000;
                 }
+
                 return {
                     id: `${conversationId}_dom_${i}`,
                     conversationId,
