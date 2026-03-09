@@ -299,7 +299,10 @@ export class GeminiFetcher {
         const scrollInfo = scrollResult?.[0]?.result || {};
         console.log(`[GeminiFetcher] Sidebar scroll complete: ${scrollInfo.finalCount} entries loaded`);
 
-        // Step 2: Discover sidebar conversation entries.
+        // Step 2: Discover sidebar conversation entries WITH time-group headings.
+        // Gemini groups sidebar entries under headings like "Today", "Yesterday",
+        // "Previous 7 Days", "Previous 30 Days", "May 2025", etc.
+        // We capture these to assign approximate timestamps to imported messages.
         // Primary: a[href*="/app/"] links (most reliable — worked in previous runs).
         // Fallback: side-nav-entry-button elements.
         // We store the href so we can click by selector later (stable across scrolls).
@@ -307,8 +310,87 @@ export class GeminiFetcher {
             target: { tabId },
             world: 'MAIN',
             func: () => {
+                // ── Helper: find the time-group heading for a conversation element ──
+                // Walk up from the link to find the nearest preceding group heading.
+                // Gemini sidebar structure varies, but headings are typically:
+                //   - <h3> or <h4> elements with group labels
+                //   - elements with class containing "group-header", "section-header"
+                //   - text nodes with date-like content before conversation entries
+                function findGroupHeading(el) {
+                    // Strategy A: Walk previousElementSibling up from the link's parent
+                    // looking for a heading or group-header element
+                    let container = el.closest('[class*="group"]')
+                        || el.closest('[class*="section"]')
+                        || el.parentElement;
+
+                    // Check for a heading within the same group container
+                    if (container) {
+                        const heading = container.querySelector('h3, h4, h5, [class*="header"], [class*="heading"], [class*="label"]');
+                        if (heading) {
+                            const text = heading.textContent?.trim();
+                            if (text && text.length < 50) return text;
+                        }
+                    }
+
+                    // Strategy B: Walk backwards through siblings of the conversation
+                    // entry looking for a heading element
+                    let sibling = (el.closest('side-nav-entry-button') || el.parentElement);
+                    if (sibling) {
+                        let prev = sibling.previousElementSibling;
+                        let steps = 0;
+                        while (prev && steps < 30) {
+                            // Check if this sibling IS a heading
+                            const tag = prev.tagName?.toLowerCase() || '';
+                            if (/^h[1-6]$/.test(tag) || prev.classList?.toString().match(/header|heading|label|group-title/i)) {
+                                const text = prev.textContent?.trim();
+                                if (text && text.length < 50) return text;
+                            }
+                            // Check if it contains a heading
+                            const inner = prev.querySelector('h3, h4, h5, [class*="header"], [class*="heading"], [class*="group-title"]');
+                            if (inner) {
+                                const text = inner.textContent?.trim();
+                                if (text && text.length < 50) return text;
+                            }
+                            prev = prev.previousElementSibling;
+                            steps++;
+                        }
+                    }
+
+                    // Strategy C: Walk up to conversations-list and scan all children
+                    // in DOM order, tracking the last heading seen before our element
+                    const convList = document.querySelector('conversations-list');
+                    if (convList) {
+                        let lastHeading = null;
+                        const walker = document.createTreeWalker(
+                            convList,
+                            NodeFilter.SHOW_ELEMENT,
+                            null
+                        );
+                        let node = walker.nextNode();
+                        while (node) {
+                            // Is it a heading-like element?
+                            const tag = node.tagName?.toLowerCase() || '';
+                            const cls = node.classList?.toString() || '';
+                            if (/^h[1-6]$/.test(tag) || /header|heading|label|group-title/i.test(cls)) {
+                                const text = node.textContent?.trim();
+                                if (text && text.length < 50 && !/^(New chat|Home|Settings|Gems)/i.test(text)) {
+                                    lastHeading = text;
+                                }
+                            }
+                            // Is it our element?
+                            if (node === el || node.contains(el) || el.contains(node)) {
+                                return lastHeading;
+                            }
+                            node = walker.nextNode();
+                        }
+                    }
+
+                    return null;
+                }
+
                 const conversations = [];
                 const seenHrefs = new Set();
+                const headingsFound = new Set();
 
                 // Strategy 1: href-based links (most reliable)
                 const links = document.querySelectorAll('a[href*="/app/"]');
@@ -322,12 +404,15 @@ export class GeminiFetcher {
                     const title = link.textContent?.trim() || '';
                     if (title.length < 2) continue;
                     if (/^(New chat|Settings|Help|Gems|Home|Extensions)/i.test(title)) continue;
-                    conversations.push({ href, title: title.substring(0, 100), type: 'href' });
+                    const groupHeading = findGroupHeading(link);
+                    if (groupHeading) headingsFound.add(groupHeading);
+                    conversations.push({ href, title: title.substring(0, 100), type: 'href', groupHeading });
                 }
 
                 if (conversations.length > 0) {
                     console.log(`[KYT] Found ${conversations.length} conversations via a[href*="/app/"]`);
-                    console.log(`[KYT] First 3: ${conversations.slice(0, 3).map(c => c.title).join(' | ')}`);
+                    console.log(`[KYT] First 3: ${conversations.slice(0, 3).map(c => `${c.title} [${c.groupHeading || '?'}]`).join(' | ')}`);
+                    console.log(`[KYT] Time groups found: ${[...headingsFound].join(', ')}`);
                     return conversations;
                 }
 
@@ -337,11 +422,14 @@ export class GeminiFetcher {
                     const title = btn.innerText?.trim() || '';
                     if (title.length < 2) return;
                     if (/^(New chat|Settings|Help|Gems|Home|Extensions)/i.test(title)) return;
-                    conversations.push({ idx, title: title.substring(0, 100), type: 'button' });
+                    const groupHeading = findGroupHeading(btn);
+                    if (groupHeading) headingsFound.add(groupHeading);
+                    conversations.push({ idx, title: title.substring(0, 100), type: 'button', groupHeading });
                 });
 
                 if (conversations.length > 0) {
                     console.log(`[KYT] Found ${conversations.length} conversations via side-nav-entry-button`);
+                    console.log(`[KYT] Time groups found: ${[...headingsFound].join(', ')}`);
                     return conversations;
                 }
 
@@ -355,7 +443,9 @@ export class GeminiFetcher {
                         const title = item.innerText?.trim() || '';
                         if (title.length < 2) return;
                         if (/^(New|Start|Menu|Settings|Home|Gems|Help)/i.test(title)) return;
-                        conversations.push({ idx, title: title.substring(0, 100), type: 'generic' });
+                        const groupHeading = findGroupHeading(item);
+                        if (groupHeading) headingsFound.add(groupHeading);
+                        conversations.push({ idx, title: title.substring(0, 100), type: 'generic', groupHeading });
                     });
                 }
 
@@ -371,6 +461,7 @@ export class GeminiFetcher {
                 }
 
                 console.log(`[KYT] Found ${conversations.length} sidebar conversation entries`);
+                console.log(`[KYT] Time groups found: ${[...headingsFound].join(', ')}`);
                 return conversations;
             },
             args: [],
@@ -398,14 +489,69 @@ export class GeminiFetcher {
         const allMessages = [];
         let processedCount = 0;
 
-        // Step 3: Click each sidebar entry, extract messages, move to next
-        for (let i = 0; i < conversations.length; i++) {
+        // Step 3: Click each sidebar entry, extract messages with timestamps, move to next.
+        // For each conversation we:
+        //   a) Install an XHR interceptor to capture the batchexecute response (has timestamps)
+        //   b) Click the sidebar entry (triggers XHR conversation-load)
+        //   c) DOM-scrape for content (reliable)
+        //   d) Parse timestamps from captured XHR response
+        //   e) Marry timestamps to DOM-scraped messages by turn index
+        // DEBUG: Cap at 5 conversations for timestamp testing — remove after validation
+        const convLimit = Math.min(conversations.length, 5);
+        console.log(`[GeminiFetcher] DEBUG: Processing ${convLimit} of ${conversations.length} conversations (test cap)`);
+        for (let i = 0; i < convLimit; i++) {
             const conv = conversations[i];
             await this.rateLimiter.acquire();
 
             console.log(`[GeminiFetcher] Clicking conversation ${i + 1}/${conversations.length}: "${conv.title}"`);
 
-            // Click the sidebar entry
+            // Step 3a: Install XHR response interceptor BEFORE clicking
+            await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: () => {
+                    // Store captured response on window for later retrieval
+                    window.__kytCapturedConvResponse = null;
+
+                    // Patch XHR to capture the next batchexecute response
+                    if (!window.__kytOrigXhrOpen) {
+                        window.__kytOrigXhrOpen = XMLHttpRequest.prototype.open;
+                        window.__kytOrigXhrSend = XMLHttpRequest.prototype.send;
+                    }
+                    const origOpen = window.__kytOrigXhrOpen;
+                    const origSend = window.__kytOrigXhrSend;
+
+                    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+                        this.__kytUrl = (typeof url === 'string') ? url : url?.toString?.() || '';
+                        return origOpen.call(this, method, url, ...rest);
+                    };
+
+                    XMLHttpRequest.prototype.send = function(...args) {
+                        const url = this.__kytUrl || '';
+                        // Capture batchexecute responses (conversation detail loads)
+                        if (url.includes('batchexecute') || url.includes('BardChatUi')) {
+                            this.addEventListener('load', function() {
+                                try {
+                                    if (this.responseText && this.responseText.length > 500) {
+                                        // Only capture if we don't already have one (take first/largest)
+                                        if (!window.__kytCapturedConvResponse ||
+                                            this.responseText.length > window.__kytCapturedConvResponse.length) {
+                                            window.__kytCapturedConvResponse = this.responseText;
+                                            console.log(`[KYT] Captured batchexecute response: ${this.responseText.length} chars`);
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.warn('[KYT] XHR capture error:', e.message);
+                                }
+                            });
+                        }
+                        return origSend.call(this, ...args);
+                    };
+                },
+                args: [],
+            });
+
+            // Step 3b: Click the sidebar entry
             const clickResult = await chrome.scripting.executeScript({
                 target: { tabId },
                 world: 'MAIN',
@@ -493,8 +639,154 @@ export class GeminiFetcher {
 
             await new Promise(r => setTimeout(r, 500));
 
-            // Extract messages
-            const messages = await this.extractMessagesFromTab(tabId, conv.title || 'Untitled', `sidebar_${i}`);
+            // Step 3c: Retrieve captured XHR response and extract timestamps
+            const timestampResult = await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: () => {
+                    const response = window.__kytCapturedConvResponse;
+                    if (!response) {
+                        console.log('[KYT] No batchexecute response captured for this conversation');
+                        return { timestamps: [], responseLength: 0 };
+                    }
+
+                    console.log(`[KYT] Parsing captured response (${response.length} chars) for timestamps...`);
+
+                    // Parse batchexecute frames
+                    const frames = [];
+                    let pos = 0;
+                    while (pos < response.length) {
+                        while (pos < response.length && (response[pos] === '\n' || response[pos] === '\r' || response[pos] === ' ')) pos++;
+                        if (pos >= response.length) break;
+                        let numStr = '';
+                        while (pos < response.length && response[pos] >= '0' && response[pos] <= '9') {
+                            numStr += response[pos]; pos++;
+                        }
+                        if (!numStr) { pos++; continue; }
+                        if (pos < response.length && response[pos] === '\n') pos++;
+                        const len = parseInt(numStr, 10);
+                        if (isNaN(len) || len <= 0) continue;
+                        const chunk = response.substring(pos, pos + len);
+                        pos += len;
+                        try { frames.push(JSON.parse(chunk)); } catch { /* skip */ }
+                    }
+
+                    // Search frames for turn timestamps
+                    const timestamps = [];
+                    for (const frame of frames) {
+                        if (!Array.isArray(frame)) continue;
+
+                        // wrb.fr frames
+                        for (const item of frame) {
+                            if (!Array.isArray(item) || item[0] !== 'wrb.fr') continue;
+                            const innerJson = item[2];
+                            if (typeof innerJson !== 'string') continue;
+                            let data;
+                            try { data = JSON.parse(innerJson); } catch { continue; }
+                            if (!Array.isArray(data)) continue;
+
+                            // Find turns array — usually at data[0][2] or nested
+                            function findTurns(d, depth) {
+                                if (depth > 4 || !Array.isArray(d)) return null;
+                                // Check if this looks like a turns array
+                                // (array of arrays where items have nested arrays with text content)
+                                if (d.length > 0 && Array.isArray(d[0]) && d[0].length >= 3) {
+                                    // Check if any item has a timestamp-like number
+                                    let hasTimestamp = false;
+                                    for (const turn of d) {
+                                        if (!Array.isArray(turn)) continue;
+                                        for (const val of turn) {
+                                            if (typeof val === 'number' && val > 1700000000000) {
+                                                hasTimestamp = true; break;
+                                            }
+                                            if (Array.isArray(val)) {
+                                                for (const sub of val) {
+                                                    if (typeof sub === 'number' && sub > 1700000000000) {
+                                                        hasTimestamp = true; break;
+                                                    }
+                                                }
+                                            }
+                                            if (hasTimestamp) break;
+                                        }
+                                        if (hasTimestamp) break;
+                                    }
+                                    if (hasTimestamp) return d;
+                                }
+                                // Recurse
+                                for (const item of d) {
+                                    const found = findTurns(item, depth + 1);
+                                    if (found) return found;
+                                }
+                                return null;
+                            }
+
+                            const turns = findTurns(data, 0);
+                            if (!turns) continue;
+
+                            for (const turn of turns) {
+                                if (!Array.isArray(turn)) continue;
+                                // Extract timestamp from turn — search for epoch ms
+                                let ts = null;
+                                for (const val of turn) {
+                                    if (typeof val === 'number' && val > 1700000000000 && val < 2000000000000) {
+                                        ts = val; break;
+                                    }
+                                    if (typeof val === 'number' && val > 1700000000 && val < 2000000000) {
+                                        ts = val * 1000; break;
+                                    }
+                                    if (Array.isArray(val)) {
+                                        for (const sub of val) {
+                                            if (typeof sub === 'number' && sub > 1700000000000 && sub < 2000000000000) {
+                                                ts = sub; break;
+                                            }
+                                            if (typeof sub === 'number' && sub > 1700000000 && sub < 2000000000) {
+                                                ts = sub * 1000; break;
+                                            }
+                                        }
+                                    }
+                                    if (ts) break;
+                                }
+                                timestamps.push(ts);
+                            }
+
+                            if (timestamps.length > 0) {
+                                const firstValid = timestamps.find(t => t != null);
+                                console.log(`[KYT] Found ${timestamps.length} turn timestamps, first: ${firstValid ? new Date(firstValid).toISOString() : 'null'}`);
+                                break; // Got timestamps from this frame
+                            }
+                        }
+                        if (timestamps.length > 0) break;
+                    }
+
+                    // Clean up
+                    window.__kytCapturedConvResponse = null;
+
+                    return {
+                        timestamps,
+                        responseLength: response.length,
+                    };
+                },
+                args: [],
+            });
+
+            const tsData = timestampResult?.[0]?.result || {};
+            const turnTimestamps = tsData.timestamps || [];
+
+            // Resolve fallback: sidebar group heading → approximate timestamp
+            const approxTimestamp = GeminiFetcher.resolveGroupHeadingToTimestamp(conv.groupHeading);
+
+            if (turnTimestamps.length > 0) {
+                const validTs = turnTimestamps.filter(t => t != null);
+                console.log(`[GeminiFetcher] Got ${validTs.length}/${turnTimestamps.length} exact timestamps for "${conv.title}"`);
+                if (validTs.length > 0) {
+                    console.log(`[GeminiFetcher] Time range: ${new Date(Math.min(...validTs)).toISOString()} → ${new Date(Math.max(...validTs)).toISOString()}`);
+                }
+            } else {
+                console.log(`[GeminiFetcher] No XHR timestamps for "${conv.title}", using group heading: "${conv.groupHeading}" → ${new Date(approxTimestamp).toISOString()}`);
+            }
+
+            // Step 3d: Extract messages with timestamps
+            const messages = await this.extractMessagesFromTab(tabId, conv.title || 'Untitled', `sidebar_${i}`, approxTimestamp, turnTimestamps);
 
             if (messages.length > 0) {
                 console.log(`[GeminiFetcher] Extracted ${messages.length} messages from "${conv.title}"`);
@@ -512,6 +804,23 @@ export class GeminiFetcher {
                 onProgress(`sidebar_${i}`, processedCount);
             }
         }
+
+        // Clean up: restore original XHR methods
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: () => {
+                if (window.__kytOrigXhrOpen) {
+                    XMLHttpRequest.prototype.open = window.__kytOrigXhrOpen;
+                    XMLHttpRequest.prototype.send = window.__kytOrigXhrSend;
+                    delete window.__kytOrigXhrOpen;
+                    delete window.__kytOrigXhrSend;
+                    delete window.__kytCapturedConvResponse;
+                    console.log('[KYT] Restored original XHR methods');
+                }
+            },
+            args: [],
+        });
 
         console.log(`[GeminiFetcher] Finished. Processed ${processedCount} conversations, returning ${allMessages.length} messages.`);
         return allMessages;
@@ -684,9 +993,11 @@ export class GeminiFetcher {
      * @param {number} tabId
      * @param {string} title
      * @param {string} conversationId
+     * @param {number} [approxTimestamp] - Approximate epoch ms from sidebar group heading
+     * @param {number[]} [turnTimestamps] - Per-turn exact timestamps from XHR response
      * @returns {Promise<Message[]>}
      */
-    async extractMessagesFromTab(tabId, title, conversationId) {
+    async extractMessagesFromTab(tabId, title, conversationId, approxTimestamp, turnTimestamps) {
         try {
             const execResult = await chrome.scripting.executeScript({
                 target: { tabId },
@@ -801,20 +1112,121 @@ export class GeminiFetcher {
 
             console.log(`[GeminiFetcher] Extracted ${scraped.length} messages from "${title}"`);
 
-            return scraped.map((msg, i) => ({
-                id: `${conversationId}_dom_${i}`,
-                conversationId,
-                conversationTitle: title || 'Untitled',
-                content: msg.text,
-                role: msg.role,
-                timestamp: Date.now() - (scraped.length - i) * 60000,
-                platform: 'gemini',
-            }));
+            // Timestamp resolution priority:
+            // 1. Exact per-turn timestamps from XHR batchexecute response (best)
+            // 2. Approximate timestamp from sidebar group heading (month-level)
+            // 3. Date.now() fallback (worst — everything looks like today)
+            //
+            // turnTimestamps are per-turn (one per user+assistant pair).
+            // DOM messages alternate user/assistant, so turn index = floor(msgIdx / 2).
+            const baseTime = approxTimestamp || Date.now();
+            const hasExactTimestamps = Array.isArray(turnTimestamps) && turnTimestamps.some(t => t != null);
+
+            return scraped.map((msg, i) => {
+                let timestamp;
+                if (hasExactTimestamps) {
+                    // Map message index to turn index (2 messages per turn: user + assistant)
+                    const turnIdx = Math.floor(i / 2);
+                    const turnTs = turnIdx < turnTimestamps.length ? turnTimestamps[turnIdx] : null;
+                    if (turnTs) {
+                        // User message gets exact timestamp, assistant gets +1s
+                        timestamp = msg.role === 'assistant' ? turnTs + 1000 : turnTs;
+                    } else {
+                        // This turn had no timestamp — interpolate from neighbors
+                        const prevTs = turnTimestamps.slice(0, turnIdx).reverse().find(t => t != null);
+                        const nextTs = turnTimestamps.slice(turnIdx + 1).find(t => t != null);
+                        if (prevTs && nextTs) {
+                            timestamp = prevTs + (nextTs - prevTs) * (turnIdx / turnTimestamps.length);
+                        } else {
+                            timestamp = prevTs || nextTs || baseTime;
+                        }
+                        timestamp += (msg.role === 'assistant' ? 1000 : 0);
+                    }
+                } else {
+                    // No exact timestamps — use group heading or fallback
+                    timestamp = baseTime + i * 60000;
+                }
+                return {
+                    id: `${conversationId}_dom_${i}`,
+                    conversationId,
+                    conversationTitle: title || 'Untitled',
+                    content: msg.text,
+                    role: msg.role,
+                    timestamp,
+                    platform: 'gemini',
+                };
+            });
 
         } catch (error) {
             console.error(`[GeminiFetcher] Extract failed for ${conversationId}:`, error.message);
             return [];
         }
+    }
+
+    /**
+     * Convert a Gemini sidebar group heading to an approximate epoch timestamp.
+     *
+     * Gemini groups sidebar conversations under headings like:
+     *   "Today", "Yesterday", "Previous 7 days", "Previous 30 days",
+     *   "January 2026", "December 2025", "May 2025", etc.
+     *
+     * Returns a midpoint timestamp for the period. For month headings,
+     * returns the 15th of that month at noon UTC.
+     *
+     * @param {string|null|undefined} heading
+     * @returns {number} epoch milliseconds (falls back to Date.now())
+     */
+    static resolveGroupHeadingToTimestamp(heading) {
+        if (!heading) return Date.now();
+
+        const h = heading.trim().toLowerCase();
+        const now = new Date();
+
+        // "today"
+        if (h === 'today') {
+            return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0).getTime();
+        }
+
+        // "yesterday"
+        if (h === 'yesterday') {
+            const d = new Date(now);
+            d.setDate(d.getDate() - 1);
+            return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0).getTime();
+        }
+
+        // "previous 7 days" / "last 7 days" / "past 7 days" / "past week"
+        if (/(?:previous|last|past)\s*7\s*days|past\s*week/i.test(h)) {
+            const d = new Date(now);
+            d.setDate(d.getDate() - 4); // midpoint of 2-7 days ago
+            return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0).getTime();
+        }
+
+        // "previous 30 days" / "last 30 days" / "past 30 days" / "past month"
+        if (/(?:previous|last|past)\s*30\s*days|past\s*month/i.test(h)) {
+            const d = new Date(now);
+            d.setDate(d.getDate() - 18); // midpoint of 7-30 days ago
+            return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0).getTime();
+        }
+
+        // Month-year pattern: "May 2025", "January 2026", "Dec 2025", etc.
+        const monthNames = {
+            january: 0, jan: 0, february: 1, feb: 1, march: 2, mar: 2,
+            april: 3, apr: 3, may: 4, june: 5, jun: 5, july: 6, jul: 6,
+            august: 7, aug: 7, september: 8, sep: 8, sept: 8,
+            october: 9, oct: 9, november: 10, nov: 10, december: 11, dec: 11,
+        };
+        const monthYearMatch = h.match(/^(\w+)\s+(\d{4})$/);
+        if (monthYearMatch) {
+            const monthName = monthYearMatch[1].toLowerCase();
+            const year = parseInt(monthYearMatch[2], 10);
+            if (monthName in monthNames) {
+                return new Date(year, monthNames[monthName], 15, 12, 0, 0).getTime();
+            }
+        }
+
+        // Fallback: couldn't parse heading
+        console.log(`[GeminiFetcher] Unknown sidebar group heading: "${heading}"`);
+        return Date.now();
     }
 
     /**
