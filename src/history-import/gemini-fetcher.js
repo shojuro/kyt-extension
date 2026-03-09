@@ -1156,22 +1156,23 @@ export class GeminiFetcher {
                     if (ariaTimestampHits.length > 0) {
                         console.log(`[KYT extract] Found ${ariaTimestampHits.length} ARIA timestamp candidates:`);
                         ariaTimestampHits.slice(0, 5).forEach(h => console.log(`  <${h.tag}> aria-label="${h.label}"`));
-                    } else {
-                        console.log(`[KYT extract] No ARIA timestamp attributes found (scanned ${ariaEls.length} elements)`);
-                        // Broader diagnostic: dump ALL aria-labels in conversation area
-                        const allAria = [];
-                        convArea.querySelectorAll('[aria-label]').forEach(el => {
-                            const label = el.getAttribute('aria-label');
-                            if (label && label.length > 3 && label.length < 200) {
-                                allAria.push(`<${el.tagName.toLowerCase()}> "${label.substring(0, 80)}"`);
-                            }
-                        });
-                        if (allAria.length > 0) {
-                            console.log(`[KYT extract] All aria-labels in conv area (${allAria.length}):`);
-                            allAria.slice(0, 10).forEach(a => console.log(`  ${a}`));
-                            if (allAria.length > 10) console.log(`  ... and ${allAria.length - 10} more`);
-                        }
                     }
+                    // Broader diagnostic: dump ALL aria-labels so background console can see them
+                    const allAriaLabels = [];
+                    convArea.querySelectorAll('[aria-label]').forEach(el => {
+                        const label = el.getAttribute('aria-label');
+                        if (label && label.length > 3 && label.length < 200) {
+                            allAriaLabels.push(`<${el.tagName.toLowerCase()}> "${label.substring(0, 80)}"`);
+                        }
+                    });
+                    // Also check title attributes and data-* timestamp attributes
+                    const allTitleAttrs = [];
+                    convArea.querySelectorAll('[title]').forEach(el => {
+                        const title = el.getAttribute('title');
+                        if (title && title.length > 3 && title.length < 200) {
+                            allTitleAttrs.push(`<${el.tagName.toLowerCase()}> title="${title.substring(0, 80)}"`);
+                        }
+                    });
 
                     // Diagnostic logging
                     console.log(`[KYT extract] user-query: ${userQueries.length}, model-response: ${modelResponses.length}`);
@@ -1245,7 +1246,7 @@ export class GeminiFetcher {
                             if (i < userByIdx.length) interleaved.push(userByIdx[i]);
                             if (i < modelByIdx.length) interleaved.push(modelByIdx[i]);
                         }
-                        return interleaved;
+                        return { messages: interleaved, diagnostics: { ariaTimestampHits, allAriaCount: ariaEls.length, allAriaLabels: allAriaLabels.slice(0, 15), allTitleAttrs: allTitleAttrs.slice(0, 15), strategy: 'webcomponents' } };
                     }
 
                     // ═══ Strategy 2: Generic fallback ═══
@@ -1265,12 +1266,27 @@ export class GeminiFetcher {
                             }
                         }
                     }
-                    return messages;
+                    return { messages, diagnostics: { ariaTimestampHits, allAriaCount: ariaEls.length, allAriaLabels: allAriaLabels.slice(0, 15), allTitleAttrs: allTitleAttrs.slice(0, 15), strategy: 'fallback' } };
                 },
                 args: [],
             });
 
-            const scraped = execResult?.[0]?.result || [];
+            const rawResult = execResult?.[0]?.result;
+            // Handle both { messages, diagnostics } object and legacy array returns
+            let scraped, diagnostics;
+            if (rawResult && !Array.isArray(rawResult) && rawResult.messages) {
+                scraped = rawResult.messages || [];
+                diagnostics = rawResult.diagnostics || {};
+            } else {
+                scraped = Array.isArray(rawResult) ? rawResult : [];
+                diagnostics = {};
+            }
+
+            // Log ARIA diagnostics in background console (executeScript logs go to tab console)
+            if (diagnostics && Object.keys(diagnostics).length > 0) {
+                console.log(`[GeminiFetcher] ARIA diagnostics for "${title}": ${JSON.stringify(diagnostics)}`);
+            }
+
             if (scraped.length === 0) {
                 console.warn(`[GeminiFetcher] Extracted 0 messages from "${title}" (${conversationId})`);
                 return [];
