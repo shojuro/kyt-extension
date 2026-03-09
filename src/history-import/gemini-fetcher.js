@@ -818,8 +818,12 @@ export class GeminiFetcher {
                 args: [],
             });
             const pathname = urlResult?.[0]?.result || '';
-            // Extract c_xxx from /app/c_xxx or /app/0/c_xxx etc.
-            const convIdMatch = pathname.match(/\/(c_[0-9a-f]+)/);
+            // Extract conversation ID from URL path.
+            // Gemini uses two formats:
+            //   /app/c_d256defe4aabd853  (c_ prefix + hex)
+            //   /app/ec54957d0ff33365    (plain hex, 16+ chars)
+            //   /app/0/c_xxx            (occasionally with numeric prefix)
+            const convIdMatch = pathname.match(/\/(c_[0-9a-f]+)/) || pathname.match(/\/app\/(?:\d+\/)?([0-9a-f]{12,})/);
             if (!convIdMatch) {
                 console.log(`[GeminiFetcher] No conversation ID in URL: ${pathname}`);
                 return [];
