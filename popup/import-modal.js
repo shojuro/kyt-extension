@@ -55,6 +55,15 @@ function cacheElements() {
     elements.fallbackReason = document.getElementById('fallback-reason');
     elements.exportInstructions = document.getElementById('export-instructions');
     elements.platformSelect = document.getElementById('platform-select');
+    // Fallback view progress/status elements
+    elements.fallbackHeading = document.getElementById('fallback-heading');
+    elements.fallbackSubtext = document.getElementById('fallback-subtext');
+    elements.fallbackProgressContainer = document.getElementById('fallback-progress-container');
+    elements.fallbackProgressFill = document.getElementById('fallback-progress-fill');
+    elements.fallbackProgressText = document.getElementById('fallback-progress-text');
+    elements.fallbackProgressCount = document.getElementById('fallback-progress-count');
+    elements.fallbackErrorMsg = document.getElementById('fallback-error-msg');
+    elements.fallbackSuccessMsg = document.getElementById('fallback-success-msg');
 }
 
 let selectedMode = 'full';
@@ -167,6 +176,31 @@ function setupUploadZone() {
     });
 }
 
+/**
+ * Get the active progress/status elements based on current view.
+ * When in fallback view, use fallback-specific elements; otherwise use main-view ones.
+ */
+function getActiveUI() {
+    if (currentState === STATES.FALLBACK) {
+        return {
+            progressContainer: elements.fallbackProgressContainer,
+            progressFill: elements.fallbackProgressFill,
+            progressText: elements.fallbackProgressText,
+            progressCount: elements.fallbackProgressCount,
+            errorMsg: elements.fallbackErrorMsg,
+            successMsg: elements.fallbackSuccessMsg
+        };
+    }
+    return {
+        progressContainer: elements.progressContainer,
+        progressFill: elements.progressFill,
+        progressText: elements.progressText,
+        progressCount: elements.progressCount,
+        errorMsg: elements.errorMsg,
+        successMsg: elements.successMsg
+    };
+}
+
 async function handleFileUpload(file) {
     const platform = fallbackPlatform || selectedPlatform;
     if (!platform) {
@@ -174,11 +208,14 @@ async function handleFileUpload(file) {
         return;
     }
 
+    const ui = getActiveUI();
+
     try {
         // Validate the file
-        elements.progressText.textContent = 'Validating file...';
-        elements.progressContainer.style.display = 'block';
-        elements.progressFill.style.width = '10%';
+        ui.progressText.textContent = 'Validating file...';
+        ui.progressContainer.style.display = 'block';
+        ui.progressContainer.classList.remove('hidden');
+        ui.progressFill.style.width = '10%';
 
         const validation = await validateExportFile(file, platform);
         if (!validation.valid) {
@@ -186,8 +223,8 @@ async function handleFileUpload(file) {
         }
 
         // Parse the ZIP in popup (Option B - File API works here)
-        elements.progressText.textContent = 'Parsing ZIP file...';
-        elements.progressFill.style.width = '30%';
+        ui.progressText.textContent = 'Parsing ZIP file...';
+        ui.progressFill.style.width = '30%';
 
         const messages = await parseZipExport(file, platform);
 
@@ -195,8 +232,8 @@ async function handleFileUpload(file) {
             throw new Error('No messages found in export file');
         }
 
-        elements.progressText.textContent = `Found ${messages.length} messages. Saving...`;
-        elements.progressFill.style.width = '50%';
+        ui.progressText.textContent = `Found ${messages.length} messages. Saving...`;
+        ui.progressFill.style.width = '50%';
 
         // Send parsed messages to background for saving
         const response = await chrome.runtime.sendMessage({
@@ -211,13 +248,13 @@ async function handleFileUpload(file) {
         }
 
         // Success
-        elements.progressFill.style.width = '100%';
-        elements.progressText.textContent = 'Import complete!';
+        ui.progressFill.style.width = '100%';
+        ui.progressText.textContent = 'Import complete!';
         completedPlatforms.add(platform);
         updatePlatformButtons();
 
-        elements.successMsg.textContent = `Successfully imported ${messages.length} messages from ${platform}.`;
-        elements.successMsg.style.display = 'block';
+        ui.successMsg.textContent = `Successfully imported ${messages.length} messages from ${platform}.`;
+        ui.successMsg.style.display = 'block';
 
         // Return to platform select after delay
         setTimeout(() => {
@@ -226,8 +263,9 @@ async function handleFileUpload(file) {
 
     } catch (e) {
         console.error('File upload error:', e);
-        showError(e.message);
-        elements.progressContainer.style.display = 'none';
+        ui.errorMsg.textContent = e.message;
+        ui.errorMsg.style.display = 'block';
+        ui.progressContainer.style.display = 'none';
     }
 }
 
@@ -289,10 +327,18 @@ function setState(newState) {
     elements.mainView?.classList.add('hidden');
     elements.fallbackView?.classList.add('hidden');
 
-    // Reset messages
+    // Reset main-view messages
     elements.errorMsg.style.display = 'none';
     elements.successMsg.style.display = 'none';
     elements.progressContainer.style.display = 'none';
+
+    // Reset fallback-view messages
+    if (elements.fallbackErrorMsg) elements.fallbackErrorMsg.style.display = 'none';
+    if (elements.fallbackSuccessMsg) elements.fallbackSuccessMsg.style.display = 'none';
+    if (elements.fallbackProgressContainer) {
+        elements.fallbackProgressContainer.style.display = 'none';
+        elements.fallbackProgressContainer.classList.add('hidden');
+    }
 
     switch (newState) {
         case STATES.WELCOME:
@@ -396,12 +442,57 @@ function selectPlatform(platform) {
     selectedPlatform = platform;
     updatePlatformButtons();
 
+    // Gemini uses Google Takeout — go directly to file upload
+    if (platform === 'gemini') {
+        showGeminiUploadUI();
+        return;
+    }
+
     elements.btnStart.disabled = false;
     elements.errorMsg.style.display = 'none';
     elements.successMsg.style.display = 'none';
 
     // Check status
     checkStatus(platform);
+}
+
+/**
+ * Show Google Takeout upload UI for Gemini.
+ * This is the primary import path for Gemini (not a fallback).
+ */
+async function showGeminiUploadUI() {
+    fallbackPlatform = 'gemini';
+
+    // Positive framing — this is the primary path, not a fallback
+    if (elements.fallbackHeading) {
+        elements.fallbackHeading.textContent = 'Import from Google Takeout';
+    }
+    elements.fallbackReason.textContent =
+        'Gemini imports use Google Takeout for accurate timestamps across your full conversation history.';
+    if (elements.fallbackSubtext) {
+        elements.fallbackSubtext.innerHTML = '<strong>Follow these steps:</strong>';
+    }
+
+    // Set Gemini-specific instructions
+    elements.exportInstructions.innerHTML = getExportInstructions('gemini');
+
+    setState(STATES.FALLBACK);
+
+    // Check if Gemini was previously imported
+    try {
+        const response = await chrome.runtime.sendMessage({
+            type: 'CHECK_IMPORT_STATUS',
+            platform: 'gemini'
+        });
+        if (response.success && response.status?.hasCompletedImport) {
+            const ui = getActiveUI();
+            ui.successMsg.textContent =
+                `Previously imported on ${new Date(response.status.completedAt).toLocaleDateString()}. Upload again to update.`;
+            ui.successMsg.style.display = 'block';
+        }
+    } catch (e) {
+        // Not critical
+    }
 }
 
 async function checkStatus(platform) {
@@ -432,6 +523,12 @@ async function checkStatus(platform) {
 
 async function startImport() {
     if (!selectedPlatform) return;
+
+    // Gemini uses Takeout upload, not live fetching
+    if (selectedPlatform === 'gemini') {
+        showGeminiUploadUI();
+        return;
+    }
 
     isImporting = true;
     elements.btnStart.disabled = true;
@@ -468,6 +565,14 @@ async function startImport() {
 function showFallbackUI(platform, reason) {
     fallbackPlatform = platform;
 
+    // Restore warning framing for ChatGPT/Claude fallback
+    if (elements.fallbackHeading) {
+        elements.fallbackHeading.textContent = '⚠️ Automatic import unavailable';
+    }
+    if (elements.fallbackSubtext) {
+        elements.fallbackSubtext.innerHTML = '<strong>You can still import via export file:</strong>';
+    }
+
     // Set reason text
     const reasonMap = {
         'chatgpt': 'You\'re not logged into ChatGPT.',
@@ -502,11 +607,12 @@ function getExportInstructions(platform) {
         `;
     } else if (platform === 'gemini') {
         return `
-            <li>Go to <a href="https://takeout.google.com/" target="_blank">Google Takeout</a></li>
-            <li>Click "Deselect all", then select only "Gemini Apps"</li>
-            <li>Click "Next step" → "Create export"</li>
-            <li>Wait for the email, then download the ZIP</li>
-            <li>Upload the ZIP file here</li>
+            <li>Go to <a href="https://takeout.google.com/" target="_blank">takeout.google.com</a></li>
+            <li>Click <strong>"Deselect all"</strong> at the top</li>
+            <li>Scroll down and check <strong>"Gemini Apps"</strong></li>
+            <li>Click "Next step" → choose <strong>.zip</strong> format → "Create export"</li>
+            <li>Wait for the email from Google (usually 5-30 minutes)</li>
+            <li>Download the ZIP and upload it here</li>
         `;
     }
     return '';
@@ -552,8 +658,9 @@ function updateProgress(progress) {
 }
 
 function showError(msg) {
-    elements.errorMsg.textContent = msg;
-    elements.errorMsg.style.display = 'block';
+    const ui = getActiveUI();
+    ui.errorMsg.textContent = msg;
+    ui.errorMsg.style.display = 'block';
 }
 
 function resetUI(completed = false) {

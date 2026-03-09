@@ -264,12 +264,12 @@
     </div>
   </div>
 
-  <!-- ZIP Fallback View -->
+  <!-- ZIP / Takeout Upload View -->
   <div class="container hidden" id="fallback-view">
-    <h2>⚠️ Automatic import unavailable</h2>
+    <h2 id="fallback-heading">⚠️ Automatic import unavailable</h2>
     <div class="card">
       <p id="fallback-reason">You're not logged into ChatGPT.</p>
-      <p style="margin-top: 8px;"><strong>You can still import via export file:</strong></p>
+      <p id="fallback-subtext" style="margin-top: 8px;"><strong>You can still import via export file:</strong></p>
       <ol class="instructions" id="export-instructions">
         <!-- Platform-specific instructions injected by JS -->
       </ol>
@@ -282,6 +282,17 @@
         <p class="upload-hint">Accepted: .zip files up to 500MB</p>
       </div>
     </div>
+    <div class="progress-container hidden" id="fallback-progress-container">
+      <div class="progress-bar">
+        <div class="progress-fill" id="fallback-progress-fill"></div>
+      </div>
+      <div class="stats">
+        <span id="fallback-progress-text">Processing...</span>
+        <span id="fallback-progress-count">0 msgs</span>
+      </div>
+    </div>
+    <div class="error" id="fallback-error-msg" style="display:none"></div>
+    <div class="success" id="fallback-success-msg" style="display:none"></div>
     <div class="button-row">
       <button class="btn btn-secondary" id="btn-back-to-platforms">← Back to Platforms</button>
     </div>
