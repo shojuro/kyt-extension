@@ -160,61 +160,183 @@ export class GeminiFetcher {
         // Step 0: Capture live batchexecute params from Gemini tab
         await this.captureLiveParams();
 
-        // Step 1: Get conversation list — DOM scrape first (reliable),
-        // batchexecute as fallback (RPC IDs rotate with Google deploys)
-        let conversations = await this.scrapeConversationListFromDOM().catch(() => []);
-        if (!conversations || conversations.length === 0) {
-            console.log('[GeminiFetcher] DOM scrape returned 0, trying batchexecute...');
-            conversations = await this.fetchConversationList();
-        } else {
-            console.log(`[GeminiFetcher] DOM scrape found ${conversations.length} conversations`);
+        const tabs = await chrome.tabs.query({ url: ['https://gemini.google.com/*'] });
+        if (!tabs || tabs.length === 0) {
+            throw new Error('No Gemini tab found. Please open gemini.google.com and try again.');
         }
+        const tabId = tabs[0].id;
 
-        if (!conversations || conversations.length === 0) {
-            throw new Error('Could not fetch Gemini conversations. Please log in to gemini.google.com and try again.');
+        // Step 1: Navigate to Gemini home to ensure sidebar is visible
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: () => {
+                if (!window.location.pathname.startsWith('/app')) {
+                    window.location.href = 'https://gemini.google.com/app';
+                }
+            },
+            args: [],
+        });
+        await new Promise(r => setTimeout(r, 3000));
+
+        // Step 2: Discover sidebar conversation entries (click-based, not URL-based)
+        // Gemini SPA doesn't load conversations via direct URL navigation —
+        // we must click sidebar entries to trigger internal Angular routing.
+        const convListResult = await chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: () => {
+                // Find sidebar conversation buttons
+                const buttons = document.querySelectorAll('side-nav-entry-button');
+                const conversations = [];
+                buttons.forEach((btn, idx) => {
+                    const title = btn.innerText?.trim() || '';
+                    // Skip non-conversation entries (empty or very short titles)
+                    if (title.length < 2) return;
+                    // Skip known non-conversation buttons
+                    if (/^(New chat|Settings|Help|Gems|Home|Extensions)/i.test(title)) return;
+                    conversations.push({ idx, title: title.substring(0, 100) });
+                });
+
+                // Also try generic sidebar links as fallback
+                if (conversations.length === 0) {
+                    const sidebar = document.querySelector('conversations-list')
+                        || document.querySelector('side-navigation-content')
+                        || document.querySelector('nav');
+                    if (sidebar) {
+                        const items = sidebar.querySelectorAll('a, button, [role="listitem"], [role="button"]');
+                        items.forEach((item, idx) => {
+                            const title = item.innerText?.trim() || '';
+                            if (title.length < 2) return;
+                            if (/^(New|Start|Menu|Settings|Home|Gems|Help)/i.test(title)) return;
+                            conversations.push({ idx, title: title.substring(0, 100), fallback: true });
+                        });
+                    }
+                }
+
+                console.log(`[KYT] Found ${conversations.length} sidebar conversation entries`);
+                return conversations;
+            },
+            args: [],
+        });
+
+        const conversations = convListResult?.[0]?.result || [];
+        console.log(`[GeminiFetcher] Found ${conversations.length} sidebar conversations`);
+
+        if (conversations.length === 0) {
+            // Fall back to batchexecute if no sidebar entries found
+            console.log('[GeminiFetcher] No sidebar entries, trying batchexecute...');
+            const batchConvs = await this.fetchConversationList();
+            if (!batchConvs || batchConvs.length === 0) {
+                throw new Error('Could not fetch Gemini conversations. Please log in to gemini.google.com and try again.');
+            }
+            // Can't click-navigate with batchexecute IDs, return empty
+            console.warn('[GeminiFetcher] batchexecute found conversations but cannot click-navigate');
+            throw new Error('Gemini sidebar conversations not found. Please ensure the sidebar is visible and try again.');
         }
-
-        const cutoffDate = Date.now() - (maxAgeDays * 24 * 60 * 60 * 1000);
-        const allMessages = [];
-        let processedCount = 0;
 
         if (onTotal) {
             onTotal(conversations.length);
         }
 
-        // Find resume point
-        let startIndex = 0;
-        if (resumeFromId) {
-            const index = conversations.findIndex(c => c.id === resumeFromId);
-            if (index !== -1) {
-                startIndex = index + 1;
-                processedCount = startIndex;
-            }
-        }
+        const allMessages = [];
+        let processedCount = 0;
 
-        for (let i = startIndex; i < conversations.length; i++) {
+        // Step 3: Click each sidebar entry, extract messages, move to next
+        for (let i = 0; i < conversations.length; i++) {
             const conv = conversations[i];
+            await this.rateLimiter.acquire();
 
-            // Check age
-            if (conv.updatedAt && conv.updatedAt < cutoffDate) {
-                console.log(`[GeminiFetcher] Skipping old conversation: ${new Date(conv.updatedAt).toISOString()}`);
+            console.log(`[GeminiFetcher] Clicking conversation ${i + 1}/${conversations.length}: "${conv.title}"`);
+
+            // Click the sidebar entry
+            const clickResult = await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: (convIdx, isFallback) => {
+                    let buttons;
+                    if (!isFallback) {
+                        buttons = document.querySelectorAll('side-nav-entry-button');
+                    } else {
+                        const sidebar = document.querySelector('conversations-list')
+                            || document.querySelector('side-navigation-content')
+                            || document.querySelector('nav');
+                        if (!sidebar) return false;
+                        buttons = sidebar.querySelectorAll('a, button, [role="listitem"], [role="button"]');
+                    }
+                    if (convIdx >= buttons.length) return false;
+                    const btn = buttons[convIdx];
+                    // Try clicking the button itself or a clickable child
+                    const clickTarget = btn.querySelector('a, button') || btn;
+                    clickTarget.click();
+                    return true;
+                },
+                args: [conv.idx, !!conv.fallback],
+            });
+
+            if (!clickResult?.[0]?.result) {
+                console.warn(`[GeminiFetcher] Could not click conversation ${i + 1}`);
+                processedCount++;
                 continue;
             }
 
-            // Fetch conversation detail
-            const messages = await this.fetchConversationDetail(conv.id, conv.title);
+            // Wait for conversation to render after click
+            await new Promise(r => setTimeout(r, 3000));
+
+            // Poll for conversation elements (up to 8s additional)
+            await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: async () => {
+                    for (let i = 0; i < 8; i++) {
+                        const els = document.querySelectorAll('user-query, model-response');
+                        if (els.length > 0) return;
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
+                },
+                args: [],
+            });
+
+            // Scroll to load all messages
+            await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: async () => {
+                    const scroller = document.querySelector('infinite-scroller')
+                        || document.querySelector('main');
+                    if (!scroller) return;
+                    let lastCount = 0;
+                    let stableRounds = 0;
+                    for (let i = 0; i < 15 && stableRounds < 3; i++) {
+                        scroller.scrollTo({ top: 0, behavior: 'auto' });
+                        await new Promise(r => setTimeout(r, 600));
+                        const count = document.querySelectorAll('user-query, model-response').length;
+                        if (count === lastCount) stableRounds++;
+                        else { stableRounds = 0; lastCount = count; }
+                    }
+                },
+                args: [],
+            });
+
+            await new Promise(r => setTimeout(r, 500));
+
+            // Extract messages
+            const messages = await this.extractMessagesFromTab(tabId, conv.title || 'Untitled', `sidebar_${i}`);
 
             if (messages.length > 0) {
+                console.log(`[GeminiFetcher] Extracted ${messages.length} messages from "${conv.title}"`);
                 if (onBatch) {
                     await onBatch(messages);
                 } else {
                     allMessages.push(...messages);
                 }
+            } else {
+                console.warn(`[GeminiFetcher] 0 messages from "${conv.title}"`);
             }
 
             processedCount++;
             if (onProgress) {
-                onProgress(conv.id, processedCount);
+                onProgress(`sidebar_${i}`, processedCount);
             }
         }
 
@@ -383,152 +505,42 @@ export class GeminiFetcher {
     }
 
     /**
-     * Fetch a single conversation's messages.
+     * Extract messages from the currently visible conversation in a Gemini tab.
+     * Shared between sidebar-click flow and any future direct-navigation flow.
      *
-     * @param {string} conversationId
+     * @param {number} tabId
      * @param {string} title
+     * @param {string} conversationId
      * @returns {Promise<Message[]>}
      */
-    async fetchConversationDetail(conversationId, title) {
-        await this.rateLimiter.acquire();
-
-        // DOM scrape is the primary strategy — batchexecute RPC IDs rotate
-        // with Google deploys and reliably 400. DOM scraping is slower (requires
-        // navigation + render) but uses stable custom elements (<user-query>,
-        // <model-response>) that haven't changed.
-        return this.scrapeConversationDetailFromDOM(conversationId, title);
-    }
-
-    /**
-     * Scrape a conversation's messages by navigating to its page.
-     * Gemini renders conversation turns in the DOM — we extract text
-     * from the rendered message elements.
-     *
-     * @param {string} conversationId
-     * @param {string} title
-     * @returns {Promise<Message[]>}
-     */
-    async scrapeConversationDetailFromDOM(conversationId, title) {
+    async extractMessagesFromTab(tabId, title, conversationId) {
         try {
-            const tabs = await chrome.tabs.query({ url: ['https://gemini.google.com/*'] });
-            if (!tabs || tabs.length === 0) {
-                console.error('[GeminiFetcher] No Gemini tab for DOM scrape');
-                return [];
-            }
-
-            const tabId = tabs[0].id;
-
-            // Navigate to the conversation
-            await chrome.scripting.executeScript({
-                target: { tabId },
-                world: 'MAIN',
-                func: (convUrl) => { window.location.href = convUrl; },
-                args: [`https://gemini.google.com/app/${conversationId}`],
-            });
-
-            // Wait for page load + Angular bootstrap + conversation render
-            // Full page navigation takes longer than SPA routing
-            await new Promise(r => setTimeout(r, 6000));
-
-            // Poll for conversation content to appear (up to 10s additional)
-            await chrome.scripting.executeScript({
-                target: { tabId },
-                world: 'MAIN',
-                func: async () => {
-                    for (let i = 0; i < 10; i++) {
-                        const uq = document.querySelectorAll('user-query, model-response');
-                        if (uq.length > 0) {
-                            console.log(`[KYT] Conversation elements appeared after ${i * 1000}ms extra wait`);
-                            return;
-                        }
-                        await new Promise(r => setTimeout(r, 1000));
-                    }
-                    console.log('[KYT] Conversation elements never appeared after 10s polling');
-                },
-                args: [],
-            });
-
-            // Scroll up to load earlier messages (Gemini lazy-loads conversation history)
-            await chrome.scripting.executeScript({
-                target: { tabId },
-                world: 'MAIN',
-                func: async () => {
-                    const scroller = document.querySelector('infinite-scroller')
-                        || document.querySelector('.chat-history-scroll-container')
-                        || document.querySelector('#chat-history')
-                        || document.querySelector('main');
-                    if (!scroller) return;
-
-                    let lastCount = 0;
-                    let stableRounds = 0;
-                    for (let i = 0; i < 20 && stableRounds < 3; i++) {
-                        scroller.scrollTo({ top: 0, behavior: 'auto' });
-                        await new Promise(r => setTimeout(r, 800));
-                        const count = document.querySelectorAll('user-query, model-response').length;
-                        if (count === lastCount) stableRounds++;
-                        else { stableRounds = 0; lastCount = count; }
-                    }
-                },
-                args: [],
-            });
-
-            // Wait for final DOM stabilization
-            await new Promise(r => setTimeout(r, 1000));
-
-            // Extract messages — tries light DOM, shadow DOM, and innerText fallbacks
             const execResult = await chrome.scripting.executeScript({
                 target: { tabId },
                 world: 'MAIN',
                 func: () => {
                     const messages = [];
 
-                    // Helper: recursively query through shadow roots
-                    function deepQueryAll(root, selector) {
-                        const results = [...root.querySelectorAll(selector)];
-                        // Also check shadow roots of all elements
-                        const allEls = root.querySelectorAll('*');
-                        for (const el of allEls) {
-                            if (el.shadowRoot) {
-                                results.push(...deepQueryAll(el.shadowRoot, selector));
-                            }
-                        }
-                        return results;
-                    }
+                    // ═══ Strategy 1: Gemini custom web components ═══
+                    const userQueries = document.querySelectorAll('user-query, USER-QUERY');
+                    const modelResponses = document.querySelectorAll('model-response, MODEL-RESPONSE');
 
-                    // ═══ Strategy 1: Gemini custom web components (light DOM) ═══
-                    let userQueries = document.querySelectorAll('user-query, USER-QUERY');
-                    let modelResponses = document.querySelectorAll('model-response, MODEL-RESPONSE');
+                    // Diagnostic logging
+                    console.log(`[KYT extract] user-query: ${userQueries.length}, model-response: ${modelResponses.length}`);
 
-                    // ═══ Strategy 1b: Shadow DOM traversal ═══
                     if (userQueries.length === 0 && modelResponses.length === 0) {
-                        console.log('[KYT extract] No elements in light DOM, trying shadow DOM...');
-                        userQueries = deepQueryAll(document, 'user-query, USER-QUERY');
-                        modelResponses = deepQueryAll(document, 'model-response, MODEL-RESPONSE');
-                        console.log(`[KYT extract] Shadow DOM: ${userQueries.length} user, ${modelResponses.length} model`);
-                    }
-
-                    // Diagnostic: log what IS in the DOM
-                    if (userQueries.length === 0 && modelResponses.length === 0) {
-                        const body = document.body;
                         const allTags = new Set();
-                        body.querySelectorAll('*').forEach(el => allTags.add(el.tagName.toLowerCase()));
+                        document.body.querySelectorAll('*').forEach(el => allTags.add(el.tagName.toLowerCase()));
                         const customTags = [...allTags].filter(t => t.includes('-'));
-                        console.log('[KYT extract] Custom elements found:', customTags.join(', '));
-                        console.log('[KYT extract] Body text length:', body.innerText?.length);
-                        console.log('[KYT extract] Body first 200 chars:', body.innerText?.substring(0, 200));
+                        console.log('[KYT extract] Custom elements:', customTags.join(', '));
+                        console.log('[KYT extract] Body text length:', document.body.innerText?.length);
+                        console.log('[KYT extract] Body first 300 chars:', document.body.innerText?.substring(0, 300));
                     }
 
                     if (userQueries.length > 0 || modelResponses.length > 0) {
-                        console.log(`[KYT extract] Found ${userQueries.length} user-query, ${modelResponses.length} model-response`);
-
                         // Extract user messages
-                        const uqArray = Array.isArray(userQueries) ? userQueries : [...userQueries];
-                        uqArray.forEach((uq, idx) => {
-                            // Try sub-selectors first (light + shadow)
-                            let textEls = uq.querySelectorAll('.query-text-line, .query-text, p');
-                            if (textEls.length === 0 && uq.shadowRoot) {
-                                textEls = uq.shadowRoot.querySelectorAll('.query-text-line, .query-text, p');
-                            }
+                        userQueries.forEach((uq, idx) => {
+                            const textEls = uq.querySelectorAll('.query-text-line, .query-text, p');
                             const seen = new Set();
                             let text = '';
                             textEls.forEach(el => {
@@ -538,7 +550,6 @@ export class GeminiFetcher {
                                     text += t + ' ';
                                 }
                             });
-                            // Fallback: use full innerText if sub-selectors found nothing
                             if (!text.trim()) text = uq.innerText?.trim() || '';
                             if (text.trim()) {
                                 messages.push({ role: 'user', text: text.trim(), idx });
@@ -546,20 +557,11 @@ export class GeminiFetcher {
                         });
 
                         // Extract model responses
-                        const mrArray = Array.isArray(modelResponses) ? modelResponses : [...modelResponses];
-                        mrArray.forEach((mr, idx) => {
-                            let msgContent = mr.querySelector('message-content, MESSAGE-CONTENT');
-                            if (!msgContent && mr.shadowRoot) {
-                                msgContent = mr.shadowRoot.querySelector('message-content, MESSAGE-CONTENT');
-                            }
-                            let markdown = msgContent?.querySelector('.markdown')
+                        modelResponses.forEach((mr, idx) => {
+                            const msgContent = mr.querySelector('message-content, MESSAGE-CONTENT');
+                            const markdown = msgContent?.querySelector('.markdown')
                                 || msgContent?.querySelector('.response-content')
                                 || msgContent;
-                            // Check shadow root of message-content too
-                            if (!markdown && msgContent?.shadowRoot) {
-                                markdown = msgContent.shadowRoot.querySelector('.markdown')
-                                    || msgContent.shadowRoot.querySelector('.response-content');
-                            }
 
                             let text = '';
                             if (markdown) {
@@ -573,9 +575,7 @@ export class GeminiFetcher {
                                     }
                                 });
                             }
-                            // Fallback: full innerText
                             if (!text.trim()) text = mr.innerText?.trim() || '';
-                            // Clean up noise
                             text = text
                                 .replace(/Read documents\s*/gi, '')
                                 .replace(/Response finalized\s*/gi, '')
@@ -586,7 +586,7 @@ export class GeminiFetcher {
                             }
                         });
 
-                        // Interleave by index (user[0], model[0], user[1], model[1], ...)
+                        // Interleave by index
                         const interleaved = [];
                         const userByIdx = messages.filter(m => m.role === 'user');
                         const modelByIdx = messages.filter(m => m.role === 'assistant');
@@ -598,27 +598,11 @@ export class GeminiFetcher {
                         return interleaved;
                     }
 
-                    // ═══ Strategy 2: data-message-author-role attributes ═══
-                    const roleMsgs = deepQueryAll(document, '[data-message-author-role]');
-                    if (roleMsgs.length > 0) {
-                        for (const el of roleMsgs) {
-                            const role = el.getAttribute('data-message-author-role');
-                            const text = el.innerText?.trim();
-                            if (text && text.length > 0) {
-                                messages.push({
-                                    role: role === 'model' ? 'assistant' : 'user',
-                                    text,
-                                });
-                            }
-                        }
-                        return messages;
-                    }
-
-                    // ═══ Strategy 3: Generic fallback — any .query-text + .markdown ═══
-                    const queries = deepQueryAll(document, '.query-text-line, .query-text');
-                    const resps = deepQueryAll(document, 'message-content .markdown');
+                    // ═══ Strategy 2: Generic fallback ═══
+                    const queries = document.querySelectorAll('.query-text-line, .query-text');
+                    const resps = document.querySelectorAll('message-content .markdown');
                     if (queries.length > 0 || resps.length > 0) {
-                        console.log(`[KYT extract] Strategy 3: ${queries.length} queries, ${resps.length} responses`);
+                        console.log(`[KYT extract] Fallback: ${queries.length} queries, ${resps.length} responses`);
                         const maxLen = Math.max(queries.length, resps.length);
                         for (let i = 0; i < maxLen; i++) {
                             if (i < queries.length) {
@@ -630,12 +614,7 @@ export class GeminiFetcher {
                                 if (t) messages.push({ role: 'assistant', text: t });
                             }
                         }
-                        return messages;
                     }
-
-                    // ═══ Strategy 4: Raw text extraction — last resort ═══
-                    // If nothing else works, extract alternating user/assistant blocks from body text
-                    console.log('[KYT extract] All element strategies failed, trying raw text extraction');
                     return messages;
                 },
                 args: [],
@@ -643,13 +622,12 @@ export class GeminiFetcher {
 
             const scraped = execResult?.[0]?.result || [];
             if (scraped.length === 0) {
-                console.warn(`[GeminiFetcher] DOM scrape found 0 messages for ${conversationId}`);
+                console.warn(`[GeminiFetcher] Extracted 0 messages from "${title}" (${conversationId})`);
                 return [];
             }
 
-            console.log(`[GeminiFetcher] DOM scrape found ${scraped.length} messages for ${conversationId}`);
+            console.log(`[GeminiFetcher] Extracted ${scraped.length} messages from "${title}"`);
 
-            // Convert to Message format
             return scraped.map((msg, i) => ({
                 id: `${conversationId}_dom_${i}`,
                 conversationId,
@@ -661,7 +639,7 @@ export class GeminiFetcher {
             }));
 
         } catch (error) {
-            console.error(`[GeminiFetcher] DOM scrape failed for ${conversationId}:`, error.message);
+            console.error(`[GeminiFetcher] Extract failed for ${conversationId}:`, error.message);
             return [];
         }
     }
