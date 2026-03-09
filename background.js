@@ -1118,6 +1118,20 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
       break;
 
+    case 'backfillGravity':
+      try {
+        console.log('⏰ Gravity backfill alarm fired');
+        const gravResult = await callEdgeFunction('backfill_gravity', { fast_mode: true, max_rows: 50 }, { timeoutMs: 120000 });
+        console.log(`✅ Gravity backfill: ${gravResult.classified} classified, ${gravResult.topics_set} topics set, ${gravResult.remaining} remaining`);
+        if (gravResult.remaining > 0) {
+          chrome.alarms.create('backfillGravity', { delayInMinutes: 3 });
+        }
+      } catch (error) {
+        console.error('❌ Gravity backfill alarm error:', error.message);
+        chrome.alarms.create('backfillGravity', { delayInMinutes: 10 });
+      }
+      break;
+
     case 'postImportBackfill':
       try {
         console.log('⏰ Post-import backfill orchestrator fired');
@@ -1128,14 +1142,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
           chrome.alarms.create('backfillContextual', { delayInMinutes: 1 });
           chrome.alarms.create('postImportBackfill', { delayInMinutes: 3 });
         } else {
-          // Contextual done → start entity backfill chain
-          console.log('✅ Contextual complete — starting entity backfill chain');
+          // Contextual done → start entity + gravity backfill chains
+          console.log('✅ Contextual complete — starting entity + gravity backfill chains');
           chrome.alarms.create('backfillEntities', { delayInMinutes: 0.5 });
+          chrome.alarms.create('backfillGravity', { delayInMinutes: 1 });
         }
       } catch (error) {
         console.error('❌ Post-import backfill error:', error.message);
-        // Still try entity backfill even if contextual check fails
+        // Still try entity + gravity backfill even if contextual check fails
         chrome.alarms.create('backfillEntities', { delayInMinutes: 3 });
+        chrome.alarms.create('backfillGravity', { delayInMinutes: 4 });
       }
       break;
 
@@ -1271,11 +1287,14 @@ globalThis.KYT_DEBUG = {
   backfillContextual: (limit = 20) => callEdgeFunction('backfill_contextual', { limit }, { timeoutMs: 120000 })
     .then(result => { console.log('📝 Contextual backfill result:', result); return result; })
     .catch(err => { console.error('❌ Contextual backfill failed:', err.message); return { success: false, error: err.message }; }),
+  backfillGravity: (maxRows = 50) => callEdgeFunction('backfill_gravity', { fast_mode: true, max_rows: maxRows }, { timeoutMs: 120000 })
+    .then(result => { console.log('⚖️ Gravity backfill result:', result); return result; })
+    .catch(err => { console.error('❌ Gravity backfill failed:', err.message); return { success: false, error: err.message }; }),
   backfillPostImport: () => {
     console.log('🔄 Starting post-import backfill chain...');
     chrome.alarms.create('backfillContextual', { delayInMinutes: 0.1 });
     chrome.alarms.create('postImportBackfill', { delayInMinutes: 1 });
-    return 'Post-import backfill chain started (contextual → entities)';
+    return 'Post-import backfill chain started (contextual → entities → gravity)';
   },
   backfillImported: async () => {
     console.log('🚀 Starting full post-import backfill...');
@@ -1306,10 +1325,20 @@ globalThis.KYT_DEBUG = {
       console.error('❌ Entity backfill failed:', err.message);
       entResult = { processed: 0, remaining: -1, error: err.message };
     }
+    // 4. Gravity scoring (impact_score + intimacy_level + topics)
+    let gravResult;
+    try {
+      gravResult = await callEdgeFunction('backfill_gravity', { fast_mode: true, max_rows: 50 }, { timeoutMs: 120000 });
+      console.log(`⚖️ Gravity: ${gravResult.classified} classified, ${gravResult.remaining} remaining`);
+    } catch (err) {
+      console.error('❌ Gravity backfill failed:', err.message);
+      gravResult = { classified: 0, remaining: -1, error: err.message };
+    }
     // Schedule follow-ups for remaining work
     if (ctxResult.remaining > 0) chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
     if (entResult.remaining > 0) chrome.alarms.create('backfillEntities', { delayInMinutes: 1 });
-    return { contextual: ctxResult, embeddings: embResult, entities: entResult };
+    if (gravResult.remaining > 0) chrome.alarms.create('backfillGravity', { delayInMinutes: 1.5 });
+    return { contextual: ctxResult, embeddings: embResult, entities: entResult, gravity: gravResult };
   },
   excludeConversation: async (conversationId) => {
     const config = await getConfig();
@@ -1392,8 +1421,9 @@ console.log('   - KYT_DEBUG.backfillEmbeddings() - Backfill null embeddings in m
 console.log('   - KYT_DEBUG.backfillChatTurnEmbeddings(platform?) - Backfill null embeddings in chat_turns (e.g. "gemini")');
 console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
 console.log('   - KYT_DEBUG.backfillContextual() - Generate context summaries + re-embed');
-console.log('   - KYT_DEBUG.backfillPostImport() - Full post-import chain (contextual → entities)');
-console.log('   - KYT_DEBUG.backfillImported() - Full post-import backfill: contextual → embeddings → entities');
+console.log('   - KYT_DEBUG.backfillGravity(maxRows?) - Backfill impact_score + intimacy_level + topics');
+console.log('   - KYT_DEBUG.backfillPostImport() - Full post-import chain (contextual → entities → gravity)');
+console.log('   - KYT_DEBUG.backfillImported() - Full post-import backfill: contextual → embeddings → entities → gravity');
 console.log('   - KYT_DEBUG.forceSyncAll() - Reset sync timestamp and sync ALL local messages (deduped)');
 console.log('   - KYT_DEBUG.excludeConversation(id) - Hide a conversation from search (reversible)');
 console.log('   - KYT_DEBUG.includeConversation(id) - Un-hide a conversation from search');

@@ -734,7 +734,8 @@ export function registerMessageHandler(deps) {
             chrome.alarms.create('backfillContextual', { delayInMinutes: 1 });
             chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 1.5 });
             chrome.alarms.create('postImportBackfill', { delayInMinutes: 3 });
-            console.log('⏰ Post-import backfill alarms scheduled (contextual: 1min, embeddings: 1.5min, orchestrator: 3min)');
+            chrome.alarms.create('backfillGravity', { delayInMinutes: 5 });
+            console.log('⏰ Post-import backfill alarms scheduled (contextual: 1min, embeddings: 1.5min, orchestrator: 3min, gravity: 5min)');
 
             sendResponse({
               success: true,
@@ -755,7 +756,7 @@ export function registerMessageHandler(deps) {
           try {
             const allAlarms = await chrome.alarms.getAll();
             const backfillAlarms = allAlarms.filter(a =>
-              ['backfillContextual', 'backfillEntities', 'postImportBackfill', 'backfillEmbeddings'].includes(a.name)
+              ['backfillContextual', 'backfillEntities', 'postImportBackfill', 'backfillEmbeddings', 'backfillGravity'].includes(a.name)
             );
             sendResponse({
               success: true,
