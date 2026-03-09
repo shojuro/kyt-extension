@@ -178,8 +178,23 @@ async function parseClaudeZip(zip) {
 async function parseGeminiZip(zip) {
     const messages = [];
 
-    // Try: Takeout/Gemini Apps/ folder structure
-    // Google Takeout nests under "Takeout/Gemini Apps/" or just "Gemini Apps/"
+    // Try: Google Takeout "My Activity" HTML format (most common as of 2026)
+    const activityHtmlPaths = [
+        'Takeout/My Activity/Gemini Apps/MyActivity.html',
+        'My Activity/Gemini Apps/MyActivity.html',
+    ];
+    for (const path of activityHtmlPaths) {
+        const htmlFile = zip.file(path);
+        if (htmlFile) {
+            const html = await htmlFile.async('string');
+            parseGeminiActivityHtml(html, messages);
+            if (messages.length > 0) {
+                return messages.sort((a, b) => a.timestamp - b.timestamp);
+            }
+        }
+    }
+
+    // Fallback: JSON folder structure
     let conversationsFolder = null;
     const possiblePaths = [
         'Takeout/Gemini Apps/Conversations',
@@ -366,4 +381,153 @@ function parseGeminiConversationData(data, convId, convTitle, messages) {
             platform: 'gemini',
         });
     }
+}
+
+/**
+ * Parse Google Takeout "My Activity" HTML format for Gemini Apps.
+ *
+ * Each activity entry is an `outer-cell` div containing:
+ * - "Prompted\xA0" prefix (non-breaking space) followed by user's message
+ * - Timestamp like "Mar 9, 2026, 1:53:07 PM GMT+08:00"
+ * - Assistant response as inline HTML (paragraphs, lists, etc.)
+ *
+ * Other entry types ("Created", "Used", "Selected") are skipped — they are
+ * metadata events, not conversational turns.
+ *
+ * @param {string} html - Full HTML content of MyActivity.html
+ * @param {Message[]} messages - Array to push parsed messages into
+ */
+function parseGeminiActivityHtml(html, messages) {
+    // Split on outer-cell divs. First element is the HTML preamble.
+    const entries = html.split('<div class="outer-cell');
+
+    // Regex for the content structure within each entry.
+    // "Prompted" is followed by \xA0 (non-breaking space), then the user's prompt,
+    // then <br>, then the timestamp, then <br>, then the response HTML.
+    // Timestamp format: "Mar 9, 2026, 1:53:07 PM GMT+08:00"
+    const timestampRe = /(\w{3}\s\d{1,2},\s\d{4},\s\d{1,2}:\d{2}:\d{2}\s[AP]M\s[\w+:\/\d]+)/;
+
+    // Track conversation grouping: consecutive entries close in time = same conversation
+    // Google Takeout doesn't provide conversation IDs, so we group by time proximity.
+    let currentConvId = null;
+    let lastTimestamp = 0;
+    let convCounter = 0;
+    const CONV_GAP_MS = 30 * 60 * 1000; // 30 minutes between entries = new conversation
+
+    for (let i = 1; i < entries.length; i++) {
+        const entry = entries[i];
+
+        // Only process "Prompted" entries (actual conversations)
+        // \xA0 = non-breaking space used by Google Takeout
+        const promptIdx = entry.indexOf('Prompted\xA0');
+        if (promptIdx === -1) continue;
+
+        // Extract everything after "Prompted\xA0" up to the closing content-cell div
+        const contentStart = promptIdx + 'Prompted\xA0'.length;
+        // Find the end of the content-cell div
+        const contentCellEnd = entry.indexOf('</div>', contentStart);
+        if (contentCellEnd === -1) continue;
+
+        const contentBlock = entry.slice(contentStart, contentCellEnd);
+
+        // Split on <br> to separate: user prompt, [audio link], timestamp, response
+        const parts = contentBlock.split(/<br\s*\/?>/);
+        if (parts.length < 2) continue;
+
+        // Find the timestamp among the parts
+        let timestampStr = null;
+        let timestampPartIdx = -1;
+        for (let j = 0; j < parts.length; j++) {
+            const stripped = parts[j].replace(/<[^>]*>/g, '').trim();
+            const tsMatch = stripped.match(timestampRe);
+            if (tsMatch) {
+                timestampStr = tsMatch[1];
+                timestampPartIdx = j;
+                break;
+            }
+        }
+
+        if (!timestampStr) continue;
+
+        // Parse timestamp
+        // Format: "Mar 9, 2026, 1:53:07 PM GMT+08:00"
+        // Date.parse handles this format directly
+        const timestamp = new Date(timestampStr).getTime();
+        if (isNaN(timestamp)) continue;
+
+        // User prompt = everything before the timestamp part
+        const userParts = parts.slice(0, timestampPartIdx);
+        let userText = userParts
+            .map(p => p.replace(/<[^>]*>/g, '').trim()) // Strip HTML tags
+            .filter(p => p && !p.startsWith('Audio included'))
+            .join('\n')
+            .trim();
+
+        // Decode HTML entities
+        userText = decodeHtmlEntities(userText);
+        if (!userText) continue;
+
+        // Skip K.Y.T. injection prompts — these are system context, not real user messages
+        if (userText.startsWith('=====') && userText.includes('K.Y.T.')) continue;
+
+        // Assistant response = everything after the timestamp part
+        const responseParts = parts.slice(timestampPartIdx + 1);
+        let responseText = responseParts
+            .join('\n')
+            .replace(/<[^>]*>/g, ' ')  // Replace HTML tags with spaces
+            .replace(/\s+/g, ' ')      // Collapse whitespace
+            .trim();
+        responseText = decodeHtmlEntities(responseText);
+
+        // Group into conversations by time proximity
+        if (!currentConvId || Math.abs(timestamp - lastTimestamp) > CONV_GAP_MS) {
+            convCounter++;
+            currentConvId = `gemini_takeout_${convCounter}`;
+        }
+        lastTimestamp = timestamp;
+
+        // Extract a title from the user's first message in each conversation
+        const convTitle = userText.slice(0, 80) + (userText.length > 80 ? '...' : '');
+
+        // Add user message
+        messages.push({
+            id: `gemini_activity_${i}_user`,
+            conversationId: currentConvId,
+            conversationTitle: convTitle,
+            content: userText,
+            role: 'user',
+            timestamp,
+            platform: 'gemini',
+        });
+
+        // Add assistant response if present
+        if (responseText) {
+            messages.push({
+                id: `gemini_activity_${i}_assistant`,
+                conversationId: currentConvId,
+                conversationTitle: convTitle,
+                content: responseText,
+                role: 'assistant',
+                timestamp: timestamp + 1000, // 1s after user message
+                platform: 'gemini',
+            });
+        }
+    }
+}
+
+/**
+ * Decode common HTML entities.
+ * @param {string} str
+ * @returns {string}
+ */
+function decodeHtmlEntities(str) {
+    return str
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&emsp;/g, ' ')
+        .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
 }

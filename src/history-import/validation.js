@@ -127,12 +127,25 @@ function validateClaudeExport(zip, fileSize) {
  * @returns {ValidationResult}
  */
 function validateGeminiExport(zip, fileSize) {
-    // Google Takeout puts data under "Takeout/Gemini Apps/" or similar
+    // Google Takeout "My Activity" format: Takeout/My Activity/Gemini Apps/MyActivity.html
+    const activityHtmlPaths = [
+        'Takeout/My Activity/Gemini Apps/MyActivity.html',
+        'My Activity/Gemini Apps/MyActivity.html',
+    ];
+    for (const path of activityHtmlPaths) {
+        if (zip.file(path)) {
+            return { valid: true, fileSize };
+        }
+    }
+
+    // Legacy/alternative: folder with JSON conversation files
     const possiblePaths = [
         'Takeout/Gemini Apps',
         'Gemini Apps',
         'Takeout/Google Gemini',
         'Google Gemini',
+        'Takeout/My Activity/Gemini Apps',
+        'My Activity/Gemini Apps',
     ];
 
     for (const path of possiblePaths) {
