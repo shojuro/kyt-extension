@@ -182,39 +182,80 @@ export class GeminiFetcher {
         // Step 2: Discover sidebar conversation entries (click-based, not URL-based)
         // Gemini SPA doesn't load conversations via direct URL navigation —
         // we must click sidebar entries to trigger internal Angular routing.
+        // Conversation entries live inside <conversations-list>, NOT <side-nav-entry-button>
+        // (those are top-level nav items like "My stuff", "Gems", etc.)
         const convListResult = await chrome.scripting.executeScript({
             target: { tabId },
             world: 'MAIN',
             func: () => {
-                // Find sidebar conversation buttons
-                const buttons = document.querySelectorAll('side-nav-entry-button');
                 const conversations = [];
-                buttons.forEach((btn, idx) => {
-                    const title = btn.innerText?.trim() || '';
-                    // Skip non-conversation entries (empty or very short titles)
-                    if (title.length < 2) return;
-                    // Skip known non-conversation buttons
-                    if (/^(New chat|Settings|Help|Gems|Home|Extensions)/i.test(title)) return;
-                    conversations.push({ idx, title: title.substring(0, 100) });
-                });
+                const seen = new Set();
 
-                // Also try generic sidebar links as fallback
-                if (conversations.length === 0) {
-                    const sidebar = document.querySelector('conversations-list')
-                        || document.querySelector('side-navigation-content')
-                        || document.querySelector('nav');
-                    if (sidebar) {
-                        const items = sidebar.querySelectorAll('a, button, [role="listitem"], [role="button"]');
+                // Section headers to skip
+                const SKIP_RE = /^(Chats|Pinned( chats?)?|Today|Yesterday|Previous \d+ days|Last week|Last month|This week|This month|Older|New chat|My stuff|Settings|Help|Gems|Storybook|Home|Extensions|Recents?)$/i;
+
+                // Primary: entries inside <conversations-list>
+                const convList = document.querySelector('conversations-list');
+                if (convList) {
+                    // Diagnostic: log the DOM structure inside conversations-list
+                    const childTags = {};
+                    convList.querySelectorAll('*').forEach(el => {
+                        const tag = el.tagName.toLowerCase();
+                        childTags[tag] = (childTags[tag] || 0) + 1;
+                    });
+                    console.log('[KYT] conversations-list child tags:', JSON.stringify(childTags));
+
+                    // Try multiple selectors — Gemini may use different element types
+                    const selectors = [
+                        'a[href*="/app/"]',                    // Direct conversation links
+                        'a',                                    // Any links
+                        'button',                               // Buttons
+                        '[role="listitem"]',                    // List items
+                        '[role="button"]',                      // Button-role divs
+                        '[tabindex="0"]',                       // Focusable items
+                    ];
+
+                    for (const sel of selectors) {
+                        const items = convList.querySelectorAll(sel);
                         items.forEach((item, idx) => {
-                            const title = item.innerText?.trim() || '';
-                            if (title.length < 2) return;
-                            if (/^(New|Start|Menu|Settings|Home|Gems|Help)/i.test(title)) return;
-                            conversations.push({ idx, title: title.substring(0, 100), fallback: true });
+                            // Get just the first line of text (title, not subtitle)
+                            let title = item.innerText?.trim() || '';
+                            // Remove "Pinned chat" subtitle
+                            title = title.replace(/\n.*Pinned chat.*/gi, '').trim();
+                            // Remove other subtitles
+                            title = title.split('\n')[0].trim();
+
+                            if (title.length < 3) return;
+                            if (SKIP_RE.test(title)) return;
+                            if (seen.has(title)) return;
+                            seen.add(title);
+                            conversations.push({ selector: sel, idx, title: title.substring(0, 100) });
+                        });
+                        if (conversations.length > 0) {
+                            console.log(`[KYT] Found ${conversations.length} conversations using selector: ${sel}`);
+                            break;
+                        }
+                    }
+                }
+
+                // Fallback: direct children of side-navigation-content
+                if (conversations.length === 0) {
+                    const sideNav = document.querySelector('side-navigation-content');
+                    if (sideNav) {
+                        const items = sideNav.querySelectorAll('a, button, [role="listitem"]');
+                        items.forEach((item, idx) => {
+                            let title = item.innerText?.trim().split('\n')[0] || '';
+                            if (title.length < 3 || SKIP_RE.test(title) || seen.has(title)) return;
+                            seen.add(title);
+                            conversations.push({ selector: 'sidenav', idx, title: title.substring(0, 100) });
                         });
                     }
                 }
 
                 console.log(`[KYT] Found ${conversations.length} sidebar conversation entries`);
+                if (conversations.length > 0) {
+                    console.log('[KYT] First 3:', conversations.slice(0, 3).map(c => c.title).join(' | '));
+                }
                 return conversations;
             },
             args: [],
@@ -249,36 +290,41 @@ export class GeminiFetcher {
 
             console.log(`[GeminiFetcher] Clicking conversation ${i + 1}/${conversations.length}: "${conv.title}"`);
 
-            // Click the sidebar entry
+            // Click the sidebar entry using the stored selector
             const clickResult = await chrome.scripting.executeScript({
                 target: { tabId },
                 world: 'MAIN',
-                func: (convIdx, isFallback) => {
-                    let buttons;
-                    if (!isFallback) {
-                        buttons = document.querySelectorAll('side-nav-entry-button');
-                    } else {
-                        const sidebar = document.querySelector('conversations-list')
-                            || document.querySelector('side-navigation-content')
-                            || document.querySelector('nav');
-                        if (!sidebar) return false;
-                        buttons = sidebar.querySelectorAll('a, button, [role="listitem"], [role="button"]');
+                func: (convIdx, selector) => {
+                    let container;
+                    if (selector === 'sidenav') {
+                        container = document.querySelector('side-navigation-content');
+                        if (!container) return { ok: false, reason: 'no side-navigation-content' };
+                        const items = container.querySelectorAll('a, button, [role="listitem"]');
+                        if (convIdx >= items.length) return { ok: false, reason: `idx ${convIdx} >= ${items.length}` };
+                        items[convIdx].click();
+                        return { ok: true };
                     }
-                    if (convIdx >= buttons.length) return false;
-                    const btn = buttons[convIdx];
-                    // Try clicking the button itself or a clickable child
+
+                    container = document.querySelector('conversations-list');
+                    if (!container) return { ok: false, reason: 'no conversations-list' };
+                    const items = container.querySelectorAll(selector);
+                    if (convIdx >= items.length) return { ok: false, reason: `idx ${convIdx} >= ${items.length} for ${selector}` };
+                    const btn = items[convIdx];
+                    // Try the element itself, or find a clickable child
                     const clickTarget = btn.querySelector('a, button') || btn;
                     clickTarget.click();
-                    return true;
+                    return { ok: true, tag: clickTarget.tagName, text: clickTarget.innerText?.substring(0, 50) };
                 },
-                args: [conv.idx, !!conv.fallback],
+                args: [conv.idx, conv.selector],
             });
 
-            if (!clickResult?.[0]?.result) {
-                console.warn(`[GeminiFetcher] Could not click conversation ${i + 1}`);
+            const clickInfo = clickResult?.[0]?.result;
+            if (!clickInfo?.ok) {
+                console.warn(`[GeminiFetcher] Could not click conversation ${i + 1}: ${clickInfo?.reason || 'unknown'}`);
                 processedCount++;
                 continue;
             }
+            console.log(`[GeminiFetcher] Clicked: <${clickInfo.tag}> "${clickInfo.text}"`)
 
             // Wait for conversation to render after click
             await new Promise(r => setTimeout(r, 3000));
