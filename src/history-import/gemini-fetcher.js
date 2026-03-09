@@ -505,52 +505,6 @@ export class GeminiFetcher {
 
             console.log(`[GeminiFetcher] Clicking conversation ${i + 1}/${conversations.length}: "${conv.title}"`);
 
-            // Step 3a: Install XHR response interceptor BEFORE clicking
-            await chrome.scripting.executeScript({
-                target: { tabId },
-                world: 'MAIN',
-                func: () => {
-                    // Store captured response on window for later retrieval
-                    window.__kytCapturedConvResponse = null;
-
-                    // Patch XHR to capture the next batchexecute response
-                    if (!window.__kytOrigXhrOpen) {
-                        window.__kytOrigXhrOpen = XMLHttpRequest.prototype.open;
-                        window.__kytOrigXhrSend = XMLHttpRequest.prototype.send;
-                    }
-                    const origOpen = window.__kytOrigXhrOpen;
-                    const origSend = window.__kytOrigXhrSend;
-
-                    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-                        this.__kytUrl = (typeof url === 'string') ? url : url?.toString?.() || '';
-                        return origOpen.call(this, method, url, ...rest);
-                    };
-
-                    XMLHttpRequest.prototype.send = function(...args) {
-                        const url = this.__kytUrl || '';
-                        // Capture batchexecute responses (conversation detail loads)
-                        if (url.includes('batchexecute') || url.includes('BardChatUi')) {
-                            this.addEventListener('load', function() {
-                                try {
-                                    if (this.responseText && this.responseText.length > 500) {
-                                        // Only capture if we don't already have one (take first/largest)
-                                        if (!window.__kytCapturedConvResponse ||
-                                            this.responseText.length > window.__kytCapturedConvResponse.length) {
-                                            window.__kytCapturedConvResponse = this.responseText;
-                                            console.log(`[KYT] Captured batchexecute response: ${this.responseText.length} chars`);
-                                        }
-                                    }
-                                } catch (e) {
-                                    console.warn('[KYT] XHR capture error:', e.message);
-                                }
-                            });
-                        }
-                        return origSend.call(this, ...args);
-                    };
-                },
-                args: [],
-            });
-
             // Step 3b: Click the sidebar entry
             const clickResult = await chrome.scripting.executeScript({
                 target: { tabId },
@@ -639,138 +593,9 @@ export class GeminiFetcher {
 
             await new Promise(r => setTimeout(r, 500));
 
-            // Step 3c: Retrieve captured XHR response and extract timestamps
-            const timestampResult = await chrome.scripting.executeScript({
-                target: { tabId },
-                world: 'MAIN',
-                func: () => {
-                    const response = window.__kytCapturedConvResponse;
-                    if (!response) {
-                        console.log('[KYT] No batchexecute response captured for this conversation');
-                        return { timestamps: [], responseLength: 0 };
-                    }
-
-                    console.log(`[KYT] Parsing captured response (${response.length} chars) for timestamps...`);
-
-                    // Parse batchexecute frames
-                    const frames = [];
-                    let pos = 0;
-                    while (pos < response.length) {
-                        while (pos < response.length && (response[pos] === '\n' || response[pos] === '\r' || response[pos] === ' ')) pos++;
-                        if (pos >= response.length) break;
-                        let numStr = '';
-                        while (pos < response.length && response[pos] >= '0' && response[pos] <= '9') {
-                            numStr += response[pos]; pos++;
-                        }
-                        if (!numStr) { pos++; continue; }
-                        if (pos < response.length && response[pos] === '\n') pos++;
-                        const len = parseInt(numStr, 10);
-                        if (isNaN(len) || len <= 0) continue;
-                        const chunk = response.substring(pos, pos + len);
-                        pos += len;
-                        try { frames.push(JSON.parse(chunk)); } catch { /* skip */ }
-                    }
-
-                    // Search frames for turn timestamps
-                    const timestamps = [];
-                    for (const frame of frames) {
-                        if (!Array.isArray(frame)) continue;
-
-                        // wrb.fr frames
-                        for (const item of frame) {
-                            if (!Array.isArray(item) || item[0] !== 'wrb.fr') continue;
-                            const innerJson = item[2];
-                            if (typeof innerJson !== 'string') continue;
-                            let data;
-                            try { data = JSON.parse(innerJson); } catch { continue; }
-                            if (!Array.isArray(data)) continue;
-
-                            // Find turns array — usually at data[0][2] or nested
-                            function findTurns(d, depth) {
-                                if (depth > 4 || !Array.isArray(d)) return null;
-                                // Check if this looks like a turns array
-                                // (array of arrays where items have nested arrays with text content)
-                                if (d.length > 0 && Array.isArray(d[0]) && d[0].length >= 3) {
-                                    // Check if any item has a timestamp-like number
-                                    let hasTimestamp = false;
-                                    for (const turn of d) {
-                                        if (!Array.isArray(turn)) continue;
-                                        for (const val of turn) {
-                                            if (typeof val === 'number' && val > 1700000000000) {
-                                                hasTimestamp = true; break;
-                                            }
-                                            if (Array.isArray(val)) {
-                                                for (const sub of val) {
-                                                    if (typeof sub === 'number' && sub > 1700000000000) {
-                                                        hasTimestamp = true; break;
-                                                    }
-                                                }
-                                            }
-                                            if (hasTimestamp) break;
-                                        }
-                                        if (hasTimestamp) break;
-                                    }
-                                    if (hasTimestamp) return d;
-                                }
-                                // Recurse
-                                for (const item of d) {
-                                    const found = findTurns(item, depth + 1);
-                                    if (found) return found;
-                                }
-                                return null;
-                            }
-
-                            const turns = findTurns(data, 0);
-                            if (!turns) continue;
-
-                            for (const turn of turns) {
-                                if (!Array.isArray(turn)) continue;
-                                // Extract timestamp from turn — search for epoch ms
-                                let ts = null;
-                                for (const val of turn) {
-                                    if (typeof val === 'number' && val > 1700000000000 && val < 2000000000000) {
-                                        ts = val; break;
-                                    }
-                                    if (typeof val === 'number' && val > 1700000000 && val < 2000000000) {
-                                        ts = val * 1000; break;
-                                    }
-                                    if (Array.isArray(val)) {
-                                        for (const sub of val) {
-                                            if (typeof sub === 'number' && sub > 1700000000000 && sub < 2000000000000) {
-                                                ts = sub; break;
-                                            }
-                                            if (typeof sub === 'number' && sub > 1700000000 && sub < 2000000000) {
-                                                ts = sub * 1000; break;
-                                            }
-                                        }
-                                    }
-                                    if (ts) break;
-                                }
-                                timestamps.push(ts);
-                            }
-
-                            if (timestamps.length > 0) {
-                                const firstValid = timestamps.find(t => t != null);
-                                console.log(`[KYT] Found ${timestamps.length} turn timestamps, first: ${firstValid ? new Date(firstValid).toISOString() : 'null'}`);
-                                break; // Got timestamps from this frame
-                            }
-                        }
-                        if (timestamps.length > 0) break;
-                    }
-
-                    // Clean up
-                    window.__kytCapturedConvResponse = null;
-
-                    return {
-                        timestamps,
-                        responseLength: response.length,
-                    };
-                },
-                args: [],
-            });
-
-            const tsData = timestampResult?.[0]?.result || {};
-            const turnTimestamps = tsData.timestamps || [];
+            // Step 3c: Extract conversation ID from URL and fetch timestamps via direct API call.
+            // This bypasses XHR interception issues — we make our OWN fetch using the tab's cookies.
+            const turnTimestamps = await this.fetchConversationTimestamps(tabId);
 
             // Resolve fallback: sidebar group heading → approximate timestamp
             const approxTimestamp = GeminiFetcher.resolveGroupHeadingToTimestamp(conv.groupHeading);
@@ -782,7 +607,7 @@ export class GeminiFetcher {
                     console.log(`[GeminiFetcher] Time range: ${new Date(Math.min(...validTs)).toISOString()} → ${new Date(Math.max(...validTs)).toISOString()}`);
                 }
             } else {
-                console.log(`[GeminiFetcher] No XHR timestamps for "${conv.title}", using group heading: "${conv.groupHeading}" → ${new Date(approxTimestamp).toISOString()}`);
+                console.log(`[GeminiFetcher] No API timestamps for "${conv.title}", using group heading: "${conv.groupHeading}" → ${new Date(approxTimestamp).toISOString()}`);
             }
 
             // Step 3d: Extract messages with timestamps
@@ -804,23 +629,6 @@ export class GeminiFetcher {
                 onProgress(`sidebar_${i}`, processedCount);
             }
         }
-
-        // Clean up: restore original XHR methods
-        await chrome.scripting.executeScript({
-            target: { tabId },
-            world: 'MAIN',
-            func: () => {
-                if (window.__kytOrigXhrOpen) {
-                    XMLHttpRequest.prototype.open = window.__kytOrigXhrOpen;
-                    XMLHttpRequest.prototype.send = window.__kytOrigXhrSend;
-                    delete window.__kytOrigXhrOpen;
-                    delete window.__kytOrigXhrSend;
-                    delete window.__kytCapturedConvResponse;
-                    console.log('[KYT] Restored original XHR methods');
-                }
-            },
-            args: [],
-        });
 
         console.log(`[GeminiFetcher] Finished. Processed ${processedCount} conversations, returning ${allMessages.length} messages.`);
         return allMessages;
@@ -984,6 +792,202 @@ export class GeminiFetcher {
             console.error('[GeminiFetcher] DOM scrape failed:', error.message);
             throw new Error('Could not fetch Gemini conversations via API or DOM. Please use Google Takeout export instead.');
         }
+    }
+
+    /**
+     * Fetch exact per-turn timestamps for the currently open conversation.
+     *
+     * After a conversation is clicked and rendered, we:
+     * 1. Extract the conversation ID from the current URL (e.g. /app/c_xxx → c_xxx)
+     * 2. Make a direct batchexecute fetch using the tab's cookies
+     * 3. Parse the response for timestamp-like epoch values in each turn
+     *
+     * This avoids XHR interception (which fails because Gemini caches method refs
+     * at page load time, before our patches run).
+     *
+     * @param {number} tabId
+     * @returns {Promise<number[]>} Array of epoch ms timestamps, one per turn
+     */
+    async fetchConversationTimestamps(tabId) {
+        try {
+            // Extract conversation ID from current URL
+            const urlResult = await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: () => window.location.pathname,
+                args: [],
+            });
+            const pathname = urlResult?.[0]?.result || '';
+            // Extract c_xxx from /app/c_xxx or /app/0/c_xxx etc.
+            const convIdMatch = pathname.match(/\/(c_[0-9a-f]+)/);
+            if (!convIdMatch) {
+                console.log(`[GeminiFetcher] No conversation ID in URL: ${pathname}`);
+                return [];
+            }
+            const convId = convIdMatch[1];
+            console.log(`[GeminiFetcher] Fetching timestamps for conversation: ${convId}`);
+
+            // Try multiple known RPC IDs for conversation detail
+            // These rotate with Google deploys, so we try several
+            const knownDetailRPCs = [
+                'hNvQHb',  // Known from history-load interception (2026-02-28)
+                'GIm1Qd',  // Generic/fallback
+                'boMsKe',  // Alternate seen in some deploys
+            ];
+
+            const rpcId = this.liveParams.conversationDetailRpcId || knownDetailRPCs[0];
+            const rpcIds = this.liveParams.conversationDetailRpcId
+                ? [this.liveParams.conversationDetailRpcId]
+                : knownDetailRPCs;
+
+            for (const tryRpcId of rpcIds) {
+                // Build the batchexecute request
+                // Conversation detail payload: the conversation ID
+                const args = JSON.stringify([convId]);
+                const body = this.buildBatchExecuteBody(tryRpcId, args);
+                const params = this.getBatchExecuteParams(tryRpcId);
+                const url = `https://gemini.google.com/_/BardChatUi/data/batchexecute?${params}`;
+
+                console.log(`[GeminiFetcher] Trying RPC ${tryRpcId} for conversation timestamps...`);
+
+                // Execute fetch in the tab's context (has auth cookies)
+                const fetchResult = await chrome.scripting.executeScript({
+                    target: { tabId },
+                    world: 'MAIN',
+                    func: async (fetchUrl, fetchBody) => {
+                        try {
+                            const resp = await fetch(fetchUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                body: fetchBody,
+                                credentials: 'include',
+                            });
+                            if (!resp.ok) {
+                                console.log(`[KYT] batchexecute returned ${resp.status}`);
+                                return { ok: false, status: resp.status, body: '' };
+                            }
+                            const text = await resp.text();
+                            console.log(`[KYT] batchexecute response: ${text.length} chars`);
+                            return { ok: true, status: resp.status, body: text };
+                        } catch (e) {
+                            console.error('[KYT] batchexecute fetch error:', e.message);
+                            return { ok: false, status: 0, body: e.message };
+                        }
+                    },
+                    args: [url, body],
+                });
+
+                const result = fetchResult?.[0]?.result;
+                if (!result?.ok || !result.body || result.body.length < 100) {
+                    console.log(`[GeminiFetcher] RPC ${tryRpcId} returned ${result?.status}, body ${result?.body?.length || 0} chars — trying next`);
+                    continue;
+                }
+
+                // Parse the batchexecute response for timestamps
+                const timestamps = this.extractTimestampsFromResponse(result.body);
+                if (timestamps.length > 0) {
+                    const validTs = timestamps.filter(t => t != null);
+                    if (validTs.length > 0) {
+                        console.log(`[GeminiFetcher] RPC ${tryRpcId}: Got ${validTs.length}/${timestamps.length} exact timestamps`);
+                        console.log(`[GeminiFetcher] Time range: ${new Date(Math.min(...validTs)).toISOString()} → ${new Date(Math.max(...validTs)).toISOString()}`);
+                        // Cache the working RPC ID
+                        this.liveParams.conversationDetailRpcId = tryRpcId;
+                        return timestamps;
+                    }
+                }
+
+                console.log(`[GeminiFetcher] RPC ${tryRpcId}: response parsed but no timestamps found`);
+            }
+
+            console.log(`[GeminiFetcher] No timestamps from any RPC ID`);
+            return [];
+
+        } catch (error) {
+            console.error(`[GeminiFetcher] fetchConversationTimestamps error:`, error.message);
+            return [];
+        }
+    }
+
+    /**
+     * Parse a batchexecute response body and extract per-turn timestamps.
+     *
+     * @param {string} responseText - Raw batchexecute response
+     * @returns {number[]} Array of epoch ms timestamps (null entries for turns without timestamps)
+     */
+    extractTimestampsFromResponse(responseText) {
+        const timestamps = [];
+
+        try {
+            const frames = this.parseBatchExecuteFrames(responseText);
+
+            for (const frame of frames) {
+                if (!Array.isArray(frame)) continue;
+
+                // Handle both [[wrb.fr, ...]] and [wrb.fr, ...] structures
+                const items = (Array.isArray(frame[0]) && frame[0][0] === 'wrb.fr') ? frame : [frame];
+
+                for (const item of items) {
+                    if (!Array.isArray(item) || item[0] !== 'wrb.fr') continue;
+                    const innerJson = item[2];
+                    if (typeof innerJson !== 'string') continue;
+
+                    let data;
+                    try { data = JSON.parse(innerJson); } catch { continue; }
+                    if (!Array.isArray(data)) continue;
+
+                    // Search for turns array — contains conversation turn data with timestamps
+                    const turns = this.findTurnsArray(data, 0);
+                    if (!turns) continue;
+
+                    for (const turn of turns) {
+                        const ts = this.extractTimestamp(turn);
+                        timestamps.push(ts);
+                    }
+
+                    if (timestamps.length > 0) {
+                        console.log(`[GeminiFetcher] Extracted ${timestamps.length} timestamps from response frame`);
+                        return timestamps;
+                    }
+                }
+            }
+        } catch (error) {
+            console.error(`[GeminiFetcher] extractTimestampsFromResponse error:`, error.message);
+        }
+
+        return timestamps;
+    }
+
+    /**
+     * Recursively find the turns array in parsed batchexecute conversation data.
+     * The turns array is identified by containing sub-arrays with timestamp-like values.
+     *
+     * @param {any} data
+     * @param {number} depth
+     * @returns {any[]|null}
+     */
+    findTurnsArray(data, depth) {
+        if (depth > 5 || !Array.isArray(data)) return null;
+
+        // Check if this looks like a turns array:
+        // Array of arrays, each with length >= 3, and some contain timestamp-like numbers
+        if (data.length > 0 && Array.isArray(data[0]) && data[0].length >= 3) {
+            let hasTimestamp = false;
+            for (const turn of data) {
+                if (!Array.isArray(turn)) continue;
+                if (this.extractTimestamp(turn) !== null) {
+                    hasTimestamp = true;
+                    break;
+                }
+            }
+            if (hasTimestamp) return data;
+        }
+
+        // Recurse into sub-arrays
+        for (const item of data) {
+            const found = this.findTurnsArray(item, depth + 1);
+            if (found) return found;
+        }
+        return null;
     }
 
     /**
