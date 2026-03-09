@@ -179,83 +179,121 @@ export class GeminiFetcher {
         });
         await new Promise(r => setTimeout(r, 3000));
 
+        // Step 1b: Scroll the sidebar to load ALL conversation history.
+        // Gemini lazy-loads sidebar entries — only recent conversations are
+        // visible initially. We scroll the conversations-list container to
+        // the bottom repeatedly until no new entries appear, loading the
+        // full ~90 day history.
+        const scrollResult = await chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: async () => {
+                // Find the scrollable sidebar container
+                const convList = document.querySelector('conversations-list')
+                    || document.querySelector('side-navigation-content');
+                if (!convList) {
+                    console.log('[KYT sidebar scroll] No conversations-list found');
+                    return { scrolled: false, finalCount: 0 };
+                }
+
+                // The scrollable element might be the conversations-list itself,
+                // its parent, or an inner infinite-scroller
+                const scroller = convList.querySelector('infinite-scroller')
+                    || convList.querySelector('[style*="overflow"]')
+                    || convList;
+
+                // Also check mat-sidenav or the nav element
+                const sideNav = document.querySelector('mat-sidenav')
+                    || document.querySelector('side-navigation-v2')
+                    || scroller;
+
+                let lastCount = 0;
+                let stableRounds = 0;
+                const maxScrollAttempts = 60; // Cap at 60 scrolls (~60s max)
+
+                for (let i = 0; i < maxScrollAttempts && stableRounds < 4; i++) {
+                    const entries = document.querySelectorAll('side-nav-entry-button');
+                    const currentCount = entries.length;
+
+                    if (i % 5 === 0) {
+                        console.log(`[KYT sidebar scroll] Attempt ${i}: ${currentCount} entries visible`);
+                    }
+
+                    if (currentCount === lastCount) {
+                        stableRounds++;
+                    } else {
+                        stableRounds = 0;
+                        lastCount = currentCount;
+                    }
+
+                    // Scroll to the bottom of the sidebar
+                    // Try multiple scroll targets — Gemini's sidebar nesting varies
+                    for (const target of [scroller, sideNav, convList]) {
+                        if (target && target.scrollHeight > target.clientHeight) {
+                            target.scrollTo({ top: target.scrollHeight, behavior: 'auto' });
+                        }
+                    }
+
+                    // Also try scrolling the last entry into view (triggers lazy load)
+                    if (entries.length > 0) {
+                        entries[entries.length - 1].scrollIntoView({ behavior: 'auto', block: 'end' });
+                    }
+
+                    await new Promise(r => setTimeout(r, 800));
+                }
+
+                const finalEntries = document.querySelectorAll('side-nav-entry-button');
+                console.log(`[KYT sidebar scroll] Done. Final count: ${finalEntries.length} entries after scrolling`);
+
+                // Scroll back to top so sidebar is in a clean state
+                for (const target of [scroller, sideNav, convList]) {
+                    if (target) target.scrollTo({ top: 0, behavior: 'auto' });
+                }
+
+                return { scrolled: true, finalCount: finalEntries.length };
+            },
+            args: [],
+        });
+
+        const scrollInfo = scrollResult?.[0]?.result || {};
+        console.log(`[GeminiFetcher] Sidebar scroll complete: ${scrollInfo.finalCount} entries loaded`);
+
         // Step 2: Discover sidebar conversation entries (click-based, not URL-based)
         // Gemini SPA doesn't load conversations via direct URL navigation —
         // we must click sidebar entries to trigger internal Angular routing.
-        // Conversation entries live inside <conversations-list>, NOT <side-nav-entry-button>
-        // (those are top-level nav items like "My stuff", "Gems", etc.)
         const convListResult = await chrome.scripting.executeScript({
             target: { tabId },
             world: 'MAIN',
             func: () => {
+                // Find sidebar conversation buttons
+                const buttons = document.querySelectorAll('side-nav-entry-button');
                 const conversations = [];
-                const seen = new Set();
+                buttons.forEach((btn, idx) => {
+                    const title = btn.innerText?.trim() || '';
+                    // Skip non-conversation entries (empty or very short titles)
+                    if (title.length < 2) return;
+                    // Skip known non-conversation buttons
+                    if (/^(New chat|Settings|Help|Gems|Home|Extensions)/i.test(title)) return;
+                    conversations.push({ idx, title: title.substring(0, 100) });
+                });
 
-                // Section headers to skip
-                const SKIP_RE = /^(Chats|Pinned( chats?)?|Today|Yesterday|Previous \d+ days|Last week|Last month|This week|This month|Older|New chat|My stuff|Settings|Help|Gems|Storybook|Home|Extensions|Recents?)$/i;
-
-                // Primary: entries inside <conversations-list>
-                const convList = document.querySelector('conversations-list');
-                if (convList) {
-                    // Diagnostic: log the DOM structure inside conversations-list
-                    const childTags = {};
-                    convList.querySelectorAll('*').forEach(el => {
-                        const tag = el.tagName.toLowerCase();
-                        childTags[tag] = (childTags[tag] || 0) + 1;
-                    });
-                    console.log('[KYT] conversations-list child tags:', JSON.stringify(childTags));
-
-                    // Try multiple selectors — Gemini may use different element types
-                    const selectors = [
-                        'a[href*="/app/"]',                    // Direct conversation links
-                        'a',                                    // Any links
-                        'button',                               // Buttons
-                        '[role="listitem"]',                    // List items
-                        '[role="button"]',                      // Button-role divs
-                        '[tabindex="0"]',                       // Focusable items
-                    ];
-
-                    for (const sel of selectors) {
-                        const items = convList.querySelectorAll(sel);
-                        items.forEach((item, idx) => {
-                            // Get just the first line of text (title, not subtitle)
-                            let title = item.innerText?.trim() || '';
-                            // Remove "Pinned chat" subtitle
-                            title = title.replace(/\n.*Pinned chat.*/gi, '').trim();
-                            // Remove other subtitles
-                            title = title.split('\n')[0].trim();
-
-                            if (title.length < 3) return;
-                            if (SKIP_RE.test(title)) return;
-                            if (seen.has(title)) return;
-                            seen.add(title);
-                            conversations.push({ selector: sel, idx, title: title.substring(0, 100) });
-                        });
-                        if (conversations.length > 0) {
-                            console.log(`[KYT] Found ${conversations.length} conversations using selector: ${sel}`);
-                            break;
-                        }
-                    }
-                }
-
-                // Fallback: direct children of side-navigation-content
+                // Also try generic sidebar links as fallback
                 if (conversations.length === 0) {
-                    const sideNav = document.querySelector('side-navigation-content');
-                    if (sideNav) {
-                        const items = sideNav.querySelectorAll('a, button, [role="listitem"]');
+                    const sidebar = document.querySelector('conversations-list')
+                        || document.querySelector('side-navigation-content')
+                        || document.querySelector('nav');
+                    if (sidebar) {
+                        const items = sidebar.querySelectorAll('a, button, [role="listitem"], [role="button"]');
                         items.forEach((item, idx) => {
-                            let title = item.innerText?.trim().split('\n')[0] || '';
-                            if (title.length < 3 || SKIP_RE.test(title) || seen.has(title)) return;
-                            seen.add(title);
-                            conversations.push({ selector: 'sidenav', idx, title: title.substring(0, 100) });
+                            const title = item.innerText?.trim() || '';
+                            if (title.length < 2) return;
+                            if (/^(New|Start|Menu|Settings|Home|Gems|Help)/i.test(title)) return;
+                            conversations.push({ idx, title: title.substring(0, 100), fallback: true });
                         });
                     }
                 }
 
                 console.log(`[KYT] Found ${conversations.length} sidebar conversation entries`);
-                if (conversations.length > 0) {
-                    console.log('[KYT] First 3:', conversations.slice(0, 3).map(c => c.title).join(' | '));
-                }
                 return conversations;
             },
             args: [],
@@ -290,41 +328,36 @@ export class GeminiFetcher {
 
             console.log(`[GeminiFetcher] Clicking conversation ${i + 1}/${conversations.length}: "${conv.title}"`);
 
-            // Click the sidebar entry using the stored selector
+            // Click the sidebar entry
             const clickResult = await chrome.scripting.executeScript({
                 target: { tabId },
                 world: 'MAIN',
-                func: (convIdx, selector) => {
-                    let container;
-                    if (selector === 'sidenav') {
-                        container = document.querySelector('side-navigation-content');
-                        if (!container) return { ok: false, reason: 'no side-navigation-content' };
-                        const items = container.querySelectorAll('a, button, [role="listitem"]');
-                        if (convIdx >= items.length) return { ok: false, reason: `idx ${convIdx} >= ${items.length}` };
-                        items[convIdx].click();
-                        return { ok: true };
+                func: (convIdx, isFallback) => {
+                    let buttons;
+                    if (!isFallback) {
+                        buttons = document.querySelectorAll('side-nav-entry-button');
+                    } else {
+                        const sidebar = document.querySelector('conversations-list')
+                            || document.querySelector('side-navigation-content')
+                            || document.querySelector('nav');
+                        if (!sidebar) return false;
+                        buttons = sidebar.querySelectorAll('a, button, [role="listitem"], [role="button"]');
                     }
-
-                    container = document.querySelector('conversations-list');
-                    if (!container) return { ok: false, reason: 'no conversations-list' };
-                    const items = container.querySelectorAll(selector);
-                    if (convIdx >= items.length) return { ok: false, reason: `idx ${convIdx} >= ${items.length} for ${selector}` };
-                    const btn = items[convIdx];
-                    // Try the element itself, or find a clickable child
+                    if (convIdx >= buttons.length) return false;
+                    const btn = buttons[convIdx];
+                    // Try clicking the button itself or a clickable child
                     const clickTarget = btn.querySelector('a, button') || btn;
                     clickTarget.click();
-                    return { ok: true, tag: clickTarget.tagName, text: clickTarget.innerText?.substring(0, 50) };
+                    return true;
                 },
-                args: [conv.idx, conv.selector],
+                args: [conv.idx, !!conv.fallback],
             });
 
-            const clickInfo = clickResult?.[0]?.result;
-            if (!clickInfo?.ok) {
-                console.warn(`[GeminiFetcher] Could not click conversation ${i + 1}: ${clickInfo?.reason || 'unknown'}`);
+            if (!clickResult?.[0]?.result) {
+                console.warn(`[GeminiFetcher] Could not click conversation ${i + 1}`);
                 processedCount++;
                 continue;
             }
-            console.log(`[GeminiFetcher] Clicked: <${clickInfo.tag}> "${clickInfo.text}"`)
 
             // Wait for conversation to render after click
             await new Promise(r => setTimeout(r, 3000));
