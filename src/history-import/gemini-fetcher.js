@@ -179,6 +179,43 @@ export class GeminiFetcher {
         });
         await new Promise(r => setTimeout(r, 3000));
 
+        // Step 1a: Ensure sidebar is EXPANDED (Gemini has a collapsible sidebar)
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: () => {
+                // Check if sidebar is collapsed by looking for the conversation list
+                const convList = document.querySelector('conversations-list');
+                const sideNav = document.querySelector('mat-sidenav');
+                const isVisible = convList && convList.offsetParent !== null;
+                const sideNavOpen = sideNav && (
+                    sideNav.getAttribute('role') === 'navigation'
+                    || sideNav.classList.contains('mat-drawer-opened')
+                    || getComputedStyle(sideNav).visibility !== 'hidden'
+                );
+
+                // If sidebar seems collapsed, click the hamburger/menu button
+                if (!isVisible || !sideNavOpen) {
+                    console.log('[KYT] Sidebar appears collapsed, trying to expand...');
+                    const menuBtn = document.querySelector('side-nav-menu-button')
+                        || document.querySelector('button[aria-label*="menu" i]')
+                        || document.querySelector('button[aria-label*="Main menu" i]')
+                        || document.querySelector('.menu-button');
+                    if (menuBtn) {
+                        const clickTarget = menuBtn.querySelector('button') || menuBtn;
+                        clickTarget.click();
+                        console.log('[KYT] Clicked sidebar menu button');
+                    } else {
+                        console.log('[KYT] No menu button found to expand sidebar');
+                    }
+                } else {
+                    console.log('[KYT] Sidebar already visible');
+                }
+            },
+            args: [],
+        });
+        await new Promise(r => setTimeout(r, 2000));
+
         // Step 1b: Scroll the sidebar to load ALL conversation history.
         // Gemini lazy-loads sidebar entries — only recent conversations are
         // visible initially. We scroll the conversations-list container to
@@ -212,8 +249,10 @@ export class GeminiFetcher {
                 const maxScrollAttempts = 60; // Cap at 60 scrolls (~60s max)
 
                 for (let i = 0; i < maxScrollAttempts && stableRounds < 4; i++) {
-                    const entries = document.querySelectorAll('side-nav-entry-button');
-                    const currentCount = entries.length;
+                    // Count both entry types — href links are more reliable
+                    const entryButtons = document.querySelectorAll('side-nav-entry-button');
+                    const hrefLinks = document.querySelectorAll('a[href*="/app/"]');
+                    const currentCount = Math.max(entryButtons.length, hrefLinks.length);
 
                     if (i % 5 === 0) {
                         console.log(`[KYT sidebar scroll] Attempt ${i}: ${currentCount} entries visible`);
@@ -235,15 +274,17 @@ export class GeminiFetcher {
                     }
 
                     // Also try scrolling the last entry into view (triggers lazy load)
-                    if (entries.length > 0) {
-                        entries[entries.length - 1].scrollIntoView({ behavior: 'auto', block: 'end' });
+                    const allEntries = hrefLinks.length > 0 ? hrefLinks : entryButtons;
+                    if (allEntries.length > 0) {
+                        allEntries[allEntries.length - 1].scrollIntoView({ behavior: 'auto', block: 'end' });
                     }
 
                     await new Promise(r => setTimeout(r, 800));
                 }
 
-                const finalEntries = document.querySelectorAll('side-nav-entry-button');
-                console.log(`[KYT sidebar scroll] Done. Final count: ${finalEntries.length} entries after scrolling`);
+                const finalButtons = document.querySelectorAll('side-nav-entry-button');
+                const finalLinks = document.querySelectorAll('a[href*="/app/"]');
+                console.log(`[KYT sidebar scroll] Done. Final: ${finalButtons.length} buttons, ${finalLinks.length} href links`);
 
                 // Scroll back to top so sidebar is in a clean state
                 for (const target of [scroller, sideNav, convList]) {
@@ -258,39 +299,75 @@ export class GeminiFetcher {
         const scrollInfo = scrollResult?.[0]?.result || {};
         console.log(`[GeminiFetcher] Sidebar scroll complete: ${scrollInfo.finalCount} entries loaded`);
 
-        // Step 2: Discover sidebar conversation entries (click-based, not URL-based)
-        // Gemini SPA doesn't load conversations via direct URL navigation —
-        // we must click sidebar entries to trigger internal Angular routing.
+        // Step 2: Discover sidebar conversation entries.
+        // Primary: a[href*="/app/"] links (most reliable — worked in previous runs).
+        // Fallback: side-nav-entry-button elements.
+        // We store the href so we can click by selector later (stable across scrolls).
         const convListResult = await chrome.scripting.executeScript({
             target: { tabId },
             world: 'MAIN',
             func: () => {
-                // Find sidebar conversation buttons
-                const buttons = document.querySelectorAll('side-nav-entry-button');
                 const conversations = [];
+                const seenHrefs = new Set();
+
+                // Strategy 1: href-based links (most reliable)
+                const links = document.querySelectorAll('a[href*="/app/"]');
+                for (const link of links) {
+                    const href = link.getAttribute('href') || '';
+                    // Only conversation links (contain c_ ID or are direct /app/ paths)
+                    if (seenHrefs.has(href)) continue;
+                    // Skip the home /app link itself
+                    if (href === '/app' || href === '/app/') continue;
+                    seenHrefs.add(href);
+                    const title = link.textContent?.trim() || '';
+                    if (title.length < 2) continue;
+                    if (/^(New chat|Settings|Help|Gems|Home|Extensions)/i.test(title)) continue;
+                    conversations.push({ href, title: title.substring(0, 100), type: 'href' });
+                }
+
+                if (conversations.length > 0) {
+                    console.log(`[KYT] Found ${conversations.length} conversations via a[href*="/app/"]`);
+                    console.log(`[KYT] First 3: ${conversations.slice(0, 3).map(c => c.title).join(' | ')}`);
+                    return conversations;
+                }
+
+                // Strategy 2: side-nav-entry-button (fallback)
+                const buttons = document.querySelectorAll('side-nav-entry-button');
                 buttons.forEach((btn, idx) => {
                     const title = btn.innerText?.trim() || '';
-                    // Skip non-conversation entries (empty or very short titles)
                     if (title.length < 2) return;
-                    // Skip known non-conversation buttons
                     if (/^(New chat|Settings|Help|Gems|Home|Extensions)/i.test(title)) return;
-                    conversations.push({ idx, title: title.substring(0, 100) });
+                    conversations.push({ idx, title: title.substring(0, 100), type: 'button' });
                 });
 
-                // Also try generic sidebar links as fallback
-                if (conversations.length === 0) {
-                    const sidebar = document.querySelector('conversations-list')
-                        || document.querySelector('side-navigation-content')
-                        || document.querySelector('nav');
-                    if (sidebar) {
-                        const items = sidebar.querySelectorAll('a, button, [role="listitem"], [role="button"]');
-                        items.forEach((item, idx) => {
-                            const title = item.innerText?.trim() || '';
-                            if (title.length < 2) return;
-                            if (/^(New|Start|Menu|Settings|Home|Gems|Help)/i.test(title)) return;
-                            conversations.push({ idx, title: title.substring(0, 100), fallback: true });
-                        });
-                    }
+                if (conversations.length > 0) {
+                    console.log(`[KYT] Found ${conversations.length} conversations via side-nav-entry-button`);
+                    return conversations;
+                }
+
+                // Strategy 3: generic sidebar items
+                const sidebar = document.querySelector('conversations-list')
+                    || document.querySelector('side-navigation-content')
+                    || document.querySelector('nav');
+                if (sidebar) {
+                    const items = sidebar.querySelectorAll('a, button, [role="listitem"], [role="button"]');
+                    items.forEach((item, idx) => {
+                        const title = item.innerText?.trim() || '';
+                        if (title.length < 2) return;
+                        if (/^(New|Start|Menu|Settings|Home|Gems|Help)/i.test(title)) return;
+                        conversations.push({ idx, title: title.substring(0, 100), type: 'generic' });
+                    });
+                }
+
+                // Diagnostic
+                const convListEl = document.querySelector('conversations-list');
+                if (convListEl) {
+                    const tags = {};
+                    convListEl.querySelectorAll('*').forEach(el => {
+                        const t = el.tagName.toLowerCase();
+                        tags[t] = (tags[t] || 0) + 1;
+                    });
+                    console.log('[KYT] conversations-list child tags:', JSON.stringify(tags));
                 }
 
                 console.log(`[KYT] Found ${conversations.length} sidebar conversation entries`);
@@ -332,9 +409,27 @@ export class GeminiFetcher {
             const clickResult = await chrome.scripting.executeScript({
                 target: { tabId },
                 world: 'MAIN',
-                func: (convIdx, isFallback) => {
+                func: (convHref, convIdx, convType) => {
+                    // href-based click — find the <a> by its href attribute
+                    if (convType === 'href' && convHref) {
+                        const link = document.querySelector(`a[href="${convHref}"]`);
+                        if (link) {
+                            link.click();
+                            return true;
+                        }
+                        // href might have changed (scroll reorder), try partial match
+                        const links = document.querySelectorAll('a[href*="/app/"]');
+                        for (const l of links) {
+                            if (l.getAttribute('href') === convHref) {
+                                l.click();
+                                return true;
+                            }
+                        }
+                    }
+
+                    // Index-based click (button or generic type)
                     let buttons;
-                    if (!isFallback) {
+                    if (convType === 'button') {
                         buttons = document.querySelectorAll('side-nav-entry-button');
                     } else {
                         const sidebar = document.querySelector('conversations-list')
@@ -345,12 +440,11 @@ export class GeminiFetcher {
                     }
                     if (convIdx >= buttons.length) return false;
                     const btn = buttons[convIdx];
-                    // Try clicking the button itself or a clickable child
                     const clickTarget = btn.querySelector('a, button') || btn;
                     clickTarget.click();
                     return true;
                 },
-                args: [conv.idx, !!conv.fallback],
+                args: [conv.href || null, conv.idx || 0, conv.type],
             });
 
             if (!clickResult?.[0]?.result) {
