@@ -846,8 +846,10 @@ export class GeminiFetcher {
 
             for (const tryRpcId of rpcIds) {
                 // Build the batchexecute request
-                // Conversation detail payload: the conversation ID
-                const args = JSON.stringify([convId]);
+                // Try multiple payload formats — Gemini's expected format varies by RPC
+                // Format 1: [convId]  (simple)
+                // Format 2: [[convId, null, null, ...]]  (nested, seen in hNvQHb)
+                const args = JSON.stringify([convId, null, null, [], null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, true]);
                 const body = this.buildBatchExecuteBody(tryRpcId, args);
                 const params = this.getBatchExecuteParams(tryRpcId);
                 const url = `https://gemini.google.com/_/BardChatUi/data/batchexecute?${params}`;
@@ -887,6 +889,8 @@ export class GeminiFetcher {
                     continue;
                 }
 
+                console.log(`[GeminiFetcher] RPC ${tryRpcId}: got ${result.body.length} char response, first 200: ${result.body.substring(0, 200)}`);
+
                 // Parse the batchexecute response for timestamps
                 const timestamps = this.extractTimestampsFromResponse(result.body);
                 if (timestamps.length > 0) {
@@ -923,8 +927,10 @@ export class GeminiFetcher {
 
         try {
             const frames = this.parseBatchExecuteFrames(responseText);
+            console.log(`[GeminiFetcher] extractTimestamps: ${frames.length} frames, response ${responseText.length} chars`);
 
-            for (const frame of frames) {
+            for (let fi = 0; fi < frames.length; fi++) {
+                const frame = frames[fi];
                 if (!Array.isArray(frame)) continue;
 
                 // Handle both [[wrb.fr, ...]] and [wrb.fr, ...] structures
@@ -932,6 +938,7 @@ export class GeminiFetcher {
 
                 for (const item of items) {
                     if (!Array.isArray(item) || item[0] !== 'wrb.fr') continue;
+                    const rpcId = item[1]; // RPC ID in the response
                     const innerJson = item[2];
                     if (typeof innerJson !== 'string') continue;
 
@@ -939,10 +946,52 @@ export class GeminiFetcher {
                     try { data = JSON.parse(innerJson); } catch { continue; }
                     if (!Array.isArray(data)) continue;
 
+                    console.log(`[GeminiFetcher] Frame ${fi} RPC=${rpcId}: inner data is array[${data.length}]`);
+
+                    // Diagnostic: scan for ALL numbers that look like timestamps anywhere in the data
+                    const allTimestamps = [];
+                    const scanForTimestamps = (d, path, depth) => {
+                        if (depth > 8) return;
+                        if (typeof d === 'number' && d > 1700000000 && d < 2100000000000) {
+                            const ms = d < 10000000000 ? d * 1000 : d;
+                            allTimestamps.push({ value: ms, path, original: d });
+                        }
+                        if (Array.isArray(d)) {
+                            for (let i = 0; i < Math.min(d.length, 20); i++) {
+                                scanForTimestamps(d[i], `${path}[${i}]`, depth + 1);
+                            }
+                        }
+                    };
+                    scanForTimestamps(data, 'data', 0);
+
+                    if (allTimestamps.length > 0) {
+                        console.log(`[GeminiFetcher] Found ${allTimestamps.length} timestamp-like numbers in frame ${fi}:`);
+                        for (const ts of allTimestamps.slice(0, 10)) {
+                            console.log(`  ${ts.path} = ${ts.original} → ${new Date(ts.value).toISOString()}`);
+                        }
+                        if (allTimestamps.length > 10) {
+                            console.log(`  ... and ${allTimestamps.length - 10} more`);
+                        }
+                    } else {
+                        // Log the structure shape to understand what we got
+                        const describeShape = (d, depth) => {
+                            if (depth > 3) return '...';
+                            if (d === null) return 'null';
+                            if (typeof d !== 'object') return typeof d;
+                            if (Array.isArray(d)) return `[${d.length}:${d.slice(0, 3).map(x => describeShape(x, depth + 1)).join(',')}]`;
+                            return 'obj';
+                        };
+                        console.log(`[GeminiFetcher] Frame ${fi} shape: ${describeShape(data, 0)}`);
+                    }
+
                     // Search for turns array — contains conversation turn data with timestamps
                     const turns = this.findTurnsArray(data, 0);
-                    if (!turns) continue;
+                    if (!turns) {
+                        console.log(`[GeminiFetcher] Frame ${fi}: findTurnsArray returned null`);
+                        continue;
+                    }
 
+                    console.log(`[GeminiFetcher] Frame ${fi}: found turns array with ${turns.length} turns`);
                     for (const turn of turns) {
                         const ts = this.extractTimestamp(turn);
                         timestamps.push(ts);
