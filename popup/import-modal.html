@@ -9,38 +9,39 @@
       margin: 0;
       padding: 20px;
       width: 350px;
-      background-color: #f9fafb;
-      color: #111827;
+      background-color: #1A1A1A;
+      color: #f0f0f0;
     }
-    
+
     .container {
       display: flex;
       flex-direction: column;
       gap: 16px;
     }
-    
+
     h1 {
       font-size: 18px;
       font-weight: 600;
       margin: 0;
-      color: #111827;
+      color: #f0f0f0;
     }
-    
+
     p {
       font-size: 14px;
-      color: #4b5563;
+      color: #b0b0b0;
       margin: 0;
       line-height: 1.5;
     }
-    
+
     .card {
-      background: white;
-      border: 1px solid #e5e7eb;
+      background: rgba(255, 255, 255, 0.04);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 102, 178, 0.1);
       border-radius: 8px;
       padding: 16px;
-      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     }
-    
+
     .btn {
       display: inline-flex;
       align-items: center;
@@ -54,68 +55,137 @@
       border: none;
       width: 100%;
     }
-    
+
     .btn-primary {
-      background-color: #2563eb;
+      background-color: #FF66B2;
       color: white;
     }
-    
+
     .btn-primary:hover {
-      background-color: #1d4ed8;
+      background-color: #ff4da0;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(255, 102, 178, 0.4);
     }
-    
+
     .btn-secondary {
-      background-color: #f3f4f6;
-      color: #374151;
-      border: 1px solid #d1d5db;
+      background-color: transparent;
+      color: #c0c0c0;
+      border: 1px solid #800020;
     }
-    
+
     .btn-secondary:hover {
-      background-color: #e5e7eb;
+      border-color: #a0002a;
+      color: #f0f0f0;
     }
-    
+
     .progress-container {
       display: none;
       margin-top: 12px;
     }
-    
+
+    /* K.I.T.T. Scanner */
+    .kitt-scanner {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 3px;
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+
+    .kitt-scanner.scanning::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 20px;
+      height: 100%;
+      border-radius: 3px;
+      background: #FF66B2;
+      box-shadow: 0 0 15px #FF66B2, 0 0 30px #FF99CC;
+      animation: kitt-sweep 2s ease-in-out infinite;
+    }
+
+    .kitt-scanner.scanning::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 60px;
+      height: 100%;
+      border-radius: 3px;
+      background: linear-gradient(90deg, transparent, rgba(255, 102, 178, 0.4), transparent);
+      animation: kitt-sweep 2s ease-in-out infinite;
+    }
+
+    @keyframes kitt-sweep {
+      0%   { transform: translateX(0); }
+      50%  { transform: translateX(calc(350px - 20px)); }
+      100% { transform: translateX(0); }
+    }
+
+    .kitt-scanner.scan-complete::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 20px;
+      height: 100%;
+      border-radius: 3px;
+      background: #B8860B;
+      box-shadow: 0 0 15px #B8860B, 0 0 30px rgba(184, 134, 11, 0.5);
+      animation: kitt-complete 2s ease-in-out 1;
+    }
+
+    .kitt-scanner.scan-complete::after {
+      display: none;
+    }
+
+    @keyframes kitt-complete {
+      0%   { box-shadow: 0 0 15px #B8860B, 0 0 30px rgba(184, 134, 11, 0.5); }
+      50%  { box-shadow: 0 0 25px #B8860B, 0 0 50px rgba(184, 134, 11, 0.7); }
+      100% { box-shadow: 0 0 15px #B8860B, 0 0 30px rgba(184, 134, 11, 0.5); }
+    }
+
+    /* Thin progress bar below scanner */
     .progress-bar {
-      height: 8px;
-      background-color: #e5e7eb;
-      border-radius: 4px;
+      height: 2px;
+      background-color: rgba(255, 102, 178, 0.15);
+      border-radius: 1px;
       overflow: hidden;
       margin-bottom: 8px;
     }
-    
+
     .progress-fill {
       height: 100%;
-      background-color: #2563eb;
+      background-color: #FF66B2;
       width: 0%;
       transition: width 0.3s ease;
     }
-    
+
     .stats {
       display: flex;
       justify-content: space-between;
       font-size: 12px;
-      color: #6b7280;
+      color: #a0a0a0;
     }
-    
+
     .error {
-      color: #dc2626;
+      color: #FF6B6B;
       font-size: 13px;
-      background-color: #fef2f2;
-      border: 1px solid #fee2e2;
+      background-color: rgba(255, 107, 107, 0.1);
+      border: 1px solid rgba(255, 107, 107, 0.2);
       padding: 8px;
       border-radius: 6px;
       display: none;
     }
-    
+
     .success {
-      color: #059669;
+      color: #B8860B;
       font-size: 13px;
-      background-color: #ecfdf5;
-      border: 1px solid #d1fae5;
+      background-color: rgba(184, 134, 11, 0.1);
+      border: 1px solid rgba(184, 134, 11, 0.2);
       padding: 8px;
       border-radius: 6px;
       display: none;
@@ -132,13 +202,13 @@
     }
 
     .btn-complete {
-      background: #10b981 !important;
-      border-color: #10b981 !important;
+      background: #B8860B !important;
+      border-color: #B8860B !important;
       color: white !important;
     }
 
     .upload-zone {
-      border: 2px dashed #d1d5db;
+      border: 2px dashed rgba(255, 102, 178, 0.3);
       border-radius: 8px;
       padding: 24px;
       text-align: center;
@@ -148,8 +218,8 @@
     }
 
     .upload-zone:hover, .upload-zone.dragover {
-      border-color: #2563eb;
-      background: #f0f7ff;
+      border-color: #FF66B2;
+      background: rgba(255, 102, 178, 0.05);
     }
 
     .upload-icon {
@@ -160,7 +230,7 @@
 
     .upload-hint {
       font-size: 12px;
-      color: #9ca3af;
+      color: #a0a0a0;
       margin-top: 4px;
     }
 
@@ -168,6 +238,7 @@
       text-align: left;
       padding-left: 20px;
       margin: 12px 0;
+      color: #c0c0c0;
     }
 
     .feature-list li, .instructions li {
@@ -178,7 +249,7 @@
       font-size: 16px;
       font-weight: 600;
       margin: 0 0 12px 0;
-      color: #111827;
+      color: #f0f0f0;
     }
 
     .button-row {
@@ -189,23 +260,145 @@
 
     .mode-choice {
       transition: all 0.15s ease;
+      cursor: pointer;
     }
 
     .mode-choice:hover {
-      border-color: #2563eb !important;
+      border-color: #FF66B2 !important;
     }
 
     .mode-choice.selected {
-      border-color: #2563eb !important;
-      background-color: #eff6ff;
+      border-color: #FF66B2 !important;
+      background-color: rgba(255, 102, 178, 0.08);
+    }
+
+    .step-indicator {
+      font-size: 12px;
+      font-weight: 500;
+      color: #a0a0a0;
+      margin-bottom: 4px;
+    }
+
+    .kyt-tagline {
+      font-size: 15px;
+      font-weight: 500;
+      color: #FF66B2;
+      margin-bottom: 4px;
+    }
+
+    strong {
+      color: #f0f0f0;
+    }
+
+    a {
+      color: #FF66B2;
+    }
+
+    a:hover {
+      color: #ff4da0;
+    }
+
+    /* Micro-reward animations */
+    @keyframes checkmark-pop {
+      0%   { transform: scale(0); opacity: 0; }
+      60%  { transform: scale(1.2); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    .checkmark-anim {
+      display: inline-block;
+      animation: checkmark-pop 0.6s ease-out;
+    }
+
+    @keyframes badge-reveal {
+      0%   { transform: scale(0) rotate(-30deg); opacity: 0; }
+      70%  { transform: scale(1.1) rotate(0deg); opacity: 1; }
+      100% { transform: scale(1) rotate(0deg); opacity: 1; }
+    }
+
+    #completion-badge {
+      text-align: center;
+      margin: 16px 0 8px;
+    }
+
+    #completion-badge .badge {
+      display: inline-block;
+      width: 48px;
+      height: 48px;
+      background: #B8860B;
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+      box-shadow: 0 0 20px rgba(184, 134, 11, 0.5);
+      animation: badge-reveal 0.8s ease-out;
+      position: relative;
+    }
+
+    #completion-badge .badge::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 20px;
+      height: 12px;
+      border-left: 3px solid #1A1A1A;
+      border-bottom: 3px solid #1A1A1A;
+      transform: translate(-50%, -60%) rotate(-45deg);
+    }
+
+    #completion-badge .badge-label {
+      display: block;
+      font-size: 11px;
+      color: #B8860B;
+      margin-top: 6px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    /* Progress bar role accessibility */
+    .progress-fill[role="progressbar"] {
+      transition: width 0.3s ease;
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      .kitt-scanner.scanning::before,
+      .kitt-scanner.scanning::after {
+        animation: none !important;
+        left: 25%;
+        width: 50%;
+        opacity: 0.6;
+        transform: none;
+      }
+
+      .kitt-scanner.scan-complete::before {
+        animation: none !important;
+      }
+
+      .checkmark-anim {
+        animation: none !important;
+        transform: scale(1);
+        opacity: 1;
+      }
+
+      #completion-badge .badge {
+        animation: none !important;
+        transform: scale(1);
+        opacity: 1;
+      }
+
+      .btn {
+        transition: none;
+      }
     }
   </style>
 </head>
 <body>
   <!-- Welcome View (first-install only, step 1) -->
   <div class="container hidden" id="welcome-view">
-    <h1>Welcome to K.Y.T.</h1>
-    <p style="font-size: 15px; font-weight: 500; color: #2563eb; margin-bottom: 4px;">Keep Your Thoughts</p>
+    <div class="step-indicator">Step <span class="step-current">1</span> of <span class="step-total">3</span></div>
+    <h1>Welcome to <span class="kyt-name">K.Y.T.</span></h1>
+    <p class="kyt-tagline">Keep Your Thoughts</p>
     <div class="card">
       <p><strong>Your AI conversations, remembered.</strong></p>
       <p style="margin-top: 8px;">K.Y.T. captures your ChatGPT and Claude conversations and gives your AI long-term memory across sessions.</p>
@@ -216,7 +409,7 @@
       </ul>
     </div>
     <div class="card" style="margin-top: 8px;">
-      <p style="font-weight: 600; margin-bottom: 8px;">How your data is handled:</p>
+      <p style="font-weight: 600; margin-bottom: 8px; color: #f0f0f0;">How your data is handled:</p>
       <ul class="feature-list" style="margin-top: 0;">
         <li>Stored encrypted in your personal database</li>
         <li>Never shared with third parties</li>
@@ -229,25 +422,27 @@
 
   <!-- Mode Selection View (first-install, step 2) -->
   <div class="container hidden" id="mode-view">
+    <div class="step-indicator">Step <span class="step-current">2</span> of <span class="step-total">3</span></div>
     <h1>Choose Your Mode</h1>
     <p style="margin-bottom: 12px;">You can change this anytime from the extension popup.</p>
-    <div class="card mode-choice" id="mode-full" data-mode="full" style="cursor: pointer; margin-bottom: 8px; border: 2px solid #10b981;">
-      <p><strong>Full Mode</strong> <span style="color: #10b981; font-size: 12px;">RECOMMENDED</span></p>
-      <p style="font-size: 13px; color: #6b7280; margin-top: 4px;">Capture conversations + inject memories into your AI chats. The complete K.Y.T. experience.</p>
+    <div class="card mode-choice" id="mode-full" data-mode="full" style="margin-bottom: 8px; border: 2px solid #FF66B2;">
+      <p><strong>Full Mode</strong> <span style="color: #FF66B2; font-size: 12px;">RECOMMENDED</span></p>
+      <p style="font-size: 13px; margin-top: 4px;">Capture conversations + inject memories into your AI chats. The complete K.Y.T. experience.</p>
     </div>
-    <div class="card mode-choice" id="mode-clean-room" data-mode="clean_room" style="cursor: pointer; margin-bottom: 8px;">
+    <div class="card mode-choice" id="mode-clean-room" data-mode="clean_room" style="margin-bottom: 8px; border: 2px solid rgba(255, 255, 255, 0.1);">
       <p><strong>Clean Room</strong></p>
-      <p style="font-size: 13px; color: #6b7280; margin-top: 4px;">Capture conversations but don't inject memories. Good for evaluating K.Y.T. before turning on memory injection.</p>
+      <p style="font-size: 13px; margin-top: 4px;">Capture conversations but don't inject memories. Good for evaluating K.Y.T. before turning on memory injection.</p>
     </div>
-    <div class="card mode-choice" id="mode-incognito" data-mode="incognito" style="cursor: pointer; margin-bottom: 8px;">
+    <div class="card mode-choice" id="mode-incognito" data-mode="incognito" style="margin-bottom: 8px; border: 2px solid rgba(255, 255, 255, 0.1);">
       <p><strong>Incognito</strong></p>
-      <p style="font-size: 13px; color: #6b7280; margin-top: 4px;">Nothing captured, nothing injected. K.Y.T. is completely paused.</p>
+      <p style="font-size: 13px; margin-top: 4px;">Nothing captured, nothing injected. K.Y.T. is completely paused.</p>
     </div>
     <button class="btn btn-primary" id="btn-mode-continue" style="margin-top: 4px;">Continue</button>
   </div>
 
   <!-- Permission View (first-install, step 3) -->
   <div class="container hidden" id="permission-view">
+    <div class="step-indicator">Step <span class="step-current">3</span> of <span class="step-total">3</span></div>
     <h1>Import Your History</h1>
     <div class="card">
       <p><strong>Bring in your last 90 days of conversations?</strong></p>
@@ -266,7 +461,7 @@
 
   <!-- ZIP Fallback View -->
   <div class="container hidden" id="fallback-view">
-    <h2>⚠️ Automatic import unavailable</h2>
+    <h2>Automatic import unavailable</h2>
     <div class="card">
       <p id="fallback-reason">You're not logged into ChatGPT.</p>
       <p style="margin-top: 8px;"><strong>You can still import via export file:</strong></p>
@@ -277,25 +472,26 @@
     <div class="upload-zone" id="upload-zone">
       <input type="file" id="file-input" accept=".zip" hidden>
       <div class="upload-content">
-        <span class="upload-icon">📁</span>
+        <span class="upload-icon">&#128193;</span>
         <p>Drop ZIP file here or click to browse</p>
         <p class="upload-hint">Accepted: .zip files up to 500MB</p>
       </div>
     </div>
     <div class="button-row">
-      <button class="btn btn-secondary" id="btn-back-to-platforms">← Back to Platforms</button>
+      <button class="btn btn-secondary" id="btn-back-to-platforms">&#8592; Back to Platforms</button>
     </div>
   </div>
 
   <!-- Main View -->
   <div class="container" id="main-view">
+    <div class="step-indicator" id="main-step-indicator">Step <span class="step-current">1</span> of <span class="step-total">3</span></div>
     <h1>Import Chat History</h1>
-    
+
     <div class="card">
       <p>Import your last 90 days of chat history to enable full memory recall.</p>
-      
-      <div style="margin-top: 12px; font-size: 13px; color: #6b7280;">
-        <ul style="padding-left: 20px; margin: 0;">
+
+      <div style="margin-top: 12px; font-size: 13px; color: #a0a0a0;">
+        <ul style="padding-left: 20px; margin: 0; color: #c0c0c0;">
           <li>Includes ChatGPT & Claude</li>
           <li>Private & Secure</li>
           <li>Runs in background</li>
@@ -304,7 +500,7 @@
     </div>
 
     <div id="platform-select" class="card">
-      <p style="margin-bottom: 12px; font-weight: 500;">Select Platform:</p>
+      <p style="margin-bottom: 12px; font-weight: 500; color: #f0f0f0;">Select Platform:</p>
       <div style="display: flex; gap: 8px;">
         <button class="btn btn-secondary" id="btn-chatgpt">ChatGPT</button>
         <button class="btn btn-secondary" id="btn-claude">Claude</button>
@@ -313,15 +509,17 @@
 
     <div id="status-area">
       <div class="progress-container" id="progress-container">
+        <div class="kitt-scanner" id="kitt-scanner"></div>
         <div class="progress-bar">
-          <div class="progress-fill" id="progress-fill"></div>
+          <div class="progress-fill" id="progress-fill" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
         </div>
         <div class="stats">
-          <span id="progress-text">Starting...</span>
+          <span id="progress-text" aria-live="polite">Securing your memories...</span>
           <span id="progress-count">0 msgs</span>
         </div>
       </div>
-      
+
+      <div id="completion-badge" class="hidden"></div>
       <div class="error" id="error-msg"></div>
       <div class="success" id="success-msg"></div>
     </div>

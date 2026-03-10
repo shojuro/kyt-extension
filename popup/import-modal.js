@@ -13,6 +13,18 @@ const STATES = {
     ERROR: 'error'
 };
 
+// Step mapping for step indicator
+const STATE_STEPS = {
+    [STATES.WELCOME]:         { current: 1, total: 3 },
+    [STATES.MODE_SELECT]:     { current: 2, total: 3 },
+    [STATES.PERMISSION]:      { current: 3, total: 3 },
+    [STATES.PLATFORM_SELECT]: { current: 1, total: 3 },
+    [STATES.IMPORTING]:       { current: 2, total: 3 },
+    [STATES.COMPLETE]:        { current: 3, total: 3 },
+    [STATES.FALLBACK]:        null,
+    [STATES.ERROR]:           null
+};
+
 let currentState = STATES.PLATFORM_SELECT;
 let selectedPlatform = null;
 let isImporting = false;
@@ -54,12 +66,15 @@ function cacheElements() {
     elements.fallbackReason = document.getElementById('fallback-reason');
     elements.exportInstructions = document.getElementById('export-instructions');
     elements.platformSelect = document.getElementById('platform-select');
+    elements.kittScanner = document.getElementById('kitt-scanner');
+    elements.completionBadge = document.getElementById('completion-badge');
+    elements.mainStepIndicator = document.getElementById('main-step-indicator');
 }
 
 let selectedMode = 'full';
 
 function setupListeners() {
-    // Welcome view → Mode selection
+    // Welcome view -> Mode selection
     elements.btnWelcomeContinue?.addEventListener('click', () => {
         setState(STATES.MODE_SELECT);
     });
@@ -69,15 +84,15 @@ function setupListeners() {
         card.addEventListener('click', () => {
             document.querySelectorAll('.mode-choice').forEach(c => {
                 c.classList.remove('selected');
-                c.style.borderColor = '#e5e7eb';
+                c.style.borderColor = 'rgba(255, 255, 255, 0.1)';
             });
             card.classList.add('selected');
-            card.style.borderColor = '#2563eb';
+            card.style.borderColor = '#FF66B2';
             selectedMode = card.dataset.mode;
         });
     });
 
-    // Mode view → Permission/import
+    // Mode view -> Permission/import
     elements.btnModeContinue?.addEventListener('click', async () => {
         // Save the selected mode
         try {
@@ -177,6 +192,7 @@ async function handleFileUpload(file) {
         elements.progressText.textContent = 'Validating file...';
         elements.progressContainer.style.display = 'block';
         elements.progressFill.style.width = '10%';
+        elements.progressFill.setAttribute('aria-valuenow', '10');
 
         const validation = await validateExportFile(file, platform);
         if (!validation.valid) {
@@ -186,6 +202,7 @@ async function handleFileUpload(file) {
         // Parse the ZIP in popup (Option B - File API works here)
         elements.progressText.textContent = 'Parsing ZIP file...';
         elements.progressFill.style.width = '30%';
+        elements.progressFill.setAttribute('aria-valuenow', '30');
 
         const messages = await parseZipExport(file, platform);
 
@@ -195,6 +212,7 @@ async function handleFileUpload(file) {
 
         elements.progressText.textContent = `Found ${messages.length} messages. Saving...`;
         elements.progressFill.style.width = '50%';
+        elements.progressFill.setAttribute('aria-valuenow', '50');
 
         // Send parsed messages to background for saving
         const response = await chrome.runtime.sendMessage({
@@ -210,6 +228,7 @@ async function handleFileUpload(file) {
 
         // Success
         elements.progressFill.style.width = '100%';
+        elements.progressFill.setAttribute('aria-valuenow', '100');
         elements.progressText.textContent = 'Import complete!';
         completedPlatforms.add(platform);
         updatePlatformButtons();
@@ -270,6 +289,35 @@ async function markOnboardingSeen() {
     await chrome.storage.local.set({ show_import_onboarding: false });
 }
 
+function updateStepIndicator(state) {
+    const step = STATE_STEPS[state];
+    if (!step) return;
+
+    // Update all step indicators in the active view
+    const activeView = getActiveView(state);
+    if (!activeView) return;
+
+    const currentEls = activeView.querySelectorAll('.step-current');
+    const totalEls = activeView.querySelectorAll('.step-total');
+    currentEls.forEach(el => { el.textContent = step.current; });
+    totalEls.forEach(el => { el.textContent = step.total; });
+}
+
+function getActiveView(state) {
+    switch (state) {
+        case STATES.WELCOME: return elements.welcomeView;
+        case STATES.MODE_SELECT: return elements.modeView;
+        case STATES.PERMISSION: return elements.permissionView;
+        case STATES.PLATFORM_SELECT:
+        case STATES.IMPORTING:
+        case STATES.COMPLETE:
+        case STATES.ERROR:
+            return elements.mainView;
+        case STATES.FALLBACK: return elements.fallbackView;
+        default: return null;
+    }
+}
+
 function setState(newState) {
     currentState = newState;
 
@@ -284,6 +332,12 @@ function setState(newState) {
     elements.errorMsg.style.display = 'none';
     elements.successMsg.style.display = 'none';
     elements.progressContainer.style.display = 'none';
+    elements.completionBadge?.classList.add('hidden');
+
+    // Reset scanner
+    if (elements.kittScanner) {
+        elements.kittScanner.classList.remove('scanning', 'scan-complete');
+    }
 
     switch (newState) {
         case STATES.WELCOME:
@@ -296,7 +350,7 @@ function setState(newState) {
             const fullCard = document.getElementById('mode-full');
             if (fullCard) {
                 fullCard.classList.add('selected');
-                fullCard.style.borderColor = '#2563eb';
+                fullCard.style.borderColor = '#FF66B2';
             }
             break;
 
@@ -310,12 +364,21 @@ function setState(newState) {
             selectedPlatform = null;
             elements.btnStart.disabled = true;
             elements.btnStart.textContent = 'Start Import';
+            elements.btnStart.classList.remove('btn-secondary');
+            elements.btnStart.classList.add('btn-primary');
+            elements.btnCancel.textContent = 'Cancel';
+            elements.btnCancel.classList.remove('btn-primary');
+            elements.btnCancel.classList.add('btn-secondary');
             updatePlatformButtons();
             break;
 
         case STATES.IMPORTING:
             elements.mainView?.classList.remove('hidden');
             elements.progressContainer.style.display = 'block';
+            // Start K.I.T.T. scanner
+            if (elements.kittScanner) {
+                elements.kittScanner.classList.add('scanning');
+            }
             break;
 
         case STATES.FALLBACK:
@@ -324,7 +387,12 @@ function setState(newState) {
 
         case STATES.COMPLETE:
             elements.mainView?.classList.remove('hidden');
+            elements.progressContainer.style.display = 'block';
             elements.successMsg.style.display = 'block';
+            // Scanner freeze -> gold
+            if (elements.kittScanner) {
+                elements.kittScanner.classList.add('scan-complete');
+            }
             break;
 
         case STATES.ERROR:
@@ -332,12 +400,15 @@ function setState(newState) {
             elements.errorMsg.style.display = 'block';
             break;
     }
+
+    // Update step indicator for the new state
+    updateStepIndicator(newState);
 }
 
 function updatePlatformButtons() {
     // ChatGPT button
     if (completedPlatforms.has('chatgpt')) {
-        elements.btnChatGPT.textContent = 'ChatGPT ✓';
+        elements.btnChatGPT.innerHTML = 'ChatGPT <span class="checkmark-anim">&#10003;</span>';
         elements.btnChatGPT.classList.add('btn-complete');
         elements.btnChatGPT.classList.remove('btn-primary', 'btn-secondary');
     } else if (isImporting && selectedPlatform !== 'chatgpt') {
@@ -351,7 +422,7 @@ function updatePlatformButtons() {
 
     // Claude button
     if (completedPlatforms.has('claude')) {
-        elements.btnClaude.textContent = 'Claude ✓';
+        elements.btnClaude.innerHTML = 'Claude <span class="checkmark-anim">&#10003;</span>';
         elements.btnClaude.classList.add('btn-complete');
         elements.btnClaude.classList.remove('btn-primary', 'btn-secondary');
     } else if (isImporting && selectedPlatform !== 'claude') {
@@ -394,6 +465,9 @@ async function checkStatus(platform) {
                 elements.btnStart.disabled = true;
                 elements.btnStart.textContent = 'Importing...';
                 elements.progressContainer.style.display = 'block';
+                if (elements.kittScanner) {
+                    elements.kittScanner.classList.add('scanning');
+                }
                 updateProgress(response.status.progress);
                 updatePlatformButtons();
             } else if (response.status.hasCompletedImport) {
@@ -463,8 +537,8 @@ function getExportInstructions(platform) {
     if (platform === 'chatgpt') {
         return `
             <li>Go to <a href="https://chatgpt.com/" target="_blank">chatgpt.com</a></li>
-            <li>Click your profile icon (bottom left) → Settings</li>
-            <li>Go to Data Controls → Export data</li>
+            <li>Click your profile icon (bottom left) &rarr; Settings</li>
+            <li>Go to Data Controls &rarr; Export data</li>
             <li>Click "Export" and wait for email</li>
             <li>Download the ZIP file and upload it here</li>
         `;
@@ -499,14 +573,30 @@ function updateProgress(progress) {
         : 0;
 
     elements.progressFill.style.width = `${percent}%`;
+    elements.progressFill.setAttribute('aria-valuenow', String(percent));
     elements.progressCount.textContent = `${progress.messagesImported} msgs`;
 
     if (progress.status === 'completed') {
-        elements.progressText.textContent = 'Completed!';
+        elements.progressFill.style.width = '100%';
+        elements.progressFill.setAttribute('aria-valuenow', '100');
+        elements.progressText.textContent = 'Your memories are secured.';
         elements.successMsg.textContent = `Successfully imported ${progress.messagesImported} messages.`;
         elements.successMsg.style.display = 'block';
         completedPlatforms.add(progress.platform || selectedPlatform);
-        resetUI(true);
+
+        // Scanner -> gold complete
+        if (elements.kittScanner) {
+            elements.kittScanner.classList.remove('scanning');
+            elements.kittScanner.classList.add('scan-complete');
+        }
+
+        // Show completion badge
+        showCompletionBadge();
+
+        // Delay before showing action buttons (let the moment land)
+        setTimeout(() => {
+            resetUI(true);
+        }, 1500);
     } else if (progress.status === 'failed') {
         if (progress.fallbackRequired) {
             showFallbackUI(progress.platform || selectedPlatform, progress.errorMessage);
@@ -515,8 +605,17 @@ function updateProgress(progress) {
             resetUI();
         }
     } else {
-        elements.progressText.textContent = `Processing... (${percent}%)`;
+        elements.progressText.textContent = `Remembering... (${percent}%)`;
     }
+}
+
+function showCompletionBadge() {
+    if (!elements.completionBadge) return;
+    elements.completionBadge.classList.remove('hidden');
+    elements.completionBadge.innerHTML = `
+        <div class="badge"></div>
+        <span class="badge-label">Memories Secured</span>
+    `;
 }
 
 function showError(msg) {
@@ -527,10 +626,30 @@ function showError(msg) {
 function resetUI(completed = false) {
     isImporting = false;
     elements.btnStart.disabled = false;
-    elements.btnStart.textContent = completed ? 'Re-import' : 'Start Import';
-    updatePlatformButtons();
 
-    if (!completed) {
+    if (completed) {
+        // "Close" is primary action, "Re-import" is secondary
+        elements.btnStart.textContent = 'Re-import';
+        elements.btnStart.classList.remove('btn-primary');
+        elements.btnStart.classList.add('btn-secondary');
+        elements.btnCancel.textContent = 'Close';
+        elements.btnCancel.classList.remove('btn-secondary');
+        elements.btnCancel.classList.add('btn-primary');
+    } else {
+        elements.btnStart.textContent = 'Start Import';
+        elements.btnStart.classList.remove('btn-secondary');
+        elements.btnStart.classList.add('btn-primary');
+        elements.btnCancel.textContent = 'Cancel';
+        elements.btnCancel.classList.remove('btn-primary');
+        elements.btnCancel.classList.add('btn-secondary');
         elements.progressContainer.style.display = 'none';
+        // Reset scanner
+        if (elements.kittScanner) {
+            elements.kittScanner.classList.remove('scanning', 'scan-complete');
+        }
+        // Hide badge
+        elements.completionBadge?.classList.add('hidden');
     }
+
+    updatePlatformButtons();
 }
