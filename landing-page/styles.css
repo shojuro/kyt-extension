@@ -1625,3 +1625,188 @@ body::before {
   outline: 2px solid var(--amber);
   outline-offset: 3px;
 }
+
+/* ============================================
+   DEV-PRIMARY ICP ANCHORS
+   ============================================ */
+.hero__icp--primary {
+  flex: 1.4;
+  border-width: 1px;
+  background: rgba(255, 184, 0, 0.03);
+}
+
+.hero__icp--primary p {
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.hero__icp--emotional {
+  flex: 1;
+  opacity: 0.8;
+}
+
+/* ============================================
+   TERMINAL RECOVERY ANIMATION
+   ============================================ */
+.terminal__recovery {
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border-top: 1px solid rgba(57, 255, 20, 0.08);
+  background: rgba(57, 255, 20, 0.02);
+  animation: recovery-fadein 0.8s var(--ease-smooth);
+}
+
+.terminal__recovery[hidden] {
+  display: none;
+}
+
+@keyframes recovery-fadein {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.terminal__recovery-tag {
+  font-family: 'Space Mono', monospace;
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: var(--phosphor);
+  background: rgba(57, 255, 20, 0.1);
+  border: 1px solid rgba(57, 255, 20, 0.2);
+  padding: 1px 6px;
+  border-radius: 2px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-shadow: 0 0 6px var(--phosphor-dim);
+}
+
+.terminal__recovery-text {
+  font-family: 'Space Mono', monospace;
+  font-size: var(--fs-sm);
+  color: var(--phosphor);
+  text-shadow: 0 0 8px var(--phosphor-dim);
+}
+
+.terminal__recovery-source {
+  font-family: 'Space Mono', monospace;
+  font-size: var(--fs-xs);
+  color: var(--silver-dim);
+  opacity: 0.6;
+  margin-left: auto;
+}
+
+/* ============================================
+   REAL RETRIEVAL DEMO CARD
+   ============================================ */
+.demo-card--real {
+  max-width: 700px;
+  border-color: rgba(255, 59, 59, 0.12);
+}
+
+.demo-card__real-badge {
+  margin-left: auto;
+  font-family: 'Space Mono', monospace;
+  font-size: 0.625rem;
+  color: var(--phosphor);
+  background: rgba(57, 255, 20, 0.06);
+  border: 1px solid rgba(57, 255, 20, 0.15);
+  padding: 2px 8px;
+  border-radius: 2px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.demo-card__role-note {
+  font-weight: 400;
+  font-size: var(--fs-xs);
+  color: var(--silver-dim);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.demo-card__list {
+  list-style: none;
+  padding: 0;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.demo-card__list li {
+  font-size: var(--fs-sm);
+  color: var(--silver-dim);
+  line-height: 1.6;
+  padding-left: 16px;
+  position: relative;
+}
+
+.demo-card__list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 4px;
+  height: 4px;
+  background: var(--scanner-red);
+  box-shadow: 0 0 6px var(--scanner-red-glow);
+  transform: rotate(45deg);
+}
+
+.demo-card__list li em {
+  color: var(--silver);
+  font-style: italic;
+}
+
+.demo-card__list li strong {
+  color: #fff;
+}
+
+.demo-card__source-cite--cross {
+  border-color: rgba(255, 184, 0, 0.15);
+  color: var(--amber);
+}
+
+.demo-card__source-cite--cross .demo-card__source-dot {
+  background: var(--amber);
+  box-shadow: 0 0 6px rgba(255, 184, 0, 0.4);
+}
+
+.demo-card__cross-label {
+  font-size: 0.625rem;
+  color: var(--amber-muted);
+  opacity: 0.7;
+  margin-left: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Provenance footer */
+.demo-card__provenance {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 20px;
+  font-family: 'Space Mono', monospace;
+  font-size: var(--fs-xs);
+  color: var(--silver-dim);
+  line-height: 1.5;
+  border-top: 1px solid rgba(255, 59, 59, 0.06);
+  background: rgba(255, 59, 59, 0.01);
+  opacity: 0.7;
+}
+
+.demo-card__provenance svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--scanner-red);
+  opacity: 0.6;
+}

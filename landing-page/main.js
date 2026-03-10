@@ -2,7 +2,7 @@
    K.Y.T. LANDING PAGE — main.js
    Boot sequence, scroll reveals, interactions
    K.I.T.T. segmented scanner engine
-   CRT effects & glitch interactions
+   CRT effects, terminal recovery, glitch
    ============================================ */
 
 (function () {
@@ -108,7 +108,6 @@
       taglineEl.textContent += taglineText[charIndex];
       charIndex++;
 
-      // Occasional CRT flicker during typing
       if (!prefersReducedMotion && charIndex % 12 === 0) {
         taglineEl.style.opacity = '0.7';
         setTimeout(() => { taglineEl.style.opacity = '1'; }, 50);
@@ -143,10 +142,13 @@
   });
 
   // ============================================
-  // TERMINAL FADE ANIMATION
+  // TERMINAL FADE + RECOVERY ANIMATION
+  // Lines fade out (problem), then one comes
+  // back with phosphor glow (K.Y.T. solution)
   // ============================================
   const terminalSection = document.getElementById('problem');
   const terminalLines = document.querySelectorAll('.terminal__line');
+  const terminalRecovery = document.getElementById('terminal-recovery');
   let terminalTriggered = false;
 
   const terminalObserver = new IntersectionObserver(
@@ -176,12 +178,26 @@
         currentIndex++;
         setTimeout(fadeNext, 800);
       } else {
-        setTimeout(() => {
-          lines.forEach((line) => line.classList.remove('fading'));
-          currentIndex = 0;
-          setTimeout(fadeNext, 1500);
-        }, 2000);
+        // All lines faded — show recovery after pause
+        setTimeout(showRecovery, 1200);
       }
+    }
+
+    function showRecovery() {
+      if (terminalRecovery) {
+        terminalRecovery.hidden = false;
+      }
+      // Hold the recovery visible, then reset cycle
+      setTimeout(resetCycle, 3500);
+    }
+
+    function resetCycle() {
+      if (terminalRecovery) {
+        terminalRecovery.hidden = true;
+      }
+      lines.forEach((line) => line.classList.remove('fading'));
+      currentIndex = 0;
+      setTimeout(fadeNext, 1500);
     }
 
     setTimeout(fadeNext, 1000);
@@ -235,7 +251,7 @@
   }
 
   // ============================================
-  // RECENCY SIGNAL (simulated "last signup" timer)
+  // RECENCY SIGNAL
   // ============================================
   const recencyEl = document.getElementById('recency-minutes');
   if (recencyEl) {
@@ -257,7 +273,7 @@
   // ============================================
   const demoTabs = document.querySelectorAll('.demo-tab');
   const demoTechnical = document.getElementById('demo-technical');
-  const demoEmotional = document.getElementById('demo-emotional');
+  const demoDeeper = document.getElementById('demo-deeper');
 
   demoTabs.forEach((tab) => {
     tab.addEventListener('click', () => {
@@ -273,11 +289,15 @@
       if (target === 'technical') {
         demoTechnical.hidden = false;
         demoTechnical.classList.remove('demo-card--hidden');
-        demoEmotional.hidden = true;
-        demoEmotional.classList.add('demo-card--hidden');
+        if (demoDeeper) {
+          demoDeeper.hidden = true;
+          demoDeeper.classList.add('demo-card--hidden');
+        }
       } else {
-        demoEmotional.hidden = false;
-        demoEmotional.classList.remove('demo-card--hidden');
+        if (demoDeeper) {
+          demoDeeper.hidden = false;
+          demoDeeper.classList.remove('demo-card--hidden');
+        }
         demoTechnical.hidden = true;
         demoTechnical.classList.add('demo-card--hidden');
       }
@@ -306,7 +326,7 @@
   }
 
   // ============================================
-  // SCANNER SCROLL PARALLAX (slow sweep on scroll)
+  // SCANNER SCROLL PARALLAX
   // ============================================
   if (!prefersReducedMotion) {
     let ticking = false;

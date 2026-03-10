@@ -47,17 +47,17 @@
         <span class="hero__logo-letter">K</span><span class="hero__logo-dot">.</span><span class="hero__logo-letter">Y</span><span class="hero__logo-dot">.</span><span class="hero__logo-letter">T</span><span class="hero__logo-dot">.</span>
       </h1>
       <p class="hero__tagline" aria-live="polite"></p>
-      <p class="hero__sub">K.Y.T. remembers every conversation across ChatGPT, Claude, Gemini, and Claude&nbsp;Code. So your AI finally knows who you&nbsp;are.</p>
+      <p class="hero__sub">K.Y.T. remembers every conversation across ChatGPT, Claude, Gemini, and Claude&nbsp;Code &mdash; so your AI finally knows your stack, your decisions, and&nbsp;you.</p>
 
       <div class="hero__icp-anchors">
-        <p class="hero__icp hero__icp--technical">
+        <div class="hero__icp hero__icp--technical hero__icp--primary">
           <span class="hero__icp-tag">DEV</span>
-          For developers and researchers who use AI like a&nbsp;colleague.
-        </p>
-        <p class="hero__icp hero__icp--emotional">
+          <p>For developers and researchers who use AI like a&nbsp;colleague. Your stack, your patterns, your architecture decisions&nbsp;&mdash;&nbsp;remembered.</p>
+        </div>
+        <div class="hero__icp hero__icp--emotional">
           <span class="hero__icp-tag">YOU</span>
-          For anyone who's ever wished their AI remembered&nbsp;yesterday.
-        </p>
+          <p>For anyone who's ever wished their AI remembered&nbsp;yesterday.</p>
+        </div>
       </div>
 
       <form id="hero-form" class="cta-form" aria-label="Join the waitlist">
@@ -118,14 +118,20 @@
                 <span class="terminal__title">memory.log</span>
               </div>
               <div class="terminal__body" id="terminal-lines">
-                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "Use Tailwind for this project"</p>
-                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "I had a bad day at work today"</p>
                 <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "Deploy to Vercel, not AWS"</p>
-                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "Remember our conversation about my mom?"</p>
                 <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "My preferred stack is Next.js + Supabase"</p>
-                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "You're the only one I've told about this"</p>
                 <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "Never use semicolons in JS"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "Use Tailwind for this project"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "ambiguity isn't discomfort, it's honesty"</p>
                 <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "I'm training for a marathon"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "Remember our conversation about my mom?"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "You're the only one I've told about this"</p>
+              </div>
+              <!-- Recovery line — appears after fade cycle -->
+              <div class="terminal__recovery" id="terminal-recovery" hidden>
+                <span class="terminal__recovery-tag">K.Y.T.</span>
+                <span class="terminal__recovery-text">"My preferred stack is Next.js + Supabase"</span>
+                <span class="terminal__recovery-source">recalled from ChatGPT &middot; Feb 12</span>
               </div>
             </div>
           </div>
@@ -176,14 +182,14 @@
       <!-- Demo card tabs -->
       <div class="demo-tabs reveal" role="tablist" aria-label="Use case examples">
         <button class="demo-tab demo-tab--active" role="tab" aria-selected="true" aria-controls="demo-technical" data-tab="technical">
-          <span class="demo-tab__indicator"></span>Developer
+          <span class="demo-tab__indicator"></span>Your Code
         </button>
-        <button class="demo-tab" role="tab" aria-selected="false" aria-controls="demo-emotional" data-tab="emotional">
-          <span class="demo-tab__indicator"></span>Personal
+        <button class="demo-tab" role="tab" aria-selected="false" aria-controls="demo-deeper" data-tab="deeper">
+          <span class="demo-tab__indicator"></span>Beyond Code
         </button>
       </div>
 
-      <!-- Technical demo card -->
+      <!-- Technical demo card (dev stack recall) -->
       <div class="demo-card reveal" id="demo-technical" role="tabpanel" aria-label="Developer use case">
         <div class="demo-card__header">
           <span class="demo-card__platform-tag">Claude</span>
@@ -207,26 +213,37 @@
         </div>
       </div>
 
-      <!-- Emotional demo card -->
-      <div class="demo-card demo-card--hidden" id="demo-emotional" role="tabpanel" aria-label="Personal use case" hidden>
+      <!-- "Beyond Code" demo card — REAL K.Y.T. retrieval -->
+      <div class="demo-card demo-card--hidden demo-card--real" id="demo-deeper" role="tabpanel" aria-label="Beyond code — real retrieval" hidden>
         <div class="demo-card__header">
-          <span class="demo-card__platform-tag">ChatGPT</span>
+          <span class="demo-card__platform-tag">Claude</span>
           <span class="demo-card__dot"></span>
           <span class="demo-card__status">K.Y.T. active</span>
+          <span class="demo-card__real-badge">Real retrieval</span>
         </div>
         <div class="demo-card__messages">
           <div class="demo-card__msg demo-card__msg--user">
             <span class="demo-card__role">You</span>
-            <p>I'm feeling anxious about the job interview tomorrow. We talked about this&nbsp;before.</p>
+            <p>What is my connection to the movies Stand By Me, Ladyhawke, and the painting Melancholy and Mystery of a&nbsp;Street?</p>
           </div>
           <div class="demo-card__msg demo-card__msg--assistant">
-            <span class="demo-card__role">ChatGPT</span>
-            <p>I remember. Last Tuesday you said the interview was for the <strong>senior role at Meridian</strong>. You were worried about the system design round. You also mentioned your therapist suggested <strong>box breathing</strong> before high-stress moments. Want to walk through some prep&nbsp;questions?</p>
+            <span class="demo-card__role">Claude <span class="demo-card__role-note">&mdash; never told any of this directly</span></span>
+            <p>Based on what K.Y.T. retrieved, you have a personal philosophy connecting these works through a concept you've called <strong>&ldquo;emotional entropy&rdquo;</strong> &mdash; and the through-line is your appreciation for <strong>ambiguity as a form of&nbsp;honesty</strong>.</p>
+            <ul class="demo-card__list">
+              <li><em>Mystery and Melancholy of a Street</em> as your favorite painting, tied to its visual and emotional ambiguity &mdash; the lone girl, the deep shadows, the sense of something&nbsp;unresolved</li>
+              <li>A philosophical framework connecting that feeling to your film taste, using a Schr&ouml;dinger&rsquo;s cat&nbsp;analogy</li>
+              <li>Your core thesis, captured in your own words: <strong>&ldquo;ambiguity isn&rsquo;t discomfort, it&rsquo;s&nbsp;honesty&rdquo;</strong></li>
+            </ul>
             <div class="demo-card__sources">
-              <span class="demo-card__source-cite"><span class="demo-card__source-dot"></span>ChatGPT &middot; Mar 1</span>
+              <span class="demo-card__source-cite demo-card__source-cite--cross"><span class="demo-card__source-dot"></span>ChatGPT &middot; Feb 16 <span class="demo-card__cross-label">original</span></span>
               <span class="demo-card__source-cite"><span class="demo-card__source-dot"></span>Claude &middot; Feb 24</span>
+              <span class="demo-card__source-cite"><span class="demo-card__source-dot"></span>Claude &middot; Feb 25</span>
             </div>
           </div>
+        </div>
+        <div class="demo-card__provenance">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14"><path d="M8 1v6m0 2v.5M2.5 8a5.5 5.5 0 1 0 11 0 5.5 5.5 0 0 0-11 0z"/></svg>
+          This is a real K.Y.T. retrieval. A personal philosophy expressed to ChatGPT was retrieved 9&nbsp;days later in an incognito Claude session with zero prior&nbsp;context.
         </div>
       </div>
     </div>
@@ -333,19 +350,19 @@
       <div class="what-if-grid reveal">
         <div class="what-if__item">
           <span class="what-if__bullet"></span>
-          <p>What if Claude remembered your deploy target, your test framework, and your code&nbsp;style&nbsp;&mdash;&nbsp;without being&nbsp;told?</p>
+          <p>What if Claude remembered your deploy target, your test framework, and your code&nbsp;style &mdash; without being&nbsp;told?</p>
         </div>
         <div class="what-if__item">
           <span class="what-if__bullet"></span>
-          <p>What if ChatGPT remembered the coping strategy you came up with together last&nbsp;month?</p>
+          <p>What if Gemini knew you already tried that API and it didn't work &mdash; three conversations&nbsp;ago?</p>
         </div>
         <div class="what-if__item">
           <span class="what-if__bullet"></span>
-          <p>What if Gemini knew you already tried that API and it didn't work&nbsp;&mdash;&nbsp;three conversations&nbsp;ago?</p>
+          <p>What if every architecture decision you've ever discussed was one query&nbsp;away?</p>
         </div>
         <div class="what-if__item">
           <span class="what-if__bullet"></span>
-          <p>What if your AI remembered that your dad's birthday is coming up and you haven't found a gift&nbsp;yet?</p>
+          <p>What if your AI remembered not just your stack &mdash; but your philosophy behind&nbsp;it?</p>
         </div>
         <div class="what-if__item">
           <span class="what-if__bullet"></span>
