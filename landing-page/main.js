@@ -2,6 +2,7 @@
    K.Y.T. LANDING PAGE — main.js
    Boot sequence, scroll reveals, interactions
    K.I.T.T. segmented scanner engine
+   CRT effects & glitch interactions
    ============================================ */
 
 (function () {
@@ -14,17 +15,14 @@
   // 8-segment LED sweep with halogen trailing glow
   // ============================================
   const LED_COUNT = 8;
-  // Intensity levels for the leading light and its trail
-  // Index 0 = leading edge (brightest), then decay
   const TRAIL_INTENSITIES = [5, 4, 3, 2, 1];
-  const BASE_STEP_MS = 120; // ms per LED step (base speed)
+  const BASE_STEP_MS = 120;
 
   const scannerTracks = document.querySelectorAll('.hero__scanner-track');
-  let scannerSpeed = 1; // 1 = normal, higher = slower
+  let scannerSpeed = 1;
 
   function initScanners() {
     if (prefersReducedMotion) {
-      // Static center glow for reduced motion
       scannerTracks.forEach((track) => {
         const leds = track.querySelectorAll('.scanner-led');
         const mid = Math.floor(leds.length / 2);
@@ -46,16 +44,14 @@
     const leds = track.querySelectorAll('.scanner-led');
     const isHero = !track.classList.contains('hero__scanner-track--bottom');
     let position = 0;
-    let direction = 1; // 1 = right, -1 = left
+    let direction = 1;
     let paused = false;
 
     function step() {
-      // Clear all LEDs
       for (let i = 0; i < leds.length; i++) {
         leds[i].setAttribute('data-intensity', '0');
       }
 
-      // Set leading light and trail
       for (let t = 0; t < TRAIL_INTENSITIES.length; t++) {
         const idx = position - t * direction;
         if (idx >= 0 && idx < leds.length) {
@@ -63,10 +59,8 @@
         }
       }
 
-      // Advance position
       position += direction;
 
-      // Bounce at edges with a slight pause
       if (position >= leds.length) {
         position = leds.length - 1;
         direction = -1;
@@ -77,10 +71,9 @@
         paused = true;
       }
 
-      // Hero scanner slows on scroll; bottom scanner always runs at full speed
       const speed = isHero ? scannerSpeed : 1;
       const delay = paused
-        ? BASE_STEP_MS * speed * 2.5 // Edge pause
+        ? BASE_STEP_MS * speed * 2.5
         : BASE_STEP_MS * speed;
       paused = false;
 
@@ -90,7 +83,6 @@
     step();
   }
 
-  // Flash all LEDs (used on email submit)
   function flashScanners() {
     if (prefersReducedMotion) return;
     scannerTracks.forEach((track) => {
@@ -102,10 +94,11 @@
     });
   }
 
-  // Start scanners on load
   initScanners();
 
-  // --- BOOT SEQUENCE: Typewriter ---
+  // ============================================
+  // BOOT SEQUENCE: Typewriter with CRT flicker
+  // ============================================
   const taglineEl = document.querySelector('.hero__tagline');
   const taglineText = "You've told AI everything. It remembers nothing.";
   let charIndex = 0;
@@ -114,7 +107,14 @@
     if (charIndex < taglineText.length) {
       taglineEl.textContent += taglineText[charIndex];
       charIndex++;
-      const delay = taglineText[charIndex - 1] === '.' ? 280 : 45;
+
+      // Occasional CRT flicker during typing
+      if (!prefersReducedMotion && charIndex % 12 === 0) {
+        taglineEl.style.opacity = '0.7';
+        setTimeout(() => { taglineEl.style.opacity = '1'; }, 50);
+      }
+
+      const delay = taglineText[charIndex - 1] === '.' ? 320 : 42;
       setTimeout(typeNextChar, delay);
     } else {
       setTimeout(() => taglineEl.classList.add('done'), 2000);
@@ -123,7 +123,9 @@
 
   setTimeout(typeNextChar, 2000);
 
-  // --- SCROLL REVEAL (IntersectionObserver) ---
+  // ============================================
+  // SCROLL REVEAL (IntersectionObserver)
+  // ============================================
   const revealObserver = new IntersectionObserver(
     (entries) => {
       entries.forEach((entry) => {
@@ -140,7 +142,9 @@
     revealObserver.observe(el);
   });
 
-  // --- TERMINAL FADE ANIMATION ---
+  // ============================================
+  // TERMINAL FADE ANIMATION
+  // ============================================
   const terminalSection = document.getElementById('problem');
   const terminalLines = document.querySelectorAll('.terminal__line');
   let terminalTriggered = false;
@@ -183,7 +187,9 @@
     setTimeout(fadeNext, 1000);
   }
 
-  // --- PLATFORM ICONS LIGHT-UP ---
+  // ============================================
+  // PLATFORM ICONS LIGHT-UP
+  // ============================================
   const platformSection = document.getElementById('solution');
   const platforms = document.querySelectorAll('.platform');
   let platformsTriggered = false;
@@ -207,7 +213,9 @@
     platformObserver.observe(platformSection);
   }
 
-  // --- STEPS TIMELINE LINE FILL ---
+  // ============================================
+  // STEPS TIMELINE LINE FILL
+  // ============================================
   const stepsSection = document.getElementById('how');
   const lineFill = document.querySelector('.steps__line-fill');
 
@@ -226,25 +234,27 @@
     stepsObserver.observe(stepsSection);
   }
 
-  // --- RECENCY SIGNAL (simulated "last signup" timer) ---
+  // ============================================
+  // RECENCY SIGNAL (simulated "last signup" timer)
+  // ============================================
   const recencyEl = document.getElementById('recency-minutes');
   if (recencyEl) {
-    // Start with a random believable number (2-7 min)
     let minutes = Math.floor(Math.random() * 6) + 2;
     recencyEl.textContent = minutes;
 
     setInterval(() => {
-      // Randomly reset to low number (simulating new signups)
       if (minutes >= 12 || Math.random() < 0.3) {
         minutes = Math.floor(Math.random() * 4) + 1;
       } else {
         minutes++;
       }
       recencyEl.textContent = minutes;
-    }, 30000); // Update every 30s
+    }, 30000);
   }
 
-  // --- DEMO CARD TAB SWITCHING ---
+  // ============================================
+  // DEMO CARD TAB SWITCHING
+  // ============================================
   const demoTabs = document.querySelectorAll('.demo-tab');
   const demoTechnical = document.getElementById('demo-technical');
   const demoEmotional = document.getElementById('demo-emotional');
@@ -274,7 +284,9 @@
     });
   });
 
-  // --- SCROLL PEEK (Zeigarnik — show problem headline at hero bottom) ---
+  // ============================================
+  // SCROLL PEEK (Zeigarnik)
+  // ============================================
   if (!prefersReducedMotion) {
     const problemHeading = document.querySelector('#problem .section__heading');
     if (problemHeading) {
@@ -293,7 +305,9 @@
     }
   }
 
-  // --- SCANNER SCROLL PARALLAX (slow sweep on scroll) ---
+  // ============================================
+  // SCANNER SCROLL PARALLAX (slow sweep on scroll)
+  // ============================================
   if (!prefersReducedMotion) {
     let ticking = false;
     window.addEventListener('scroll', () => {
@@ -302,7 +316,6 @@
           const scrollY = window.scrollY;
           const vh = window.innerHeight;
           const scrollRatio = Math.min(scrollY / (vh * 2), 1);
-          // Slow scanner as user scrolls: 1x → 3x slower
           scannerSpeed = 1 + scrollRatio * 2;
           ticking = false;
         });
@@ -311,7 +324,9 @@
     });
   }
 
-  // --- EXIT INTENT MODAL ---
+  // ============================================
+  // EXIT INTENT MODAL
+  // ============================================
   const exitModal = document.getElementById('exit-modal');
   let exitShown = false;
 
@@ -329,7 +344,6 @@
       exitModal.hidden = true;
     }
 
-    // Trigger on mouse leaving viewport top
     document.addEventListener('mouseout', (e) => {
       if (e.clientY <= 0 && !exitShown) {
         showExitModal();
@@ -339,7 +353,6 @@
     closeBtn.addEventListener('click', hideExitModal);
     backdrop.addEventListener('click', hideExitModal);
 
-    // Close on Escape
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !exitModal.hidden) {
         hideExitModal();
@@ -347,13 +360,16 @@
     });
   }
 
-  // --- EMAIL FORM SUBMISSION ---
+  // ============================================
+  // EMAIL FORM SUBMISSION
+  // ============================================
   document.querySelectorAll('.cta-form').forEach((form) => {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
 
       const input = form.querySelector('.cta-form__input');
       const btn = form.querySelector('.cta-form__btn');
+      const btnText = btn.querySelector('.cta-form__btn-text');
       const hint = form.querySelector('.cta-form__hint');
       const success = form.querySelector('.cta-form__success');
       const email = input.value.trim();
@@ -361,28 +377,20 @@
       if (!email) return;
 
       btn.disabled = true;
-      btn.textContent = 'Joining...';
+      if (btnText) btnText.textContent = 'Joining...';
 
       try {
         // TODO: Replace with actual Supabase edge function endpoint
-        // await fetch('https://your-project.supabase.co/functions/v1/waitlist', {
-        //   method: 'POST',
-        //   headers: { 'Content-Type': 'application/json' },
-        //   body: JSON.stringify({ email }),
-        // });
-
-        // Simulate for v1
         await new Promise((resolve) => setTimeout(resolve, 800));
 
         input.value = '';
         if (hint) hint.hidden = true;
         success.hidden = false;
-        btn.textContent = "You're in";
+        if (btnText) btnText.textContent = "You're in";
 
-        // Scanner flash on submit
         flashScanners();
       } catch (err) {
-        btn.textContent = 'Try again';
+        if (btnText) btnText.textContent = 'Try again';
         btn.disabled = false;
         console.error('Waitlist submission failed:', err);
       }

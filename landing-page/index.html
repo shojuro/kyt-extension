@@ -16,15 +16,21 @@
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- CRT scanline overlay -->
+  <div class="crt-overlay" aria-hidden="true"></div>
+  <!-- Traveling horizontal scanline -->
+  <div class="traveling-scanline" aria-hidden="true"></div>
+
   <!-- ============================================ -->
   <!-- SECTION 0 — THE BOOT SEQUENCE (HERO)         -->
   <!-- ============================================ -->
   <section id="hero" class="hero" aria-label="K.Y.T. — AI conversation memory">
+    <div class="hero__grid-bg" aria-hidden="true"></div>
     <div class="hero__scanner-track" aria-hidden="true">
       <div class="scanner-led" data-intensity="0"></div>
       <div class="scanner-led" data-intensity="0"></div>
@@ -37,15 +43,21 @@
     </div>
 
     <div class="hero__content">
-      <h1 class="hero__logo" aria-label="K.Y.T.">
+      <h1 class="hero__logo" aria-label="K.Y.T." data-text="K.Y.T.">
         <span class="hero__logo-letter">K</span><span class="hero__logo-dot">.</span><span class="hero__logo-letter">Y</span><span class="hero__logo-dot">.</span><span class="hero__logo-letter">T</span><span class="hero__logo-dot">.</span>
       </h1>
       <p class="hero__tagline" aria-live="polite"></p>
       <p class="hero__sub">K.Y.T. remembers every conversation across ChatGPT, Claude, Gemini, and Claude&nbsp;Code. So your AI finally knows who you&nbsp;are.</p>
 
       <div class="hero__icp-anchors">
-        <p class="hero__icp hero__icp--technical">For developers and researchers who use AI like a&nbsp;colleague.</p>
-        <p class="hero__icp hero__icp--emotional">For anyone who's ever wished their AI remembered&nbsp;yesterday.</p>
+        <p class="hero__icp hero__icp--technical">
+          <span class="hero__icp-tag">DEV</span>
+          For developers and researchers who use AI like a&nbsp;colleague.
+        </p>
+        <p class="hero__icp hero__icp--emotional">
+          <span class="hero__icp-tag">YOU</span>
+          For anyone who's ever wished their AI remembered&nbsp;yesterday.
+        </p>
       </div>
 
       <form id="hero-form" class="cta-form" aria-label="Join the waitlist">
@@ -60,7 +72,10 @@
             autocomplete="email"
             aria-describedby="hero-hint"
           >
-          <button type="submit" class="cta-form__btn">Start Remembering</button>
+          <button type="submit" class="cta-form__btn">
+            <span class="cta-form__btn-text">Start Remembering</span>
+            <span class="cta-form__btn-glitch" aria-hidden="true">Start Remembering</span>
+          </button>
         </div>
         <p id="hero-hint" class="cta-form__hint">Early access is free. It won't always&nbsp;be.</p>
         <p class="cta-form__success" aria-live="polite" hidden>You're in. We'll be in touch.</p>
@@ -76,37 +91,43 @@
   <!-- SECTION 1 — THE PROBLEM (LOSS AVERSION)      -->
   <!-- ============================================ -->
   <section id="problem" class="section section--problem" aria-label="The problem">
+    <div class="section__divider section__divider--top" aria-hidden="true"></div>
     <div class="container split">
       <div class="split__text reveal">
-        <h2 class="section__heading">You've had thousands of AI&nbsp;conversations.<br>You remember none of&nbsp;them.</h2>
+        <h2 class="section__heading glitch-hover">You've had thousands of AI&nbsp;conversations.<br>You remember none of&nbsp;them.</h2>
         <p class="section__body">Every insight. Every decision. Every preference you've stated. Gone the moment you close the tab. Across every platform. Every&nbsp;day.</p>
         <div class="stat-row">
           <div class="stat">
-            <span class="stat__number">~10,000</span>
+            <span class="stat__number" data-value="~10,000">~10,000</span>
             <span class="stat__label">conversations / year</span>
           </div>
           <div class="stat">
-            <span class="stat__number">~0</span>
+            <span class="stat__number stat__number--zero" data-value="~0">~0</span>
             <span class="stat__label">remembered by your AI</span>
           </div>
         </div>
       </div>
       <div class="split__visual reveal" aria-hidden="true">
         <div class="terminal">
-          <div class="terminal__bar">
-            <span class="terminal__dot"></span>
-            <span class="terminal__dot"></span>
-            <span class="terminal__dot"></span>
-          </div>
-          <div class="terminal__body" id="terminal-lines">
-            <p class="terminal__line">"Use Tailwind for this project"</p>
-            <p class="terminal__line">"I had a bad day at work today"</p>
-            <p class="terminal__line">"Deploy to Vercel, not AWS"</p>
-            <p class="terminal__line">"Remember our conversation about my mom?"</p>
-            <p class="terminal__line">"My preferred stack is Next.js + Supabase"</p>
-            <p class="terminal__line">"You're the only one I've told about this"</p>
-            <p class="terminal__line">"Never use semicolons in JS"</p>
-            <p class="terminal__line">"I'm training for a marathon"</p>
+          <div class="terminal__bezel">
+            <div class="terminal__screen">
+              <div class="terminal__bar">
+                <span class="terminal__dot"></span>
+                <span class="terminal__dot"></span>
+                <span class="terminal__dot"></span>
+                <span class="terminal__title">memory.log</span>
+              </div>
+              <div class="terminal__body" id="terminal-lines">
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "Use Tailwind for this project"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "I had a bad day at work today"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "Deploy to Vercel, not AWS"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "Remember our conversation about my mom?"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "My preferred stack is Next.js + Supabase"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "You're the only one I've told about this"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "Never use semicolons in JS"</p>
+                <p class="terminal__line"><span class="terminal__prompt">&gt;</span> "I'm training for a marathon"</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -118,7 +139,7 @@
   <!-- ============================================ -->
   <section id="solution" class="section section--solution" aria-label="The solution">
     <div class="container">
-      <h2 class="section__heading reveal">One memory. Every&nbsp;platform.</h2>
+      <h2 class="section__heading reveal glitch-hover">One memory. Every&nbsp;platform.</h2>
       <p class="section__body section__body--center reveal">K.Y.T. captures your conversations silently. Indexes them with AI&nbsp;embeddings. And injects the right context back&nbsp;&mdash;&nbsp;automatically.</p>
 
       <div class="platforms reveal" aria-label="Supported platforms">
@@ -154,8 +175,12 @@
 
       <!-- Demo card tabs -->
       <div class="demo-tabs reveal" role="tablist" aria-label="Use case examples">
-        <button class="demo-tab demo-tab--active" role="tab" aria-selected="true" aria-controls="demo-technical" data-tab="technical">Developer</button>
-        <button class="demo-tab" role="tab" aria-selected="false" aria-controls="demo-emotional" data-tab="emotional">Personal</button>
+        <button class="demo-tab demo-tab--active" role="tab" aria-selected="true" aria-controls="demo-technical" data-tab="technical">
+          <span class="demo-tab__indicator"></span>Developer
+        </button>
+        <button class="demo-tab" role="tab" aria-selected="false" aria-controls="demo-emotional" data-tab="emotional">
+          <span class="demo-tab__indicator"></span>Personal
+        </button>
       </div>
 
       <!-- Technical demo card -->
@@ -212,7 +237,7 @@
   <!-- ============================================ -->
   <section id="how" class="section section--how" aria-label="How it works">
     <div class="container">
-      <h2 class="section__heading reveal">Three steps. Zero&nbsp;friction.</h2>
+      <h2 class="section__heading reveal glitch-hover">Three steps. Zero&nbsp;friction.</h2>
 
       <div class="steps">
         <div class="steps__line" aria-hidden="true">
@@ -220,7 +245,9 @@
         </div>
 
         <div class="step reveal">
-          <div class="step__marker" aria-hidden="true">1</div>
+          <div class="step__marker" aria-hidden="true">
+            <span class="step__number">01</span>
+          </div>
           <div class="step__content">
             <h3 class="step__title">Install</h3>
             <p class="step__desc">30-second Chrome extension install. Zero config. No API keys. No setup&nbsp;wizards.</p>
@@ -228,7 +255,9 @@
         </div>
 
         <div class="step reveal">
-          <div class="step__marker" aria-hidden="true">2</div>
+          <div class="step__marker" aria-hidden="true">
+            <span class="step__number">02</span>
+          </div>
           <div class="step__content">
             <h3 class="step__title">Talk</h3>
             <p class="step__desc">Use ChatGPT, Claude, Gemini, and Claude Code normally. K.Y.T. captures everything in the&nbsp;background.</p>
@@ -236,7 +265,9 @@
         </div>
 
         <div class="step reveal">
-          <div class="step__marker" aria-hidden="true">3</div>
+          <div class="step__marker" aria-hidden="true">
+            <span class="step__number">03</span>
+          </div>
           <div class="step__content">
             <h3 class="step__title">Remember</h3>
             <p class="step__desc">Your AI now references past conversations, preferences, and decisions. Across platforms. Automatically.</p>
@@ -298,7 +329,7 @@
   <!-- ============================================ -->
   <section id="what-if" class="section section--what-if" aria-label="What if">
     <div class="container">
-      <h2 class="section__heading section__heading--large reveal">What if your AI already knew?</h2>
+      <h2 class="section__heading section__heading--large reveal glitch-hover">What if your AI already knew?</h2>
       <div class="what-if-grid reveal">
         <div class="what-if__item">
           <span class="what-if__bullet"></span>
@@ -344,7 +375,7 @@
     </div>
 
     <div class="container">
-      <h2 class="section__heading section__heading--large reveal">Stop losing your&nbsp;mind.<br>Start keeping&nbsp;it.</h2>
+      <h2 class="section__heading section__heading--large reveal glitch-hover">Stop losing your&nbsp;mind.<br>Start keeping&nbsp;it.</h2>
 
       <form id="cta-form" class="cta-form cta-form--large" aria-label="Join the waitlist">
         <div class="cta-form__row">
@@ -358,7 +389,10 @@
             autocomplete="email"
             aria-describedby="cta-hint"
           >
-          <button type="submit" class="cta-form__btn">Start Remembering</button>
+          <button type="submit" class="cta-form__btn">
+            <span class="cta-form__btn-text">Start Remembering</span>
+            <span class="cta-form__btn-glitch" aria-hidden="true">Start Remembering</span>
+          </button>
         </div>
         <p id="cta-hint" class="cta-form__hint">Early access is free. It won't always&nbsp;be.</p>
         <p class="cta-form__success" aria-live="polite" hidden>You're in. We'll be in touch.</p>
@@ -391,7 +425,10 @@
         <div class="cta-form__row">
           <label for="exit-email" class="sr-only">Email address</label>
           <input id="exit-email" type="email" class="cta-form__input" placeholder="your@email.com" required autocomplete="email">
-          <button type="submit" class="cta-form__btn">Start Remembering</button>
+          <button type="submit" class="cta-form__btn">
+            <span class="cta-form__btn-text">Start Remembering</span>
+            <span class="cta-form__btn-glitch" aria-hidden="true">Start Remembering</span>
+          </button>
         </div>
         <p class="cta-form__success" aria-live="polite" hidden>You're in. We'll be in touch.</p>
       </form>
