@@ -1287,9 +1287,28 @@ globalThis.KYT_DEBUG = {
   backfillContextual: (limit = 20) => callEdgeFunction('backfill_contextual', { limit }, { timeoutMs: 120000 })
     .then(result => { console.log('📝 Contextual backfill result:', result); return result; })
     .catch(err => { console.error('❌ Contextual backfill failed:', err.message); return { success: false, error: err.message }; }),
-  backfillGravity: (maxRows = 50) => callEdgeFunction('backfill_gravity', { fast_mode: true, max_rows: maxRows }, { timeoutMs: 120000 })
-    .then(result => { console.log('⚖️ Gravity backfill result:', result); return result; })
-    .catch(err => { console.error('❌ Gravity backfill failed:', err.message); return { success: false, error: err.message }; }),
+  backfillGravity: async (maxRows = 50) => {
+    const BATCH_CAP = 50;
+    let totalClassified = 0, totalTopics = 0, remaining = -1;
+    const batches = Math.ceil(maxRows / BATCH_CAP);
+    for (let i = 0; i < batches; i++) {
+      const batchSize = Math.min(BATCH_CAP, maxRows - totalClassified);
+      try {
+        const result = await callEdgeFunction('backfill_gravity', { fast_mode: true, max_rows: batchSize }, { timeoutMs: 120000 });
+        totalClassified += result.classified || 0;
+        totalTopics += result.topics_set || 0;
+        remaining = result.remaining || 0;
+        console.log(`⚖️ Gravity batch ${i + 1}/${batches}: ${result.classified} classified, ${result.remaining} remaining`);
+        if (remaining === 0) break;
+      } catch (err) {
+        console.error(`❌ Gravity batch ${i + 1} failed: ${err.message}`);
+        return { success: false, classified: totalClassified, topics_set: totalTopics, remaining, error: err.message };
+      }
+    }
+    const summary = { success: true, classified: totalClassified, topics_set: totalTopics, remaining };
+    console.log('⚖️ Gravity backfill complete:', summary);
+    return summary;
+  },
   backfillPostImport: () => {
     console.log('🔄 Starting post-import backfill chain...');
     chrome.alarms.create('backfillContextual', { delayInMinutes: 0.1 });

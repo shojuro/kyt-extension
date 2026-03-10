@@ -26,7 +26,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 const BATCH_SIZE = 5;
 const MAX_ROWS = 50;
-const MAX_ROWS_CAP = 200;
+const MAX_ROWS_CAP = 50;
 const BATCH_DELAY_MS = 2000;
 const FAST_BATCH_DELAY_MS = 200;
 
