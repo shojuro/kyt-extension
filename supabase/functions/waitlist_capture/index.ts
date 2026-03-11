@@ -4,6 +4,14 @@ import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const VALID_SOURCES = new Set(['hero', 'cta', 'exit-intent']);
+const MAX_FIELD_LEN = 256;
+
+/** Strip HTML tags and cap length. Prevents stored XSS in UTM/referrer fields. */
+function sanitize(val: unknown): string | null {
+  if (val == null) return null;
+  const s = String(val).replace(/<[^>]*>/g, '').trim();
+  return s ? s.slice(0, MAX_FIELD_LEN) : null;
+}
 
 Deno.serve(async (req: Request) => {
   // CORS preflight
@@ -56,12 +64,12 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Hash IP with daily salt for privacy
-    const dailySalt = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    // Hash IP with secret salt for privacy (GDPR-safe)
+    const salt = Deno.env.get('WAITLIST_HASH_SALT') || 'kyt-waitlist-fallback';
     const encoder = new TextEncoder();
     const hashBuffer = await crypto.subtle.digest(
       'SHA-256',
-      encoder.encode(ip + dailySalt),
+      encoder.encode(ip + salt),
     );
     const ipHash = Array.from(new Uint8Array(hashBuffer))
       .map(b => b.toString(16).padStart(2, '0'))
@@ -79,12 +87,12 @@ Deno.serve(async (req: Request) => {
         email,
         source,
         ip_hash: ipHash,
-        utm_source: body.utm_source || null,
-        utm_medium: body.utm_medium || null,
-        utm_campaign: body.utm_campaign || null,
-        utm_content: body.utm_content || null,
-        utm_term: body.utm_term || null,
-        referrer: body.referrer || null,
+        utm_source: sanitize(body.utm_source),
+        utm_medium: sanitize(body.utm_medium),
+        utm_campaign: sanitize(body.utm_campaign),
+        utm_content: sanitize(body.utm_content),
+        utm_term: sanitize(body.utm_term),
+        referrer: sanitize(body.referrer),
         created_at: new Date().toISOString(),
       },
       { onConflict: 'email' },
