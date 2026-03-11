@@ -1,0 +1,193 @@
+/* ============================================
+   K.Y.T. Extension — Shared CRT Cockpit Theme
+   Design language aligned with landing page
+   ============================================ */
+
+/* --- @font-face declarations --- */
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(fonts/rajdhani-600.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(fonts/rajdhani-700.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 300 600;
+  font-display: swap;
+  src: url(fonts/outfit-latin.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Space Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(fonts/spacemono-400.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Space Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(fonts/spacemono-700.woff2) format('woff2');
+}
+
+/* --- Design Tokens --- */
+:root {
+  --cockpit-black: #080809;
+  --cockpit-edge: #111114;
+  --cockpit-panel: #1A1A1F;
+  --cockpit-panel-hover: #222228;
+  --scanner-red: #FF3B3B;
+  --scanner-red-glow: rgba(255, 59, 59, 0.35);
+  --scanner-red-dim: rgba(255, 59, 59, 0.15);
+  --amber: #FFB800;
+  --amber-dim: rgba(255, 184, 0, 0.12);
+  --phosphor: #39FF14;
+  --phosphor-dim: rgba(57, 255, 20, 0.15);
+  --silver: #E8E8EC;
+  --silver-dim: #8A8A94;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-hover: rgba(255, 255, 255, 0.12);
+  --font-display: 'Rajdhani', 'Segoe UI', sans-serif;
+  --font-body: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'Space Mono', 'Courier New', monospace;
+}
+
+/* --- Status Dot Indicators --- */
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.status-dot--ok {
+  background: var(--phosphor);
+  box-shadow: 0 0 6px var(--phosphor-dim);
+}
+
+.status-dot--warn {
+  background: var(--amber);
+  box-shadow: 0 0 6px var(--amber-dim);
+}
+
+.status-dot--error {
+  background: var(--scanner-red);
+  box-shadow: 0 0 6px var(--scanner-red-dim);
+}
+
+.status-dot--pending {
+  background: var(--silver-dim);
+  animation: dot-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* --- Scanner Track (K.I.T.T. LED bar) --- */
+.kyt-scanner-track {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 0;
+}
+
+.kyt-scanner-led {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--scanner-red);
+  opacity: 0.03;
+  transition: opacity 0.08s ease, box-shadow 0.08s ease;
+}
+
+.kyt-scanner-led[data-intensity="1"] {
+  opacity: 0.12;
+}
+.kyt-scanner-led[data-intensity="2"] {
+  opacity: 0.25;
+}
+.kyt-scanner-led[data-intensity="3"] {
+  opacity: 0.45;
+  box-shadow: 0 0 4px var(--scanner-red-dim);
+}
+.kyt-scanner-led[data-intensity="4"] {
+  opacity: 0.7;
+  box-shadow: 0 0 8px var(--scanner-red-glow);
+}
+.kyt-scanner-led[data-intensity="5"] {
+  opacity: 1;
+  box-shadow: 0 0 12px var(--scanner-red-glow), 0 0 24px var(--scanner-red-dim);
+}
+
+/* --- CRT Scanline Overlay (subtle for popup) --- */
+.crt-scanlines::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.04) 2px,
+    rgba(0, 0, 0, 0.04) 4px
+  );
+  pointer-events: none;
+  z-index: 9998;
+}
+
+/* --- Shared Button Styles --- */
+.kyt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 16px;
+  border: none;
+  border-radius: 2px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  width: 100%;
+}
+
+.kyt-btn-primary {
+  background: var(--scanner-red);
+  color: white;
+}
+
+.kyt-btn-primary:hover {
+  background: #e63434;
+  box-shadow: 0 0 12px var(--scanner-red-dim);
+}
+
+.kyt-btn-secondary {
+  background: var(--cockpit-panel);
+  color: var(--silver);
+  border: 1px solid var(--border-subtle);
+}
+
+.kyt-btn-secondary:hover {
+  background: var(--cockpit-panel-hover);
+  border-color: var(--border-hover);
+}

@@ -3,121 +3,123 @@
 <head>
   <meta charset="UTF-8">
   <title>Import Chat History</title>
+  <link rel="stylesheet" href="kyt-theme.css">
   <style>
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-family: var(--font-body);
       margin: 0;
       padding: 20px;
       width: 350px;
-      background-color: #f9fafb;
-      color: #111827;
+      background-color: var(--cockpit-black);
+      color: var(--silver);
     }
-    
+
     .container {
       display: flex;
       flex-direction: column;
       gap: 16px;
     }
-    
+
     h1 {
+      font-family: var(--font-display);
       font-size: 18px;
-      font-weight: 600;
+      font-weight: 700;
       margin: 0;
-      color: #111827;
+      color: var(--silver);
+      letter-spacing: 0.5px;
     }
-    
+
     p {
       font-size: 14px;
-      color: #4b5563;
+      color: var(--silver-dim);
       margin: 0;
       line-height: 1.5;
     }
-    
+
     .card {
-      background: white;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
+      background: var(--cockpit-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 2px;
       padding: 16px;
-      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
     }
-    
+
     .btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       padding: 8px 16px;
-      border-radius: 6px;
+      border-radius: 2px;
+      font-family: var(--font-body);
       font-size: 14px;
       font-weight: 500;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.15s;
       border: none;
       width: 100%;
     }
-    
+
     .btn-primary {
-      background-color: #2563eb;
+      background-color: var(--scanner-red);
       color: white;
     }
-    
+
     .btn-primary:hover {
-      background-color: #1d4ed8;
+      background-color: #e63434;
+      box-shadow: 0 0 12px var(--scanner-red-dim);
     }
-    
+
     .btn-secondary {
-      background-color: #f3f4f6;
-      color: #374151;
-      border: 1px solid #d1d5db;
+      background-color: var(--cockpit-panel);
+      color: var(--silver);
+      border: 1px solid var(--border-subtle);
     }
-    
+
     .btn-secondary:hover {
-      background-color: #e5e7eb;
+      background-color: var(--cockpit-panel-hover);
+      border-color: var(--border-hover);
     }
-    
+
     .progress-container {
       display: none;
       margin-top: 12px;
     }
-    
-    .progress-bar {
-      height: 8px;
-      background-color: #e5e7eb;
-      border-radius: 4px;
-      overflow: hidden;
+
+    /* Scanner track replaces progress bar */
+    .import-scanner {
       margin-bottom: 8px;
     }
-    
-    .progress-fill {
-      height: 100%;
-      background-color: #2563eb;
-      width: 0%;
-      transition: width 0.3s ease;
+
+    .import-progress-text {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--silver-dim);
+      text-align: center;
     }
-    
+
     .stats {
       display: flex;
       justify-content: space-between;
       font-size: 12px;
-      color: #6b7280;
+      color: var(--silver-dim);
     }
-    
+
     .error {
-      color: #dc2626;
+      color: var(--scanner-red);
       font-size: 13px;
-      background-color: #fef2f2;
-      border: 1px solid #fee2e2;
+      background-color: var(--scanner-red-dim);
+      border: 1px solid rgba(255, 59, 59, 0.25);
       padding: 8px;
-      border-radius: 6px;
+      border-radius: 2px;
       display: none;
     }
-    
+
     .success {
-      color: #059669;
+      color: var(--phosphor);
       font-size: 13px;
-      background-color: #ecfdf5;
-      border: 1px solid #d1fae5;
+      background-color: var(--phosphor-dim);
+      border: 1px solid rgba(57, 255, 20, 0.25);
       padding: 8px;
-      border-radius: 6px;
+      border-radius: 2px;
       display: none;
     }
 
@@ -126,41 +128,42 @@
     }
 
     .btn-inactive {
-      opacity: 0.5;
+      opacity: 0.3;
       cursor: not-allowed;
       pointer-events: none;
     }
 
     .btn-complete {
-      background: #10b981 !important;
-      border-color: #10b981 !important;
-      color: white !important;
+      background: var(--phosphor) !important;
+      border-color: var(--phosphor) !important;
+      color: var(--cockpit-black) !important;
     }
 
     .upload-zone {
-      border: 2px dashed #d1d5db;
-      border-radius: 8px;
+      border: 2px dashed var(--border-hover);
+      border-radius: 2px;
       padding: 24px;
       text-align: center;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.15s;
       margin: 12px 0;
     }
 
     .upload-zone:hover, .upload-zone.dragover {
-      border-color: #2563eb;
-      background: #f0f7ff;
+      border-color: var(--scanner-red);
+      background: var(--scanner-red-dim);
     }
 
     .upload-icon {
       font-size: 32px;
       display: block;
       margin-bottom: 8px;
+      opacity: 0.7;
     }
 
     .upload-hint {
       font-size: 12px;
-      color: #9ca3af;
+      color: var(--silver-dim);
       margin-top: 4px;
     }
 
@@ -168,17 +171,24 @@
       text-align: left;
       padding-left: 20px;
       margin: 12px 0;
+      color: var(--silver-dim);
     }
 
     .feature-list li, .instructions li {
       margin-bottom: 6px;
     }
 
+    .feature-list strong, .instructions strong {
+      color: var(--silver);
+    }
+
     h2 {
+      font-family: var(--font-display);
       font-size: 16px;
       font-weight: 600;
       margin: 0 0 12px 0;
-      color: #111827;
+      color: var(--silver);
+      letter-spacing: 0.5px;
     }
 
     .button-row {
@@ -189,25 +199,38 @@
 
     .mode-choice {
       transition: all 0.15s ease;
+      cursor: pointer;
     }
 
     .mode-choice:hover {
-      border-color: #2563eb !important;
+      border-color: var(--scanner-red) !important;
     }
 
     .mode-choice.selected {
-      border-color: #2563eb !important;
-      background-color: #eff6ff;
+      border-color: var(--scanner-red) !important;
+      background-color: var(--scanner-red-dim);
+    }
+
+    .mode-choice p strong {
+      color: var(--silver);
+    }
+
+    a {
+      color: var(--scanner-red);
+    }
+
+    a:hover {
+      color: #e63434;
     }
   </style>
 </head>
-<body>
+<body class="crt-scanlines">
   <!-- Welcome View (first-install only, step 1) -->
   <div class="container hidden" id="welcome-view">
     <h1>Welcome to K.Y.T.</h1>
-    <p style="font-size: 15px; font-weight: 500; color: #2563eb; margin-bottom: 4px;">Keep Your Thoughts</p>
+    <p style="font-size: 15px; font-weight: 500; color: var(--scanner-red); margin-bottom: 4px;">Keep Your Thoughts</p>
     <div class="card">
-      <p><strong>Your AI conversations, remembered.</strong></p>
+      <p style="color: var(--silver);"><strong>Your AI conversations, remembered.</strong></p>
       <p style="margin-top: 8px;">K.Y.T. captures your ChatGPT, Claude, and Gemini conversations and gives your AI long-term memory across sessions.</p>
       <ul class="feature-list" style="margin-top: 12px;">
         <li><strong>Ask once, remembered forever</strong> — your preferences, facts, and decisions carry across conversations</li>
@@ -216,7 +239,7 @@
       </ul>
     </div>
     <div class="card" style="margin-top: 8px;">
-      <p style="font-weight: 600; margin-bottom: 8px;">How your data is handled:</p>
+      <p style="font-weight: 600; margin-bottom: 8px; color: var(--silver);">How your data is handled:</p>
       <ul class="feature-list" style="margin-top: 0;">
         <li>Stored encrypted in your personal database</li>
         <li>Never shared with third parties</li>
@@ -231,17 +254,17 @@
   <div class="container hidden" id="mode-view">
     <h1>Choose Your Mode</h1>
     <p style="margin-bottom: 12px;">You can change this anytime from the extension popup.</p>
-    <div class="card mode-choice" id="mode-full" data-mode="full" style="cursor: pointer; margin-bottom: 8px; border: 2px solid #10b981;">
-      <p><strong>Full Mode</strong> <span style="color: #10b981; font-size: 12px;">RECOMMENDED</span></p>
-      <p style="font-size: 13px; color: #6b7280; margin-top: 4px;">Capture conversations + inject memories into your AI chats. The complete K.Y.T. experience.</p>
+    <div class="card mode-choice" id="mode-full" data-mode="full" style="margin-bottom: 8px; border: 2px solid var(--phosphor);">
+      <p><strong>Full Mode</strong> <span style="color: var(--phosphor); font-size: 12px;">RECOMMENDED</span></p>
+      <p style="font-size: 13px; color: var(--silver-dim); margin-top: 4px;">Capture conversations + inject memories into your AI chats. The complete K.Y.T. experience.</p>
     </div>
-    <div class="card mode-choice" id="mode-clean-room" data-mode="clean_room" style="cursor: pointer; margin-bottom: 8px;">
+    <div class="card mode-choice" id="mode-clean-room" data-mode="clean_room" style="margin-bottom: 8px;">
       <p><strong>Clean Room</strong></p>
-      <p style="font-size: 13px; color: #6b7280; margin-top: 4px;">Capture conversations but don't inject memories. Good for evaluating K.Y.T. before turning on memory injection.</p>
+      <p style="font-size: 13px; color: var(--silver-dim); margin-top: 4px;">Capture conversations but don't inject memories. Good for evaluating K.Y.T. before turning on memory injection.</p>
     </div>
-    <div class="card mode-choice" id="mode-incognito" data-mode="incognito" style="cursor: pointer; margin-bottom: 8px;">
+    <div class="card mode-choice" id="mode-incognito" data-mode="incognito" style="margin-bottom: 8px;">
       <p><strong>Incognito</strong></p>
-      <p style="font-size: 13px; color: #6b7280; margin-top: 4px;">Nothing captured, nothing injected. K.Y.T. is completely paused.</p>
+      <p style="font-size: 13px; color: var(--silver-dim); margin-top: 4px;">Nothing captured, nothing injected. K.Y.T. is completely paused.</p>
     </div>
     <button class="btn btn-primary" id="btn-mode-continue" style="margin-top: 4px;">Continue</button>
   </div>
@@ -250,7 +273,7 @@
   <div class="container hidden" id="permission-view">
     <h1>Import Your History</h1>
     <div class="card">
-      <p><strong>Bring in your last 90 days of conversations?</strong></p>
+      <p style="color: var(--silver);"><strong>Bring in your last 90 days of conversations?</strong></p>
       <p style="margin-top: 8px;">This gives K.Y.T. a head start — your AI will remember things you've already discussed.</p>
       <ul class="feature-list">
         <li>Private & secure (processed locally)</li>
@@ -266,10 +289,10 @@
 
   <!-- ZIP / Takeout Upload View -->
   <div class="container hidden" id="fallback-view">
-    <h2 id="fallback-heading">⚠️ Automatic import unavailable</h2>
+    <h2 id="fallback-heading">Automatic import unavailable</h2>
     <div class="card">
       <p id="fallback-reason">You're not logged into ChatGPT.</p>
-      <p id="fallback-subtext" style="margin-top: 8px;"><strong>You can still import via export file:</strong></p>
+      <p id="fallback-subtext" style="margin-top: 8px; color: var(--silver);"><strong>You can still import via export file:</strong></p>
       <ol class="instructions" id="export-instructions">
         <!-- Platform-specific instructions injected by JS -->
       </ol>
@@ -277,7 +300,7 @@
     <div class="upload-zone" id="upload-zone">
       <input type="file" id="file-input" accept=".zip" hidden>
       <div class="upload-content">
-        <span class="upload-icon">📁</span>
+        <span class="upload-icon">&#128193;</span>
         <p>Drop ZIP file here or click to browse</p>
         <p class="upload-hint">Accepted: .zip files up to 500MB</p>
       </div>
@@ -294,18 +317,18 @@
     <div class="error" id="fallback-error-msg" style="display:none"></div>
     <div class="success" id="fallback-success-msg" style="display:none"></div>
     <div class="button-row">
-      <button class="btn btn-secondary" id="btn-back-to-platforms">← Back to Platforms</button>
+      <button class="btn btn-secondary" id="btn-back-to-platforms">Back to Platforms</button>
     </div>
   </div>
 
   <!-- Main View -->
   <div class="container" id="main-view">
     <h1>Import Chat History</h1>
-    
+
     <div class="card">
       <p>Import your last 90 days of chat history to enable full memory recall.</p>
-      
-      <div style="margin-top: 12px; font-size: 13px; color: #6b7280;">
+
+      <div style="margin-top: 12px; font-size: 13px; color: var(--silver-dim);">
         <ul style="padding-left: 20px; margin: 0;">
           <li>Includes ChatGPT, Claude & Gemini</li>
           <li>Private & Secure</li>
@@ -315,7 +338,7 @@
     </div>
 
     <div id="platform-select" class="card">
-      <p style="margin-bottom: 12px; font-weight: 500;">Select Platform:</p>
+      <p style="margin-bottom: 12px; font-weight: 500; color: var(--silver);">Select Platform:</p>
       <div style="display: flex; gap: 8px; flex-wrap: wrap;">
         <button class="btn btn-secondary" id="btn-chatgpt">ChatGPT</button>
         <button class="btn btn-secondary" id="btn-claude">Claude</button>
@@ -325,15 +348,22 @@
 
     <div id="status-area">
       <div class="progress-container" id="progress-container">
-        <div class="progress-bar">
-          <div class="progress-fill" id="progress-fill"></div>
+        <div class="kyt-scanner-track import-scanner" id="importScanner">
+          <div class="kyt-scanner-led" data-intensity="0"></div>
+          <div class="kyt-scanner-led" data-intensity="0"></div>
+          <div class="kyt-scanner-led" data-intensity="0"></div>
+          <div class="kyt-scanner-led" data-intensity="0"></div>
+          <div class="kyt-scanner-led" data-intensity="0"></div>
+          <div class="kyt-scanner-led" data-intensity="0"></div>
+          <div class="kyt-scanner-led" data-intensity="0"></div>
+          <div class="kyt-scanner-led" data-intensity="0"></div>
         </div>
         <div class="stats">
           <span id="progress-text">Starting...</span>
           <span id="progress-count">0 msgs</span>
         </div>
       </div>
-      
+
       <div class="error" id="error-msg"></div>
       <div class="success" id="success-msg"></div>
     </div>

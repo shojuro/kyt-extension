@@ -1,3 +1,7 @@
+/* ============================================
+   K.Y.T. Memories Page — CRT Cockpit Theme
+   ============================================ */
+
 * {
   margin: 0;
   padding: 0;
@@ -5,9 +9,9 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-  background: #f0f2f5;
-  color: #333;
+  font-family: var(--font-body);
+  background: var(--cockpit-black);
+  color: var(--silver);
   min-height: 100vh;
 }
 
@@ -18,21 +22,24 @@ body {
 }
 
 .header {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  background: var(--cockpit-edge);
+  color: var(--silver);
   padding: 24px 32px;
   text-align: center;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .header h1 {
+  font-family: var(--font-display);
   font-size: 22px;
-  font-weight: 600;
+  font-weight: 700;
   margin-bottom: 4px;
+  letter-spacing: 0.5px;
 }
 
 .subtitle {
   font-size: 13px;
-  opacity: 0.9;
+  color: var(--silver-dim);
 }
 
 /* Toolbar */
@@ -41,17 +48,18 @@ body {
   justify-content: space-between;
   align-items: center;
   padding: 12px 24px;
-  background: white;
-  border-bottom: 1px solid #e0e0e0;
+  background: var(--cockpit-edge);
+  border-bottom: 1px solid var(--border-subtle);
   position: sticky;
   top: 0;
   z-index: 10;
 }
 
 .stats-bar {
-  font-size: 13px;
-  color: #666;
-  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--silver-dim);
+  font-weight: 400;
 }
 
 .toolbar-actions {
@@ -64,13 +72,13 @@ body {
   padding: 16px 24px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .loading {
   text-align: center;
   padding: 40px;
-  color: #999;
+  color: var(--silver-dim);
   font-size: 14px;
 }
 
@@ -80,26 +88,25 @@ body {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: white;
-  border-radius: 8px;
-  border: 1px solid #e8e8e8;
+  background: var(--cockpit-panel);
+  border-radius: 2px;
+  border: 1px solid var(--border-subtle);
   transition: all 0.15s ease;
 }
 
 .conversation-row:hover {
-  border-color: #667eea;
-  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.1);
+  border-color: var(--scanner-red-dim);
+  background: var(--cockpit-panel-hover);
 }
 
 .conversation-row.excluded {
-  opacity: 0.55;
-  background: #fafafa;
+  opacity: 0.45;
 }
 
 .conv-platform {
   width: 32px;
   height: 32px;
-  border-radius: 6px;
+  border-radius: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -108,19 +115,23 @@ body {
 }
 
 .conv-platform.chatgpt {
-  background: #d4f5e0;
+  background: rgba(57, 255, 20, 0.15);
+  color: var(--phosphor);
 }
 
 .conv-platform.claude {
-  background: #e0d8f0;
+  background: rgba(255, 184, 0, 0.12);
+  color: var(--amber);
 }
 
 .conv-platform.cli {
-  background: #e0e0e0;
+  background: rgba(138, 138, 148, 0.15);
+  color: var(--silver-dim);
 }
 
 .conv-platform.imported {
-  background: #fff3cd;
+  background: var(--amber-dim);
+  color: var(--amber);
 }
 
 .conv-info {
@@ -131,7 +142,7 @@ body {
 .conv-title {
   font-size: 14px;
   font-weight: 600;
-  color: #333;
+  color: var(--silver);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -139,8 +150,9 @@ body {
 }
 
 .conv-meta {
-  font-size: 12px;
-  color: #888;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--silver-dim);
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
@@ -155,86 +167,93 @@ body {
 .btn-icon {
   width: 32px;
   height: 32px;
-  border-radius: 6px;
-  border: 1px solid #e0e0e0;
-  background: white;
+  border-radius: 2px;
+  border: 1px solid var(--border-subtle);
+  background: var(--cockpit-panel);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 14px;
   transition: all 0.15s ease;
+  color: var(--silver-dim);
 }
 
 .btn-icon:hover {
-  background: #f0f0f0;
-  border-color: #ccc;
+  background: var(--cockpit-panel-hover);
+  border-color: var(--border-hover);
+  color: var(--silver);
 }
 
 .btn-icon.active {
-  background: #fff3cd;
-  border-color: #D4890B;
+  background: var(--amber-dim);
+  border-color: var(--amber);
+  color: var(--amber);
 }
 
 .btn-icon.danger:hover {
-  background: #f8d7da;
-  border-color: #dc3545;
+  background: var(--scanner-red-dim);
+  border-color: var(--scanner-red);
+  color: var(--scanner-red);
 }
 
 /* Buttons */
 .btn-secondary {
   padding: 10px 20px;
-  border: 2px solid #667eea;
-  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  font-family: var(--font-body);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  background: white;
-  color: #667eea;
-  transition: all 0.2s ease;
+  background: var(--cockpit-panel);
+  color: var(--silver);
+  transition: all 0.15s ease;
 }
 
 .btn-secondary:hover {
-  background: #667eea;
-  color: white;
+  background: var(--cockpit-panel-hover);
+  border-color: var(--border-hover);
 }
 
 .btn-secondary-sm {
   padding: 8px 16px;
-  border: 1px solid #ccc;
-  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  font-family: var(--font-body);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  background: white;
-  color: #666;
+  background: var(--cockpit-panel);
+  color: var(--silver-dim);
   transition: all 0.15s ease;
 }
 
 .btn-secondary-sm:hover {
-  background: #f0f0f0;
+  background: var(--cockpit-panel-hover);
+  color: var(--silver);
 }
 
 .btn-danger-sm {
   padding: 8px 16px;
-  border: 1px solid #dc3545;
-  border-radius: 6px;
+  border: 1px solid var(--scanner-red);
+  border-radius: 2px;
+  font-family: var(--font-body);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  background: white;
-  color: #dc3545;
+  background: transparent;
+  color: var(--scanner-red);
   transition: all 0.15s ease;
 }
 
 .btn-danger-sm:hover {
-  background: #dc3545;
-  color: white;
+  background: var(--scanner-red-dim);
 }
 
 .btn-danger-sm:disabled,
 .btn-secondary-sm:disabled {
-  opacity: 0.6;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
@@ -252,7 +271,7 @@ body {
 .empty-state {
   text-align: center;
   padding: 60px 24px;
-  color: #999;
+  color: var(--silver-dim);
 }
 
 .empty-state.hidden {
@@ -266,7 +285,8 @@ body {
 
 .empty-hint {
   font-size: 13px;
-  color: #bbb;
+  color: var(--silver-dim);
+  opacity: 0.7;
 }
 
 /* Modal */
@@ -292,36 +312,38 @@ body {
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.7);
 }
 
 .modal-content {
   position: relative;
-  background: white;
-  border-radius: 12px;
+  background: var(--cockpit-edge);
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
   padding: 24px;
   max-width: 420px;
   width: 90%;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
 .modal-content h3 {
+  font-family: var(--font-display);
   font-size: 16px;
   font-weight: 600;
   margin-bottom: 8px;
-  color: #333;
+  color: var(--silver);
 }
 
 .modal-content p {
   font-size: 13px;
-  color: #666;
+  color: var(--silver-dim);
   margin-bottom: 8px;
   line-height: 1.5;
 }
 
 .modal-title {
   font-weight: 600;
-  color: #333;
+  color: var(--silver) !important;
   font-style: italic;
 }
 
@@ -330,4 +352,9 @@ body {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* Hidden utility */
+.hidden {
+  display: none !important;
 }
