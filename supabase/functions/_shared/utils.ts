@@ -53,31 +53,62 @@ export async function retryWrapper<T>(
 }
 
 /**
+ * Entry for granular cost logging.
+ * Accepts either this object form or legacy positional args.
+ */
+export interface CostLogEntry {
+    service: string;
+    model: string;
+    operation: string;
+    cost: number;
+    requestId?: string;
+    userId?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    edgeFunction?: string;
+    latencyMs?: number;
+}
+
+/**
  * Cost Monitor for tracking API usage.
  */
 export class CostMonitor {
     private static THRESHOLDS = [10, 25, 50, 100];
 
+    /**
+     * Log API usage cost. Accepts either:
+     * - A CostLogEntry object (new form)
+     * - Legacy positional args: (service, model, operation, cost, requestId?, userId?)
+     */
     static async logUsage(
-        service: string,
-        model: string,
-        operation: string,
-        cost: number,
+        serviceOrEntry: string | CostLogEntry,
+        model?: string,
+        operation?: string,
+        cost?: number,
         requestId?: string,
         userId?: string
     ) {
+        // Normalize to CostLogEntry
+        const entry: CostLogEntry = typeof serviceOrEntry === 'string'
+            ? { service: serviceOrEntry, model: model!, operation: operation!, cost: cost!, requestId, userId }
+            : serviceOrEntry;
+
         try {
             const supabase = getSupabaseClient();
             if (!supabase) return;
 
             // 1. Log to DB
             await supabase.from('cost_tracking').insert({
-                service,
-                model,
-                operation,
-                estimated_cost_usd: cost,
-                request_id: requestId,
-                user_id: userId
+                service: entry.service,
+                model: entry.model,
+                operation: entry.operation,
+                estimated_cost_usd: entry.cost,
+                request_id: entry.requestId,
+                user_id: entry.userId,
+                input_tokens: entry.inputTokens || 0,
+                output_tokens: entry.outputTokens || 0,
+                edge_function: entry.edgeFunction || null,
+                latency_ms: entry.latencyMs || null,
             });
 
             // 2. Check Daily Total (simple check)
@@ -93,7 +124,7 @@ export class CostMonitor {
             // Check thresholds
             for (const threshold of this.THRESHOLDS) {
                 // If we just crossed the threshold
-                if (dailyTotal >= threshold && dailyTotal - cost < threshold) {
+                if (dailyTotal >= threshold && dailyTotal - entry.cost < threshold) {
                     console.error(JSON.stringify({
                         level: 'alert',
                         message: `Daily cost threshold reached: $${threshold}`,

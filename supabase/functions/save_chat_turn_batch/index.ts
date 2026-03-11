@@ -4,6 +4,7 @@ import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
 import { extractEntities, saveEntitiesWithMentions, savePreferences } from '../_shared/entity-extractor.ts';
 import { classifyMemory } from '../_shared/memory-classifier.ts';
 import { generateChunkContext } from '../_shared/context-generator.ts';
+import type { ClientContext } from '../_shared/anthropic-client.ts';
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
 import { getUserTier, getTierLimits } from '../_shared/tier-check.ts';
@@ -164,7 +165,9 @@ serve(async (req) => {
         }
 
         // SLOW PATH: With AI processing (sequential for embedding/classification)
-        const hfClient = new HuggingFaceClient(Deno.env.get('HUGGINGFACE_API_KEY')!);
+        const userId = turns[0]?.user_id;
+        const costContext: ClientContext = { userId, edgeFunction: 'save_chat_turn_batch' };
+        const hfClient = new HuggingFaceClient(Deno.env.get('HUGGINGFACE_API_KEY')!, costContext);
         const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY')!;
 
         const results = [];
@@ -222,17 +225,17 @@ serve(async (req) => {
                     console.log(`Skipping extraction: role=${turn.role}, is_injection=${turn.is_injection}`);
                 }
                 const [classification, entities, contextResult] = await Promise.allSettled([
-                    classifyMemory({ content: turn.content }, anthropicKey),
+                    classifyMemory({ content: turn.content }, anthropicKey, costContext),
                     skipExtraction
                         ? Promise.resolve({ entities: [], preferences: [] })
-                        : extractEntities({ content: turn.content, speakers: [turn.role || 'user'] }, anthropicKey),
+                        : extractEntities({ content: turn.content, speakers: [turn.role || 'user'] }, anthropicKey, costContext),
                     // Context generation — no surrounding chunks in inline path (single-turn batch)
                     generateChunkContext({
                         chunkContent: turn.content,
                         platform: normalizePlatform(turn.platform),
                         conversationId: turn.conversation_id,
                         timestamp: turn.timestamp ? new Date(turn.timestamp).toISOString() : undefined,
-                    }, anthropicKey)
+                    }, anthropicKey, costContext)
                 ]);
 
                 const gravity = classification.status === 'fulfilled'

@@ -7,7 +7,7 @@
  * SECURITY: All LLM API calls happen server-side. Never expose API keys to client.
  */
 
-import { AnthropicClient } from "./anthropic-client.ts";
+import { AnthropicClient, type ClientContext } from "./anthropic-client.ts";
 
 // Types
 export interface ClassificationResult {
@@ -29,7 +29,8 @@ export interface ClassifierPromptData {
  */
 export async function classifyMemory(
   data: ClassifierPromptData,
-  anthropicApiKey: string
+  anthropicApiKey: string,
+  context?: ClientContext
 ): Promise<ClassificationResult> {
   // Input validation
   if (!data.content || data.content.trim().length === 0) {
@@ -47,7 +48,7 @@ export async function classifyMemory(
   // Build classification prompt
   const prompt = buildClassifierPrompt(data);
 
-  const client = new AnthropicClient(anthropicApiKey);
+  const client = new AnthropicClient(anthropicApiKey, context);
 
   const classification = await client.generateJsonCompletion<{
     impact?: number;
@@ -145,13 +146,14 @@ Provide impact score (0-100) and intimacy level (0-3) with brief reasoning.`;
  */
 export async function classifyMemoryBatch(
   memories: ClassifierPromptData[],
-  anthropicApiKey: string
+  anthropicApiKey: string,
+  context?: ClientContext
 ): Promise<ClassificationResult[]> {
   const results: ClassificationResult[] = [];
 
   for (const memory of memories) {
     try {
-      const result = await classifyMemory(memory, anthropicApiKey);
+      const result = await classifyMemory(memory, anthropicApiKey, context);
       results.push(result);
     } catch (error) {
       // On error, return default classification rather than failing entire batch

@@ -12,7 +12,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { HuggingFaceClient, HFRerankResponse } from "./huggingface-client.ts";
-import { AnthropicClient } from "./anthropic-client.ts";
+import { AnthropicClient, type ClientContext } from "./anthropic-client.ts";
 import { Logger } from "./utils.ts";
 import { generateHyDEWithFallback, shouldSkipHyDE } from "./hyde-generator.ts";
 import { mergeHydeAndRawResults, fallbackToRawResults, reciprocalRankFusion } from "./rrf.ts";
@@ -41,6 +41,7 @@ export interface SearchOptions {
     mmrLambda?: number;   // MMR diversity/relevance trade-off (0.35 for synthesis, 0.5 default)
     recentTopics?: string[];  // Recent topic words for implicit query enrichment
     conversationWindow?: Array<{ role: string; content: string }>;  // Recent messages for coreference resolution
+    edgeFunction?: string;  // Source edge function for cost attribution
 }
 
 // ========================================================================
@@ -69,7 +70,8 @@ async function resolveImplicitQuery(
     query: string,
     conversationWindow: Array<{ role: string; content: string }>,
     anthropicApiKey: string,
-    requestId?: string
+    requestId?: string,
+    context?: ClientContext
 ): Promise<string | null> {
     if (!conversationWindow || conversationWindow.length === 0) return null;
     if (!IMPLICIT_SIGNALS.test(query)) return null;
@@ -81,7 +83,7 @@ async function resolveImplicitQuery(
             .map(m => `${m.role}: ${m.content}`)
             .join('\n');
 
-        const client = new AnthropicClient(anthropicApiKey);
+        const client = new AnthropicClient(anthropicApiKey, context);
         const result = await client.generateJsonCompletion<{ resolvedQuery: string; changed: boolean }>(
             `You resolve implicit references in search queries using recent conversation context. Given the conversation window and the query, replace pronouns/demonstratives ("it", "that", "the other one", etc.) with their referents from the conversation. Return JSON: {"resolvedQuery": "the explicit query", "changed": true/false}. If no resolution is needed, return the original query with changed=false.`,
             `Recent conversation:\n${contextStr}\n\nQuery to resolve: "${query}"`,
@@ -119,13 +121,14 @@ interface DecomposedQuery {
 async function decomposeQuery(
     query: string,
     anthropicApiKey: string,
-    requestId?: string
+    requestId?: string,
+    context?: ClientContext
 ): Promise<DecomposedQuery | null> {
     if (!MULTI_HOP_SIGNALS.test(query)) return null;
     if (!anthropicApiKey) return null;
 
     try {
-        const client = new AnthropicClient(anthropicApiKey);
+        const client = new AnthropicClient(anthropicApiKey, context);
         const result = await client.generateJsonCompletion<DecomposedQuery>(
             `You decompose complex search queries into 2-3 focused sub-queries for a personal conversation memory search system. Each sub-query should target a distinct information need. Return JSON: {"subQueries": ["query1", "query2"], "reasoning": "brief explanation"}. If the query is already focused enough, return {"subQueries": [], "reasoning": "no decomposition needed"}.`,
             `Query: "${query}"`,
@@ -614,7 +617,11 @@ export async function getRelevantMemories(
         mmrLambda = 0.5,
         recentTopics,
         conversationWindow,
+        edgeFunction,
     } = options;
+
+    // Build cost attribution context once, pass to all clients
+    const costContext: ClientContext = { userId, edgeFunction };
 
     // MVP: profileId = userId (1:1). Future: multi-profile adds junction table.
     const resolvedProfileId = profileId || userId;
@@ -637,7 +644,7 @@ export async function getRelevantMemories(
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
-    const hfClient = new HuggingFaceClient(hfApiKey);
+    const hfClient = new HuggingFaceClient(hfApiKey, costContext);
 
     // ========================================================================
     // STEP 0: Preference Query Router (0ms regex, before any embedding)
@@ -660,7 +667,7 @@ export async function getRelevantMemories(
     // ========================================================================
     if (conversationWindow && conversationWindow.length > 0 && anthropicApiKey && !fast) {
         const corefStart = performance.now();
-        const resolvedQuery = await resolveImplicitQuery(query, conversationWindow, anthropicApiKey, requestId);
+        const resolvedQuery = await resolveImplicitQuery(query, conversationWindow, anthropicApiKey, requestId, costContext);
         const corefMs = Math.round(performance.now() - corefStart);
         Logger.info(`Coreference resolution: ${corefMs}ms`, { requestId });
         if (resolvedQuery) {
@@ -682,7 +689,7 @@ export async function getRelevantMemories(
     // ========================================================================
     if (!fast && anthropicApiKey && !(options as any)._skipDecomposition) {
         const decompStart = performance.now();
-        const decomposition = await decomposeQuery(query, anthropicApiKey, requestId);
+        const decomposition = await decomposeQuery(query, anthropicApiKey, requestId, costContext);
         const decompMs = Math.round(performance.now() - decompStart);
         Logger.info(`Query decomposition: ${decompMs}ms`, { requestId });
         if (decomposition && decomposition.subQueries.length >= 2) {
@@ -795,7 +802,7 @@ export async function getRelevantMemories(
     const [entityResult, hydeResult, conceptEntityIds] = await Promise.all([
         searchEntities(supabase, rawEmbedding, userId, entitySearchQuery, requestId, resolvedProfileId, dynamicSynonyms),
         useHyde && anthropicApiKey
-            ? generateHyDEWithFallback(query, anthropicApiKey, requestId)
+            ? generateHyDEWithFallback(query, anthropicApiKey, requestId, costContext)
             : Promise.resolve({ hydeDoc: null, usedHyde: false }),
         detectConceptEntities(supabase, query, userId, requestId, resolvedProfileId)
     ]);

@@ -14,7 +14,7 @@
  * query embeddings stay raw. DO NOT "fix" this — it's intentional per Anthropic's design.
  */
 
-import { AnthropicClient } from "./anthropic-client.ts";
+import { AnthropicClient, type ClientContext } from "./anthropic-client.ts";
 
 export interface ContextGeneratorInput {
   chunkContent: string;
@@ -100,7 +100,8 @@ Write a 1-3 sentence context summary for the chunk above:`;
  */
 export async function generateChunkContext(
   input: ContextGeneratorInput,
-  anthropicApiKey: string
+  anthropicApiKey: string,
+  context?: ClientContext
 ): Promise<ContextResult | null> {
   if (!input.chunkContent || input.chunkContent.trim().length === 0) {
     return null;
@@ -114,7 +115,7 @@ export async function generateChunkContext(
   const prompt = buildContextPrompt(input);
 
   try {
-    const client = new AnthropicClient(anthropicApiKey);
+    const client = new AnthropicClient(anthropicApiKey, context);
     const contextPrefix = await client.generateCompletion(
       CONTEXT_GENERATION_SYSTEM_PROMPT,
       prompt,
@@ -153,12 +154,13 @@ export async function generateChunkContext(
 export async function generateContextBatch(
   inputs: ContextGeneratorInput[],
   anthropicApiKey: string,
-  delayMs: number = 200
+  delayMs: number = 200,
+  context?: ClientContext
 ): Promise<(ContextResult | null)[]> {
   const results: (ContextResult | null)[] = [];
 
   for (let i = 0; i < inputs.length; i++) {
-    const result = await generateChunkContext(inputs[i], anthropicApiKey);
+    const result = await generateChunkContext(inputs[i], anthropicApiKey, context);
     results.push(result);
 
     // Rate limit delay between calls (skip after last)

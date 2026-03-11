@@ -20,6 +20,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { generateChunkContext } from "../_shared/context-generator.ts";
 import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
+import type { ClientContext } from "../_shared/anthropic-client.ts";
 import { securityHeaders } from "../_shared/headers.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -28,7 +29,7 @@ const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY")!;
 const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY")!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
-const hfClient = new HuggingFaceClient(hfApiKey);
+const hfClient = new HuggingFaceClient(hfApiKey, { edgeFunction: 'backfill_contextual' });
 
 const BATCH_SIZE = 5;
 const MAX_ROWS = 20;  // ~3-5s per row (Haiku 4.5 + surrounding chunk fetch + re-embed), concurrency 3 → ~50s for 20 rows
@@ -252,6 +253,7 @@ serve(async (req) => {
         );
 
         // Generate context summary via Haiku 4.5
+        const costContext: ClientContext = { userId: row.user_id, edgeFunction: 'backfill_contextual' };
         const contextResult = await generateChunkContext(
           {
             chunkContent: row.content,
@@ -262,7 +264,8 @@ serve(async (req) => {
               : undefined,
             surroundingChunks,
           },
-          anthropicApiKey
+          anthropicApiKey,
+          costContext
         );
 
         if (!contextResult) {

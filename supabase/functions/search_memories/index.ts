@@ -121,6 +121,7 @@ serve(async (req) => {
             mmrLambda,
             recentTopics: recentTopics || undefined,
             conversationWindow: conversationWindow || undefined,
+            edgeFunction: 'search_memories',
         };
 
         // Get relevant memories using the full Hybrid HyDE pipeline:

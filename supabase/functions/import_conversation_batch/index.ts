@@ -15,6 +15,7 @@ import { messagesToTurnChunks, type RawMessage, type TurnChunk } from '../_share
 import { generateHypotheticalDocument } from '../_shared/hyde-generator.ts';
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
 import { classifyMemory } from '../_shared/memory-classifier.ts';
+import type { ClientContext } from '../_shared/anthropic-client.ts';
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
 import { getUserTier, getTierLimits } from '../_shared/tier-check.ts';
@@ -232,7 +233,8 @@ interface ProcessedChunk extends TurnChunk {
  */
 async function batchProcessHyDE(
   chunks: TurnChunk[],
-  anthropicKey: string
+  anthropicKey: string,
+  costContext?: ClientContext
 ): Promise<{ chunk: TurnChunk; hydeDoc: string | null }[]> {
   const results: { chunk: TurnChunk; hydeDoc: string | null }[] = [];
   const batches = chunkArray(chunks, HYDE_BATCH_SIZE);
@@ -247,7 +249,7 @@ async function batchProcessHyDE(
       try {
         // Generate HyDE for chunk content (first 500 chars as query)
         const query = chunk.content.substring(0, 500);
-        const hydeDoc = await generateHypotheticalDocument(query, anthropicKey);
+        const hydeDoc = await generateHypotheticalDocument(query, anthropicKey, undefined, costContext);
         return { chunk, hydeDoc };
       } catch (e) {
         console.warn(`[import] HyDE failed for chunk, continuing:`, e.message);
@@ -317,7 +319,8 @@ async function batchProcessEmbeddings(
  */
 async function batchClassifyChunks(
   chunks: TurnChunk[],
-  anthropicKey: string
+  anthropicKey: string,
+  costContext?: ClientContext
 ): Promise<{ impact_score: number; intimacy_level: number }[]> {
   const results: { impact_score: number; intimacy_level: number }[] = [];
 
@@ -331,7 +334,8 @@ async function batchClassifyChunks(
       try {
         const classification = await classifyMemory(
           { content: chunk.content },
-          anthropicKey
+          anthropicKey,
+          costContext
         );
         return {
           impact_score: classification?.impact_score || 0,
@@ -444,7 +448,8 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
         );
         const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY') || '';
         const hfKey = Deno.env.get('HUGGINGFACE_API_KEY') || '';
-        const hfClient = new HuggingFaceClient(hfKey);
+        const costContext: ClientContext = { userId: user_id, edgeFunction: 'import_conversation_batch' };
+        const hfClient = new HuggingFaceClient(hfKey, costContext);
 
         let processedChunks: ProcessedChunk[] = [];
 
@@ -461,7 +466,7 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
         } else {
           // Stage 4: HyDE generation
           sendEvent({ stage: 'hyde', percent: 30, message: 'Generating HyDE documents...' });
-          const hydeResults = await batchProcessHyDE(chunks, anthropicKey);
+          const hydeResults = await batchProcessHyDE(chunks, anthropicKey, costContext);
           sendEvent({ stage: 'hyde', percent: 45, message: `Generated ${hydeResults.filter(h => h.hydeDoc).length} HyDE documents` });
 
           // Stage 5: Embeddings
@@ -474,7 +479,7 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
 
           // Stage 6: Classification
           sendEvent({ stage: 'classifying', percent: 70, message: 'Classifying memories...' });
-          const classifications = await batchClassifyChunks(chunks, anthropicKey);
+          const classifications = await batchClassifyChunks(chunks, anthropicKey, costContext);
           sendEvent({ stage: 'classifying', percent: 80, message: 'Classification complete' });
 
           // Combine results
@@ -715,7 +720,8 @@ Deno.serve(async (req) => {
 
     const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY') || '';
     const hfKey = Deno.env.get('HUGGINGFACE_API_KEY') || '';
-    const hfClient = new HuggingFaceClient(hfKey);
+    const costContext: ClientContext = { userId: user_id, edgeFunction: 'import_conversation_batch' };
+    const hfClient = new HuggingFaceClient(hfKey, costContext);
 
     // ==========================================================================
     // Progress Tracking (Auto-Resume Support)
@@ -847,7 +853,7 @@ Deno.serve(async (req) => {
       console.log(`[import] Starting AI processing for ${chunksToProcess.length} chunks...`);
 
       // 3a. Generate HyDE documents (parallel batched)
-      const hydeResults = await batchProcessHyDE(chunksToProcess, anthropicKey);
+      const hydeResults = await batchProcessHyDE(chunksToProcess, anthropicKey, costContext);
 
       // 3b. Prepare texts for embedding (chunk content + HyDE docs)
       const textsToEmbed: string[] = hydeResults.map(({ chunk, hydeDoc }) => {
@@ -859,7 +865,7 @@ Deno.serve(async (req) => {
       const embeddings = await batchProcessEmbeddings(textsToEmbed, hfClient);
 
       // 3d. Classify for gravity (impact + intimacy)
-      const classifications = await batchClassifyChunks(chunksToProcess, anthropicKey);
+      const classifications = await batchClassifyChunks(chunksToProcess, anthropicKey, costContext);
 
       // 3e. Combine results
       processedChunks = chunksToProcess.map((chunk, idx) => ({

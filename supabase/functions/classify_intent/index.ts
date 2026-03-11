@@ -15,7 +15,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { AnthropicClient } from "../_shared/anthropic-client.ts";
+import { AnthropicClient, type ClientContext } from "../_shared/anthropic-client.ts";
 import { Logger } from "../_shared/utils.ts";
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
 import { securityHeaders } from "../_shared/headers.ts";
@@ -89,7 +89,7 @@ serve(async (req) => {
         const truncated = (typeof message === "string" ? message : "").slice(0, 500);
         const startTime = Date.now();
 
-        const client = new AnthropicClient(anthropicKey);
+        const client = new AnthropicClient(anthropicKey, { userId: user.id, edgeFunction: 'classify_intent' });
 
         const result = await client.generateCompletion(
             SYSTEM_PROMPT,

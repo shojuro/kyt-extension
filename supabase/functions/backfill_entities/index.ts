@@ -17,6 +17,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { extractEntities, saveEntitiesWithMentions, savePreferences } from "../_shared/entity-extractor.ts";
 import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
+import type { ClientContext } from "../_shared/anthropic-client.ts";
 import { securityHeaders } from "../_shared/headers.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -25,7 +26,7 @@ const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY")!;
 const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY")!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
-const hfClient = new HuggingFaceClient(hfApiKey);
+const hfClient = new HuggingFaceClient(hfApiKey, { edgeFunction: 'backfill_entities' });
 
 const BATCH_SIZE = 5;
 const MAX_ROWS = 100;
@@ -147,12 +148,14 @@ serve(async (req) => {
           }
 
           // Extract entities + preferences using GPT-4o-mini
+          const costContext: ClientContext = { userId: row.user_id, edgeFunction: 'backfill_entities' };
           const { entities, preferences } = await extractEntities(
             {
               content: row.content,
               speakers: row.speakers || ["User", "Assistant"],
             },
-            anthropicApiKey
+            anthropicApiKey,
+            costContext
           );
 
           // Save entities + mentions + relationships

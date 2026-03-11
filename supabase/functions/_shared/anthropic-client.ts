@@ -18,13 +18,20 @@ export interface CompletionOptions {
     operation?: string;
 }
 
+export interface ClientContext {
+    userId?: string;
+    edgeFunction?: string;
+}
+
 export class AnthropicClient {
     private apiKey: string;
+    private context: ClientContext;
     private static readonly MODEL = "claude-haiku-4-5-20251001";
     private static readonly API_URL = "https://api.anthropic.com/v1/messages";
 
-    constructor(apiKey: string) {
+    constructor(apiKey: string, context: ClientContext = {}) {
         this.apiKey = apiKey;
+        this.context = context;
     }
 
     /**
@@ -169,13 +176,17 @@ export class AnthropicClient {
         const outputTokens = data.usage?.output_tokens || 0;
         const estimatedCost = (inputTokens * 0.0000008) + (outputTokens * 0.000004);
 
-        await CostMonitor.logUsage(
-            "anthropic",
-            AnthropicClient.MODEL,
+        await CostMonitor.logUsage({
+            service: "anthropic",
+            model: AnthropicClient.MODEL,
             operation,
-            estimatedCost,
-            requestId
-        );
+            cost: estimatedCost,
+            requestId,
+            userId: this.context.userId,
+            inputTokens,
+            outputTokens,
+            edgeFunction: this.context.edgeFunction,
+        });
 
         Logger.info("Anthropic completion generated", {
             requestId,

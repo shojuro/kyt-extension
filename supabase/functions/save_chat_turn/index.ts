@@ -23,6 +23,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { classifyMemory, type ClassificationResult } from '../_shared/memory-classifier.ts';
 import { extractEntities, saveEntitiesWithMentions, savePreferences } from '../_shared/entity-extractor.ts';
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
+import { type ClientContext } from '../_shared/anthropic-client.ts';
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
 import { getUserTier, getTierLimits } from '../_shared/tier-check.ts';
@@ -55,7 +56,8 @@ const hfApiKey = Deno.env.get('HUGGINGFACE_API_KEY');
 if (!hfApiKey) {
   throw new Error('HUGGINGFACE_API_KEY environment variable not configured');
 }
-const hfClient = new HuggingFaceClient(hfApiKey);
+// Module-level client without cost context (overridden per-request below)
+let hfClient = new HuggingFaceClient(hfApiKey);
 
 interface SaveChatTurnRequest {
   content: string;
@@ -149,6 +151,10 @@ serve(async (req) => {
       console.log('user_id auto-generated (entity extraction will be skipped)');
     }
 
+    // 2b. Build cost-tracking context now that user_id is resolved
+    const costContext: ClientContext = { userId: requestData.user_id, edgeFunction: 'save_chat_turn' };
+    hfClient = new HuggingFaceClient(hfApiKey!, costContext);
+
     // 3. Get environment variables (SERVER-SIDE ONLY)
     const anthropicApiKey = Deno.env.get('ANTHROPIC_API_KEY');
     if (!anthropicApiKey) {
@@ -162,12 +168,12 @@ serve(async (req) => {
         content: requestData.content,
         speakers: requestData.speakers,
         topics: requestData.topics
-      }, anthropicApiKey),
+      }, anthropicApiKey, costContext),
 
       extractEntities({
         content: requestData.content,
         speakers: requestData.speakers
-      }, anthropicApiKey)
+      }, anthropicApiKey, costContext)
     ]);
 
     // Handle results independently (fault isolation)

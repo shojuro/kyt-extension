@@ -15,6 +15,7 @@ import { saveNote } from './tools/save-note.js';
 import { getPreferences } from './tools/get-preferences.js';
 import { setMemoryMode } from './tools/set-memory-mode.js';
 import { ingestSession } from './tools/ingest-session.js';
+import { queryCosts } from './tools/query-costs.js';
 
 const server = new McpServer({
   name: 'kyt-memory',
@@ -88,6 +89,18 @@ server.tool(
     force: z.boolean().optional().default(false).describe('Force re-ingestion (resets ingested count to 0)'),
   },
   async (args) => ingestSession(args),
+);
+
+// --- Tool: query_costs ---
+server.tool(
+  'query_costs',
+  'Query K.Y.T. API cost tracking. Shows per-provider, per-operation, per-edge-function, or per-model cost breakdowns with token counts and daily trends.',
+  {
+    days: z.number().optional().default(7).describe('Number of days to look back (default: 7)'),
+    groupBy: z.enum(['provider', 'operation', 'edge_function', 'user', 'model']).optional().default('provider')
+      .describe('Group costs by this dimension'),
+  },
+  async (args) => queryCosts(args),
 );
 
 // Start the server

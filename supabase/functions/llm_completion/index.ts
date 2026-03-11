@@ -24,7 +24,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { AnthropicClient } from "../_shared/anthropic-client.ts";
+import { AnthropicClient, type ClientContext } from "../_shared/anthropic-client.ts";
 import { Logger, CostMonitor } from "../_shared/utils.ts";
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
 import { securityHeaders } from "../_shared/headers.ts";
@@ -47,6 +47,7 @@ async function callOpenAI(
     jsonMode: boolean,
     operation: string,
     requestId: string,
+    userId?: string,
 ): Promise<string> {
     const body: Record<string, unknown> = {
         model,
@@ -84,7 +85,17 @@ async function callOpenAI(
     const outputTokens = data.usage?.completion_tokens || 0;
     const estimatedCost = (inputTokens * 0.0000004) + (outputTokens * 0.0000016);
 
-    await CostMonitor.logUsage("openai", model, operation, estimatedCost, requestId);
+    await CostMonitor.logUsage({
+        service: "openai",
+        model,
+        operation,
+        cost: estimatedCost,
+        requestId,
+        userId,
+        inputTokens,
+        outputTokens,
+        edgeFunction: "llm_completion",
+    });
 
     Logger.info("OpenAI completion generated", {
         requestId,
@@ -184,6 +195,7 @@ serve(async (req) => {
                 !!json_mode,
                 operationLabel,
                 requestId,
+                user.id,
             );
         } else {
             // ── Anthropic path (default) ──
@@ -196,7 +208,7 @@ serve(async (req) => {
                 );
             }
 
-            const client = new AnthropicClient(anthropicKey);
+            const client = new AnthropicClient(anthropicKey, { userId: user.id, edgeFunction: "llm_completion" });
             const options = {
                 temperature: tempValue,
                 maxTokens: maxTokensValue,

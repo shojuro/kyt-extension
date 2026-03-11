@@ -9,7 +9,7 @@
  * stored conversations than the raw query, improving retrieval quality.
  */
 
-import { AnthropicClient } from "./anthropic-client.ts";
+import { AnthropicClient, type ClientContext } from "./anthropic-client.ts";
 import { Logger } from "./utils.ts";
 
 const HYDE_SYSTEM_PROMPT = `You are generating a hypothetical conversation that might exist in a user's ChatGPT or Claude chat history, captured by K.Y.T. (Know Your Thoughts), a personal conversation memory extension.
@@ -41,7 +41,8 @@ Rules:
 export async function generateHypotheticalDocument(
     query: string,
     apiKey: string,
-    requestId?: string
+    requestId?: string,
+    context?: ClientContext
 ): Promise<string | null> {
     if (!apiKey) {
         Logger.warn("Anthropic API key not configured, skipping HyDE", { requestId });
@@ -54,7 +55,7 @@ export async function generateHypotheticalDocument(
     }
 
     try {
-        const client = new AnthropicClient(apiKey);
+        const client = new AnthropicClient(apiKey, context);
 
         const userPrompt = `Search query: "${query}"
 
@@ -134,9 +135,10 @@ Generate a hypothetical conversation that would answer this query:`;
 export async function generateHyDEWithFallback(
     query: string,
     apiKey: string,
-    requestId?: string
+    requestId?: string,
+    context?: ClientContext
 ): Promise<{ hydeDoc: string | null; usedHyde: boolean }> {
-    const hydeDoc = await generateHypotheticalDocument(query, apiKey, requestId);
+    const hydeDoc = await generateHypotheticalDocument(query, apiKey, requestId, context);
     return {
         hydeDoc,
         usedHyde: hydeDoc !== null

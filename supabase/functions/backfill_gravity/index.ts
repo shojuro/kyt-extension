@@ -16,6 +16,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { classifyMemory } from "../_shared/memory-classifier.ts";
+import type { ClientContext } from "../_shared/anthropic-client.ts";
 import { securityHeaders } from "../_shared/headers.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -143,12 +144,14 @@ serve(async (req) => {
           }
 
           // Classify memory: impact_score + intimacy_level via Haiku 4.5
+          const costContext: ClientContext = { userId: filterUserId || undefined, edgeFunction: 'backfill_gravity' };
           const classification = await classifyMemory(
             {
               content: row.content,
               speakers: row.speakers || ["user", "assistant"],
             },
-            anthropicApiKey
+            anthropicApiKey,
+            costContext
           );
 
           // Extract topics (keyword-based, no LLM cost)

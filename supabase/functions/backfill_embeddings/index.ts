@@ -2,6 +2,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
+import type { ClientContext } from "../_shared/anthropic-client.ts";
 import { securityHeaders } from "../_shared/headers.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -9,7 +10,7 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY")!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
-const hfClient = new HuggingFaceClient(hfApiKey);
+const hfClient = new HuggingFaceClient(hfApiKey, { edgeFunction: 'backfill_embeddings' });
 
 // Configuration
 const BATCH_SIZE = 10;

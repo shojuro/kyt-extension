@@ -12,6 +12,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
+import type { ClientContext } from "../_shared/anthropic-client.ts";
 import { Logger } from "../_shared/utils.ts";
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
 import { securityHeaders } from "../_shared/headers.ts";
@@ -65,7 +66,7 @@ serve(async (req) => {
             });
         }
 
-        const client = new HuggingFaceClient(hfKey);
+        const client = new HuggingFaceClient(hfKey, { userId, edgeFunction: 'generate_embeddings' });
         const embeddings = await client.generateEmbeddingsBatch(texts, requestId);
 
         Logger.info("Embeddings generated", { requestId, count: embeddings.length });

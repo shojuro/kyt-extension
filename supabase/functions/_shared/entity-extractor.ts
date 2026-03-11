@@ -36,7 +36,7 @@ export interface EntityExtractionData {
   speakers: string[];           // Participants in conversation
 }
 
-import { AnthropicClient } from "./anthropic-client.ts";
+import { AnthropicClient, type ClientContext } from "./anthropic-client.ts";
 
 /**
  * System prompt for relationship-aware entity extraction
@@ -266,7 +266,8 @@ Return entities with their relationship to the user, and any user preferences de
  */
 export async function extractEntities(
   data: EntityExtractionData,
-  anthropicApiKey: string
+  anthropicApiKey: string,
+  context?: ClientContext
 ): Promise<{ entities: ExtractedEntity[], preferences: ExtractedPreference[] }> {
   // Input validation
   if (!data.content || data.content.trim().length === 0) {
@@ -285,7 +286,7 @@ export async function extractEntities(
   const prompt = buildExtractionPrompt(data);
 
   try {
-    const client = new AnthropicClient(anthropicApiKey);
+    const client = new AnthropicClient(anthropicApiKey, context);
 
     const parsed = await client.generateJsonCompletion<{
       entities?: Array<{

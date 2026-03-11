@@ -1,8 +1,10 @@
 
 import { retryWrapper, CostMonitor } from "./utils.ts";
+import type { ClientContext } from "./anthropic-client.ts";
 
 export class HuggingFaceClient {
     private apiKey: string;
+    private context: ClientContext;
     private static readonly EMBEDDING_MODEL = "qwen3-embedding-8b";
     private static readonly RERANK_MODEL = "BAAI/bge-reranker-v2-m3";
     // HuggingFace Router for Scaleway embeddings (works with HF API key)
@@ -26,8 +28,9 @@ export class HuggingFaceClient {
         return truncated.map(val => val / norm);
     }
 
-    constructor(apiKey: string) {
+    constructor(apiKey: string, context: ClientContext = {}) {
         this.apiKey = apiKey;
+        this.context = context;
     }
 
     async generateEmbeddings(text: string, requestId?: string): Promise<number[][]> {
@@ -55,13 +58,16 @@ export class HuggingFaceClient {
             const data = await response.json();
 
             // Log cost (approx $0.0001 per request)
-            await CostMonitor.logUsage(
-                "huggingface",
-                HuggingFaceClient.EMBEDDING_MODEL,
-                "embedding",
-                0.0001,
-                requestId
-            );
+            await CostMonitor.logUsage({
+                service: "huggingface",
+                model: HuggingFaceClient.EMBEDDING_MODEL,
+                operation: "embedding",
+                cost: 0.0001,
+                requestId,
+                userId: this.context.userId,
+                inputTokens: Math.ceil(text.length / 4),
+                edgeFunction: this.context.edgeFunction,
+            });
 
             return data.data.map((item: any) =>
                 HuggingFaceClient.truncateAndNormalize(item.embedding, HuggingFaceClient.TARGET_DIMS)
@@ -102,13 +108,17 @@ export class HuggingFaceClient {
             const data = await response.json();
 
             // Log cost (approx $0.0001 per text in batch)
-            await CostMonitor.logUsage(
-                "huggingface",
-                HuggingFaceClient.EMBEDDING_MODEL,
-                "embedding_batch",
-                0.0001 * texts.length,
-                requestId
-            );
+            const totalChars = texts.reduce((sum, t) => sum + t.length, 0);
+            await CostMonitor.logUsage({
+                service: "huggingface",
+                model: HuggingFaceClient.EMBEDDING_MODEL,
+                operation: "embedding_batch",
+                cost: 0.0001 * texts.length,
+                requestId,
+                userId: this.context.userId,
+                inputTokens: Math.ceil(totalChars / 4),
+                edgeFunction: this.context.edgeFunction,
+            });
 
             // Scaleway returns embeddings sorted by index, but ensure order
             const sortedData = data.data.sort((a: any, b: any) => a.index - b.index);
@@ -144,13 +154,16 @@ export class HuggingFaceClient {
             const data = await response.json();
 
             // Log cost (approx $0.00005 per request)
-            await CostMonitor.logUsage(
-                "huggingface",
-                HuggingFaceClient.RERANK_MODEL,
-                "rerank",
-                0.00005,
-                requestId
-            );
+            await CostMonitor.logUsage({
+                service: "huggingface",
+                model: HuggingFaceClient.RERANK_MODEL,
+                operation: "rerank",
+                cost: 0.00005,
+                requestId,
+                userId: this.context.userId,
+                inputTokens: Math.ceil((query.length + documents.join('').length) / 4),
+                edgeFunction: this.context.edgeFunction,
+            });
 
             return data.results || data;
         });
