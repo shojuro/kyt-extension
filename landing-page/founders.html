@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <title>K.Y.T. — Founder's Dashboard</title>
+  <meta name="description" content="Your K.Y.T. Founder's List dashboard. Lifetime Pro access.">
+  <meta name="robots" content="noindex, nofollow">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Founder page specific styles */
+    .founder-page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: var(--space-lg) var(--space-md);
+    }
+
+    .founder-card {
+      background: var(--cockpit-edge);
+      border: 1px solid rgba(255, 184, 0, 0.2);
+      border-radius: 12px;
+      padding: var(--space-lg);
+      max-width: 540px;
+      width: 100%;
+      text-align: center;
+    }
+
+    .founder-card__logo {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: var(--fs-xl);
+      font-weight: 700;
+      color: var(--scanner-red);
+      letter-spacing: 0.15em;
+      margin-bottom: var(--space-xs);
+    }
+
+    .founder-card__number {
+      font-family: 'Space Mono', monospace;
+      font-size: var(--fs-lg);
+      color: var(--amber);
+      margin-bottom: var(--space-xs);
+    }
+
+    .founder-card__number span {
+      color: var(--silver);
+      font-size: var(--fs-base);
+    }
+
+    .founder-card__email {
+      font-family: 'Space Mono', monospace;
+      font-size: var(--fs-sm);
+      color: var(--silver-dim);
+      margin-bottom: var(--space-md);
+    }
+
+    .founder-card__divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--amber-dim), transparent);
+      margin: var(--space-md) 0;
+    }
+
+    .founder-card__section-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: var(--fs-md);
+      font-weight: 600;
+      color: var(--silver);
+      margin-bottom: var(--space-sm);
+      text-align: left;
+    }
+
+    .founder-card__perks {
+      list-style: none;
+      text-align: left;
+      margin-bottom: var(--space-md);
+    }
+
+    .founder-card__perks li {
+      font-family: 'Outfit', sans-serif;
+      font-size: var(--fs-sm);
+      color: var(--silver-dim);
+      padding: var(--space-xs) 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .founder-card__perks li::before {
+      content: '';
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      background: var(--phosphor);
+      border-radius: 50%;
+      margin-right: 10px;
+      vertical-align: middle;
+      box-shadow: 0 0 6px var(--phosphor-dim);
+    }
+
+    .founder-card__status {
+      font-family: 'Space Mono', monospace;
+      font-size: var(--fs-xs);
+      color: var(--amber);
+      background: var(--amber-dim);
+      padding: 6px 12px;
+      border-radius: 6px;
+      display: inline-block;
+      margin-bottom: var(--space-md);
+    }
+
+    .founder-card__bookmark {
+      font-family: 'Outfit', sans-serif;
+      font-size: var(--fs-xs);
+      color: var(--silver-dim);
+      margin-top: var(--space-md);
+      opacity: 0.7;
+    }
+
+    /* Tester signup form */
+    .tester-form {
+      text-align: left;
+      margin-top: var(--space-sm);
+    }
+
+    .tester-form__label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: 'Outfit', sans-serif;
+      font-size: var(--fs-sm);
+      color: var(--silver);
+      cursor: pointer;
+      margin-bottom: var(--space-sm);
+    }
+
+    .tester-form__label input[type="checkbox"] {
+      accent-color: var(--amber);
+      width: 16px;
+      height: 16px;
+    }
+
+    .tester-form__contact {
+      width: 100%;
+      padding: 10px 14px;
+      background: var(--cockpit-black);
+      border: 1px solid rgba(255, 184, 0, 0.15);
+      border-radius: 8px;
+      color: var(--silver);
+      font-family: 'Space Mono', monospace;
+      font-size: var(--fs-sm);
+      margin-bottom: var(--space-sm);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .tester-form__contact:focus {
+      border-color: var(--amber);
+    }
+
+    .tester-form__contact::placeholder {
+      color: var(--silver-dim);
+      opacity: 0.5;
+    }
+
+    .tester-form__btn {
+      background: var(--amber);
+      color: var(--cockpit-black);
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 600;
+      font-size: var(--fs-sm);
+      padding: 8px 20px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    .tester-form__btn:hover {
+      opacity: 0.85;
+    }
+
+    .tester-form__btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .tester-form__success {
+      font-family: 'Outfit', sans-serif;
+      font-size: var(--fs-sm);
+      color: var(--phosphor);
+      margin-top: var(--space-xs);
+    }
+
+    /* Loading / error states */
+    .founder-state {
+      font-family: 'Space Mono', monospace;
+      font-size: var(--fs-sm);
+      color: var(--silver-dim);
+      text-align: center;
+      padding: var(--space-lg);
+    }
+
+    .founder-state--error {
+      color: var(--scanner-red);
+    }
+
+    .founder-state__back {
+      display: inline-block;
+      margin-top: var(--space-md);
+      color: var(--amber);
+      text-decoration: none;
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 600;
+    }
+
+    .founder-state__back:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <!-- CRT scanline overlay -->
+  <div class="crt-overlay" aria-hidden="true"></div>
+
+  <main class="founder-page">
+    <!-- STATE: Loading -->
+    <div id="founder-loading" class="founder-state">
+      Loading your founder dashboard...
+    </div>
+
+    <!-- STATE: Invalid token -->
+    <div id="founder-error" class="founder-state founder-state--error" hidden>
+      <p>Invalid or missing founder token.</p>
+      <p>If you just purchased, check your email for the confirmation link.</p>
+      <a href="/" class="founder-state__back">Back to K.Y.T.</a>
+    </div>
+
+    <!-- STATE: Dashboard -->
+    <div id="founder-dashboard" class="founder-card" hidden>
+      <div class="founder-card__logo">K.Y.T.</div>
+      <div class="founder-card__number">
+        Founder #<span id="fd-number">—</span> <span>of <span id="fd-total">200</span></span>
+      </div>
+      <div class="founder-card__email" id="fd-email"></div>
+
+      <div class="founder-card__status">LIFETIME PRO ACCESS</div>
+
+      <div class="founder-card__divider"></div>
+
+      <h2 class="founder-card__section-title">What's included</h2>
+      <ul class="founder-card__perks">
+        <li>Unlimited cross-platform memory</li>
+        <li>Priority access to new features</li>
+        <li>5,000 memory cap (vs 500 free tier)</li>
+        <li>Pro-tier search and recall speed</li>
+        <li>Founder badge in extension</li>
+        <li>Direct line to the developer</li>
+      </ul>
+
+      <div class="founder-card__divider"></div>
+
+      <h2 class="founder-card__section-title">Help test K.Y.T.</h2>
+      <div class="tester-form" id="tester-form">
+        <label class="tester-form__label">
+          <input type="checkbox" id="fd-wants-test">
+          I want to be an early tester
+        </label>
+        <input
+          type="text"
+          id="fd-contact"
+          class="tester-form__contact"
+          placeholder="Discord handle, Twitter, or email"
+          maxlength="256"
+        >
+        <button type="button" id="fd-save-btn" class="tester-form__btn">Save</button>
+        <p id="fd-save-success" class="tester-form__success" hidden>Saved!</p>
+      </div>
+
+      <p class="founder-card__bookmark">Bookmark this page — your token is your access key.</p>
+    </div>
+  </main>
+
+  <script src="founders.js"></script>
+</body>
+</html>

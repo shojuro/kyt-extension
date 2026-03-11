@@ -40,6 +40,12 @@ const PRICE_TO_TIER: Record<string, string> = {
   'price_xxx_dev': 'dev',   // TODO: Replace with real Dev price ID
 }
 
+// Founder's List price IDs (one-time purchase, not subscription)
+const FOUNDER_PRICE_IDS = new Set([
+  'price_1T9lKzRYAcScMJtScvDwYDxg', // $5 tier
+  'price_1T9lKzRYAcScMJtSQb6Tu6UT', // $10 tier
+])
+
 function getTierFromPriceId(priceId: string): string {
   return PRICE_TO_TIER[priceId] || 'free'
 }
@@ -48,7 +54,69 @@ function getTierFromPriceId(priceId: string): string {
 // EVENT HANDLERS
 // ============================================================================
 
+async function handleFounderPurchase(session: Stripe.Checkout.Session) {
+  const accessToken = session.metadata?.access_token
+  if (!accessToken) {
+    console.error('Founder purchase missing access_token in metadata')
+    throw new Error('Missing access_token in session metadata')
+  }
+
+  const email = (session.customer_details?.email || session.customer_email || '').toLowerCase()
+  if (!email) {
+    console.error('Founder purchase missing email')
+    throw new Error('Missing email in session')
+  }
+
+  // Link to waitlist if exists
+  const { data: waitlistRow } = await supabase
+    .from('waitlist_captures')
+    .select('id')
+    .eq('email', email)
+    .single()
+
+  // Insert founder (trigger auto-assigns founder_number, enforces cap)
+  const { data, error } = await supabase.from('founders').insert({
+    email,
+    stripe_session_id: session.id,
+    stripe_customer_id: session.customer as string || null,
+    price_paid_cents: session.amount_total || 0,
+    access_token: accessToken,
+    waitlist_id: waitlistRow?.id || null,
+  }).select('founder_number').single()
+
+  if (error) {
+    // Cap exceeded (23514) or duplicate (23505) — auto-refund
+    if (error.code === '23514' || error.code === '23505') {
+      const paymentIntentId = session.payment_intent as string
+      if (paymentIntentId) {
+        try {
+          await stripe.refunds.create({ payment_intent: paymentIntentId })
+          console.log(`Auto-refunded founder purchase (${error.code}): ${paymentIntentId}`)
+        } catch (refundErr) {
+          // Log failed refund for manual recovery
+          console.error(`REFUND FAILED for ${paymentIntentId}:`, refundErr)
+          await supabase.from('stripe_events').upsert({
+            stripe_event_id: `refund_failed_${paymentIntentId}`,
+            event_type: 'refund_failed',
+            data: { payment_intent: paymentIntentId, error: (refundErr as Error).message },
+            status: 'failed',
+          }, { onConflict: 'stripe_event_id' })
+        }
+      }
+    }
+    throw error
+  }
+
+  console.log(`Founder #${data.founder_number} registered: ${email}`)
+}
+
 async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
+  // Intercept founder purchases before subscription logic
+  if (session.metadata?.product === 'founder_list') {
+    await handleFounderPurchase(session)
+    return
+  }
+
   const userId = session.metadata?.supabase_user_id
   if (!userId) {
     console.error('No supabase_user_id in session metadata')

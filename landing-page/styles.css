@@ -1463,6 +1463,86 @@ body::before {
 }
 
 /* ============================================
+   FOUNDER UPSELL (post-email-submission)
+   ============================================ */
+.cta-form__founder-upsell {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  background: rgba(255, 184, 0, 0.04);
+  border: 1px solid rgba(255, 184, 0, 0.15);
+  border-radius: 10px;
+  text-align: center;
+  animation: upsellReveal 0.5s var(--ease-smooth) both;
+}
+
+@keyframes upsellReveal {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.founder-upsell__text {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--silver);
+  margin-bottom: var(--space-sm);
+}
+
+.founder-upsell__btn {
+  display: inline-block;
+  padding: 12px 28px;
+  background: var(--amber);
+  color: var(--cockpit-black);
+  font-family: 'Rajdhani', sans-serif;
+  font-size: var(--fs-base);
+  font-weight: 700;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: opacity 0.2s, box-shadow 0.2s;
+  letter-spacing: 0.02em;
+}
+
+.founder-upsell__btn:hover {
+  opacity: 0.9;
+  box-shadow: 0 0 20px rgba(255, 184, 0, 0.25);
+}
+
+.founder-upsell__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.founder-upsell__price {
+  font-family: 'Space Mono', monospace;
+  font-weight: 700;
+}
+
+.founder-upsell__note {
+  font-family: 'Space Mono', monospace;
+  font-size: var(--fs-xs);
+  color: var(--silver-dim);
+  margin-top: var(--space-xs);
+}
+
+.founder-upsell__spots-text {
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.cta-form__founder-upsell[data-sold-out="true"] .founder-upsell__btn {
+  background: var(--silver-dim);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ============================================
    RESPONSIVE
    ============================================ */
 @media (max-width: 1024px) {

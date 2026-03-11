@@ -381,6 +381,87 @@
   }
 
   // ============================================
+  // FOUNDER UPSELL
+  // ============================================
+  const SUPABASE_FN_BASE = 'https://svrcvfzlwhnixzuxaccf.supabase.co/functions/v1';
+  let founderCountCache = null;
+  let founderCountFetchedAt = 0;
+  const FOUNDER_COUNT_TTL = 60000; // 60s cache
+
+  async function getFounderCount() {
+    const now = Date.now();
+    if (founderCountCache !== null && now - founderCountFetchedAt < FOUNDER_COUNT_TTL) {
+      return founderCountCache;
+    }
+    try {
+      const res = await fetch(SUPABASE_FN_BASE + '/get_founder_count');
+      if (!res.ok) return null;
+      const data = await res.json();
+      founderCountCache = data;
+      founderCountFetchedAt = now;
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
+  async function showFounderUpsell(upsellEl, email) {
+    const countData = await getFounderCount();
+    if (!countData || countData.count >= countData.total) {
+      // Sold out — still show but disabled
+      if (countData && countData.count >= countData.total) {
+        upsellEl.setAttribute('data-sold-out', 'true');
+        const btn = upsellEl.querySelector('.founder-upsell__btn');
+        btn.disabled = true;
+        btn.textContent = 'Sold Out';
+        const spotsText = upsellEl.querySelector('.founder-upsell__spots-text');
+        if (spotsText) spotsText.textContent = '0';
+        upsellEl.hidden = false;
+      }
+      return;
+    }
+
+    const remaining = countData.total - countData.count;
+    const price = countData.count < 100 ? '$5' : '$10';
+
+    const priceEl = upsellEl.querySelector('.founder-upsell__price');
+    const spotsText = upsellEl.querySelector('.founder-upsell__spots-text');
+    const btn = upsellEl.querySelector('.founder-upsell__btn');
+
+    if (priceEl) priceEl.textContent = price;
+    if (spotsText) spotsText.textContent = String(remaining);
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.style.opacity = '0.7';
+
+      try {
+        const res = await fetch(SUPABASE_FN_BASE + '/create_founder_checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email || '' }),
+        });
+        const data = await res.json();
+
+        if (data.sold_out) {
+          btn.textContent = 'Sold Out';
+          return;
+        }
+
+        if (data.url) {
+          window.location.href = data.url;
+        }
+      } catch (err) {
+        console.error('Founder checkout error:', err);
+        btn.disabled = false;
+        btn.style.opacity = '1';
+      }
+    }, { once: true });
+
+    upsellEl.hidden = false;
+  }
+
+  // ============================================
   // EMAIL FORM SUBMISSION
   // ============================================
   function getFormSource(form) {
@@ -441,6 +522,12 @@
         if (btnText) btnText.textContent = "You're in";
 
         flashScanners();
+
+        // Show founder upsell after successful signup
+        const upsellEl = form.querySelector('.cta-form__founder-upsell');
+        if (upsellEl) {
+          showFounderUpsell(upsellEl, email);
+        }
       } catch (err) {
         if (btnText) btnText.textContent = 'Try again';
         btn.disabled = false;

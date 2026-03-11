@@ -56,3 +56,13 @@ verify_jwt = true
 [functions.waitlist_capture]
 # Public endpoint — no JWT; uses honeypot + rate limiting
 verify_jwt = false
+
+# Founder's List — public endpoints (token-based or no auth)
+[functions.create_founder_checkout]
+verify_jwt = false
+
+[functions.get_founder_info]
+verify_jwt = false
+
+[functions.get_founder_count]
+verify_jwt = false
