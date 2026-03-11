@@ -19,8 +19,8 @@ Deno.serve(async (req: Request) => {
   }
 
   // Rate limit by IP (10 req/min)
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-    || req.headers.get('cf-connecting-ip')
+  const ip = req.headers.get('cf-connecting-ip')
+    || req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
     || 'unknown';
 
   if (!checkRateLimit('waitlist', ip, 10)) {
