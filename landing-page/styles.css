@@ -1555,6 +1555,16 @@ body::before {
   }
 }
 
+/* --- Honeypot (anti-spam) --- */
+.cta-form__honeypot {
+  position: absolute;
+  left: -9999px;
+  opacity: 0;
+  height: 0;
+  width: 0;
+  pointer-events: none;
+}
+
 /* ============================================
    ACCESSIBILITY — REDUCED MOTION
    ============================================ */

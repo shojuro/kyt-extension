@@ -383,6 +383,24 @@
   // ============================================
   // EMAIL FORM SUBMISSION
   // ============================================
+  function getFormSource(form) {
+    const id = form.id || '';
+    if (id.includes('hero')) return 'hero';
+    if (id.includes('exit')) return 'exit-intent';
+    return 'cta';
+  }
+
+  function getUtmParams() {
+    const p = new URLSearchParams(window.location.search);
+    return {
+      utm_source: p.get('utm_source'),
+      utm_medium: p.get('utm_medium'),
+      utm_campaign: p.get('utm_campaign'),
+      utm_content: p.get('utm_content'),
+      utm_term: p.get('utm_term'),
+    };
+  }
+
   document.querySelectorAll('.cta-form').forEach((form) => {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -400,8 +418,22 @@
       if (btnText) btnText.textContent = 'Joining...';
 
       try {
-        // TODO: Replace with actual Supabase edge function endpoint
-        await new Promise((resolve) => setTimeout(resolve, 800));
+        const honeypot = form.querySelector('.cta-form__honeypot');
+        const res = await fetch(
+          'https://svrcvfzlwhnixzuxaccf.supabase.co/functions/v1/waitlist_capture',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email,
+              source: getFormSource(form),
+              website: honeypot?.value || '',
+              referrer: document.referrer || null,
+              ...getUtmParams(),
+            }),
+          }
+        );
+        if (!res.ok) throw new Error('HTTP ' + res.status);
 
         input.value = '';
         if (hint) hint.hidden = true;

@@ -51,3 +51,8 @@ verify_jwt = true
 [functions.import_conversation_batch]
 # Service role key required for import operations
 verify_jwt = true
+
+# Waitlist email capture (landing page)
+[functions.waitlist_capture]
+# Public endpoint — no JWT; uses honeypot + rate limiting
+verify_jwt = false
