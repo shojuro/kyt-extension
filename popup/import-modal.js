@@ -21,6 +21,77 @@ let fallbackPlatform = null;
 
 const elements = {};
 
+// ============================================
+// K.I.T.T. SCANNER ENGINE (import progress)
+// ============================================
+const LED_COUNT = 8;
+const TRAIL_INTENSITIES = [5, 4, 3, 2, 1];
+const BASE_STEP_MS = 120;
+let scannerTimer = null;
+
+function startImportScanner() {
+    const track = document.getElementById('importScanner');
+    if (!track) return;
+
+    const leds = track.querySelectorAll('.kyt-scanner-led');
+    let position = 0;
+    let direction = 1;
+    let paused = false;
+
+    function step() {
+        for (let i = 0; i < leds.length; i++) {
+            leds[i].setAttribute('data-intensity', '0');
+        }
+
+        for (let t = 0; t < TRAIL_INTENSITIES.length; t++) {
+            const idx = position - t * direction;
+            if (idx >= 0 && idx < leds.length) {
+                leds[idx].setAttribute('data-intensity', String(TRAIL_INTENSITIES[t]));
+            }
+        }
+
+        position += direction;
+
+        if (position >= leds.length) {
+            position = leds.length - 1;
+            direction = -1;
+            paused = true;
+        } else if (position < 0) {
+            position = 0;
+            direction = 1;
+            paused = true;
+        }
+
+        const delay = paused ? BASE_STEP_MS * 2.5 : BASE_STEP_MS;
+        paused = false;
+        scannerTimer = setTimeout(step, delay);
+    }
+
+    step();
+}
+
+function stopImportScanner(flash) {
+    if (scannerTimer) {
+        clearTimeout(scannerTimer);
+        scannerTimer = null;
+    }
+
+    const track = document.getElementById('importScanner');
+    if (!track) return;
+
+    const leds = track.querySelectorAll('.kyt-scanner-led');
+
+    if (flash) {
+        // Flash all LEDs on completion
+        leds.forEach(led => led.setAttribute('data-intensity', '5'));
+        setTimeout(() => {
+            leds.forEach(led => led.setAttribute('data-intensity', '2'));
+        }, 400);
+    } else {
+        leds.forEach(led => led.setAttribute('data-intensity', '0'));
+    }
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     cacheElements();
@@ -44,7 +115,6 @@ function cacheElements() {
     elements.btnCancel = document.getElementById('btn-cancel');
     elements.btnBackToPlatforms = document.getElementById('btn-back-to-platforms');
     elements.progressContainer = document.getElementById('progress-container');
-    elements.progressFill = document.getElementById('progress-fill');
     elements.progressText = document.getElementById('progress-text');
     elements.progressCount = document.getElementById('progress-count');
     elements.errorMsg = document.getElementById('error-msg');
@@ -69,17 +139,16 @@ function setupListeners() {
         card.addEventListener('click', () => {
             document.querySelectorAll('.mode-choice').forEach(c => {
                 c.classList.remove('selected');
-                c.style.borderColor = '#e5e7eb';
+                c.style.borderColor = 'var(--border-subtle)';
             });
             card.classList.add('selected');
-            card.style.borderColor = '#2563eb';
+            card.style.borderColor = 'var(--scanner-red)';
             selectedMode = card.dataset.mode;
         });
     });
 
     // Mode view → Permission/import
     elements.btnModeContinue?.addEventListener('click', async () => {
-        // Save the selected mode
         try {
             await chrome.runtime.sendMessage({
                 type: 'SET_MEMORY_MODE',
@@ -173,19 +242,16 @@ async function handleFileUpload(file) {
     }
 
     try {
-        // Validate the file
         elements.progressText.textContent = 'Validating file...';
         elements.progressContainer.style.display = 'block';
-        elements.progressFill.style.width = '10%';
+        startImportScanner();
 
         const validation = await validateExportFile(file, platform);
         if (!validation.valid) {
             throw new Error(validation.error);
         }
 
-        // Parse the ZIP in popup (Option B - File API works here)
         elements.progressText.textContent = 'Parsing ZIP file...';
-        elements.progressFill.style.width = '30%';
 
         const messages = await parseZipExport(file, platform);
 
@@ -194,9 +260,7 @@ async function handleFileUpload(file) {
         }
 
         elements.progressText.textContent = `Found ${messages.length} messages. Saving...`;
-        elements.progressFill.style.width = '50%';
 
-        // Send parsed messages to background for saving
         const response = await chrome.runtime.sendMessage({
             type: 'PROCESS_IMPORTED_MESSAGES',
             platform,
@@ -209,7 +273,7 @@ async function handleFileUpload(file) {
         }
 
         // Success
-        elements.progressFill.style.width = '100%';
+        stopImportScanner(true);
         elements.progressText.textContent = 'Import complete!';
         completedPlatforms.add(platform);
         updatePlatformButtons();
@@ -217,13 +281,13 @@ async function handleFileUpload(file) {
         elements.successMsg.textContent = `Successfully imported ${messages.length} messages from ${platform}.`;
         elements.successMsg.style.display = 'block';
 
-        // Return to platform select after delay
         setTimeout(() => {
             setState(STATES.PLATFORM_SELECT);
         }, 2000);
 
     } catch (e) {
         console.error('File upload error:', e);
+        stopImportScanner(false);
         showError(e.message);
         elements.progressContainer.style.display = 'none';
     }
@@ -234,7 +298,6 @@ async function checkFirstInstall() {
     const isFirstInstall = urlParams.get('mode') === 'first-install';
 
     if (isFirstInstall) {
-        // Check if user has already seen onboarding
         const { show_import_onboarding } = await chrome.storage.local.get('show_import_onboarding');
 
         if (show_import_onboarding !== false) {
@@ -243,7 +306,6 @@ async function checkFirstInstall() {
         }
     }
 
-    // Check for completed imports
     await loadCompletedPlatforms();
     setState(STATES.PLATFORM_SELECT);
 }
@@ -284,6 +346,7 @@ function setState(newState) {
     elements.errorMsg.style.display = 'none';
     elements.successMsg.style.display = 'none';
     elements.progressContainer.style.display = 'none';
+    stopImportScanner(false);
 
     switch (newState) {
         case STATES.WELCOME:
@@ -296,7 +359,7 @@ function setState(newState) {
             const fullCard = document.getElementById('mode-full');
             if (fullCard) {
                 fullCard.classList.add('selected');
-                fullCard.style.borderColor = '#2563eb';
+                fullCard.style.borderColor = 'var(--scanner-red)';
             }
             break;
 
@@ -316,6 +379,7 @@ function setState(newState) {
         case STATES.IMPORTING:
             elements.mainView?.classList.remove('hidden');
             elements.progressContainer.style.display = 'block';
+            startImportScanner();
             break;
 
         case STATES.FALLBACK:
@@ -337,7 +401,7 @@ function setState(newState) {
 function updatePlatformButtons() {
     // ChatGPT button
     if (completedPlatforms.has('chatgpt')) {
-        elements.btnChatGPT.textContent = 'ChatGPT ✓';
+        elements.btnChatGPT.textContent = 'ChatGPT \u2713';
         elements.btnChatGPT.classList.add('btn-complete');
         elements.btnChatGPT.classList.remove('btn-primary', 'btn-secondary');
     } else if (isImporting && selectedPlatform !== 'chatgpt') {
@@ -351,7 +415,7 @@ function updatePlatformButtons() {
 
     // Claude button
     if (completedPlatforms.has('claude')) {
-        elements.btnClaude.textContent = 'Claude ✓';
+        elements.btnClaude.textContent = 'Claude \u2713';
         elements.btnClaude.classList.add('btn-complete');
         elements.btnClaude.classList.remove('btn-primary', 'btn-secondary');
     } else if (isImporting && selectedPlatform !== 'claude') {
@@ -377,7 +441,6 @@ function selectPlatform(platform) {
     elements.errorMsg.style.display = 'none';
     elements.successMsg.style.display = 'none';
 
-    // Check status
     checkStatus(platform);
 }
 
@@ -394,6 +457,7 @@ async function checkStatus(platform) {
                 elements.btnStart.disabled = true;
                 elements.btnStart.textContent = 'Importing...';
                 elements.progressContainer.style.display = 'block';
+                startImportScanner();
                 updateProgress(response.status.progress);
                 updatePlatformButtons();
             } else if (response.status.hasCompletedImport) {
@@ -434,8 +498,6 @@ async function startImport() {
             }
         }
 
-        // Success handled via progress updates
-
     } catch (e) {
         showError(e.message);
         resetUI();
@@ -445,14 +507,12 @@ async function startImport() {
 function showFallbackUI(platform, reason) {
     fallbackPlatform = platform;
 
-    // Set reason text
     const reasonMap = {
         'chatgpt': 'You\'re not logged into ChatGPT.',
         'claude': 'You\'re not logged into Claude.'
     };
     elements.fallbackReason.textContent = reason || reasonMap[platform] || 'Automatic import unavailable.';
 
-    // Set export instructions
     const instructions = getExportInstructions(platform);
     elements.exportInstructions.innerHTML = instructions;
 
@@ -463,8 +523,8 @@ function getExportInstructions(platform) {
     if (platform === 'chatgpt') {
         return `
             <li>Go to <a href="https://chatgpt.com/" target="_blank">chatgpt.com</a></li>
-            <li>Click your profile icon (bottom left) → Settings</li>
-            <li>Go to Data Controls → Export data</li>
+            <li>Click your profile icon (bottom left) &rarr; Settings</li>
+            <li>Go to Data Controls &rarr; Export data</li>
             <li>Click "Export" and wait for email</li>
             <li>Download the ZIP file and upload it here</li>
         `;
@@ -485,6 +545,7 @@ async function cancelImport() {
         await chrome.runtime.sendMessage({
             type: 'CANCEL_HISTORY_IMPORT'
         });
+        stopImportScanner(false);
         resetUI();
     } catch (e) {
         console.error('Failed to cancel:', e);
@@ -498,16 +559,17 @@ function updateProgress(progress) {
         ? Math.round((progress.conversationsProcessed / progress.conversationsTotal) * 100)
         : 0;
 
-    elements.progressFill.style.width = `${percent}%`;
     elements.progressCount.textContent = `${progress.messagesImported} msgs`;
 
     if (progress.status === 'completed') {
+        stopImportScanner(true);
         elements.progressText.textContent = 'Completed!';
         elements.successMsg.textContent = `Successfully imported ${progress.messagesImported} messages.`;
         elements.successMsg.style.display = 'block';
         completedPlatforms.add(progress.platform || selectedPlatform);
         resetUI(true);
     } else if (progress.status === 'failed') {
+        stopImportScanner(false);
         if (progress.fallbackRequired) {
             showFallbackUI(progress.platform || selectedPlatform, progress.errorMessage);
         } else {
@@ -532,5 +594,6 @@ function resetUI(completed = false) {
 
     if (!completed) {
         elements.progressContainer.style.display = 'none';
+        stopImportScanner(false);
     }
 }

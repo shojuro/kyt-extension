@@ -46,18 +46,82 @@ const TIER_INFO = {
   dev: { label: 'DEV', description: 'API access, advanced features' }
 };
 
+// ============================================
+// K.I.T.T. SCANNER ENGINE (header)
+// ============================================
+const LED_COUNT = 8;
+const TRAIL_INTENSITIES = [5, 4, 3, 2, 1];
+const BASE_STEP_MS = 120;
+
+function initHeaderScanner() {
+  const track = document.querySelector('.header-scanner');
+  if (!track) return;
+  startScannerSweep(track);
+}
+
+function startScannerSweep(track) {
+  const leds = track.querySelectorAll('.kyt-scanner-led');
+  let position = 0;
+  let direction = 1;
+  let paused = false;
+
+  function step() {
+    for (let i = 0; i < leds.length; i++) {
+      leds[i].setAttribute('data-intensity', '0');
+    }
+
+    for (let t = 0; t < TRAIL_INTENSITIES.length; t++) {
+      const idx = position - t * direction;
+      if (idx >= 0 && idx < leds.length) {
+        leds[idx].setAttribute('data-intensity', String(TRAIL_INTENSITIES[t]));
+      }
+    }
+
+    position += direction;
+
+    if (position >= leds.length) {
+      position = leds.length - 1;
+      direction = -1;
+      paused = true;
+    } else if (position < 0) {
+      position = 0;
+      direction = 1;
+      paused = true;
+    }
+
+    const delay = paused ? BASE_STEP_MS * 2.5 : BASE_STEP_MS;
+    paused = false;
+    setTimeout(step, delay);
+  }
+
+  step();
+}
+
+// ============================================
+// STATUS HELPERS
+// ============================================
+
+/**
+ * Build a status-dot + text HTML string
+ */
+function statusHTML(dotClass, text) {
+  return `<span class="status-dot ${dotClass}"></span> ${text}`;
+}
+
 /**
  * Update status indicator with color coding
  */
 function updateStatus(element, active, text) {
-  element.textContent = text;
   element.className = 'status-indicator';
 
   if (active === true) {
+    element.innerHTML = statusHTML('status-dot--ok', text);
     element.classList.add('active');
   } else if (active === false) {
+    element.innerHTML = statusHTML('status-dot--error', text);
     element.classList.add('inactive');
   } else {
+    element.innerHTML = statusHTML('status-dot--warn', text);
     element.classList.add('partial');
   }
 }
@@ -107,17 +171,17 @@ async function loadStats() {
     // Update interception status with helpful context
     if (!onPlatform && !stats.fetch?.active) {
       // Not on platform page - show helpful message
-      updateStatus(fetchStatus, null, '⚠️ Not on platform page');
-      updateStatus(wsStatus, null, '⚠️ Navigate to chatgpt.com or claude.ai');
-      updateStatus(domStatus, null, '⚠️ Then reopen this popup');
+      updateStatus(fetchStatus, null, 'Not on platform page');
+      updateStatus(wsStatus, null, 'Navigate to chatgpt.com or claude.ai');
+      updateStatus(domStatus, null, 'Then reopen this popup');
     } else {
       // On platform page - show actual status
       updateStatus(fetchStatus, stats.fetch?.active,
-        stats.fetch?.active ? '🟢 Active' : '🔴 Inactive');
+        stats.fetch?.active ? 'Active' : 'Inactive');
       updateStatus(wsStatus, stats.websocket?.active,
-        stats.websocket?.active ? '🟢 Active' : '🔴 Inactive');
+        stats.websocket?.active ? 'Active' : 'Inactive');
       updateStatus(domStatus, stats.domObserver?.active,
-        stats.domObserver?.active ? '🟢 Active' : '🔴 Inactive');
+        stats.domObserver?.active ? 'Active' : 'Inactive');
     }
 
     // Update message counts
@@ -127,12 +191,15 @@ async function loadStats() {
 
     // Update platform detection with helpful hints
     if (!onPlatform && hasMessages) {
-      // Has messages but not currently on platform
-      chatgptPlatform.textContent = '💡 Open chatgpt.com to see live stats';
-      claudePlatform.textContent = '💡 Open claude.ai to see live stats';
+      chatgptPlatform.innerHTML = statusHTML('status-dot--warn', 'Open chatgpt.com for live stats');
+      claudePlatform.innerHTML = statusHTML('status-dot--warn', 'Open claude.ai for live stats');
     } else {
-      chatgptPlatform.textContent = stats.platform === 'chatgpt' ? '✅ Detected' : '❌ Not Detected';
-      claudePlatform.textContent = stats.platform === 'claude' ? '✅ Detected' : '❌ Not Detected';
+      chatgptPlatform.innerHTML = stats.platform === 'chatgpt'
+        ? statusHTML('status-dot--ok', 'Detected')
+        : statusHTML('status-dot--error', 'Not Detected');
+      claudePlatform.innerHTML = stats.platform === 'claude'
+        ? statusHTML('status-dot--ok', 'Detected')
+        : statusHTML('status-dot--error', 'Not Detected');
     }
 
   } catch (error) {
@@ -191,47 +258,38 @@ async function loadConfig() {
     const isAuthed = session?.access_token && session.expires_at > Math.floor(Date.now() / 1000);
 
     if (isAuthed) {
-      // Authenticated mode — keys are handled server-side
-      apiStatus.textContent = '✅ Authenticated';
-      apiStatus.style.color = '#155724';
-      hfKeyStatus.textContent = '✅ Server-side';
-      hfKeyStatus.style.color = '#155724';
-      hfKeyStatus.style.fontWeight = '';
+      apiStatus.innerHTML = statusHTML('status-dot--ok', 'Authenticated');
+      hfKeyStatus.innerHTML = statusHTML('status-dot--ok', 'Server-side');
     } else if (!config) {
-      apiStatus.textContent = '❌ Not Configured';
-      apiStatus.style.color = '#721c24';
-      hfKeyStatus.textContent = '❌ Not Configured';
-      hfKeyStatus.style.color = '#721c24';
-      transformStatus.textContent = '⚠️ Unknown';
-      transformStatus.style.color = '#856404';
+      apiStatus.innerHTML = statusHTML('status-dot--error', 'Not Configured');
+      hfKeyStatus.innerHTML = statusHTML('status-dot--error', 'Not Configured');
+      transformStatus.innerHTML = statusHTML('status-dot--warn', 'Unknown');
       return;
     } else {
-      // Legacy mode — check individual keys
       const hasKeys = config.supabaseUrl && config.supabaseKey && config.openaiKey;
-      apiStatus.textContent = hasKeys ? '✅ Configured' : '⚠️ Incomplete';
-      apiStatus.style.color = hasKeys ? '#155724' : '#856404';
+      apiStatus.innerHTML = hasKeys
+        ? statusHTML('status-dot--ok', 'Configured')
+        : statusHTML('status-dot--warn', 'Incomplete');
 
       const hasHfKey = !!config.huggingfaceKey;
       if (hasHfKey) {
-        hfKeyStatus.textContent = '✅ Configured';
-        hfKeyStatus.style.color = '#155724';
+        hfKeyStatus.innerHTML = statusHTML('status-dot--ok', 'Configured');
       } else {
-        hfKeyStatus.textContent = '❌ Missing (Required for sync!)';
-        hfKeyStatus.style.color = '#721c24';
-        hfKeyStatus.style.fontWeight = '700';
+        hfKeyStatus.innerHTML = statusHTML('status-dot--error', 'Missing (Required!)');
       }
     }
 
     // Check query transformation (applies to both modes)
     const transformDisabled = config?.disableQueryTransformation ?? false;
-    transformStatus.textContent = transformDisabled ? '⚠️ Disabled' : '✅ Enabled';
-    transformStatus.style.color = transformDisabled ? '#856404' : '#155724';
+    transformStatus.innerHTML = transformDisabled
+      ? statusHTML('status-dot--warn', 'Disabled')
+      : statusHTML('status-dot--ok', 'Enabled');
 
   } catch (error) {
     console.error('Error loading config:', error);
-    apiStatus.textContent = '❌ Error';
-    hfKeyStatus.textContent = '❌ Error';
-    transformStatus.textContent = '❌ Error';
+    apiStatus.innerHTML = statusHTML('status-dot--error', 'Error');
+    hfKeyStatus.innerHTML = statusHTML('status-dot--error', 'Error');
+    transformStatus.innerHTML = statusHTML('status-dot--error', 'Error');
   }
 }
 
@@ -255,7 +313,7 @@ async function saveDebugMode() {
   try {
     const debugMode = debugModeToggle.checked;
     await chrome.storage.local.set({ kytDebugMode: debugMode });
-    console.log('🐛 K.Y.T. Debug Mode:', debugMode ? 'ENABLED' : 'DISABLED');
+    console.log('K.Y.T. Debug Mode:', debugMode ? 'ENABLED' : 'DISABLED');
   } catch (error) {
     console.error('Error saving debug mode:', error);
   }
@@ -266,35 +324,32 @@ async function saveDebugMode() {
  */
 async function testCapture() {
   testCaptureBtn.disabled = true;
-  testCaptureBtn.textContent = '🔄 Testing...';
+  testCaptureBtn.textContent = 'Testing...';
 
   try {
-    // Send test message to background script
     const response = await chrome.runtime.sendMessage({
       type: 'TEST_CAPTURE'
     });
 
     if (response && response.success) {
       testResult.className = 'test-result success';
-      testResult.textContent = `✅ Success! Captured ${response.messageCount} test message(s). Interception is working correctly.`;
+      testResult.textContent = `Captured ${response.messageCount} test message(s). Interception working.`;
     } else {
       testResult.className = 'test-result error';
-      testResult.textContent = `❌ Test failed: ${response?.error || 'Unknown error'}`;
+      testResult.textContent = `Test failed: ${response?.error || 'Unknown error'}`;
     }
 
     testResult.classList.remove('hidden');
-
-    // Reload stats to show updated counts
     setTimeout(loadStats, 500);
 
   } catch (error) {
     console.error('Test failed:', error);
     testResult.className = 'test-result error';
-    testResult.textContent = `❌ Test error: ${error.message}`;
+    testResult.textContent = `Test error: ${error.message}`;
     testResult.classList.remove('hidden');
   } finally {
     testCaptureBtn.disabled = false;
-    testCaptureBtn.textContent = '🔬 Test Message Capture';
+    testCaptureBtn.textContent = 'Test Message Capture';
   }
 }
 
@@ -322,28 +377,27 @@ function openImport() {
  */
 async function rescanMessages() {
   rescanBtn.disabled = true;
-  rescanBtn.textContent = '🔄 Scanning...';
+  rescanBtn.textContent = 'Scanning...';
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) throw new Error('No active tab');
 
-    // Send message to content script
     await chrome.tabs.sendMessage(tab.id, { type: 'SCAN_DOM' });
 
     testResult.className = 'test-result success';
-    testResult.textContent = '✅ Rescan command sent. Check console for details.';
+    testResult.textContent = 'Rescan command sent. Check console for details.';
     testResult.classList.remove('hidden');
 
   } catch (error) {
     console.error('Rescan failed:', error);
     testResult.className = 'test-result error';
-    testResult.textContent = `❌ Rescan failed: ${error.message}`;
+    testResult.textContent = `Rescan failed: ${error.message}`;
     testResult.classList.remove('hidden');
   } finally {
     setTimeout(() => {
       rescanBtn.disabled = false;
-      rescanBtn.textContent = '🔄 Rescan Page Messages';
+      rescanBtn.textContent = 'Rescan Page Messages';
     }, 2000);
   }
 }
@@ -353,19 +407,14 @@ async function rescanMessages() {
  */
 async function loadSubscription() {
   try {
-    // Get user tier from storage (synced from database via background script)
     const result = await chrome.storage.local.get(['user_tier', 'user_id', 'api_config']);
     const tier = result.user_tier || 'free';
-    const userId = result.user_id;
-    const config = result.api_config;
 
-    // Update tier badge
     const info = TIER_INFO[tier] || TIER_INFO.free;
     tierBadge.textContent = info.label;
     tierBadge.className = `tier-badge tier-${tier}`;
     tierDescription.textContent = info.description;
 
-    // Show/hide buttons based on tier
     if (tier === 'free') {
       upgradeBtn.classList.remove('hidden');
       manageBillingBtn.classList.add('hidden');
@@ -376,7 +425,6 @@ async function loadSubscription() {
 
   } catch (error) {
     console.error('Error loading subscription:', error);
-    // Default to free tier on error
     tierBadge.textContent = 'FREE';
     tierBadge.className = 'tier-badge tier-free';
     tierDescription.textContent = 'Basic features';
@@ -384,28 +432,25 @@ async function loadSubscription() {
 }
 
 /**
- * Handle upgrade button click - redirect to Stripe Checkout
+ * Handle upgrade button click
  */
 async function handleUpgrade() {
   upgradeBtn.disabled = true;
-  upgradeBtn.textContent = '⏳ Loading...';
+  upgradeBtn.textContent = 'Loading...';
 
   try {
     const result = await chrome.storage.local.get(['user_id', 'api_config', AUTH_SESSION_KEY]);
     const session = result[AUTH_SESSION_KEY];
     const config = result.api_config;
 
-    // Determine auth method: JWT session or legacy keys
     let supabaseUrl, bearerToken, userId;
 
     if (session?.access_token) {
-      // Authenticated mode
       const SUPABASE_URL = 'https://svrcvfzlwhnixzuxaccf.supabase.co';
       supabaseUrl = SUPABASE_URL;
       bearerToken = session.access_token;
       userId = session.user?.id;
     } else if (config?.supabaseUrl && config?.supabaseKey) {
-      // Legacy mode
       supabaseUrl = config.supabaseUrl;
       bearerToken = config.supabaseKey;
       userId = result.user_id || config.userId;
@@ -413,7 +458,6 @@ async function handleUpgrade() {
       throw new Error('Please sign in or configure API keys first');
     }
 
-    // Call create-checkout Edge Function
     const response = await fetch(`${supabaseUrl}/functions/v1/create-checkout`, {
       method: 'POST',
       headers: {
@@ -422,7 +466,7 @@ async function handleUpgrade() {
       },
       body: JSON.stringify({
         userId: userId,
-        priceId: 'price_xxx_pro', // TODO: Replace with real price ID after Stripe setup
+        priceId: 'price_xxx_pro',
       }),
     });
 
@@ -439,16 +483,16 @@ async function handleUpgrade() {
     alert(`Upgrade failed: ${error.message}`);
   } finally {
     upgradeBtn.disabled = false;
-    upgradeBtn.textContent = '⚡ Upgrade to Pro';
+    upgradeBtn.textContent = 'Upgrade to Pro';
   }
 }
 
 /**
- * Handle manage billing button click - redirect to Stripe Billing Portal
+ * Handle manage billing button click
  */
 async function handleManageBilling() {
   manageBillingBtn.disabled = true;
-  manageBillingBtn.textContent = '⏳ Loading...';
+  manageBillingBtn.textContent = 'Loading...';
 
   try {
     const result = await chrome.storage.local.get(['user_id', 'api_config', AUTH_SESSION_KEY]);
@@ -494,12 +538,12 @@ async function handleManageBilling() {
     alert(`Billing portal failed: ${error.message}`);
   } finally {
     manageBillingBtn.disabled = false;
-    manageBillingBtn.textContent = '⚙️ Manage Subscription';
+    manageBillingBtn.textContent = 'Manage Subscription';
   }
 }
 
 /**
- * Load and display sync status (captured vs synced messages)
+ * Load and display sync status
  */
 async function loadSyncStatus() {
   try {
@@ -516,13 +560,12 @@ async function loadSyncStatus() {
     pendingCount.textContent = pending;
     lastSyncTime.textContent = formatTimestamp(syncStatus.lastSyncTime);
 
-    // Highlight pending count if there are unsynced messages
     if (pending > 0) {
-      pendingCount.style.color = '#f5576c';
+      pendingCount.style.color = 'var(--scanner-red)';
       pendingCount.style.fontWeight = '700';
     } else {
-      pendingCount.style.color = '#155724';
-      pendingCount.style.fontWeight = '600';
+      pendingCount.style.color = 'var(--phosphor)';
+      pendingCount.style.fontWeight = '';
     }
 
   } catch (error) {
@@ -531,35 +574,31 @@ async function loadSyncStatus() {
 }
 
 /**
- * Force resync all messages by clearing syncedMessageIds
+ * Force resync all messages
  */
 async function forceResync() {
   forceSyncBtn.disabled = true;
-  forceSyncBtn.textContent = '⏳ Checking config...';
+  forceSyncBtn.textContent = 'Checking config...';
 
   try {
-    // Pre-check: Verify HuggingFace key is configured (required for embeddings)
     const configResult = await chrome.storage.local.get(['api_config']);
     const config = configResult.api_config;
 
     if (!config?.huggingfaceKey) {
       syncResult.className = 'test-result error';
-      syncResult.textContent = '❌ HuggingFace API key is required for sync. Click "Configure API Keys" to add it.';
+      syncResult.textContent = 'HuggingFace API key required. Click "Configure API Keys" to add it.';
       syncResult.classList.remove('hidden');
       forceSyncBtn.disabled = false;
-      forceSyncBtn.textContent = '⚡ Force Resync All Messages';
+      forceSyncBtn.textContent = 'Force Resync All Messages';
       return;
     }
 
-    forceSyncBtn.textContent = '⏳ Clearing sync state...';
+    forceSyncBtn.textContent = 'Clearing sync state...';
 
-    // Step 1: Clear the syncedMessageIds to force full resync
     const result = await chrome.storage.local.get(['last_sync_status']);
     const syncStatus = result.last_sync_status || {};
-
     const previousCount = (syncStatus.syncedMessageIds || []).length;
 
-    // Reset sync state
     await chrome.storage.local.set({
       last_sync_status: {
         ...syncStatus,
@@ -568,10 +607,9 @@ async function forceResync() {
       }
     });
 
-    console.log(`🔄 Cleared ${previousCount} synced message IDs`);
+    console.log(`Cleared ${previousCount} synced message IDs`);
 
-    // Step 2: Trigger sync via background script
-    forceSyncBtn.textContent = '🔄 Syncing to database...';
+    forceSyncBtn.textContent = 'Syncing to database...';
 
     const syncResponse = await chrome.runtime.sendMessage({
       type: 'FORCE_SYNC'
@@ -579,24 +617,22 @@ async function forceResync() {
 
     if (syncResponse && syncResponse.success) {
       syncResult.className = 'test-result success';
-      syncResult.textContent = `✅ Success! Synced ${syncResponse.synced} messages to database.`;
+      syncResult.textContent = `Synced ${syncResponse.synced} messages to database.`;
     } else {
       throw new Error(syncResponse?.error || 'Sync failed');
     }
 
     syncResult.classList.remove('hidden');
-
-    // Refresh sync status display
     await loadSyncStatus();
 
   } catch (error) {
     console.error('Force resync failed:', error);
     syncResult.className = 'test-result error';
-    syncResult.textContent = `❌ Resync failed: ${error.message}`;
+    syncResult.textContent = `Resync failed: ${error.message}`;
     syncResult.classList.remove('hidden');
   } finally {
     forceSyncBtn.disabled = false;
-    forceSyncBtn.textContent = '⚡ Force Resync All Messages';
+    forceSyncBtn.textContent = 'Force Resync All Messages';
   }
 }
 
@@ -606,7 +642,7 @@ const hydeCBStatus = document.getElementById('hydeCBStatus');
 const jinaCBStatus = document.getElementById('jinaCBStatus');
 
 /**
- * Load and display circuit breaker status for retrieval health
+ * Load and display circuit breaker status
  */
 async function loadCircuitBreakerStatus() {
   const CB_KEYS = [
@@ -622,22 +658,18 @@ async function loadCircuitBreakerStatus() {
     for (const cb of CB_KEYS) {
       const state = result[cb.key];
       if (!state || !state.isOpen) {
-        cb.el.textContent = '🟢 OK';
-        cb.el.style.color = '#155724';
+        cb.el.innerHTML = statusHTML('status-dot--ok', 'OK');
       } else {
         const elapsed = Date.now() - state.openedAt;
         const remaining = Math.max(0, state.cooldownMs - elapsed);
         if (remaining <= 0) {
-          // Cooldown expired — show as probing
-          cb.el.textContent = '🟡 Probing';
-          cb.el.style.color = '#856404';
+          cb.el.innerHTML = statusHTML('status-dot--warn', 'Probing');
         } else {
           const remainingSec = Math.ceil(remaining / 1000);
           const display = remainingSec >= 60
             ? `${Math.ceil(remainingSec / 60)}m`
             : `${remainingSec}s`;
-          cb.el.textContent = `🔴 OPEN (${display})`;
-          cb.el.style.color = '#721c24';
+          cb.el.innerHTML = statusHTML('status-dot--error', `OPEN (${display})`);
         }
       }
     }
@@ -658,7 +690,6 @@ async function loadMemoryMode() {
     }
   } catch (error) {
     console.error('Error loading memory mode:', error);
-    // Default to full
     const radio = document.querySelector('input[name="memoryMode"][value="full"]');
     if (radio) radio.checked = true;
   }
@@ -671,14 +702,14 @@ const deleteAllBtn = document.getElementById('deleteAllBtn');
 const dataResult = document.getElementById('dataResult');
 
 /**
- * Open the Memory Management page in a new tab
+ * Open the Memory Management page
  */
 function openMemories() {
   chrome.tabs.create({ url: chrome.runtime.getURL('popup/memories.html') });
 }
 
 /**
- * Export all user data as a JSON download
+ * Export all user data as JSON
  */
 async function handleExportData() {
   exportDataBtn.disabled = true;
@@ -689,12 +720,10 @@ async function handleExportData() {
     const response = await chrome.runtime.sendMessage({ type: 'EXPORT_MY_DATA' });
     if (!response?.success) throw new Error(response?.error || 'Export failed');
 
-    // Create downloadable JSON blob
     const json = JSON.stringify(response.data, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
 
-    // Trigger download via a temporary link
     const a = document.createElement('a');
     a.href = url;
     a.download = `kyt-data-export-${new Date().toISOString().slice(0,10)}.json`;
@@ -703,7 +732,6 @@ async function handleExportData() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    // Show counts
     const counts = Object.entries(response.data)
       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.length : '?'}`)
       .join(', ');
@@ -752,7 +780,6 @@ async function handleDeleteAll() {
     dataResult.textContent = `All data deleted. ${counts}`;
     dataResult.classList.remove('hidden');
 
-    // Refresh stats
     setTimeout(loadStats, 500);
     setTimeout(loadSyncStatus, 500);
   } catch (error) {
@@ -812,20 +839,19 @@ async function checkFirstInstallRedirect() {
   try {
     const result = await chrome.storage.local.get(['show_import_onboarding']);
     if (result.show_import_onboarding === true) {
-      // Redirect to import modal with first-install mode
       window.location.href = 'import-modal.html?mode=first-install';
-      return true; // Redirecting
+      return true;
     }
   } catch (error) {
     console.error('Error checking first install:', error);
   }
-  return false; // Not redirecting
+  return false;
 }
 
-// Initial load - check for first-install redirect first
+// Initial load
 checkFirstInstallRedirect().then(redirecting => {
   if (!redirecting) {
-    // Only load normal UI if not redirecting
+    initHeaderScanner();
     loadAuthStatus();
     loadMemoryMode();
     loadProfile();
@@ -836,7 +862,6 @@ checkFirstInstallRedirect().then(redirecting => {
     loadSyncStatus();
     loadCircuitBreakerStatus();
 
-    // Refresh stats every 5 seconds
     setInterval(() => {
       loadStats();
       loadSyncStatus();

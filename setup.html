@@ -3,147 +3,213 @@
 
 <head>
   <title>KYT Memory — Sign In</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=Rajdhani:wght@600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --cockpit-black: #080809;
+      --cockpit-edge: #111114;
+      --cockpit-panel: #1A1A1F;
+      --cockpit-panel-hover: #222228;
+      --scanner-red: #FF3B3B;
+      --scanner-red-glow: rgba(255, 59, 59, 0.35);
+      --scanner-red-dim: rgba(255, 59, 59, 0.15);
+      --amber: #FFB800;
+      --amber-dim: rgba(255, 184, 0, 0.12);
+      --phosphor: #39FF14;
+      --phosphor-dim: rgba(57, 255, 20, 0.15);
+      --silver: #E8E8EC;
+      --silver-dim: #8A8A94;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-hover: rgba(255, 255, 255, 0.12);
+      --font-display: 'Rajdhani', 'Segoe UI', sans-serif;
+      --font-body: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'Space Mono', 'Courier New', monospace;
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: var(--font-body);
       max-width: 460px;
       margin: 40px auto;
       padding: 20px;
-      background: #f5f5f5;
-      color: #333;
+      background: var(--cockpit-black);
+      color: var(--silver);
     }
 
     .container {
-      background: white;
+      background: var(--cockpit-edge);
       padding: 32px;
-      border-radius: 12px;
-      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      border-radius: 2px;
+      border: 1px solid var(--border-subtle);
     }
 
     .brand { text-align: center; margin-bottom: 28px; }
-    .brand h1 { font-size: 22px; margin-bottom: 4px; }
-    .brand p { color: #888; font-size: 13px; }
+    .brand h1 {
+      font-family: var(--font-display);
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      letter-spacing: 0.5px;
+    }
+    .brand p { color: var(--silver-dim); font-size: 13px; }
 
-    /* ─── Auth forms ─── */
+    /* Auth forms */
     .auth-section { display: flex; flex-direction: column; gap: 14px; }
     .auth-section.hidden { display: none; }
 
-    label { display: block; font-weight: 600; font-size: 13px; color: #555; margin-bottom: 4px; }
+    label { display: block; font-weight: 600; font-size: 13px; color: var(--silver-dim); margin-bottom: 4px; }
 
     input[type="email"],
     input[type="password"],
     input[type="text"] {
       width: 100%;
       padding: 10px 12px;
-      border: 1px solid #ddd;
-      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 2px;
       font-size: 14px;
-      font-family: inherit;
+      font-family: var(--font-body);
       outline: none;
       transition: border-color 0.15s;
+      background: var(--cockpit-panel);
+      color: var(--silver);
     }
-    input:focus { border-color: #007bff; }
+    input:focus { border-color: var(--scanner-red); box-shadow: 0 0 0 1px var(--scanner-red-dim); }
+    input::placeholder { color: var(--silver-dim); opacity: 0.6; }
 
     .field { margin-bottom: 2px; }
 
     .btn-primary {
       width: 100%;
       padding: 11px;
-      background: #007bff;
+      background: var(--scanner-red);
       color: white;
       border: none;
-      border-radius: 6px;
+      border-radius: 2px;
       font-size: 15px;
       font-weight: 600;
+      font-family: var(--font-body);
       cursor: pointer;
-      transition: background 0.15s;
+      transition: all 0.15s;
     }
-    .btn-primary:hover { background: #0056b3; }
-    .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
+    .btn-primary:hover { background: #e63434; box-shadow: 0 0 12px var(--scanner-red-dim); }
+    .btn-primary:disabled { background: var(--cockpit-panel); color: var(--silver-dim); cursor: not-allowed; }
 
     .btn-google {
       width: 100%;
       padding: 11px;
-      background: white;
-      color: #333;
-      border: 1px solid #ddd;
-      border-radius: 6px;
+      background: var(--cockpit-panel);
+      color: var(--silver);
+      border: 1px solid var(--border-subtle);
+      border-radius: 2px;
       font-size: 14px;
       font-weight: 600;
+      font-family: var(--font-body);
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
-      transition: background 0.15s;
+      transition: all 0.15s;
     }
-    .btn-google:hover { background: #f8f8f8; }
+    .btn-google:hover { background: var(--cockpit-panel-hover); border-color: var(--border-hover); }
 
     .divider {
       display: flex; align-items: center; gap: 10px;
-      color: #aaa; font-size: 12px; margin: 4px 0;
+      color: var(--silver-dim); font-size: 12px; margin: 4px 0;
     }
     .divider::before, .divider::after {
-      content: ''; flex: 1; height: 1px; background: #e0e0e0;
+      content: ''; flex: 1; height: 1px; background: var(--border-subtle);
     }
 
     .toggle-link {
-      text-align: center; font-size: 13px; color: #007bff;
+      text-align: center; font-size: 13px; color: var(--scanner-red);
       cursor: pointer; user-select: none;
     }
     .toggle-link:hover { text-decoration: underline; }
 
-    /* ─── Signed-in state ─── */
+    /* Signed-in state */
     .signed-in { text-align: center; }
-    .signed-in .email { font-weight: 600; font-size: 15px; margin: 8px 0; word-break: break-all; }
-    .signed-in .check { font-size: 40px; margin-bottom: 8px; }
+    .signed-in .email {
+      font-family: var(--font-mono);
+      font-weight: 400;
+      font-size: 14px;
+      margin: 8px 0;
+      word-break: break-all;
+      color: var(--silver);
+    }
+    .signed-in .check {
+      font-size: 40px;
+      margin-bottom: 8px;
+      color: var(--phosphor);
+    }
     .btn-signout {
       margin-top: 14px;
       padding: 9px 20px;
-      background: #f0f0f0;
-      color: #333;
-      border: 1px solid #ddd;
-      border-radius: 6px;
+      background: var(--cockpit-panel);
+      color: var(--silver);
+      border: 1px solid var(--border-subtle);
+      border-radius: 2px;
       font-size: 13px;
+      font-family: var(--font-body);
       cursor: pointer;
     }
-    .btn-signout:hover { background: #e4e4e4; }
+    .btn-signout:hover { background: var(--cockpit-panel-hover); }
 
-    /* ─── Status messages ─── */
+    /* Status messages */
     .status {
-      margin-top: 14px; padding: 12px; border-radius: 6px;
+      margin-top: 14px; padding: 12px; border-radius: 2px;
       font-size: 13px; display: none;
     }
-    .status.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; display: block; }
-    .status.error   { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; display: block; }
-    .status.info    { background: #e7f3ff; color: #0c5460; border: 1px solid #b8daff; display: block; }
+    .status.success {
+      background: var(--phosphor-dim);
+      color: var(--phosphor);
+      border: 1px solid rgba(57, 255, 20, 0.25);
+      display: block;
+    }
+    .status.error {
+      background: var(--scanner-red-dim);
+      color: var(--scanner-red);
+      border: 1px solid rgba(255, 59, 59, 0.25);
+      display: block;
+    }
+    .status.info {
+      background: var(--amber-dim);
+      color: var(--amber);
+      border: 1px solid rgba(255, 184, 0, 0.2);
+      display: block;
+    }
 
-    /* ─── Developer mode ─── */
+    /* Developer mode */
     .dev-toggle {
-      margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee;
+      margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-subtle);
       text-align: center;
     }
     .dev-toggle summary {
-      font-size: 12px; color: #999; cursor: pointer; list-style: none;
+      font-size: 12px; color: var(--silver-dim); cursor: pointer; list-style: none;
     }
     .dev-toggle summary::-webkit-details-marker { display: none; }
     .dev-section { margin-top: 16px; text-align: left; }
     .dev-section label { font-size: 12px; }
-    .dev-section input { font-family: monospace; font-size: 12px; }
-    .dev-section small { color: #888; font-size: 11px; display: block; margin: 2px 0 10px; }
+    .dev-section input {
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .dev-section small { color: var(--silver-dim); font-size: 11px; display: block; margin: 2px 0 10px; }
     .dev-section .field { margin-bottom: 6px; }
     .btn-dev-save {
       margin-top: 10px;
       padding: 8px 16px;
-      background: #6c757d;
-      color: white;
-      border: none;
-      border-radius: 4px;
+      background: var(--cockpit-panel);
+      color: var(--silver);
+      border: 1px solid var(--border-subtle);
+      border-radius: 2px;
       font-size: 13px;
+      font-family: var(--font-body);
       cursor: pointer;
     }
-    .btn-dev-save:hover { background: #565e64; }
+    .btn-dev-save:hover { background: var(--cockpit-panel-hover); }
 
     .dev-section .checkbox-field {
       display: flex; align-items: center; gap: 6px; margin: 10px 0;
@@ -160,7 +226,7 @@
       <p>Keep Your Thoughts — Sign in to start</p>
     </div>
 
-    <!-- ═══ Signed-in state ═══ -->
+    <!-- Signed-in state -->
     <div id="signedInView" class="auth-section hidden">
       <div class="signed-in">
         <div class="check">&#10003;</div>
@@ -171,7 +237,7 @@
       <div id="migrationPrompt" class="status info" style="display:none;"></div>
     </div>
 
-    <!-- ═══ Login form ═══ -->
+    <!-- Login form -->
     <div id="loginView" class="auth-section">
       <form id="loginForm">
         <div class="field">
@@ -195,7 +261,7 @@
       <p class="toggle-link" id="showSignUp">Create an account</p>
     </div>
 
-    <!-- ═══ Sign-up form ═══ -->
+    <!-- Sign-up form -->
     <div id="signUpView" class="auth-section hidden">
       <form id="signUpForm">
         <div class="field">
@@ -213,11 +279,11 @@
 
     <div id="statusMsg" class="status"></div>
 
-    <!-- ═══ Developer Mode ═══ -->
+    <!-- Developer Mode -->
     <details class="dev-toggle">
       <summary>Developer / Self-Host Mode</summary>
       <div class="dev-section">
-        <p style="font-size:12px;color:#888;margin-bottom:12px;">
+        <p style="font-size:12px;color:var(--silver-dim);margin-bottom:12px;">
           For self-hosters: paste your own API keys below. These override the hosted auth flow.
         </p>
         <div class="field">
