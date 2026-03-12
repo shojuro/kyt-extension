@@ -29,7 +29,7 @@ server.tool(
     query: z.string().describe('Search query for cross-platform memory'),
     topK: z.number().optional().default(5).describe('Number of results (default: 5)'),
     useHyde: z.boolean().optional().default(true).describe('Enable HyDE augmented search'),
-    platform: z.enum(['all', 'chatgpt', 'claude', 'claude-code', 'cli', 'gemini']).optional().default('all')
+    platform: z.enum(['all', 'chatgpt', 'claude', 'claude-code', 'cli', 'gemini', 'mobile']).optional().default('all')
       .describe('Filter by platform'),
     fast: z.boolean().optional().default(false).describe('Fast search (no HyDE/reranking, <1s)'),
   },
