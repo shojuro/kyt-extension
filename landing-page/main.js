@@ -441,9 +441,9 @@
                 }
               })
               .catch(function () {
-                btn.disabled = false;
+                btn.textContent = 'Error — refresh to retry';
               });
-          });
+          }, { once: true });
         });
       })
       .catch(function () {
