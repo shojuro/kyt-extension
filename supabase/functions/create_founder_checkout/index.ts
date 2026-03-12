@@ -24,6 +24,7 @@ const PRICE_TIER_1 = 'price_1T9lKzRYAcScMJtScvDwYDxg' // $5 (spots 1-100)
 const PRICE_TIER_2 = 'price_1T9lKzRYAcScMJtSQb6Tu6UT' // $10 (spots 101-200)
 const FOUNDER_CAP = 200
 const LANDING_URL = Deno.env.get('LANDING_PAGE_URL') || 'https://keepyourthoughts.app'
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
@@ -94,8 +95,8 @@ Deno.serve(async (req: Request) => {
       },
     }
 
-    // Prefill email on Stripe form if provided
-    if (email) {
+    // Prefill email on Stripe form if provided (validate first)
+    if (email && EMAIL_RE.test(email)) {
       sessionParams.customer_email = email
     }
 

@@ -28,6 +28,11 @@
     return;
   }
 
+  // Strip token from URL bar to prevent leaking via browser history/analytics
+  if (window.history.replaceState) {
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }
+
   // Fetch founder info
   fetchFounderInfo();
 
