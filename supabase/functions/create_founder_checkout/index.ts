@@ -12,7 +12,7 @@ import { corsHeaders } from '../_shared/headers.ts'
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts'
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY')!, {
-  apiVersion: '2024-11-20',
+  apiVersion: '2025-02-24.acacia',
 })
 
 const supabase = createClient(
@@ -23,7 +23,7 @@ const supabase = createClient(
 const PRICE_TIER_1 = 'price_1T9lKzRYAcScMJtScvDwYDxg' // $5 (spots 1-100)
 const PRICE_TIER_2 = 'price_1T9lKzRYAcScMJtSQb6Tu6UT' // $10 (spots 101-200)
 const FOUNDER_CAP = 200
-const LANDING_URL = Deno.env.get('LANDING_PAGE_URL') || 'https://kyt.land'
+const LANDING_URL = Deno.env.get('LANDING_PAGE_URL') || 'https://keepyourthoughts.app'
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {

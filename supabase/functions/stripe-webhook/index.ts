@@ -24,7 +24,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 // Initialize Stripe with Web Crypto provider for Deno
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY')!, {
-  apiVersion: '2024-11-20',
+  apiVersion: '2025-02-24.acacia',
 })
 const cryptoProvider = Stripe.createSubtleCryptoProvider()
 
