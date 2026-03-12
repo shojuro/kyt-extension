@@ -1463,83 +1463,96 @@ body::before {
 }
 
 /* ============================================
-   FOUNDER UPSELL (post-email-submission)
+   FOUNDER CHOICE (visible beside email form)
    ============================================ */
-.cta-form__founder-upsell {
-  margin-top: var(--space-md);
-  padding: var(--space-md);
-  background: rgba(255, 184, 0, 0.04);
-  border: 1px solid rgba(255, 184, 0, 0.15);
-  border-radius: 10px;
+.founder-choice {
   text-align: center;
-  animation: upsellReveal 0.5s var(--ease-smooth) both;
+  margin-top: var(--space-sm);
 }
 
-@keyframes upsellReveal {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.founder-upsell__text {
-  font-family: 'Rajdhani', sans-serif;
-  font-size: var(--fs-md);
-  font-weight: 600;
-  color: var(--silver);
+.founder-choice__divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
   margin-bottom: var(--space-sm);
 }
 
-.founder-upsell__btn {
-  display: inline-block;
-  padding: 12px 28px;
-  background: var(--amber);
-  color: var(--cockpit-black);
-  font-family: 'Rajdhani', sans-serif;
-  font-size: var(--fs-base);
-  font-weight: 700;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: opacity 0.2s, box-shadow 0.2s;
-  letter-spacing: 0.02em;
+.founder-choice__divider::before,
+.founder-choice__divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 184, 0, 0.2), transparent);
 }
 
-.founder-upsell__btn:hover {
-  opacity: 0.9;
-  box-shadow: 0 0 20px rgba(255, 184, 0, 0.25);
-}
-
-.founder-upsell__btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.founder-upsell__price {
-  font-family: 'Space Mono', monospace;
-  font-weight: 700;
-}
-
-.founder-upsell__note {
+.founder-choice__divider span {
   font-family: 'Space Mono', monospace;
   font-size: var(--fs-xs);
   color: var(--silver-dim);
-  margin-top: var(--space-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
 }
 
-.founder-upsell__spots-text {
+.founder-choice__btn {
+  display: inline-block;
+  padding: 12px 28px;
+  background: transparent;
+  color: var(--amber);
+  font-family: 'Rajdhani', sans-serif;
+  font-size: var(--fs-base);
+  font-weight: 700;
+  border: 1px solid var(--amber);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+  letter-spacing: 0.02em;
+}
+
+.founder-choice__btn:hover {
+  background: var(--amber);
+  color: var(--cockpit-black);
+  box-shadow: 0 0 20px rgba(255, 184, 0, 0.2);
+}
+
+.founder-choice__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: var(--silver-dim);
+  color: var(--silver-dim);
+}
+
+.founder-choice__btn:disabled:hover {
+  background: transparent;
+  box-shadow: none;
+}
+
+.founder-choice__price {
+  font-family: 'Space Mono', monospace;
+  font-weight: 700;
+}
+
+.founder-choice__note {
+  font-family: 'Space Mono', monospace;
+  font-size: var(--fs-xs);
+  color: var(--silver-dim);
+  margin-top: 6px;
+}
+
+.founder-choice__spots {
   color: var(--amber);
   font-weight: 700;
 }
 
-.cta-form__founder-upsell[data-sold-out="true"] .founder-upsell__btn {
-  background: var(--silver-dim);
+.founder-choice[data-sold-out="true"] .founder-choice__btn {
+  border-color: var(--silver-dim);
+  color: var(--silver-dim);
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+/* Slightly smaller in the exit modal context */
+.exit-modal .founder-choice {
+  display: none;
 }
 
 /* ============================================

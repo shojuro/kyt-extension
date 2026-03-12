@@ -381,85 +381,78 @@
   }
 
   // ============================================
-  // FOUNDER UPSELL
+  // FOUNDER CHOICE (visible on page load)
   // ============================================
   const SUPABASE_FN_BASE = 'https://svrcvfzlwhnixzuxaccf.supabase.co/functions/v1';
-  let founderCountCache = null;
-  let founderCountFetchedAt = 0;
-  const FOUNDER_COUNT_TTL = 60000; // 60s cache
 
-  async function getFounderCount() {
-    const now = Date.now();
-    if (founderCountCache !== null && now - founderCountFetchedAt < FOUNDER_COUNT_TTL) {
-      return founderCountCache;
-    }
-    try {
-      const res = await fetch(SUPABASE_FN_BASE + '/get_founder_count');
-      if (!res.ok) return null;
-      const data = await res.json();
-      founderCountCache = data;
-      founderCountFetchedAt = now;
-      return data;
-    } catch {
-      return null;
-    }
-  }
+  function initFounderChoices() {
+    const choices = document.querySelectorAll('[data-founder-choice]');
+    if (!choices.length) return;
 
-  async function showFounderUpsell(upsellEl, email) {
-    const countData = await getFounderCount();
-    if (!countData || countData.count >= countData.total) {
-      // Sold out — still show but disabled
-      if (countData && countData.count >= countData.total) {
-        upsellEl.setAttribute('data-sold-out', 'true');
-        const btn = upsellEl.querySelector('.founder-upsell__btn');
-        btn.disabled = true;
-        btn.textContent = 'Sold Out';
-        const spotsText = upsellEl.querySelector('.founder-upsell__spots-text');
-        if (spotsText) spotsText.textContent = '0';
-        upsellEl.hidden = false;
-      }
-      return;
-    }
+    // Fetch count once on load, populate all choice blocks
+    fetch(SUPABASE_FN_BASE + '/get_founder_count')
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data) return;
 
-    const remaining = countData.total - countData.count;
-    const price = countData.count < 100 ? '$5' : '$10';
+        var remaining = data.total - data.count;
+        var price = data.count < 100 ? '$5' : '$10';
+        var soldOut = data.count >= data.total;
 
-    const priceEl = upsellEl.querySelector('.founder-upsell__price');
-    const spotsText = upsellEl.querySelector('.founder-upsell__spots-text');
-    const btn = upsellEl.querySelector('.founder-upsell__btn');
+        choices.forEach(function (el) {
+          var btn = el.querySelector('.founder-choice__btn');
+          var priceEl = el.querySelector('.founder-choice__price');
+          var spotsEl = el.querySelector('.founder-choice__spots');
 
-    if (priceEl) priceEl.textContent = price;
-    if (spotsText) spotsText.textContent = String(remaining);
+          if (spotsEl) spotsEl.textContent = String(remaining);
+          if (priceEl) priceEl.textContent = price;
 
-    btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      btn.style.opacity = '0.7';
+          if (soldOut) {
+            el.setAttribute('data-sold-out', 'true');
+            btn.disabled = true;
+            btn.textContent = 'Sold Out';
+            return;
+          }
 
-      try {
-        const res = await fetch(SUPABASE_FN_BASE + '/create_founder_checkout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: email || '' }),
+          btn.addEventListener('click', function () {
+            // Grab email from the nearest form if user already typed one
+            var form = el.previousElementSibling;
+            while (form && !form.classList.contains('cta-form')) {
+              form = form.previousElementSibling;
+            }
+            var emailInput = form ? form.querySelector('.cta-form__input') : null;
+            var email = emailInput ? emailInput.value.trim() : '';
+
+            btn.disabled = true;
+
+            fetch(SUPABASE_FN_BASE + '/create_founder_checkout', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ email: email }),
+            })
+              .then(function (res) { return res.json(); })
+              .then(function (result) {
+                if (result.sold_out) {
+                  btn.textContent = 'Sold Out';
+                  return;
+                }
+                if (result.url) {
+                  window.location.href = result.url;
+                }
+              })
+              .catch(function () {
+                btn.disabled = false;
+              });
+          });
         });
-        const data = await res.json();
-
-        if (data.sold_out) {
-          btn.textContent = 'Sold Out';
-          return;
-        }
-
-        if (data.url) {
-          window.location.href = data.url;
-        }
-      } catch (err) {
-        console.error('Founder checkout error:', err);
-        btn.disabled = false;
-        btn.style.opacity = '1';
-      }
-    }, { once: true });
-
-    upsellEl.hidden = false;
+      })
+      .catch(function () {
+        // Silently hide founder choices on network error
+        choices.forEach(function (el) { el.style.display = 'none'; });
+      });
   }
+
+  initFounderChoices();
 
   // ============================================
   // EMAIL FORM SUBMISSION
@@ -522,12 +515,6 @@
         if (btnText) btnText.textContent = "You're in";
 
         flashScanners();
-
-        // Show founder upsell after successful signup
-        const upsellEl = form.querySelector('.cta-form__founder-upsell');
-        if (upsellEl) {
-          showFounderUpsell(upsellEl, email);
-        }
       } catch (err) {
         if (btnText) btnText.textContent = 'Try again';
         btn.disabled = false;
