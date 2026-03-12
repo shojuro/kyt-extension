@@ -251,24 +251,6 @@
   }
 
   // ============================================
-  // RECENCY SIGNAL
-  // ============================================
-  const recencyEl = document.getElementById('recency-minutes');
-  if (recencyEl) {
-    let minutes = Math.floor(Math.random() * 6) + 2;
-    recencyEl.textContent = minutes;
-
-    setInterval(() => {
-      if (minutes >= 12 || Math.random() < 0.3) {
-        minutes = Math.floor(Math.random() * 4) + 1;
-      } else {
-        minutes++;
-      }
-      recencyEl.textContent = minutes;
-    }, 30000);
-  }
-
-  // ============================================
   // DEMO CARD TAB SWITCHING
   // ============================================
   const demoTabs = document.querySelectorAll('.demo-tab');

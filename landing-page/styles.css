@@ -1150,26 +1150,6 @@ body::before {
   text-align: center;
 }
 
-/* Recency signal */
-.recency-signal {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-bottom: var(--space-xl);
-  font-family: 'Space Mono', monospace;
-  font-size: var(--fs-sm);
-  color: var(--silver-dim);
-}
-
-.recency-signal__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--phosphor);
-  box-shadow: 0 0 8px var(--phosphor-dim);
-  animation: pulse-dot 2s ease-in-out infinite;
-}
 
 .quote {
   max-width: 620px;
