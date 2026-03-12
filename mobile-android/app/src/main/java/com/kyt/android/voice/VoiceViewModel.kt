@@ -84,11 +84,13 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val request = Request.Builder()
-                .url("$proxyUrl?token=$token")
+                .url(proxyUrl)
                 .build()
 
             webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
+                    // Send auth token as first message (not in URL to avoid logging)
+                    webSocket.send("""{"type":"auth","token":"$token"}""")
                     _uiState.value = _uiState.value.copy(sessionState = SessionState.LISTENING)
                 }
 

@@ -277,22 +277,45 @@ const httpServer = createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on('connection', (ws, req) => {
-  // Extract JWT from query string: ws://host:port?token=<jwt>
+  // Support two auth methods:
+  // 1. Query string: ws://host:port?token=<jwt> (legacy, logged in URLs — avoid)
+  // 2. First message: {"type":"auth","token":"<jwt>"} (preferred, not logged)
   const url = new URL(req.url || '', `http://${req.headers.host}`);
-  const token = url.searchParams.get('token');
+  const queryToken = url.searchParams.get('token');
 
-  if (!token) {
-    ws.close(4001, 'Missing auth token');
-    return;
+  if (queryToken) {
+    // Legacy path — authenticate immediately from query string
+    const payload = decodeJwt(queryToken);
+    if (!payload?.sub) {
+      ws.close(4001, 'Invalid or expired token');
+      return;
+    }
+    handleClientConnection(ws, payload.sub);
+  } else {
+    // Preferred path — wait for auth message (5s timeout)
+    const authTimeout = setTimeout(() => {
+      ws.close(4001, 'Auth timeout — send {"type":"auth","token":"..."} within 5s');
+    }, 5000);
+
+    ws.once('message', (data: Buffer | string) => {
+      clearTimeout(authTimeout);
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type !== 'auth' || !msg.token) {
+          ws.close(4001, 'First message must be {"type":"auth","token":"..."}');
+          return;
+        }
+        const payload = decodeJwt(msg.token);
+        if (!payload?.sub) {
+          ws.close(4001, 'Invalid or expired token');
+          return;
+        }
+        handleClientConnection(ws, payload.sub);
+      } catch {
+        ws.close(4001, 'Invalid auth message');
+      }
+    });
   }
-
-  const payload = decodeJwt(token);
-  if (!payload?.sub) {
-    ws.close(4001, 'Invalid or expired token');
-    return;
-  }
-
-  handleClientConnection(ws, payload.sub);
 });
 
 // ── Periodic Cleanup ─────────────────────────────────────────

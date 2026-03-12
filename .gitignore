@@ -128,13 +128,13 @@ baselines/
 # SYNTHETIC DATA GENERATION
 # ============================================
 # Generated training datasets (never commit generated data)
-data/
-data/*.json
-!data/.gitkeep
+/data/
+/data/*.json
+!/data/.gitkeep
 
 # Samples and checkpoints
-data/samples/
-data/checkpoints/
+/data/samples/
+/data/checkpoints/
 
 # Cost tracking (contains API usage data)
 cost_tracking.json
