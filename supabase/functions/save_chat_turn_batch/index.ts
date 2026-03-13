@@ -7,7 +7,7 @@ import { generateChunkContext } from '../_shared/context-generator.ts';
 import type { ClientContext } from '../_shared/anthropic-client.ts';
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
-import { getUserTier, getTierLimits } from '../_shared/tier-check.ts';
+import { getUserTier, getTierLimits, RESURFACE_LIMITS } from '../_shared/tier-check.ts';
 
 const MAX_BATCH_SIZE = 50;
 
@@ -106,10 +106,56 @@ serve(async (req) => {
             return null;
         }
 
+        // Re-ingestion rate limit check: count distinct old conversations resurfaced recently
+        // "Old" = content timestamp is >90 days before ingestion (now)
+        const RESURFACE_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+        const nowMs = Date.now();
+        const nowIso = new Date().toISOString();
+
+        async function checkResurfaceLimit(userId: string): Promise<{ limited: boolean; count: number; limit: number }> {
+            const limit = RESURFACE_LIMITS[tier] || RESURFACE_LIMITS.free;
+            try {
+                const { data, error } = await supabase.rpc('count_resurfaced_conversations', {
+                    p_user_id: userId,
+                    p_window_days: 90,
+                    p_gap_seconds: 7776000, // 90 days in seconds
+                });
+                if (error) {
+                    console.warn('Resurface limit check failed, allowing:', error.message);
+                    return { limited: false, count: 0, limit };
+                }
+                const count = data || 0;
+                return { limited: count >= limit, count, limit };
+            } catch {
+                return { limited: false, count: 0, limit };
+            }
+        }
+
+        // Separate turns into "genuinely recent" vs "resurfaced old"
+        function isResurfacedTurn(turn: any): boolean {
+            const turnTimestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : nowMs;
+            return (nowMs - turnTimestamp) > RESURFACE_THRESHOLD_MS;
+        }
+
         // FAST PATH: When skipping AI processing, do a single batch upsert
         // This is ~10x faster than sequential writes
         if (skip_ai_processing) {
-            const records = turns.map((turn: any) => {
+            // Check re-ingestion rate limit for resurfaced turns
+            const userId = turns[0]?.user_id;
+            const hasResurfaced = turns.some((t: any) => isResurfacedTurn(t));
+            let rateLimited = false;
+
+            if (hasResurfaced && userId) {
+                const check = await checkResurfaceLimit(userId);
+                if (check.limited) {
+                    rateLimited = true;
+                    console.log(`Re-ingestion rate limited: user=${userId}, count=${check.count}/${check.limit}`);
+                }
+            }
+
+            const records = turns
+                .filter((turn: any) => !rateLimited || !isResurfacedTurn(turn))
+                .map((turn: any) => {
                 const timestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : Date.now();
                 return {
                     user_id: turn.user_id,
@@ -125,7 +171,8 @@ serve(async (req) => {
                     start_timestamp: timestamp,
                     end_timestamp: timestamp,
                     created_at: new Date(timestamp).toISOString(),
-                    last_accessed: new Date().toISOString(),
+                    ingested_at: nowIso,
+                    last_accessed: nowIso,
                     access_count: 0,
                     is_injection: turn.is_injection || false,
                     is_question: detectIsQuestion(turn),
@@ -149,13 +196,16 @@ serve(async (req) => {
 
             // Data contains only inserted rows (duplicates are not returned)
             const insertedCount = data?.length || 0;
-            const duplicateCount = turns.length - insertedCount;
+            const skippedByRateLimit = rateLimited ? turns.filter((t: any) => isResurfacedTurn(t)).length : 0;
+            const duplicateCount = turns.length - insertedCount - skippedByRateLimit;
 
             return new Response(JSON.stringify({
                 success: true,
                 processed: turns.length,
                 inserted: insertedCount,
                 duplicates_skipped: duplicateCount,
+                rate_limited: rateLimited,
+                rate_limited_skipped: skippedByRateLimit,
                 errors: 0,
                 results: data?.map((d: any) => ({ id: d.id, success: true, duplicate: false })) || []
             }), {
@@ -196,7 +246,8 @@ serve(async (req) => {
                             start_timestamp: timestamp,
                             end_timestamp: timestamp,
                             created_at: new Date(timestamp).toISOString(),
-                            last_accessed: new Date().toISOString(),
+                            ingested_at: nowIso,
+                            last_accessed: nowIso,
                             access_count: 0,
                             is_injection: turn.is_injection || false,
                             is_question: true,
@@ -266,7 +317,8 @@ serve(async (req) => {
                     start_timestamp: timestamp,
                     end_timestamp: timestamp,
                     created_at: new Date(timestamp).toISOString(),
-                    last_accessed: new Date().toISOString(),
+                    ingested_at: nowIso,
+                    last_accessed: nowIso,
                     access_count: 0,
                     is_injection: turn.is_injection || false,
                     is_question: false, // Already verified above (questions short-circuit)

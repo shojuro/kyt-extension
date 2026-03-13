@@ -927,6 +927,7 @@
 
       let assistantText = '';
       let assistantMessageId = null;
+      let assistantCreateTime = null;
       let chunkCount = 0;
 
       while (true) {
@@ -964,7 +965,7 @@
                     role: 'user',
                     conversationId: metadata.conversationId,
                     model: metadata.model,
-                    timestamp: Date.now(),
+                    timestamp: messageNode.create_time ? messageNode.create_time * 1000 : Date.now(),
                     isVoice: isVoice,
                     platform: 'chatgpt',
                     captureMethod: 'sse_stream'
@@ -998,6 +999,12 @@
               assistantText += content;
             }
 
+            // Capture create_time from any message node in the stream
+            const ct = json.message?.create_time || json.create_time;
+            if (ct && typeof ct === 'number') {
+              assistantCreateTime = ct;
+            }
+
             if (!assistantMessageId) {
               assistantMessageId = json.id || json.message_id || json.conversation_id;
             }
@@ -1015,7 +1022,7 @@
           role: 'assistant',
           conversationId: metadata.conversationId,
           model: metadata.model,
-          timestamp: Date.now(),
+          timestamp: assistantCreateTime ? assistantCreateTime * 1000 : Date.now(),
           messageId: assistantMessageId || `msg_assistant_${Date.now()}`,
           platform: metadata.platform
         };
@@ -1371,12 +1378,24 @@
 
           domCaptureCount++;
 
+          // Extract original timestamp from <time datetime> element near this message
+          let domTimestamp = Date.now();
+          try {
+            const turnContainer = node.closest('[data-testid*="conversation-turn"]')
+              || node.closest('[class*="group"]');
+            const timeEl = turnContainer?.querySelector('time[datetime]');
+            if (timeEl) {
+              const parsed = new Date(timeEl.getAttribute('datetime')).getTime();
+              if (parsed > 0 && !isNaN(parsed)) domTimestamp = parsed;
+            }
+          } catch (_) { /* DOM structure changed — fallback to Date.now() */ }
+
           const message = {
             content: text,
             role: role,
             conversationId: 'dom_capture',  // Will be updated by content script if available
             model: 'chatgpt',
-            timestamp: Date.now(),
+            timestamp: domTimestamp,
             messageId: `msg_dom_${(window.KYT_Deduplicator?.hashContent(window.KYT_Deduplicator?.normalizeContent(text)) || Date.now())}_${role}`,
             platform: 'chatgpt',
             captureMethod: 'dom',  // Track capture method for deduplication (vs 'websocket' or 'fetch')

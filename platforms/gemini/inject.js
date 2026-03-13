@@ -760,12 +760,25 @@
     for (const turn of turns) {
       if (!Array.isArray(turn)) continue;
 
+      // Probe turn for epoch timestamps (seconds or milliseconds in 2020-2030 range)
+      let turnTimestamp = null;
+      for (let idx = 0; idx < Math.min(turn.length, 8); idx++) {
+        const val = turn[idx];
+        if (typeof val === 'number' && val > 1577836800 && val < 1893456000) {
+          turnTimestamp = val * 1000; // seconds → ms
+          break;
+        } else if (typeof val === 'number' && val > 1577836800000 && val < 1893456000000) {
+          turnTimestamp = val; // already ms
+          break;
+        }
+      }
+
       // User message: turn[2][0][0]
       try {
         if (Array.isArray(turn[2]) && Array.isArray(turn[2][0])) {
           const userText = turn[2][0][0];
           if (typeof userText === 'string' && userText.trim().length > 0) {
-            messages.push({ content: userText.trim(), role: 'user' });
+            messages.push({ content: userText.trim(), role: 'user', timestamp: turnTimestamp });
           }
         }
       } catch (_) {}
@@ -775,7 +788,7 @@
         if (Array.isArray(turn[3]) && Array.isArray(turn[3][0]) && Array.isArray(turn[3][0][0])) {
           const textArr = turn[3][0][0][1];
           if (Array.isArray(textArr) && typeof textArr[0] === 'string' && textArr[0].trim().length > 0) {
-            messages.push({ content: textArr[0].trim(), role: 'assistant' });
+            messages.push({ content: textArr[0].trim(), role: 'assistant', timestamp: turnTimestamp });
           }
         }
       } catch (_) {}
@@ -835,7 +848,6 @@
 
     console.log('📜 KYT Gemini: History load — ' + messages.length + ' messages from ' + conversationId);
 
-    const baseTimestamp = Date.now() - messages.length * 1000;
     let captured = 0;
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
@@ -847,7 +859,7 @@
 
       if (!deduplicator.shouldCapture(cleanContent, 'history')) continue;
 
-      dispatchCapture(cleanContent, msg.role, 'history', conversationId);
+      dispatchCapture(cleanContent, msg.role, 'history', conversationId, msg.timestamp);
       captured++;
     }
 
@@ -965,7 +977,7 @@
   // DISPATCH CAPTURE
   // ═══════════════════════════════════════════════════════════════════════
 
-  function dispatchCapture(content, role, captureMethod, conversationId) {
+  function dispatchCapture(content, role, captureMethod, conversationId, optionalTimestamp) {
     if (!content || typeof content !== 'string' || content.trim().length < 2) return;
 
     // Final safety net: reject raw JSON arrays/objects that slipped through extraction
@@ -983,7 +995,7 @@
       platform: 'gemini',
       conversationId: conversationId || null,
       model: 'gemini',
-      timestamp: Date.now(),
+      timestamp: optionalTimestamp || Date.now(),
       messageId: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11),
       captureMethod: captureMethod,
       url: window.location.href,

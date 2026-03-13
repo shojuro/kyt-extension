@@ -13,6 +13,14 @@ export const TIER_LIMITS: Record<string, TierLimits> = {
   dev:   { searchesPerMin: 200, savesPerMin: 500, importsPerDay: 50, llmCallsPerMin: 100 },
 };
 
+// Re-ingestion rate limits: max distinct old conversations resurfaced per 90-day window
+// "Old" = ingested_at - created_at > 90 days
+export const RESURFACE_LIMITS: Record<string, number> = {
+  free: 10,   // Casual "oh I remember that chat" browsing
+  pro:  50,   // Power users who actively curate their history
+  dev:  200,  // Effectively unlimited for development/testing
+};
+
 export interface TierLimits {
   searchesPerMin: number;
   savesPerMin: number;
