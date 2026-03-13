@@ -965,7 +965,8 @@
                     role: 'user',
                     conversationId: metadata.conversationId,
                     model: metadata.model,
-                    timestamp: messageNode.create_time ? messageNode.create_time * 1000 : Date.now(),
+                    timestamp: (messageNode.create_time && messageNode.create_time > 1577836800 && messageNode.create_time < 1893456000)
+                      ? messageNode.create_time * 1000 : Date.now(),
                     isVoice: isVoice,
                     platform: 'chatgpt',
                     captureMethod: 'sse_stream'
@@ -1000,8 +1001,9 @@
             }
 
             // Capture create_time from any message node in the stream
+            // Fix #5: Range-validate epoch seconds (2020-01-01 to 2030-01-01)
             const ct = json.message?.create_time || json.create_time;
-            if (ct && typeof ct === 'number') {
+            if (ct && typeof ct === 'number' && ct > 1577836800 && ct < 1893456000) {
               assistantCreateTime = ct;
             }
 
@@ -1022,7 +1024,8 @@
           role: 'assistant',
           conversationId: metadata.conversationId,
           model: metadata.model,
-          timestamp: assistantCreateTime ? assistantCreateTime * 1000 : Date.now(),
+          timestamp: (assistantCreateTime && assistantCreateTime > 1577836800 && assistantCreateTime < 1893456000)
+            ? assistantCreateTime * 1000 : Date.now(),
           messageId: assistantMessageId || `msg_assistant_${Date.now()}`,
           platform: metadata.platform
         };
@@ -1386,7 +1389,8 @@
             const timeEl = turnContainer?.querySelector('time[datetime]');
             if (timeEl) {
               const parsed = new Date(timeEl.getAttribute('datetime')).getTime();
-              if (parsed > 0 && !isNaN(parsed)) domTimestamp = parsed;
+              // Fix #6: Range-validate DOM timestamps (2022-11-30 to 2030-01-01)
+              if (parsed > 1669766400000 && parsed < 1893456000000 && !isNaN(parsed)) domTimestamp = parsed;
             }
           } catch (_) { /* DOM structure changed — fallback to Date.now() */ }
 

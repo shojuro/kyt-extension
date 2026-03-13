@@ -106,11 +106,27 @@ serve(async (req) => {
             return null;
         }
 
-        // Re-ingestion rate limit check: count distinct old conversations resurfaced recently
-        // "Old" = content timestamp is >90 days before ingestion (now)
-        const RESURFACE_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+        // ─── Timestamp sanitization (Fix #1) ───
+        // Reject timestamps before ChatGPT launch or >5min in the future.
+        // Prevents gravity score manipulation via spoofed timestamps.
         const nowMs = Date.now();
         const nowIso = new Date().toISOString();
+        const MIN_VALID_TIMESTAMP = new Date('2022-11-30').getTime(); // ChatGPT launch
+        const MAX_VALID_TIMESTAMP = nowMs + 5 * 60 * 1000; // 5min future tolerance
+
+        function sanitizeTimestamp(ts: any): number {
+            const parsed = ts ? new Date(ts).getTime() : nowMs;
+            if (isNaN(parsed) || parsed < MIN_VALID_TIMESTAMP || parsed > MAX_VALID_TIMESTAMP) {
+                return nowMs; // Out-of-range → treat as live capture
+            }
+            return parsed;
+        }
+
+        // ─── Re-ingestion rate limit (Fix #2: applies to BOTH fast and slow paths) ───
+        // Detection threshold: 24h (Fix #3: tighter than DB count window)
+        // "Is this turn from the current session?" — 24h is appropriate.
+        // DB count window stays at 90 days for long-term pattern tracking.
+        const RESURFACE_DETECTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 
         async function checkResurfaceLimit(userId: string): Promise<{ limited: boolean; count: number; limit: number }> {
             const limit = RESURFACE_LIMITS[tier] || RESURFACE_LIMITS.free;
@@ -121,42 +137,48 @@ serve(async (req) => {
                     p_gap_seconds: 7776000, // 90 days in seconds
                 });
                 if (error) {
-                    console.warn('Resurface limit check failed, allowing:', error.message);
+                    // Fix #4: error-level logging for rate limit failures
+                    console.error('Resurface limit check FAILED — allowing (fail-open):', error.message);
                     return { limited: false, count: 0, limit };
                 }
                 const count = data || 0;
                 return { limited: count >= limit, count, limit };
-            } catch {
+            } catch (e) {
+                console.error('Resurface limit check FAILED — allowing (fail-open):', (e as Error).message);
                 return { limited: false, count: 0, limit };
             }
         }
 
-        // Separate turns into "genuinely recent" vs "resurfaced old"
         function isResurfacedTurn(turn: any): boolean {
-            const turnTimestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : nowMs;
-            return (nowMs - turnTimestamp) > RESURFACE_THRESHOLD_MS;
+            const turnTimestamp = sanitizeTimestamp(turn.timestamp);
+            return (nowMs - turnTimestamp) > RESURFACE_DETECTION_MS;
         }
+
+        // Fix #2: Rate limit check applies to BOTH fast and slow paths
+        const userId = turns[0]?.user_id;
+        const hasResurfaced = turns.some((t: any) => isResurfacedTurn(t));
+        let rateLimited = false;
+
+        if (hasResurfaced && userId) {
+            const check = await checkResurfaceLimit(userId);
+            if (check.limited) {
+                rateLimited = true;
+                console.log(`Re-ingestion rate limited: user=${userId}, count=${check.count}/${check.limit}`);
+            }
+        }
+
+        // Filter out resurfaced turns when rate-limited (used by both paths)
+        const turnsToProcess = rateLimited
+            ? turns.filter((t: any) => !isResurfacedTurn(t))
+            : turns;
+        const skippedByRateLimit = turns.length - turnsToProcess.length;
 
         // FAST PATH: When skipping AI processing, do a single batch upsert
         // This is ~10x faster than sequential writes
         if (skip_ai_processing) {
-            // Check re-ingestion rate limit for resurfaced turns
-            const userId = turns[0]?.user_id;
-            const hasResurfaced = turns.some((t: any) => isResurfacedTurn(t));
-            let rateLimited = false;
-
-            if (hasResurfaced && userId) {
-                const check = await checkResurfaceLimit(userId);
-                if (check.limited) {
-                    rateLimited = true;
-                    console.log(`Re-ingestion rate limited: user=${userId}, count=${check.count}/${check.limit}`);
-                }
-            }
-
-            const records = turns
-                .filter((turn: any) => !rateLimited || !isResurfacedTurn(turn))
+            const records = turnsToProcess
                 .map((turn: any) => {
-                const timestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : Date.now();
+                const timestamp = sanitizeTimestamp(turn.timestamp);
                 return {
                     user_id: turn.user_id,
                     conversation_id: turn.conversation_id,
@@ -196,8 +218,7 @@ serve(async (req) => {
 
             // Data contains only inserted rows (duplicates are not returned)
             const insertedCount = data?.length || 0;
-            const skippedByRateLimit = rateLimited ? turns.filter((t: any) => isResurfacedTurn(t)).length : 0;
-            const duplicateCount = turns.length - insertedCount - skippedByRateLimit;
+            const duplicateCount = turnsToProcess.length - insertedCount;
 
             return new Response(JSON.stringify({
                 success: true,
@@ -215,21 +236,20 @@ serve(async (req) => {
         }
 
         // SLOW PATH: With AI processing (sequential for embedding/classification)
-        const userId = turns[0]?.user_id;
         const costContext: ClientContext = { userId, edgeFunction: 'save_chat_turn_batch' };
         const hfClient = new HuggingFaceClient(Deno.env.get('HUGGINGFACE_API_KEY')!, costContext);
         const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY')!;
 
         const results = [];
 
-        for (const turn of turns) {
+        for (const turn of turnsToProcess) {
             try {
                 const isQuestion = detectIsQuestion(turn);
 
                 // Questions are filtered from retrieval — skip expensive AI processing
                 // Still save to DB with is_question=true for completeness
                 if (isQuestion) {
-                    const timestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : Date.now();
+                    const timestamp = sanitizeTimestamp(turn.timestamp);
                     const { data, error } = await supabase
                         .from('chat_turns')
                         .upsert({
@@ -301,7 +321,7 @@ serve(async (req) => {
                 const [embedding] = await hfClient.generateEmbeddings(contentToEmbed);
 
                 // 2. Save to database with ON CONFLICT handling for deduplication
-                const timestamp = turn.timestamp ? new Date(turn.timestamp).getTime() : Date.now();
+                const timestamp = sanitizeTimestamp(turn.timestamp);
 
                 const upsertData: Record<string, any> = {
                     user_id: turn.user_id,
@@ -402,6 +422,8 @@ serve(async (req) => {
             processed: results.length,
             inserted: insertedCount,
             duplicates_skipped: duplicateCount,
+            rate_limited: rateLimited,
+            rate_limited_skipped: skippedByRateLimit,
             errors: errorCount,
             results
         }), {
