@@ -1,5 +1,5 @@
 import { callEdgeFunction, getUserId } from '../lib/supabase-client.js';
-import { getMemoryMode } from '../lib/config.js';
+import { getMemoryMode, getActiveProjectId } from '../lib/config.js';
 
 export const SAVE_NOTE_SCHEMA = {
   content: { type: 'string', description: 'Note content to save to K.Y.T. memory' },
@@ -28,17 +28,21 @@ export async function saveNote({ content, tags = [] }) {
   const userId = getUserId();
   const tagsStr = tags.length > 0 ? ` [tags: ${tags.join(', ')}]` : '';
 
+  const activeProjectId = getActiveProjectId();
+  const turn = {
+    user_id: userId,
+    conversation_id: `note-${Date.now()}`,
+    platform: 'claude-code',
+    content: content.trim() + tagsStr,
+    role: 'user',
+    timestamp: new Date().toISOString(),
+    is_injection: false,
+    content_type: 'note',
+  };
+  if (activeProjectId) turn.project_id = activeProjectId;
+
   const body = {
-    turns: [{
-      user_id: userId,
-      conversation_id: `note-${Date.now()}`,
-      platform: 'claude-code',
-      content: content.trim() + tagsStr,
-      role: 'user',
-      timestamp: new Date().toISOString(),
-      is_injection: false,
-      content_type: 'note',
-    }],
+    turns: [turn],
     skip_ai_processing: false,
   };
 
