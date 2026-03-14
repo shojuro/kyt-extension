@@ -811,15 +811,15 @@ async function loadProjects() {
     if (!session?.access_token) return;
 
     // Fetch projects from Supabase REST API
-    const supabaseUrl = session.supabase_url || (await chrome.runtime.sendMessage({ type: 'GET_SUPABASE_URL' }))?.url;
-    if (!supabaseUrl) return;
+    const SUPABASE_URL = 'https://svrcvfzlwhnixzuxaccf.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cmN2Znpsd2huaXh6dXhhY2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMzkwNjIsImV4cCI6MjA3NzcxNTA2Mn0.AGh-FsrTLjGuRL0aolR4HYjI6rIE1mpk8X9Fa-E-dUU';
 
     const response = await fetch(
-      `${supabaseUrl}/rest/v1/projects?user_id=eq.${session.user.id}&is_archived=eq.false&order=name`,
+      `${SUPABASE_URL}/rest/v1/projects?user_id=eq.${session.user.id}&is_archived=eq.false&order=name`,
       {
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
-          'apikey': session.anon_key || session.access_token,
+          'apikey': SUPABASE_ANON_KEY,
         },
       }
     );
