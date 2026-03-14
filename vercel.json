@@ -1,0 +1,10 @@
+{
+  "rewrites": [
+    { "source": "/", "destination": "/landing-page/index.html" },
+    { "source": "/founders", "destination": "/landing-page/founders.html" },
+    { "source": "/features", "destination": "/site/features.html" },
+    { "source": "/pricing", "destination": "/site/pricing.html" },
+    { "source": "/docs", "destination": "/site/docs.html" },
+    { "source": "/privacy", "destination": "/site/privacy.html" }
+  ]
+}

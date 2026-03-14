@@ -124,6 +124,7 @@ export async function generateChunkContext(
         maxRetries: 2,
         timeoutMs: 5000,
         operation: 'context_generation',
+        cacheControl: true,
       }
     );
 

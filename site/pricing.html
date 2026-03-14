@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pricing — K.Y.T.</title>
+  <meta name="description" content="K.Y.T. pricing tiers: Free, Pro, and Dev. Start free with 500 memories. Upgrade for more capacity and speed.">
+
+  <meta property="og:title" content="K.Y.T. Pricing — Plans for Every User">
+  <meta property="og:description" content="Free tier with 500 memories. Pro and Dev tiers for power users.">
+  <meta property="og:type" content="website">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/site/shared.css">
+</head>
+<body>
+  <div class="crt-overlay" aria-hidden="true"></div>
+  <div class="traveling-scanline" aria-hidden="true"></div>
+
+  <!-- HERO -->
+  <section class="page-hero">
+    <div class="container">
+      <h1 class="page-hero__title glitch-hover">Pricing</h1>
+      <p class="page-hero__sub">Start free. Upgrade when you need&nbsp;more.</p>
+    </div>
+  </section>
+
+  <!-- FOUNDER BANNER -->
+  <section class="section" id="founder-banner-section" style="padding-top: 0;" hidden>
+    <div class="container">
+      <div class="founder-banner reveal">
+        <h2 class="founder-banner__title">Founder's List</h2>
+        <p class="founder-banner__text">First 200 get <strong>lifetime Pro</strong> for <span id="founder-price">$5</span>. <span id="founder-spots-text"></span></p>
+        <a href="/" class="founder-banner__cta" id="founder-cta">Claim Your Spot</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- TIER CARDS -->
+  <section class="section" aria-label="Pricing tiers">
+    <div class="container">
+      <div class="tier-grid">
+        <!-- FREE -->
+        <div class="tier reveal">
+          <h2 class="tier__name">Free</h2>
+          <div class="tier__price">$0</div>
+          <ul class="tier__features">
+            <li class="tier__feature">Memory cap <span class="tier__feature-value">500</span></li>
+            <li class="tier__feature">Searches / min <span class="tier__feature-value">10</span></li>
+            <li class="tier__feature">Saves / min <span class="tier__feature-value">20</span></li>
+            <li class="tier__feature">Imports / day <span class="tier__feature-value">1</span></li>
+            <li class="tier__feature">LLM calls / min <span class="tier__feature-value">5</span></li>
+            <li class="tier__feature">Backfill speed <span class="tier__feature-value">50 / 3min</span></li>
+            <li class="tier__feature">Privacy modes <span class="tier__feature-value">All 3</span></li>
+          </ul>
+          <a href="/" class="tier__cta">Get Started</a>
+        </div>
+
+        <!-- PRO -->
+        <div class="tier tier--featured reveal">
+          <h2 class="tier__name">Pro</h2>
+          <div class="tier__price">TBD</div>
+          <ul class="tier__features">
+            <li class="tier__feature">Memory cap <span class="tier__feature-value">5,000</span></li>
+            <li class="tier__feature">Searches / min <span class="tier__feature-value">60</span></li>
+            <li class="tier__feature">Saves / min <span class="tier__feature-value">100</span></li>
+            <li class="tier__feature">Imports / day <span class="tier__feature-value">10</span></li>
+            <li class="tier__feature">LLM calls / min <span class="tier__feature-value">30</span></li>
+            <li class="tier__feature">Backfill speed <span class="tier__feature-value">200 / batch</span></li>
+            <li class="tier__feature">Privacy modes <span class="tier__feature-value">All 3</span></li>
+          </ul>
+          <a href="/" class="tier__cta">Join Waitlist</a>
+        </div>
+
+        <!-- DEV -->
+        <div class="tier reveal">
+          <h2 class="tier__name">Dev</h2>
+          <div class="tier__price">TBD</div>
+          <ul class="tier__features">
+            <li class="tier__feature">Memory cap <span class="tier__feature-value">Unlimited</span></li>
+            <li class="tier__feature">Searches / min <span class="tier__feature-value">200</span></li>
+            <li class="tier__feature">Saves / min <span class="tier__feature-value">500</span></li>
+            <li class="tier__feature">Imports / day <span class="tier__feature-value">50</span></li>
+            <li class="tier__feature">LLM calls / min <span class="tier__feature-value">100</span></li>
+            <li class="tier__feature">Backfill speed <span class="tier__feature-value">Unlimited</span></li>
+            <li class="tier__feature">Privacy modes <span class="tier__feature-value">All 3</span></li>
+          </ul>
+          <a href="/" class="tier__cta">Join Waitlist</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="section" aria-label="Frequently asked questions">
+    <div class="container">
+      <h2 class="section__heading section__heading--center reveal">FAQ</h2>
+
+      <div class="faq-list reveal">
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">What happens when I hit 500 memories?</button>
+          <div class="faq-a"><p>New conversations still get captured, but older memories are archived. You can always search archived memories&nbsp;&mdash;&nbsp;they just won't be auto-injected into new conversations. Upgrade to Pro for 10x the capacity.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">Can I upgrade later?</button>
+          <div class="faq-a"><p>Yes. Your data is always yours. Upgrading unlocks higher limits instantly&nbsp;&mdash;&nbsp;no migration, no re-import needed.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">Is my data portable?</button>
+          <div class="faq-a"><p>Completely. Export all your conversations and memories as JSON at any time. Delete everything with one click. We never lock you in.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">What platforms are supported?</button>
+          <div class="faq-a"><p>ChatGPT, Claude (web), Gemini, and Claude Code (via MCP). The Chrome extension captures web conversations. The MCP server captures Claude Code sessions.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">What's the Founder's List?</button>
+          <div class="faq-a"><p>The first 200 people who buy a Founder's spot get lifetime Pro access. Spots 1&ndash;100 are $5, spots 101&ndash;200 are $10. Once all 200 are claimed, the offer is gone permanently.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <script src="/site/nav.js"></script>
+  <script src="/site/pricing.js"></script>
+</body>
+</html>

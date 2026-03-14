@@ -61,6 +61,7 @@ export async function classifyMemory(
       maxTokens: 300,
       maxRetries: 2,
       timeoutMs: 5000,
+      cacheControl: true,
       operation: 'memory_classification',
     }
   );

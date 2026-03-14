@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy — K.Y.T.</title>
+  <meta name="description" content="K.Y.T. privacy policy. How we handle your data, what we store, and your rights.">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/site/shared.css">
+</head>
+<body>
+  <div class="crt-overlay" aria-hidden="true"></div>
+  <div class="traveling-scanline" aria-hidden="true"></div>
+
+  <!-- HERO -->
+  <section class="page-hero">
+    <div class="container">
+      <h1 class="page-hero__title">Privacy Policy</h1>
+      <p class="page-hero__sub">Last updated: March 14, 2026</p>
+    </div>
+  </section>
+
+  <!-- PRIVACY CONTENT -->
+  <section class="section">
+    <div class="container">
+      <div class="legal-content">
+        <h2>Overview</h2>
+        <p>K.Y.T. ("Know Your Things") is a browser extension and MCP server that captures, indexes, and retrieves your AI conversations. This policy explains what data we collect, how we use it, and your rights.</p>
+
+        <h2>What We Collect</h2>
+        <h3>Conversation Data</h3>
+        <p>When you use K.Y.T. with a supported AI platform (ChatGPT, Claude, Gemini, or Claude Code), the extension captures the text content of your conversations. This includes:</p>
+        <ul>
+          <li>Your messages (user turns)</li>
+          <li>AI responses (assistant turns)</li>
+          <li>Conversation metadata (platform, timestamp, conversation ID)</li>
+        </ul>
+        <p>Conversation data is stored in a Supabase PostgreSQL database secured with Row Level Security (RLS). Only your authenticated user account can access your data.</p>
+
+        <h3>Embeddings</h3>
+        <p>Your conversation text is converted into vector embeddings (1024-dimensional numerical representations) for semantic search. Embeddings are generated using the Qwen3-Embedding model and stored alongside your conversation data.</p>
+
+        <h3>Entities</h3>
+        <p>K.Y.T. extracts named entities (people, organizations, technologies, concepts) from your conversations to enable entity-based search and knowledge graph features. Entity extraction is performed server-side using Claude Haiku 4.5.</p>
+
+        <h3>Email Address</h3>
+        <p>If you join the waitlist or purchase a Founder's spot, we collect your email address for communication purposes.</p>
+
+        <h2>What We Don't Collect</h2>
+        <ul>
+          <li>We do not collect data when Incognito mode is active</li>
+          <li>We do not sell your data to third parties</li>
+          <li>We do not use your conversation data to train AI models</li>
+          <li>We do not track your browsing activity outside of supported AI platforms</li>
+        </ul>
+
+        <h2>Privacy Modes</h2>
+        <p>K.Y.T. provides three privacy modes that you control:</p>
+        <ul>
+          <li><strong>Full</strong> &mdash; Conversations are captured and context is injected. Default mode.</li>
+          <li><strong>Clean Room</strong> &mdash; Conversations are captured but no context is injected into your prompts.</li>
+          <li><strong>Incognito</strong> &mdash; No data is captured or transmitted. Nothing leaves your browser.</li>
+        </ul>
+        <p>Privacy mode is a client-side setting stored locally in your browser. Switching to Incognito immediately stops all data collection.</p>
+
+        <h2>Third-Party Services</h2>
+        <p>K.Y.T. uses the following third-party services:</p>
+        <ul>
+          <li><strong>Supabase</strong> &mdash; Database hosting, authentication, and edge functions</li>
+          <li><strong>Anthropic</strong> &mdash; LLM processing for entity extraction, memory classification, and context generation (Claude Haiku 4.5)</li>
+          <li><strong>Stripe</strong> &mdash; Payment processing for Founder's List purchases</li>
+        </ul>
+
+        <h2>Data Retention &amp; Deletion</h2>
+        <p>Your data is retained as long as you have an active K.Y.T. account. You can:</p>
+        <ul>
+          <li><strong>Export</strong> all your data as JSON at any time from the extension settings</li>
+          <li><strong>Delete</strong> all your data with one click from the extension settings</li>
+        </ul>
+        <p>Deletion is permanent and irreversible. It removes all messages, embeddings, entities, preferences, and associated metadata from our servers.</p>
+
+        <h2>Security</h2>
+        <ul>
+          <li>All data is transmitted over HTTPS</li>
+          <li>Database access is protected by Supabase Row Level Security (RLS)</li>
+          <li>API keys and secrets are stored server-side only&nbsp;&mdash;&nbsp;never in the extension</li>
+          <li>Authentication is handled by Supabase Auth</li>
+        </ul>
+
+        <h2>Your Rights</h2>
+        <p>You have the right to:</p>
+        <ul>
+          <li>Access all data we store about you (via export)</li>
+          <li>Delete all data we store about you (via one-click deletion)</li>
+          <li>Control what data is collected (via privacy modes)</li>
+          <li>Opt out of data collection entirely (via Incognito mode or uninstalling the extension)</li>
+        </ul>
+
+        <h2>Contact</h2>
+        <p>For questions about this privacy policy or your data, contact us at <strong>privacy@kyt.tools</strong>.</p>
+
+        <h2>Changes</h2>
+        <p>We may update this privacy policy from time to time. Significant changes will be communicated via the extension or email. The "last updated" date at the top of this page reflects the most recent revision.</p>
+      </div>
+    </div>
+  </section>
+
+  <script src="/site/nav.js"></script>
+</body>
+</html>

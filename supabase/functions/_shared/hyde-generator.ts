@@ -69,6 +69,7 @@ Generate a hypothetical conversation that would answer this query:`;
                 maxRetries: 2,
                 timeoutMs: 8000,
                 operation: 'hyde_generation',
+                cacheControl: true,
             },
             requestId
         );

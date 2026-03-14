@@ -301,6 +301,7 @@ export async function extractEntities(
         maxRetries: 2,
         timeoutMs: 8000,
         operation: 'entity_extraction',
+        cacheControl: true,
       }
     );
 

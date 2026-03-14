@@ -16,6 +16,7 @@ export interface CompletionOptions {
     maxRetries?: number;
     timeoutMs?: number;
     operation?: string;
+    cacheControl?: boolean;
 }
 
 export class AnthropicClient {
@@ -48,9 +49,14 @@ export class AnthropicClient {
             maxRetries = 1,
             timeoutMs = 3000,
             operation = "completion",
+            cacheControl = false,
         } = options;
 
         return retryWrapper(async () => {
+            const systemParam = cacheControl
+                ? [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }]
+                : systemPrompt;
+
             const response = await fetch(AnthropicClient.API_URL, {
                 method: "POST",
                 headers: {
@@ -60,7 +66,7 @@ export class AnthropicClient {
                 },
                 body: JSON.stringify({
                     model: AnthropicClient.MODEL,
-                    system: systemPrompt,
+                    system: systemParam,
                     messages: [
                         { role: "user", content: userPrompt }
                     ],
@@ -108,9 +114,14 @@ export class AnthropicClient {
             maxRetries = 1,
             timeoutMs = 5000,
             operation = "json_completion",
+            cacheControl = false,
         } = options;
 
         return retryWrapper(async () => {
+            const systemParam = cacheControl
+                ? [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }]
+                : systemPrompt;
+
             const response = await fetch(AnthropicClient.API_URL, {
                 method: "POST",
                 headers: {
@@ -120,7 +131,7 @@ export class AnthropicClient {
                 },
                 body: JSON.stringify({
                     model: AnthropicClient.MODEL,
-                    system: systemPrompt,
+                    system: systemParam,
                     messages: [
                         { role: "user", content: userPrompt },
                         { role: "assistant", content: "{" }
@@ -160,14 +171,29 @@ export class AnthropicClient {
      * Log API usage cost to the cost_tracking table.
      */
     private async logCost(
-        data: { usage?: { input_tokens?: number; output_tokens?: number } },
+        data: {
+            usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_creation_input_tokens?: number;
+                cache_read_input_tokens?: number;
+            }
+        },
         operation: string,
         requestId?: string
     ): Promise<void> {
         // Haiku 4.5 pricing: $0.80/1M input, $4.00/1M output
+        // Cache write: $1.00/1M (25% premium), Cache read: $0.08/1M (90% discount)
         const inputTokens = data.usage?.input_tokens || 0;
         const outputTokens = data.usage?.output_tokens || 0;
-        const estimatedCost = (inputTokens * 0.0000008) + (outputTokens * 0.000004);
+        const cacheWriteTokens = data.usage?.cache_creation_input_tokens || 0;
+        const cacheReadTokens = data.usage?.cache_read_input_tokens || 0;
+
+        const estimatedCost =
+            (inputTokens * 0.0000008) +
+            (outputTokens * 0.000004) +
+            (cacheWriteTokens * 0.000001) +
+            (cacheReadTokens * 0.00000008);
 
         await CostMonitor.logUsage(
             "anthropic",
@@ -183,6 +209,8 @@ export class AnthropicClient {
             operation,
             inputTokens,
             outputTokens,
+            cacheWriteTokens,
+            cacheReadTokens,
             estimatedCost
         });
     }

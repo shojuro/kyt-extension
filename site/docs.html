@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docs — K.Y.T.</title>
+  <meta name="description" content="K.Y.T. documentation: quick start guide, privacy modes, platform notes, search, data management, and troubleshooting.">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/site/shared.css">
+</head>
+<body>
+  <div class="crt-overlay" aria-hidden="true"></div>
+  <div class="traveling-scanline" aria-hidden="true"></div>
+
+  <!-- HERO -->
+  <section class="page-hero">
+    <div class="container">
+      <h1 class="page-hero__title">Documentation</h1>
+      <p class="page-hero__sub">Everything you need to get started with K.Y.T.</p>
+    </div>
+  </section>
+
+  <!-- DOCS CONTENT -->
+  <section class="section">
+    <div class="container">
+      <div class="docs-layout">
+        <!-- SIDEBAR TOC -->
+        <nav class="docs-toc" aria-label="Table of contents">
+          <a href="#quick-start" class="docs-toc__link docs-toc__link--active">Quick Start</a>
+          <a href="#privacy-modes" class="docs-toc__link">Privacy Modes</a>
+          <a href="#platforms" class="docs-toc__link">Platform Notes</a>
+          <a href="#search" class="docs-toc__link">Search &amp; Recall</a>
+          <a href="#data" class="docs-toc__link">Data Management</a>
+          <a href="#troubleshooting" class="docs-toc__link">Troubleshooting</a>
+        </nav>
+
+        <!-- MAIN CONTENT -->
+        <div class="docs-content">
+          <h2 id="quick-start">Quick Start</h2>
+          <ol>
+            <li><strong>Install the Chrome extension</strong> from the Chrome Web Store (or load unpacked for development).</li>
+            <li><strong>Open any supported platform</strong>&nbsp;&mdash;&nbsp;ChatGPT, Claude, or Gemini.</li>
+            <li><strong>Start talking.</strong> K.Y.T. captures your conversations silently in the background.</li>
+            <li><strong>Switch platforms.</strong> Open a different AI. K.Y.T. automatically injects relevant context from your other conversations.</li>
+          </ol>
+          <div class="callout">
+            <p>No API keys. No configuration. No setup wizards. Just install and talk.</p>
+          </div>
+
+          <h3>Claude Code (MCP)</h3>
+          <p>For Claude Code users, K.Y.T. provides an MCP server that bridges your terminal sessions to your conversation memory. Add it to your <code>.mcp.json</code> and your CLI sessions are captured alongside your browser conversations.</p>
+
+          <h2 id="privacy-modes">Privacy Modes</h2>
+          <p>K.Y.T. supports three privacy modes. Switch between them at any time from the extension popup.</p>
+          <ul>
+            <li><strong>Full</strong>&nbsp;&mdash;&nbsp;Everything is captured and injected. This is the default. Your AI remembers everything.</li>
+            <li><strong>Clean Room</strong>&nbsp;&mdash;&nbsp;Conversations are captured, but nothing is injected into your prompts. Useful when you want to record a conversation without external context influencing the response.</li>
+            <li><strong>Incognito</strong>&nbsp;&mdash;&nbsp;Nothing is captured or injected. The session is completely off the record.</li>
+          </ul>
+          <div class="callout">
+            <p>Privacy mode is a client-side setting. It controls what the extension sends, not what the server stores. In Incognito mode, no data leaves your browser.</p>
+          </div>
+
+          <h2 id="platforms">Platform Notes</h2>
+          <h3>ChatGPT</h3>
+          <p>Full capture + injection. Works with all ChatGPT conversation types. Context is injected as a system-level prefix before your message is sent.</p>
+
+          <h3>Claude (Web)</h3>
+          <p>Full capture + injection. Works with claude.ai conversations. Same injection mechanism as ChatGPT.</p>
+
+          <h3>Gemini</h3>
+          <p>Capture + injection via XHR interception. Gemini uses XHR (not fetch) for message delivery, so K.Y.T. intercepts at the XHR level.</p>
+
+          <h3>Claude Code (MCP)</h3>
+          <p>Memory query, entity search, and note saving via MCP tools. Session ingestion captures your terminal conversations to Supabase. Automatic context injection via the <code>UserPromptSubmit</code> hook.</p>
+
+          <h2 id="search">Search &amp; Recall</h2>
+          <p>K.Y.T. provides two ways to recall past conversations:</p>
+          <ul>
+            <li><strong>Automatic injection</strong>&nbsp;&mdash;&nbsp;When you type a message on any supported platform, K.Y.T. searches your memory for relevant context and injects it before your message is sent. You don't need to do anything.</li>
+            <li><strong>Manual search</strong>&nbsp;&mdash;&nbsp;Open the extension popup and type a query. K.Y.T. returns matching conversations ranked by semantic similarity, with source platform and date.</li>
+          </ul>
+          <p>Search uses a hybrid approach: vector embeddings (1024d Qwen3 Matryoshka) for semantic meaning + BM25 for keyword matching. Results are fused via Reciprocal Rank Fusion.</p>
+
+          <h2 id="data">Data Management</h2>
+          <h3>Export</h3>
+          <p>Export all your conversations as JSON from the extension settings. The export includes messages, embeddings metadata, and entity data.</p>
+
+          <h3>Delete</h3>
+          <p>Delete all your data with one click from the extension settings. This removes all messages, embeddings, entities, and preferences from Supabase. This action is irreversible.</p>
+
+          <h3>Where is my data stored?</h3>
+          <p>Your data is stored in a Supabase PostgreSQL database with Row Level Security (RLS). Only your authenticated user ID can access your data. Embeddings are indexed with HNSW for fast vector search.</p>
+
+          <h2 id="troubleshooting">Troubleshooting</h2>
+          <h3>K.Y.T. isn't capturing my conversations</h3>
+          <ul>
+            <li>Check that the extension is enabled (icon should be visible in your toolbar).</li>
+            <li>Check your privacy mode&nbsp;&mdash;&nbsp;if it's set to Incognito, nothing will be captured.</li>
+            <li>Refresh the page. The extension needs to inject its content scripts on page load.</li>
+            <li>Check the browser console for errors (right-click &rarr; Inspect &rarr; Console).</li>
+          </ul>
+
+          <h3>Context isn't being injected</h3>
+          <ul>
+            <li>Check your privacy mode&nbsp;&mdash;&nbsp;Clean Room mode disables injection.</li>
+            <li>Check that you have saved conversations. K.Y.T. needs data to inject.</li>
+            <li>The injection pipeline takes 12&ndash;16 seconds on the first query (cold start). Subsequent queries are faster.</li>
+          </ul>
+
+          <h3>Search returns no results</h3>
+          <ul>
+            <li>Check that your conversations have been synced (look for the sync indicator in the popup).</li>
+            <li>If you recently imported conversations, the embedding backfill may still be running. Wait a few minutes.</li>
+            <li>Try a broader query. Semantic search works best with natural language, not exact phrases.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <script src="/site/nav.js"></script>
+  <script>
+    // TOC active link highlighting
+    (function () {
+      var tocLinks = document.querySelectorAll('.docs-toc__link');
+      var sections = [];
+      tocLinks.forEach(function (link) {
+        var id = link.getAttribute('href').substring(1);
+        var el = document.getElementById(id);
+        if (el) sections.push({ el: el, link: link });
+      });
+
+      if (!sections.length) return;
+
+      var observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            tocLinks.forEach(function (l) { l.classList.remove('docs-toc__link--active'); });
+            var match = sections.find(function (s) { return s.el === entry.target; });
+            if (match) match.link.classList.add('docs-toc__link--active');
+          }
+        });
+      }, { rootMargin: '-80px 0px -60% 0px' });
+
+      sections.forEach(function (s) { observer.observe(s.el); });
+    })();
+  </script>
+</body>
+</html>
