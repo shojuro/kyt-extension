@@ -21,6 +21,7 @@ import { listProjects } from './tools/list-projects.js';
 import { setActiveProject } from './tools/set-active-project.js';
 import { assignToProject } from './tools/assign-to-project.js';
 import { projectDebrief } from './tools/project-debrief.js';
+import { setVaultPin } from './tools/set-vault-pin.js';
 
 const server = new McpServer({
   name: 'kyt-memory',
@@ -165,6 +166,18 @@ server.tool(
     limit: z.number().optional().default(20).describe('Max items in summary (default: 20)'),
   },
   async (args) => projectDebrief(args),
+);
+
+// --- Tool: set_vault_pin ---
+server.tool(
+  'set_vault_pin',
+  'Set or change the PIN on a vault project. Required before a vault can be activated. If the vault already has a PIN, the current PIN must be provided to change it.',
+  {
+    projectId: z.string().describe('Vault project UUID'),
+    pin: z.string().describe('New PIN (min 4 characters)'),
+    oldPin: z.string().optional().describe('Current PIN (required when changing an existing PIN)'),
+  },
+  async (args) => setVaultPin(args),
 );
 
 // Start the server

@@ -5,6 +5,7 @@
   "description": "Capture and search conversations across ChatGPT, Claude, and more with long-term semantic memory",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "alarms",
     "scripting",
     "identity",
