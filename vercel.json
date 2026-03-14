@@ -1,4 +1,6 @@
 {
+  "buildCommand": "",
+  "outputDirectory": ".",
   "rewrites": [
     { "source": "/", "destination": "/landing-page/index.html" },
     { "source": "/founders", "destination": "/landing-page/founders.html" },
