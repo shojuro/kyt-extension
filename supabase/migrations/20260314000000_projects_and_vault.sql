@@ -12,17 +12,7 @@
 SET search_path TO public, extensions;
 
 -- ============================================================================
--- 1. Helper function: is_vault_excluded
--- ============================================================================
-CREATE OR REPLACE FUNCTION is_vault_excluded(p_project_id UUID, row_project_id UUID)
-RETURNS BOOLEAN AS $$
-  SELECT p_project_id IS NOT NULL
-    OR row_project_id IS NULL
-    OR NOT EXISTS (SELECT 1 FROM projects WHERE id = row_project_id AND is_vault = TRUE);
-$$ LANGUAGE sql STABLE;
-
--- ============================================================================
--- 2. Projects table
+-- 1. Projects table (must be created before is_vault_excluded which references it)
 -- ============================================================================
 CREATE TABLE projects (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -39,6 +29,16 @@ CREATE TABLE projects (
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
 CREATE POLICY projects_user_policy ON projects FOR ALL USING (auth.uid() = user_id);
 CREATE INDEX idx_projects_user_id ON projects(user_id);
+
+-- ============================================================================
+-- 2. Helper function: is_vault_excluded (after projects table exists)
+-- ============================================================================
+CREATE OR REPLACE FUNCTION is_vault_excluded(p_project_id UUID, row_project_id UUID)
+RETURNS BOOLEAN AS $$
+  SELECT p_project_id IS NOT NULL
+    OR row_project_id IS NULL
+    OR NOT EXISTS (SELECT 1 FROM projects WHERE id = row_project_id AND is_vault = TRUE);
+$$ LANGUAGE sql STABLE;
 
 -- ============================================================================
 -- 3. Add project_id to chat_turns, entities, conversations
