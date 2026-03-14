@@ -2,7 +2,7 @@
 
 **Status**: SPEC — Post-Phase-5 target architecture
 **Date**: 2026-03-05
-**System**: K.Y.T. (Know Your Things) — Cross-platform conversation memory with RAG retrieval
+**System**: K.Y.T. (Keep Your Thoughts) — Cross-platform conversation memory with RAG retrieval
 
 ---
 

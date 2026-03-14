@@ -46,7 +46,7 @@
         <li><a href="/pricing" class="site-footer__link">Pricing</a></li>
         <li><a href="/docs" class="site-footer__link">Docs</a></li>
       </ul>
-      <p class="site-footer__tagline">Your conversations. Your memory. Your&nbsp;things.</p>
+      <p class="site-footer__tagline">Your conversations. Your memory. Your&nbsp;thoughts.</p>
     </div>
   `;
   document.body.append(footer);

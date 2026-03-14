@@ -881,7 +881,7 @@ git diff --cached --name-only | grep -E "\.env$|\.key$|\.pem$" && exit 1
 
 ## 🧠 K.Y.T. MEMORY SEARCH RULES
 
-K.Y.T. (Know Your Things) is the project's cross-platform conversation memory system. It captures and indexes conversations from ChatGPT, Claude, Gemini, and Claude Code.
+K.Y.T. (Keep Your Thoughts) is the project's cross-platform conversation memory system. It captures and indexes conversations from ChatGPT, Claude, Gemini, and Claude Code.
 
 ### RULE: Always Search Before Dismissing
 
