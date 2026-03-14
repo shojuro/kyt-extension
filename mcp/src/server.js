@@ -145,7 +145,7 @@ server.tool(
 // --- Tool: assign_to_project ---
 server.tool(
   'assign_to_project',
-  'Search for memories and assign them to a project. First call with confirm=false to preview matches, then confirm=true to assign.',
+  'Search for memories and assign them to a project. IMPORTANT: You MUST call this with confirm=false first to show the user a preview. Then STOP and ASK the user if they want to proceed. Only call with confirm=true after the user explicitly approves. Never auto-confirm.',
   {
     query: z.string().describe('Search query to find memories'),
     projectId: z.string().describe('Project UUID to assign items to'),
