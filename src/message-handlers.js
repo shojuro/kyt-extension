@@ -1046,6 +1046,44 @@ export function registerMessageHandler(deps) {
         (async () => {
           try {
             if (message.data?.id) {
+              // Vault PIN gate: verify PIN before activating vault projects
+              if (message.data.isVault) {
+                if (!message.data.pin) {
+                  sendResponse({ success: false, error: 'This is a vault project. Provide the PIN to unlock it.' });
+                  return;
+                }
+                const session = (await chrome.storage.local.get(['auth_session'])).auth_session;
+                if (!session?.access_token) {
+                  sendResponse({ success: false, error: 'Not authenticated' });
+                  return;
+                }
+                const verifyRes = await fetch(
+                  `${SUPABASE_URL}/rest/v1/rpc/verify_vault_pin`,
+                  {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${session.access_token}`,
+                      'apikey': SUPABASE_ANON_KEY,
+                    },
+                    body: JSON.stringify({
+                      p_project_id: message.data.id,
+                      p_user_id: session.user.id,
+                      p_pin: message.data.pin,
+                    }),
+                  }
+                );
+                if (!verifyRes.ok) {
+                  const errBody = await verifyRes.json().catch(() => ({}));
+                  sendResponse({ success: false, error: errBody.message || 'PIN verification failed' });
+                  return;
+                }
+                const verified = await verifyRes.json();
+                if (!verified) {
+                  sendResponse({ success: false, error: 'Incorrect vault PIN.' });
+                  return;
+                }
+              }
               await setActiveProject(message.data.id, message.data.name, message.data.isVault);
             } else {
               await clearActiveProject();
@@ -1076,26 +1114,30 @@ export function registerMessageHandler(deps) {
               sendResponse({ success: false, error: 'Not authenticated' });
               return;
             }
-            const res = await fetch(`${SUPABASE_URL}/rest/v1/projects`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${session.access_token}`,
-                'apikey': SUPABASE_ANON_KEY,
-                'Prefer': 'return=representation',
-              },
-              body: JSON.stringify({
-                user_id: session.user.id,
-                name: message.data.name,
-                description: message.data.description || null,
-                is_vault: message.data.isVault || false,
-              }),
-            });
+            const res = await fetch(
+              `${SUPABASE_URL}/rest/v1/rpc/create_project_rpc`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${session.access_token}`,
+                  'apikey': SUPABASE_ANON_KEY,
+                },
+                body: JSON.stringify({
+                  p_user_id: session.user.id,
+                  p_name: message.data.name,
+                  p_description: message.data.description || null,
+                  p_is_vault: message.data.isVault || false,
+                  p_pin: message.data.pin || null,
+                }),
+              }
+            );
             if (!res.ok) {
               const errBody = await res.json().catch(() => ({}));
               throw new Error(errBody.message || `HTTP ${res.status}`);
             }
-            const [project] = await res.json();
+            const data = await res.json();
+            const project = Array.isArray(data) ? data[0] : data;
             sendResponse({ success: true, project });
           } catch (e) {
             sendResponse({ success: false, error: e.message });

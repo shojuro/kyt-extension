@@ -4,12 +4,20 @@ export const CREATE_PROJECT_SCHEMA = {
   name: { type: 'string', description: 'Project name' },
   description: { type: 'string', description: 'Optional project description' },
   isVault: { type: 'boolean', description: 'Whether this project is a vault (default: false)' },
+  pin: { type: 'string', description: 'Required PIN for vault projects (min 4 chars)' },
 };
 
-export async function createProject({ name, description, isVault = false }) {
+export async function createProject({ name, description, isVault = false, pin }) {
   if (!name || typeof name !== 'string' || name.trim().length === 0) {
     return {
       content: [{ type: 'text', text: 'Error: name is required and must be a non-empty string.' }],
+      isError: true,
+    };
+  }
+
+  if (isVault && (!pin || pin.trim().length < 4)) {
+    return {
+      content: [{ type: 'text', text: 'Error: Vault projects require a PIN of at least 4 characters.' }],
       isError: true,
     };
   }
@@ -23,6 +31,7 @@ export async function createProject({ name, description, isVault = false }) {
       p_name: name.trim(),
       p_description: description || null,
       p_is_vault: isVault,
+      p_pin: isVault ? pin : null,
     });
 
   if (error) {

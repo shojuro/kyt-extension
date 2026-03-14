@@ -117,6 +117,7 @@ server.tool(
     name: z.string().describe('Project name'),
     description: z.string().optional().describe('Optional project description'),
     isVault: z.boolean().optional().default(false).describe('Make this a vault (private, excluded from general search)'),
+    pin: z.string().optional().describe('Required PIN for vault projects (min 4 chars)'),
   },
   async (args) => createProject(args),
 );
@@ -138,6 +139,7 @@ server.tool(
   {
     projectId: z.string().nullable().describe('Project UUID to activate (null to clear)'),
     projectName: z.string().optional().describe('Project name for display'),
+    pin: z.string().optional().describe('Required PIN to unlock vault projects'),
   },
   async (args) => setActiveProject(args),
 );

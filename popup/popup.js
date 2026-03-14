@@ -860,10 +860,31 @@ projectSelect.addEventListener('change', async () => {
   } else {
     const isVault = selectedOption.dataset.vault === 'true';
     const name = selectedOption.dataset.name;
-    await chrome.runtime.sendMessage({
+    let pin = null;
+
+    if (isVault) {
+      pin = prompt('Enter vault PIN:');
+      if (pin === null) {
+        // User cancelled — reset dropdown to previous selection
+        const activeResult = await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PROJECT' });
+        projectSelect.value = activeResult?.project?.id || '';
+        return;
+      }
+    }
+
+    const result = await chrome.runtime.sendMessage({
       type: 'SET_ACTIVE_PROJECT',
-      data: { id: selectedOption.value, name, isVault }
+      data: { id: selectedOption.value, name, isVault, pin }
     });
+
+    if (result?.success === false) {
+      alert(result.error || 'Failed to activate project');
+      // Reset dropdown to previous selection
+      const activeResult = await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PROJECT' });
+      projectSelect.value = activeResult?.project?.id || '';
+      return;
+    }
+
     if (isVault) {
       projectVaultBadge.classList.remove('hidden');
     } else {
@@ -877,9 +898,18 @@ newProjectBtn.addEventListener('click', async () => {
   if (!name || !name.trim()) return;
   const isVault = confirm('Make this a Vault project? (Vault items never surface in general search)');
 
+  let pin = null;
+  if (isVault) {
+    pin = prompt('Set a vault PIN (min 4 characters):');
+    if (pin === null || pin.trim().length < 4) {
+      alert('Vault projects require a PIN of at least 4 characters.');
+      return;
+    }
+  }
+
   const result = await chrome.runtime.sendMessage({
     type: 'CREATE_PROJECT',
-    data: { name: name.trim(), isVault }
+    data: { name: name.trim(), isVault, pin }
   });
 
   if (result?.success) {
