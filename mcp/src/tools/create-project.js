@@ -18,15 +18,12 @@ export async function createProject({ name, description, isVault = false }) {
   const supabase = getSupabaseClient();
 
   const { data, error } = await supabase
-    .from('projects')
-    .insert({
-      user_id: userId,
-      name: name.trim(),
-      description: description || null,
-      is_vault: isVault,
-    })
-    .select()
-    .single();
+    .rpc('create_project_rpc', {
+      p_user_id: userId,
+      p_name: name.trim(),
+      p_description: description || null,
+      p_is_vault: isVault,
+    });
 
   if (error) {
     return {
@@ -35,7 +32,8 @@ export async function createProject({ name, description, isVault = false }) {
     };
   }
 
+  const project = Array.isArray(data) ? data[0] : data;
   return {
-    content: [{ type: 'text', text: `Project created: "${data.name}" (ID: ${data.id})${data.is_vault ? ' [VAULT]' : ''}` }],
+    content: [{ type: 'text', text: `Project created: "${project.name}" (ID: ${project.id})${project.is_vault ? ' [VAULT]' : ''}` }],
   };
 }

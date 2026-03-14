@@ -8,17 +8,11 @@ export async function listProjects({ includeArchived = false }) {
   const userId = getUserId();
   const supabase = getSupabaseClient();
 
-  let query = supabase
-    .from('projects')
-    .select('*')
-    .eq('user_id', userId)
-    .order('name');
-
-  if (!includeArchived) {
-    query = query.eq('is_archived', false);
-  }
-
-  const { data: projects, error } = await query;
+  const { data: projects, error } = await supabase
+    .rpc('list_projects_rpc', {
+      p_user_id: userId,
+      p_include_archived: includeArchived,
+    });
 
   if (error) {
     return {
@@ -33,28 +27,11 @@ export async function listProjects({ includeArchived = false }) {
     };
   }
 
-  // Fetch item counts per project
-  const projectIds = projects.map(p => p.id);
-  const { data: counts, error: countError } = await supabase
-    .from('chat_turns')
-    .select('project_id')
-    .in('project_id', projectIds);
-
-  const countMap = {};
-  if (!countError && counts) {
-    for (const row of counts) {
-      if (row.project_id) {
-        countMap[row.project_id] = (countMap[row.project_id] || 0) + 1;
-      }
-    }
-  }
-
   const formatted = projects.map((p, i) => {
-    const itemCount = countMap[p.id] || 0;
     const vault = p.is_vault ? ' [VAULT]' : '';
     const archived = p.is_archived ? ' [ARCHIVED]' : '';
     const created = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
-    return `${i + 1}. ${p.name}${vault}${archived} — ${itemCount} items — created ${created}\n   ID: ${p.id}${p.description ? `\n   ${p.description}` : ''}`;
+    return `${i + 1}. ${p.name}${vault}${archived} — ${p.item_count} items — created ${created}\n   ID: ${p.id}${p.description ? `\n   ${p.description}` : ''}`;
   }).join('\n\n');
 
   return {
