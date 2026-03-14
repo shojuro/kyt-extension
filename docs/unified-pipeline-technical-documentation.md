@@ -1,8 +1,9 @@
-# K.Y.T. Unified Retrieval Pipeline — Technical Documentation (Phase 5)
+# K.Y.T. Unified Retrieval Pipeline -- Technical Documentation
 
-**Status**: SPEC — Post-Phase-5 target architecture
-**Date**: 2026-03-05
-**System**: K.Y.T. (Know Your Things) — Cross-platform conversation memory with RAG retrieval
+**Status**: Current implementation (server-side pipeline deployed, client-side legacy still active as fallback)
+**Date**: 2026-03-06
+**System**: K.Y.T. (Know Your Things) -- Cross-platform conversation memory with RAG retrieval
+**Verified**: All line counts, stage orderings, and model references verified against live codebase
 
 ---
 
@@ -11,621 +12,453 @@
 # DELIVERABLE 1: FLOWCHART
 
 ```
-╔══════════════════════════════════════════════════════════════════════════╗
-║                          USER INPUT                                     ║
-║  Query string from ChatGPT / Claude Web / Claude Code (MCP) / Gemini   ║
-╚════════════════════════════════════╤═════════════════════════════════════╝
-                                     │
-                                     ▼
-═══════════════════ SECTION A: PRE-RETRIEVAL (CLIENT-SIDE) ═════════════════
++========================================================================+
+|                          USER INPUT                                     |
+|  Query string from ChatGPT / Claude Web / Claude Code (MCP) / Gemini   |
++================================+=======================================+
+                                 |
+                                 v
+======= SECTION A: PRE-RETRIEVAL (CLIENT-SIDE, <1ms) ========================
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  A1: INTENT CLASSIFICATION (client-only, <1ms)                         │
-│  ──────────────────────────────────────────────────                     │
-│  Function: 6-dimension heuristic scorer determines if query needs       │
-│  memory retrieval. Outputs: QUERY / PASSIVE / SKIP + confidence         │
-│  threshold override (0.40–0.65).                                        │
-│                                                                         │
-│  Position Rationale: Gate BEFORE any API call — prevents wasting         │
-│  12-18s of pipeline on "hello" or "write a Python function".            │
-│                                                                         │
-│  Benefits: Eliminates unnecessary API calls; raises confidence          │
-│  threshold for ambiguous queries to prevent low-quality injection.      │
-│                                                                         │
-│  Dimensions: directive_strength, memory_reference, content_density,     │
-│  question_structure, personal_reference, temporal_reference             │
-│                                                                         │
-│  If SKIP → return empty (no injection)                                  │
-│  If QUERY/PASSIVE → continue with threshold override                    │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  A2: EDGE FUNCTION CALL (single HTTP POST)                              │
-│  ─────────────────────────────────────────                              │
-│  Function: Client sends query + userId + profileId + topK +             │
-│  confidenceThreshold + synthesisLambda + fast flag to unified           │
-│  server endpoint `get_relevant_memories_v2`.                            │
-│                                                                         │
-│  Position Rationale: ALL retrieval logic moved server-side.             │
-│  Client only decides WHETHER to call (intent classifier) and            │
-│  HOW to format the results (injection builder).                         │
-│                                                                         │
-│  Benefits: Eliminates 24s local BM25 bottleneck; single pipeline;      │
-│  latency stable at 3-8s regardless of corpus size.                     │
-│                                                                         │
-│  Change: Replaces dual-path routing (edge vs legacy hybrid search).    │
-│  Previously: authenticated → edge fn, unauthenticated → local BM25 +  │
-│  client HyDE + client Jina. Now: one path for all.                     │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-══════════════════ SECTION B: SERVER-SIDE PIPELINE (Stages 0-14) ═══════════
++-------------------------------------------------------------------------+
+|  A1: INTENT CLASSIFICATION (src/intent-classifier.js, 425 lines, <1ms)  |
+|  -------------------------------------------------------------------    |
+|  Function: 7 scoring functions (6 in classifyIntent + 1 standalone).    |
+|  Heuristic scorer determines if query needs memory retrieval.            |
+|  Outputs: QUERY / PASSIVE / SKIP + confidence threshold (0.40-0.65).    |
+|                                                                         |
+|  Position Rationale: Gate BEFORE any API call -- prevents wasting        |
+|  12-18s of pipeline on "hello" or "write a Python function".            |
+|                                                                         |
+|  Benefits: Eliminates unnecessary API calls; raises confidence          |
+|  threshold for ambiguous queries to prevent low-quality injection.      |
+|                                                                         |
+|  Dimensions (in classifyIntent return):                                 |
+|  directive, memory, density, question, personal, temporal               |
+|  (scoreSynthesisIntent is 7th function, used by context-retrieval.js)   |
+|                                                                         |
+|  If SKIP -> return empty (no injection)                                 |
+|  If QUERY -> continue with threshold override                           |
+|  If PASSIVE -> Layer 2 LLM judge (A1b) or continue with high threshold  |
++------------------------------+------------------------------------------+
+                               |
+                  +------------+------------+
+                  | PASSIVE intent?          |
+                  | (ambiguous signal)       |---- NO ---> A2
+                  +------------+------------+
+                               | YES
+                               v
++-------------------------------------------------------------------------+
+|  A1b: LAYER 2 INTENT JUDGE (classify_intent edge fn, 149 lines)        |
+|  ---------------------------------------------------------------        |
+|  Function: LLM-based intent verification for PASSIVE cases. Claude      |
+|  Haiku 4.5 classifies into MEMORY_QUERY (threshold 0.50) or            |
+|  NO_RETRIEVAL (skip). Tier-aware rate limiting.                         |
+|                                                                         |
+|  Position Rationale: Cheap heuristics handle clear QUERY/SKIP cases.    |
+|  Only ambiguous PASSIVE cases need the LLM judge -- ~2s cost only       |
+|  when the heuristic is uncertain.                                       |
+|                                                                         |
+|  Benefits: Reduces false-positive retrievals; prevents wasting          |
+|  pipeline time on queries that look like memory requests but aren't.    |
+|                                                                         |
+|  Model: Claude Haiku 4.5 (via AnthropicClient)                         |
+|  Input: message (max 500 chars) + Layer 1 heuristic scores + reason     |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  A2: ROUTING DECISION (src/auth-config.js, 90 lines)                   |
+|  ----------------------------------------------------                   |
+|  Function: getRoutingMode() checks auth state. Three modes:             |
+|  - 'edge': JWT valid -> server pipeline (search_memories edge fn)       |
+|  - 'legacy': api_config exists, no JWT -> client-side BM25+HyDE        |
+|  - 'unconfigured': no credentials -> preference router only             |
+|                                                                         |
+|  MCP hook path always uses server with fast=true.                       |
+|  Client holds preference router, temporal fallback, injection builder.  |
+|                                                                         |
+|  Current state: Dual-path still exists. Phase 5 target: delete          |
+|  legacy path entirely.                                                  |
+|                                                                         |
+|  Edge call: POST to search_memories with query, userId, profileId,      |
+|  topK, confidenceThreshold, mmrLambda, fast flag.                       |
++------------------------------+------------------------------------------+
+                               |
+                               v
+======= SECTION B: SERVER-SIDE PIPELINE (search_memories -> getRelevantMemories) =
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  B0: PREFERENCE ROUTER (0ms regex)                                      │
-│  ─────────────────────────────────                                      │
-│  Function: 6 regex patterns detect "what is my favorite X?"             │
-│  Strips qualifiers ("of all time", "and why"). Calls                    │
-│  `lookup_user_preferences` RPC (p_limit: 3).                           │
-│                                                                         │
-│  Position Rationale: FIRST — cheapest possible check. If user asks      │
-│  for a preference, skip entire vector pipeline.                         │
-│                                                                         │
-│  Benefits: 0ms latency for preference queries; 3-row cap prevents      │
-│  injection flood; qualifier detection allows hybrid pref+vector.        │
-│                                                                         │
-│  Output: If pure preference → return immediately                        │
-│          If pref + qualifier ("and why") → save prefs, continue         │
-│          If no match → continue to Stage 1                              │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                       ┌─────────────┴─────────────┐
-                       │ Short-circuit?             │
-                       │ Pure pref, no qualifier    │──── YES ──→ STAGE 14 (output)
-                       └─────────────┬─────────────┘
-                                     │ NO
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  B1: QUERY EMBEDDING + QUERY TRANSFORMATION (parallel)                  │
-│  ─────────────────────────────────────────────────────                  │
-│  Function:                                                              │
-│    Promise.all([                                                        │
-│      embedQuery(query)           // Qwen3-Embedding-8B → 1024d          │
-│                                  // via Scaleway, Matryoshka truncation  │
-│      transformQuery(query, ctx)  // Haiku 4.5, 3s timeout, optional     │
-│    ])                                                                   │
-│                                                                         │
-│  Position Rationale: Embedding is required for all vector searches.     │
-│  Transformation runs in parallel — free latency if embedding is         │
-│  slower. If transformation fails/times out, raw query used.             │
-│                                                                         │
-│  Benefits: Parallel execution hides transformation latency.             │
-│  MCP path now gets query optimization (previously client-only).         │
-│                                                                         │
-│  Change: Query transformation moved from client to server.              │
-│  Cost: One Haiku call (~$0.0002), same total as before.                │
-│                                                                         │
-│  Models: Qwen3-Embedding-8B (Scaleway), Claude Haiku 4.5               │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  B2: ENTITY SEARCH + HyDE + CONCEPT DETECTION (parallel)               │
-│  ────────────────────────────────────────────────────────               │
-│  Function:                                                              │
-│    Promise.all([                                                        │
-│      searchEntities(embedding, query)  // embedding + trigram text      │
-│      generateHyDE(query)               // Haiku 4.5, temp=0.7, 8s      │
-│      detectConceptEntities(query)      // CONCEPT/ANALOGY/THEME types   │
-│    ])                                                                   │
-│                                                                         │
-│  Entity search: Dual-arm (embedding threshold 0.8 + text trigram).     │
-│  ENTITY_CONCEPT_SYNONYMS map: level↔mode↔tier.                        │
-│  Platform entities (gemini, chatgpt) excluded from boost set when       │
-│  query mentions a platform name.                                        │
-│                                                                         │
-│  HyDE prompt: "Imagine a past conversation where the user discussed     │
-│  [query]. Write a realistic excerpt..."                                 │
-│  Drift gate: HyDE output must contain ≥1 original query term           │
-│  (after 18 stop words filtered). If drift detected → discard.          │
-│                                                                         │
-│  Position Rationale: Entity search informs short-circuit decision.      │
-│  HyDE runs in parallel — if entities are high-confidence, HyDE is      │
-│  discarded (no wasted latency). Concept detection catches abstract     │
-│  queries that entity text search would miss.                            │
-│                                                                         │
-│  Benefits: 3-way parallel; entity confidence gates expensive paths;    │
-│  drift gate prevents HyDE hallucination from polluting results.        │
-│                                                                         │
-│  Models: Claude Haiku 4.5 (HyDE), Qwen3-Embedding-8B (entity embed)   │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                       ┌─────────────┴─────────────┐
-                       │ Short-Circuit Check:       │
-                       │ Top entity ≥ 0.85?         │
-                       │ (0.80 for PERSON entities) │
-                       └──────┬──────────┬──────────┘
-                              │          │
-                         YES  │          │  NO
-                              ▼          ▼
-               ┌──────────────────┐  ┌──────────────────────────────┐
-               │ B3a: SINGLE ARM  │  │ B3b: DUAL VECTOR SEARCH      │
-               │ Raw embedding    │  │ Raw + HyDE embeddings         │
-               │ only (skip HyDE) │  │ in parallel                   │
-               │ Saves 2-4s       │  │ via match_messages_with_       │
-               │                  │  │ gravity RPC                    │
-               └────────┬─────────┘  └───────────┬────────────────────┘
-                        │                         │
-                        └────────────┬────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  B3c: GRAPH WALK (parallel with vector search)                          │
-│  ─────────────────────────────────────────────                         │
-│  Function: 2-depth entity relationship traversal via                    │
-│  `graph_walk_from_entities` RPC. maxIntermediate=20.                   │
-│                                                                         │
-│  Position Rationale: Runs in parallel with vector search. Finds         │
-│  conceptually related content that vector similarity misses (e.g.,     │
-│  "Walter Peyton" → "Walter Payton" via entity bridge).                 │
-│                                                                         │
-│  Benefits: Cross-entity discovery; typo bridging; catches content      │
-│  that shares entities but not vocabulary.                               │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-═══════════════════ SECTION C: FUSION & RERANKING ══════════════════════════
++-------------------------------------------------------------------------+
+|  B0: PREFERENCE ROUTER (0ms regex, get_relevant_memories.ts:470-482)    |
+|  -------------------------------------------------------------------    |
+|  Function: 6 regex patterns detect "what is my favorite X?".            |
+|  Strips qualifiers. Calls lookup_user_preferences RPC (p_limit: 10).    |
+|                                                                         |
+|  Position Rationale: FIRST -- cheapest possible check. If user asks     |
+|  for a preference, skip entire vector pipeline.                         |
+|                                                                         |
+|  Benefits: 0ms latency for preference queries; synthesized items        |
+|  with score = confidence * 0.9 (~0.72).                                 |
+|                                                                         |
+|  Output: If pure preference -> return immediately                       |
+|          If no match -> continue to Stage B1                            |
++------------------------------+------------------------------------------+
+                               |
+                  +------------+------------+
+                  | Short-circuit?           |
+                  | Pure preference match    |---- YES ---> RETURN (done)
+                  +------------+------------+
+                               | NO
+                               v
++-------------------------------------------------------------------------+
+|  B1: QUERY EMBEDDING (get_relevant_memories.ts:485-495)                 |
+|  --------------------------------------------------                     |
+|  Function: Qwen3-Embedding-8B via Scaleway API -> 4096d truncated       |
+|  to 1024d (Matryoshka), L2-normalized. ~150ms.                          |
+|                                                                         |
+|  Position Rationale: Required for all vector searches. Sequential       |
+|  with current code (query transformation not yet server-side).          |
+|                                                                         |
+|  Model: Qwen3-Embedding-8B (Scaleway endpoint)                         |
+|                                                                         |
+|  FAST PATH: If fast=true, skip to single vector search -> BM25 ->      |
+|  quality penalties -> confidence filter -> return. ~300ms total.         |
++------------------------------+------------------------------------------+
+                               |
+                  +------------+------------+
+                  | fast=true?              |
+                  | (MCP hook path)         |---- YES ---> FAST PATH (B1f)
+                  +------------+------------+
+                               | NO
+                               v
++-------------------------------------------------------------------------+
+|  B2: ENTITY SEARCH + HyDE + CONCEPT DETECTION (parallel)               |
+|  --------------------------------------------------------               |
+|  Function: Promise.all([                                                |
+|    searchEntities(embedding, query)  // dual-arm: embedding + trigram   |
+|    generateHyDEWithFallback(query)   // Haiku 4.5, temp=0.7, 8s        |
+|    detectConceptEntities(query)      // CONCEPT/ANALOGY/THEME types     |
+|  ])                                                                     |
+|                                                                         |
+|  Entity search: Dual-arm (embedding threshold 0.8 + text trigram).      |
+|  CONCEPT_SYNONYMS map: level<->mode<->tier, nfl<->football<->player.   |
+|  Platform entities excluded from boost set when query mentions a        |
+|  platform name.                                                         |
+|                                                                         |
+|  HyDE: Haiku 4.5 generates hypothetical conversation excerpt.           |
+|  Drift gate: output must contain >=1 original query term (85 stop       |
+|  words filtered). Circuit breaker: skip on API errors for 1-5min.       |
+|                                                                         |
+|  Position Rationale: 3-way parallel; entity confidence gates HyDE.      |
+|                                                                         |
+|  Models: Claude Haiku 4.5 (HyDE), Qwen3-Embedding-8B (entity embed)    |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  B2b: GRAPH WALK (get_relevant_memories.ts:575-604)                     |
+|  --------------------------------------------------                     |
+|  Function: graph_walk_from_entities RPC. 2-depth traversal via          |
+|  entity_relationships. maxIntermediate=20.                              |
+|                                                                         |
+|  Position Rationale: Runs after entity search produces boost IDs.       |
+|  Finds conceptually related content that vector search misses           |
+|  (e.g., "Walter Peyton" -> "Walter Payton" via entity bridge).          |
+|                                                                         |
+|  Benefits: Cross-entity discovery; typo bridging; catches content       |
+|  that shares entities but not vocabulary.                                |
++------------------------------+------------------------------------------+
+                               |
+                  +------------+------------+
+                  | Short-Circuit Check:    |
+                  | Top entity >= 0.85?     |
+                  | (0.80 for PERSON)       |
+                  +------+----------+------+
+                         |          |
+                    YES  |          |  NO
+                         v          v
+          +-----------------+  +-------------------------------+
+          | B3a: SINGLE ARM |  | B3b: DUAL VECTOR SEARCH       |
+          | Raw embedding   |  | Raw + HyDE embeddings          |
+          | only (skip HyDE)|  | in parallel                    |
+          | Saves 2-4s      |  | via match_messages_with_gravity |
+          +--------+--------+  +------------+------------------+
+                   |                         |
+                   +------------+------------+
+                                |
+                                v
+======= SECTION C: FUSION & RERANKING ========================================
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  C1: RRF MERGE (Reciprocal Rank Fusion)                                 │
-│  ──────────────────────────────────────                                 │
-│  Function: Fuses 2 or 3 ranked lists into single candidate pool.       │
-│                                                                         │
-│  Formula: RRF_score = Σ (weight_i / (k + rank_i)), k=60               │
-│                                                                         │
-│  Weights (2-way): HyDE 0.60, Raw 0.40                                  │
-│  Weights (3-way): HyDE 0.48, Raw 0.32, Graph 0.20                      │
-│                                                                         │
-│  Position Rationale: Standard fusion point — after all retrieval arms   │
-│  return, before expensive reranking. RRF is rank-based (not score-     │
-│  based) so it handles heterogeneous score distributions.                │
-│                                                                         │
-│  Benefits: Combines semantic + lexical + graph signals; HyDE-weighted   │
-│  but not HyDE-dependent (raw results always participate); k=60          │
-│  smoothing prevents top-1 dominance.                                    │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  C1b: ENTITY TIMELINE GUARANTEE                                         │
-│  ──────────────────────────────                                         │
-│  Function: For each entity in the boost set, ensures the newest         │
-│  mention is in the candidate pool. Calls `get_newest_turns_for_         │
-│  entities` RPC.                                                         │
-│                                                                         │
-│  Position Rationale: After RRF merge — the pool is formed but before   │
-│  reranking. Prevents "rich old content" bias where semantically dense   │
-│  older memories always outrank recent corrections.                      │
-│                                                                         │
-│  Benefits: Solves the "Jerry problem" — when a user says "Jerry is     │
-│  real → Jerry is not real → Jerry is now real", the newest statement    │
-│  is always available for the reranker to evaluate.                      │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  C1c: QUERY ECHO FILTER                                                 │
-│  ──────────────────────                                                 │
-│  Function: Removes candidates <80 chars with >70% word overlap          │
-│  with the query. 38-word stop list excluded from overlap calc.          │
-│                                                                         │
-│  Position Rationale: Before reranking — prevents self-referential       │
-│  content from consuming a reranking slot. Cheap string comparison.      │
-│                                                                         │
-│  Benefits: Prevents circular retrieval (query echoed back as result).  │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  C2: JINA CROSS-ENCODER RERANKING                                       │
-│  ────────────────────────────────                                       │
-│  Function: BGE-Reranker-v2-m3 cross-encoder scores query-document       │
-│  relevance. Uses `contextual_content` (LLM-enriched text) when          │
-│  available for richer signal.                                           │
-│                                                                         │
-│  Timeout: 5s. Max docs: 25.                                             │
-│  Fallback: gravity_score → rrf_score → 0.5 if reranking fails.         │
-│                                                                         │
-│  Position Rationale: After cheap filters (echo, timeline), before       │
-│  expensive penalties. Cross-encoder is the most accurate relevance      │
-│  signal — worth the 2-4s latency on a reduced candidate set.           │
-│                                                                         │
-│  Benefits: Cross-encoder captures semantic nuance that bi-encoder       │
-│  (embedding) misses. Using contextual_content gives richer document    │
-│  representation.                                                        │
-│                                                                         │
-│  Model: BGE-Reranker-v2-m3 (via Jina API)                              │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  C3: BM25 KEYWORD BOOST (+0.3 max)                                      │
-│  ──────────────────────────────────                                     │
-│  Function: Exact keyword coverage bonus on top of rerank_score.         │
-│  Formula: boosted = rerank_score + (coverage * 0.3)                     │
-│  where coverage = matched_terms / total_query_terms.                    │
-│                                                                         │
-│  Position Rationale: After cross-encoder reranking. The reranker        │
-│  captures semantic relevance but can underweight exact keyword           │
-│  matches. This corrects for that bias.                                  │
-│                                                                         │
-│  Benefits: Ensures documents containing exact query terms aren't        │
-│  buried by semantically similar but lexically different content.        │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-══════════ SECTION D: POST-RETRIEVAL QUALITY FILTERS (NEW — from client) ═══
++-------------------------------------------------------------------------+
+|  C1: RRF MERGE (rrf.ts, 152 lines, Reciprocal Rank Fusion)             |
+|  -----------------------------------------------                        |
+|  Function: Fuses 2 or 3 ranked lists into single candidate pool.        |
+|                                                                         |
+|  Formula: RRF_score = SUM(weight_i / (k + rank_i)), k=60               |
+|                                                                         |
+|  Weights (2-way): HyDE 0.60, Raw 0.40                                  |
+|  Weights (3-way): HyDE 0.48, Raw 0.32, Graph 0.20                      |
+|  Weights (raw+graph): Raw 0.80, Graph 0.20                              |
+|                                                                         |
+|  Position Rationale: After all retrieval arms return, before            |
+|  expensive reranking. RRF is rank-based (not score-based).              |
+|                                                                         |
+|  Benefits: Combines semantic + lexical + graph signals; HyDE-weighted   |
+|  but not HyDE-dependent; k=60 prevents top-1 dominance.                |
+|                                                                         |
+|  Exported: reciprocalRankFusion(), mergeHydeAndRawResults(),            |
+|  fallbackToRawResults()                                                 |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  C1b: ENTITY TIMELINE GUARANTEE (get_relevant_memories.ts:363-425)      |
+|  -----------------------------------------------------------------      |
+|  Function: For each entity in boost set, ensures newest mention is      |
+|  in candidate pool. Calls get_newest_turns_for_entities RPC.            |
+|                                                                         |
+|  Position Rationale: After RRF merge -- pool is formed but before       |
+|  reranking. Prevents "rich old content" bias.                           |
+|                                                                         |
+|  Benefits: Solves the "Jerry problem" -- contradictory statements       |
+|  ("X is true" -> "X is false") always surface the newest one.           |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  C1c: QUERY ECHO FILTER (get_relevant_memories.ts:85-111)              |
+|  --------------------------------------------------------              |
+|  Function: Removes candidates <80 chars with >70% word overlap          |
+|  with the query. 50+ stop words excluded from overlap calc.             |
+|  Content with <3 non-stop words kept (too sparse for echo detection).   |
+|                                                                         |
+|  Position Rationale: Before reranking -- prevents self-referential      |
+|  content from consuming a reranking slot. Cheap string comparison.      |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  C2: CROSS-ENCODER RERANKING (get_relevant_memories.ts:986-1038)        |
+|  --------------------------------------------------------------------   |
+|  Function: BAAI/bge-reranker-v2-m3 cross-encoder scores query-document  |
+|  relevance. Uses contextual_content (LLM-enriched text) when            |
+|  available.                                                             |
+|                                                                         |
+|  Timeout: 8s (via HuggingFaceClient). Max docs: all candidates.        |
+|  Fallback: gravity_score -> rrf_score -> 0.5 if reranking fails.       |
+|                                                                         |
+|  Position Rationale: After cheap filters, before expensive penalties.   |
+|  Cross-encoder is most accurate relevance signal.                       |
+|                                                                         |
+|  Model: BAAI/bge-reranker-v2-m3 (via HuggingFace Scaleway router)      |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  C3: BM25 KEYWORD BOOST + ENTITY BOOST (+0.3 + 0.1 max)               |
+|  --------------------------------------------------------              |
+|  Function: Exact keyword coverage bonus on rerank_score.                |
+|  Formula: boost = (0.3 * term_hits / max_hits)                          |
+|  Entity boost: additional +0.1 if entity_boost flag set.                |
+|  Uses contextual_content when available for matching.                   |
+|                                                                         |
+|  Position Rationale: After cross-encoder reranking. Corrects for        |
+|  semantic relevance underweighting exact keyword matches.               |
++------------------------------+------------------------------------------+
+                               |
+                               v
+======= SECTION D: QUALITY PENALTIES (quality-penalties.ts, 524 lines) ======
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  D1: RECURSION GUARD (hard drop)                                        │
-│  ───────────────────────────────                                        │
-│  Function: Drops items containing K.Y.T. injection protocol markers:    │
-│  "K.Y.T. MEMORY INJECTION PROTOCOL", "[RETRIEVAL_CONTEXT]",            │
-│  "[SESSION_CONTEXT]", "[DATA_PROVENANCE]", "[Retrieved Items]",         │
-│  "[Memory Context".                                                     │
-│                                                                         │
-│  Position Rationale: First quality filter — these items are 100%        │
-│  noise. Remove before any scoring so they don't influence penalties.    │
-│                                                                         │
-│  Benefits: Prevents infinite recursion where injected context gets      │
-│  captured → re-retrieved → re-injected.                                │
-│                                                                         │
-│  Change: Moved from client (context-retrieval.js:851-866).              │
-│  Previously MCP results could contain injection artifacts.              │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  D2: META FLAG FILTER (hard drop)                                       │
-│  ────────────────────────────────                                       │
-│  Function: Drops items where meta === true (tagged at capture time).    │
-│                                                                         │
-│  Position Rationale: Binary flag check — O(1), do it early.            │
-│                                                                         │
-│  Change: Moved from client (context-retrieval.js:869-875).              │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  D3: BARE QUESTION FILTER (hard drop)                                   │
-│  ────────────────────────────────────                                   │
-│  Function: Drops items <120 chars, no "Assistant:" block, ending        │
-│  with "?" or matching INTERROGATIVE_RE. These are standalone questions  │
-│  without answers — no informational value.                              │
-│                                                                         │
-│  Position Rationale: After meta filter, before scored penalties.        │
-│  Cheap string check that removes definite noise.                        │
-│                                                                         │
-│  Change: Moved from client (context-retrieval.js:912-921).              │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  D4: DEFLECTION PENALTY (0.145x–0.73x or hard drop)                    │
-│  ───────────────────────────────────────────────────                    │
-│  Function: 33 deflection patterns + 7 echo patterns detect             │
-│  assistant non-answers ("I don't have access to...",                    │
-│  "I can't help with that").                                             │
-│                                                                         │
-│  Scoring: confidence 0.30–0.95 based on pattern count + message        │
-│  length. Multiplier = 1 - (confidence * 0.9).                           │
-│  Hard drop: confidence ≥ 0.85 removed entirely.                        │
-│                                                                         │
-│  Position Rationale: After hard filters, before soft penalties.         │
-│  Deflection detection requires content analysis — more expensive        │
-│  than flag checks, cheaper than regex batteries.                        │
-│                                                                         │
-│  Benefits: Prevents "I can't help" responses from appearing as         │
-│  relevant context. Length-aware scoring avoids over-penalizing          │
-│  messages that start with deflection but contain useful content.        │
-│                                                                         │
-│  Change: Moved from client. Previously leaked through MCP path.         │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  D5: KYT META-CONVERSATION PENALTY (0.3x)                              │
-│  ─────────────────────────────────────────                              │
-│  Function: 12 regex patterns detect operational chatter about the       │
-│  K.Y.T. system itself ("extension broken", "chrome.runtime error",     │
-│  "service worker crashed").                                             │
-│                                                                         │
-│  Query guard: Skipped when query matches 3 KYT_QUERY_PATTERNS          │
-│  (user is genuinely asking about the extension).                        │
-│                                                                         │
-│  Position Rationale: After deflection (which removes worse content).    │
-│  Meta-conversation content has informational value when asked about     │
-│  — hence penalty (0.3x) not hard drop.                                 │
-│                                                                         │
-│  Benefits: Prevents dev debugging conversations from drowning actual    │
-│  user content. Query guard preserves access when needed.                │
-│                                                                         │
-│  Change: Moved from client. Previously leaked through MCP path.         │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  D6: RETRIEVAL DIAGNOSTIC PENALTY (0.5x)                                │
-│  ───────────────────────────────────────                                │
-│  Function: 23 regex patterns detect meta-analysis of retrieval          │
-│  behavior itself ("query returned 0", "confidence was 0.62",           │
-│  "pipeline fired", "meta-echo", "answer isn't in one place").          │
-│                                                                         │
-│  Query guard: Skipped when query matches 3 RETRIEVAL_QUERY_PATTERNS.   │
-│                                                                         │
-│  Why 0.5x not 0.3x: Diagnostic content DOES contain useful analysis.   │
-│  0.5x is enough to let source content win (source 0.55 > diagnostic    │
-│  0.67 × 0.5 = 0.335) while keeping diagnostics findable.              │
-│                                                                         │
-│  Position Rationale: After meta-conversation penalty (which handles     │
-│  operational noise). Diagnostic penalty handles analytical noise —      │
-│  conversations ABOUT the retrieval pipeline.                            │
-│                                                                         │
-│  Change: Moved from client. This was the "meta-echo" fix.              │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  D7: PLATFORM-MISMATCH PENALTY (0.3x)                                  │
-│  ─────────────────────────────────────                                  │
-│  Function: When query mentions a platform ("on Gemini", "in ChatGPT"), │
-│  items from OTHER platforms get 0.3x penalty. Below-threshold items     │
-│  are removed. Platform-filtered rescue search if all results killed.    │
-│                                                                         │
-│  Position Rationale: After content-quality penalties, before echo.      │
-│  Platform mismatch is a relevance signal, not a quality signal.        │
-│                                                                         │
-│  Note: Already existed on server (Stage 6b). Now unified with client   │
-│  implementation that also has rescue search.                            │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  D8: ECHO PENALTY (0.50x–0.90x)                                        │
-│  ───────────────────────────────                                        │
-│  Function: 7 regex patterns detect assistant messages that echo         │
-│  stored data ("you said", "from your stored conversations",            │
-│  "KYT captured", "that was captured from").                             │
-│                                                                         │
-│  Length-scaled: <300 chars → 0.50x, 300-800 → 0.70x, >800 → 0.90x.   │
-│  Short echoes are pure paraphrase (punish hard). Long messages that    │
-│  happen to reference stored data still contain useful content.         │
-│                                                                         │
-│  Change: Moved from client. Previously leaked through MCP path.         │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-══════════════ SECTION E: DIVERSITY & RANKING (NEW — from client) ═══════════
++-------------------------------------------------------------------------+
+|  D1: RECURSION GUARD (hard drop)                                        |
+|  --------------------------------                                       |
+|  Function: Drops items containing K.Y.T. injection protocol markers:    |
+|  "K.Y.T. MEMORY INJECTION PROTOCOL", "[RETRIEVAL_CONTEXT]",            |
+|  "[SESSION_CONTEXT]", "[DATA_PROVENANCE]", "[Retrieved Items]",         |
+|  "[Memory Context".                                                     |
+|                                                                         |
+|  Position Rationale: First -- these items are 100% noise.               |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  D2: META FLAG FILTER (hard drop)                                       |
+|  --------------------------------                                       |
+|  Function: Drops items where meta === true (DB-flagged).                |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  D3: DEFLECTION PENALTY (0.145x-0.73x or hard drop)                    |
+|  ---------------------------------------------------                    |
+|  Function: 36 deflection patterns + 5 assistant echo patterns detect    |
+|  assistant non-answers ("I don't have access to...",                    |
+|  "I can't help with that", "KYT didn't surface...").                    |
+|                                                                         |
+|  Scoring: confidence 0.30-0.95 based on pattern count + message        |
+|  length + position. Multiplier = 1 - (confidence * 0.9).               |
+|  Hard drop: confidence >= 0.85 removed entirely.                        |
+|                                                                         |
+|  Position Rationale: After hard filters, before soft penalties.         |
+|  Opening-only hedge (long messages): only 0.30 confidence.              |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  D4: META-CONVERSATION PENALTY (0.3x)                                   |
+|  -------------------------------------                                   |
+|  Function: 4 regex patterns detect KYT/extension operational chatter.   |
+|  Query guard: 3 KYT_QUERY_PATTERNS skip penalty when user genuinely    |
+|  asks about extension.                                                  |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  D5: RETRIEVAL DIAGNOSTIC PENALTY (0.5x)                                |
+|  ----------------------------------------                               |
+|  Function: 23 regex patterns detect meta-analysis of retrieval          |
+|  behavior ("query returned 0", "confidence was 0.62", "meta-echo").     |
+|  Query guard: 3 RETRIEVAL_QUERY_PATTERNS.                               |
+|                                                                         |
+|  Why 0.5x not 0.3x: Diagnostic content contains useful analysis.       |
+|  0.5x lets source content win while keeping diagnostics findable.       |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  D6: ECHO PENALTY (0.50x-0.90x)                                        |
+|  --------------------------------                                       |
+|  Function: 7 stored-data echo patterns detect assistant messages        |
+|  that paraphrase stored data ("you said", "KYT captured").              |
+|  Length-scaled: <300 chars -> 0.50x, 300-800 -> 0.70x, >800 -> 0.90x. |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  D7: BARE QUESTION FILTER (hard drop)                                   |
+|  -------------------------------------                                  |
+|  Function: Drops items <120 chars, no "Assistant:" block, ending        |
+|  with "?" or matching INTERROGATIVE_RE.                                 |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  D8: RECENCY MULTIPLIER (exponential decay)                             |
+|  -------------------------------------------                            |
+|  Function: Half-life 30 days. Blend: 85% original + 15% recency.       |
+|  Formula: multiplier = exp(-daysSince / 30)                             |
+|  Applied: score = score * 0.85 + score * multiplier * 0.15              |
++------------------------------+------------------------------------------+
+                               |
+                               v
+======= SECTION E: DIVERSITY & RANKING =======================================
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  E1: RECENCY MULTIPLIER (exponential decay)                             │
-│  ──────────────────────────────────────────                             │
-│  Function: Half-life 30 days. Blend: 85% original + 15% recency.      │
-│  Formula: multiplier = exp(-daysSince / 30)                             │
-│  Applied: rerank_score = score * 0.85 + score * multiplier * 0.15      │
-│                                                                         │
-│  Position Rationale: After all penalties (which may reduce scores).     │
-│  Recency should modify the POST-penalty score, not the raw score.      │
-│                                                                         │
-│  Benefits: Recent memories get mild advantage without overwhelming      │
-│  strong older matches. 15% weight means a perfect old match still       │
-│  beats a mediocre recent one.                                           │
-│                                                                         │
-│  Change: Moved from client (context-retrieval.js:804-819).              │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  E2: CONTENT DEDUPLICATION                                              │
-│  ────────────────────────                                               │
-│  Function: Exact match on normalized (trimmed, lowercased) content.    │
-│  Keep first occurrence (highest score after penalties).                 │
-│                                                                         │
-│  Position Rationale: Before MMR — no point spending diversity budget    │
-│  on duplicates. After penalties — duplicates may have different         │
-│  penalty-adjusted scores; keep the highest.                             │
-│                                                                         │
-│  Change: Moved from client (context-retrieval.js dedup stage).          │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  E3: ENTITY-AWARE RECENCY RESOLUTION                                    │
-│  ───────────────────────────────────                                    │
-│  Function: Groups items by shared entities. Within each group:          │
-│  newest item → 1.5x boost, older items → 0.8x penalty.                │
-│  Confidence gate: skip if older outscores newest by >0.2.              │
-│                                                                         │
-│  Position Rationale: After dedup, before MMR. Ensures within-entity     │
-│  ordering reflects temporal truth before diversity selection.            │
-│                                                                         │
-│  Benefits: Solves contradictory memory chains ("X is true" → "X is     │
-│  false" → "X is true again") by always preferring newest.              │
-│  Confidence gate protects high-quality older content from being         │
-│  displaced by low-quality recent mentions.                              │
-│                                                                         │
-│  Requires: Entity enrichment data on candidates (attached at C2+).     │
-│                                                                         │
-│  Change: Moved from client (context-retrieval.js:344-421).              │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  E4: MMR DIVERSITY RERANKING                                            │
-│  ───────────────────────────                                            │
-│  Function: Maximal Marginal Relevance — greedy selection balancing      │
-│  relevance against redundancy.                                          │
-│                                                                         │
-│  Formula: MMR = λ * relevance - (1-λ) * max_sim_to_selected            │
-│                                                                         │
-│  Lambda:                                                                │
-│    - Default: 0.5 (balanced)                                            │
-│    - Synthesis queries: 0.35 (favor diversity for cross-topic bridging) │
-│                                                                         │
-│  Similarity measure:                                                    │
-│    - Primary: Cosine similarity on 1024d embeddings (if available)      │
-│    - Fallback: Jaccard similarity on word sets                          │
-│                                                                         │
-│  Boost function applied before selection:                               │
-│    +0.50 CLI source, +0.25 reference data, +0.20 instructions,         │
-│    +0.15 preferences, +0.15 factual notes, +0.10 Gemini source         │
-│                                                                         │
-│  Output cap: topK items (default 5)                                     │
-│                                                                         │
-│  Position Rationale: Near-end of pipeline — MMR selects the final       │
-│  set from the penalized, recency-adjusted, deduplicated pool.           │
-│  Must happen AFTER penalties (so diversity isn't wasted on items         │
-│  that would be filtered) and BEFORE confidence filter.                  │
-│                                                                         │
-│  Benefits: Prevents 3 results about the same topic. Synthesis lambda   │
-│  ensures cross-platform queries get diverse platform coverage.          │
-│                                                                         │
-│  Change: Moved from client (src/mmr.js, 396 lines).                    │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  E5: KEYWORD COVERAGE BOOST (+0.3 max)                                  │
-│  ─────────────────────────────────────                                  │
-│  Function: After MMR selects the final set, re-sort by keyword          │
-│  coverage. Formula: score += (matched_terms / total_terms) * 0.3.      │
-│                                                                         │
-│  Position Rationale: After MMR — diversity selection is done. This      │
-│  re-orders within the selected set to prioritize exact matches.         │
-│                                                                         │
-│  Change: Moved from client (src/keyword-boost.js, 50 lines).           │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-══════════════ SECTION F: CONFIDENCE & OUTPUT ═══════════════════════════════
++-------------------------------------------------------------------------+
+|  E1: CONTENT DEDUPLICATION (mmr.ts:deduplicateByContent, 199 lines)    |
+|  -------------------------------------------------------                |
+|  Function: Exact match on normalized (trimmed, lowercased) content.     |
+|  Keep first occurrence (highest score after penalties).                  |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  E2: MMR DIVERSITY RERANKING (mmr.ts:applyServerMMR)                    |
+|  ---------------------------------------------------                    |
+|  Function: Maximal Marginal Relevance -- greedy selection balancing      |
+|  relevance against redundancy.                                          |
+|                                                                         |
+|  Formula: MMR = lambda * relevance - (1-lambda) * max_sim_to_selected   |
+|                                                                         |
+|  Lambda: 0.5 (default), 0.35 (synthesis queries)                       |
+|                                                                         |
+|  Similarity: Per-pair hybrid -- cosine on 1024d embeddings when both    |
+|  available, Jaccard on word sets as fallback.                           |
+|                                                                         |
+|  Output cap: topK items (default 5)                                     |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  E3: POST-MMR KEYWORD BOOST (mmr.ts:applyKeywordBoost)                  |
+|  ------------------------------------------------------                  |
+|  Function: After MMR, boost items containing query keywords.            |
+|  Max boost: 15% of current score. Uses contextual_content.              |
++------------------------------+------------------------------------------+
+                               |
+                               v
+======= SECTION F: CONFIDENCE & OUTPUT =======================================
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  F1: CONFIDENCE THRESHOLD + RESCUE                                      │
-│  ────────────────────────────────                                       │
-│  Function: Apply confidence floor. 3-tier logic:                        │
-│                                                                         │
-│  Tier 1 — Normal: score >= threshold (0.40 default) → pass             │
-│  Tier 2 — Rescue: If nothing passes AND classifier didn't raise         │
-│           threshold above default → rescue top 2 if score >= 0.10.     │
-│           Platform-aware rescue: loosen to 0.25 if platform mentioned. │
-│  Tier 3 — Block: If classifier raised threshold (e.g., 0.65) AND       │
-│           nothing passes → return empty (classifier said "unlikely").   │
-│                                                                         │
-│  No rescuing deflection-dropped items.                                  │
-│                                                                         │
-│  Position Rationale: Final quality gate. After all scoring and          │
-│  diversity selection — this is the last "is this worth injecting?"      │
-│  check.                                                                 │
-│                                                                         │
-│  Benefits: Prevents low-quality injection. Rescue tier prevents         │
-│  silent failures on edge cases. Classifier integration allows           │
-│  intent-aware thresholding.                                             │
-│                                                                         │
-│  Change: Enhanced from client version (confidence-filter.js).           │
-│  Previously: client and server had separate thresholds. Now unified.   │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  F2: TEMPORAL + SYNTHESIS FALLBACK (conditional)                        │
-│  ───────────────────────────────────────────────                        │
-│  Function: If query mentions a platform with temporal/synthesis intent   │
-│  and NO results from that platform survived filtering:                  │
-│    Temporal (scoreTemporalReference ≥ 0.4): fetch 3 recent items       │
-│    Synthesis (scoreSynthesisIntent ≥ 0.5): fetch 5 recent items        │
-│  via `get_recent_by_platform` RPC (ORDER BY created_at DESC).          │
-│                                                                         │
-│  Position Rationale: Safety net after confidence filter. Only fires    │
-│  when main pipeline found nothing for a specific platform — ensures     │
-│  the user gets SOMETHING when they explicitly ask about a platform.    │
-│                                                                         │
-│  Benefits: "What did I discuss on Gemini recently?" never returns       │
-│  empty if Gemini content exists.                                        │
-│                                                                         │
-│  Change: Consolidated from 2 separate client stages.                    │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  F3: PREFERENCE + VECTOR MERGE (conditional)                            │
-│  ───────────────────────────────────────────                            │
-│  Function: If preference router found results AND query had trailing    │
-│  qualifier ("and why"), merge preference items with vector results.     │
-│  Preference floor: max(pref_sim, highest_vector_score + 0.01).         │
-│  Dedup by ID.                                                           │
-│                                                                         │
-│  Position Rationale: Final merge — preferences always appear first      │
-│  (they answer the direct question), vector results provide context      │
-│  for the qualifier.                                                     │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  F4: ENTITY ENRICHMENT                                                  │
-│  ─────────────────────                                                  │
-│  Function: Attach entity metadata (canonical_name, entity_type) to      │
-│  final results via entity_mentions join query.                          │
-│                                                                         │
-│  Position Rationale: At the end — only enrich the items we're           │
-│  actually returning (typically 3-5), not the entire candidate pool.     │
-│                                                                         │
-│  Benefits: Clients can display entity tags. Downstream diagnostics.    │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  F5: RESPONSE CONSTRUCTION                                              │
-│  ─────────────────────────                                              │
-│  Function: Build UnifiedRetrievalResponse with:                         │
-│    items[]: id, content, platform, role, created_at, rerank_score,      │
-│             source_type, entities[], contextual_content                  │
-│    metadata: pipeline_ms, stages_completed, items_before/after_filter,  │
-│             used_hyde, used_short_circuit, entity_count, routing_mode   │
-│                                                                         │
-│  Position Rationale: Final stage — all processing complete.             │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-═══════════════════ SECTION G: CLIENT-SIDE OUTPUT ══════════════════════════
++-------------------------------------------------------------------------+
+|  F1: PLATFORM-MISMATCH PENALTY (0.3x)                                   |
+|  --------------------------------------                                  |
+|  Function: When query mentions a platform ("on Gemini"), items from     |
+|  OTHER platforms get 0.3x penalty. Below-threshold items removed.       |
+|  Platform-filtered rescue search if all results killed (threshold 0.35).|
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  F2: CONFIDENCE THRESHOLD                                               |
+|  ------------------------                                               |
+|  Function: Applied in rerankAndFilter(). Default: 0.40.                 |
+|  Override by intent classifier (up to 0.65 for ambiguous queries).      |
+|  No explicit rescue tier yet -- handled by low threshold + BM25 boost.  |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  F3: ENTITY ENRICHMENT (get_relevant_memories.ts:916-981)               |
+|  --------------------------------------------------------               |
+|  Function: Batch query entity_mentions + entities tables for final      |
+|  result set. Attaches {canonical_name, entity_type} arrays.             |
+|  Also incorporates entity_timeline injection data from C1b.             |
+|                                                                         |
+|  Position Rationale: Only enrich items we're returning (3-5).           |
++------------------------------+------------------------------------------+
+                               |
+                               v
+======= SECTION G: CLIENT-SIDE OUTPUT ========================================
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  G1: INJECTION BUILDER (client-side, platform-specific)                 │
-│  ──────────────────────────────────────────────────────                 │
-│  Function: Formats server response into platform-specific injection     │
-│  block. Sanitizes content (14 bracket patterns, 2 text patterns).      │
-│  Confidence tier routing:                                               │
-│    ≥ 0.5 → "ALWAYS use K.Y.T. data first"                             │
-│    0.25–0.5 → "Review items, incorporate relevant info"                │
-│    < 0.25 → "Mention only if clearly related"                          │
-│                                                                         │
-│  Item format: boxed with type/subtype/speaker/source/timestamp/         │
-│  confidence/match_quality/content.                                      │
-│                                                                         │
-│  Position Rationale: Stays client-side — platform-specific formatting   │
-│  differs between ChatGPT (system message), Claude (Human turn prefix), │
-│  Gemini (XHR body injection), Claude Code (hook context block).        │
-│                                                                         │
-│  Benefits: Server returns platform-agnostic data. Each client formats  │
-│  for its platform's injection mechanism.                                │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-╔══════════════════════════════════════════════════════════════════════════╗
-║                         FINAL OUTPUT                                    ║
-║  Formatted injection block inserted into user's prompt on target        ║
-║  platform. 3-8s total latency. 3-5 items max.                          ║
-╚══════════════════════════════════════════════════════════════════════════╝
++-------------------------------------------------------------------------+
+|  G1: CLIENT POST-PROCESSING (src/context-retrieval.js, 795 lines)      |
+|  -----------------------------------------------------                  |
+|  Function: Receives server results, runs client-side stages:            |
+|   - Preference router (client mirror, for offline/legacy path)          |
+|   - Temporal+synthesis fallback (getRecentByPlatform via edge fn)       |
+|   - Preference + vector merge                                           |
+|   - Entity-aware recency resolution (client-side, uses entity data)     |
+|                                                                         |
+|  Note: Quality penalties, MMR, keyword boost now server-side.           |
+|  Client retains: injection building, temporal fallback, recency         |
+|  resolution.                                                            |
++------------------------------+------------------------------------------+
+                               |
+                               v
++-------------------------------------------------------------------------+
+|  G2: INJECTION BUILDER (kyt-memory-injection-builder.js, 381 lines)    |
+|  -------------------------------------------------------                |
+|  Function: Formats server response into platform-specific injection     |
+|  block. Sanitizes content (bracket patterns, separator patterns,        |
+|  prompt injection vectors).                                             |
+|                                                                         |
+|  Confidence tier routing:                                               |
+|    >= 0.5 -> "ALWAYS use K.Y.T. data first"                            |
+|    0.25-0.5 -> "Review items, incorporate relevant info"                |
+|    < 0.25 -> "Mention only if clearly related"                          |
+|                                                                         |
+|  Platform-specific formatting:                                          |
+|    ChatGPT: system message prefix                                       |
+|    Claude Web: Human turn prefix                                        |
+|    Gemini: XHR StreamGenerate payload injection                         |
+|    Claude Code: system-reminder hook context                            |
++------------------------------+------------------------------------------+
+                               |
+                               v
++========================================================================+
+|                         FINAL OUTPUT                                    |
+|  Formatted injection block inserted into user's prompt on target        |
+|  platform. 3-8s full pipeline, <300ms fast path. 3-5 items max.         |
++========================================================================+
 ```
 
 ---
@@ -638,310 +471,264 @@
 
 **Entry format**: Raw user message string (UTF-8, unbounded length).
 
-The intent classifier is a 6-dimension heuristic scorer implemented in `src/intent-classifier.js` (61 unit tests). It runs purely on regex and string analysis — no API calls, no ML inference, <1ms execution.
+The intent classifier is a heuristic scorer implemented in `src/intent-classifier.js` (425 lines, 61 unit tests). Runs purely on regex and string analysis -- no API calls, no ML inference, <1ms execution.
 
-**Six scoring dimensions** (each 0.0–1.0):
+**Seven scoring functions** (each 0.0-1.0):
 
-1. **Directive strength**: Detects imperative verbs (write, create, build, implement at 0.8; continue/proceed/resume at 0.4). High directive + low memory reference = code task, not memory query.
+1. **scoreDirective** (lines 63-102): Imperative verbs (write, create, build at 0.8; continue/proceed/resume at 0.4). High directive + low memory reference = code task, not memory query.
+2. **scoreMemoryReference** (lines 138-161): "remind me", "what did we discuss", "you mentioned" -- direct stored-information signals.
+3. **scoreContentDensity** (lines 171-200): Word count and character length. Code blocks detected and excluded.
+4. **scoreQuestionStructure** (lines 210-225): Interrogative words, question marks. "what is a monad?" doesn't need memory, "what did I say about monads?" does.
+5. **scorePersonalReference** (lines 235-262): "my", "I said", "we built" -- first-person pronouns.
+6. **scoreTemporalReference** (lines 272-290): "yesterday", "last week", "remember when" -- time-anchored recall.
+7. **scoreSynthesisIntent** (lines 295-310): Multi-topic bridging language ("connect", "relate", "combine"). Not included in classifyIntent return object -- used directly by context-retrieval.js for synthesis+platform fallback.
 
-2. **Memory reference**: "remind me", "what did we discuss", "you mentioned" — direct signals that the user wants stored information.
-
-3. **Content density**: Word count and character length. Short greetings ("hey") score low; multi-sentence questions score high. Code blocks detected and excluded from density calculation.
-
-4. **Question structure**: Interrogative words (what, how, why), question marks. Not all questions need memory — "what is a monad?" doesn't, but "what did I say about monads?" does.
-
-5. **Personal reference**: "my", "I said", "we built" — first-person pronouns indicating personal knowledge.
-
-6. **Temporal reference**: "yesterday", "last week", "remember when" — time-anchored recall requests.
+**classifyIntent() returns 6 dimensions**: `{ directive, memory, density, question, personal, temporal }`.
 
 **Classification rules** (first match wins):
-- directive ≥ 0.7 AND memory < 0.3 AND personal < 0.3 → **SKIP** (pure code task)
-- density ≤ 0.15 AND memory < 0.5 → **SKIP** (greeting/filler)
-- memory ≥ 0.7 → **QUERY** (threshold: 0.40)
-- personal ≥ 0.4 AND temporal ≥ 0.5 → **QUERY** (threshold: 0.45)
-- directive ≥ 0.4 AND memory ≥ 0.3 → **QUERY** (threshold: 0.65 — ambiguous, be strict)
-- density ≥ 0.4 AND contextual signals → **PASSIVE** (threshold: 0.60)
-- else → **SKIP**
+- directive >= 0.7 AND memory < 0.3 AND personal < 0.3 -> **SKIP**
+- density <= 0.15 AND memory < 0.5 -> **SKIP**
+- memory >= 0.7 -> **QUERY** (threshold: 0.40)
+- personal >= 0.4 AND temporal >= 0.5 -> **QUERY** (threshold: 0.45)
+- question >= 0.5 AND personal >= 0.4 -> **QUERY** (threshold: 0.45)
+- directive >= 0.4 AND memory >= 0.3 -> **QUERY** (threshold: 0.65)
+- directive >= 0.4 AND temporal >= 0.4 -> **QUERY** (threshold: 0.60)
+- question >= 0.5 AND density >= 0.4 -> **PASSIVE** (threshold: 0.60)
+- density >= 0.4 with word count >= 8 -> **PASSIVE** (threshold: 0.60)
+- else -> **SKIP**
 
-**Exit format**: `{ intent: 'QUERY'|'PASSIVE'|'SKIP', confidenceThreshold: number, reason: string, scores: object }`
+**Exit format**: `{ intent, confidenceThreshold, reason, scores }`
 
-**Why this stays client-side**: Zero latency, zero cost, no dependencies. Adding a network round-trip to determine whether to make a network round-trip is circular. The confidence threshold it produces is a critical input to the server pipeline (Stage F1).
+**Why client-side**: Zero latency, zero cost, no dependencies. The confidence threshold is a critical input to the server pipeline's confidence filter.
 
-### A2: Edge Function Call
+### A1b: Layer 2 Intent Judge (classify_intent edge function)
+
+**Entry format**: `{ message, scores, reason }` from Layer 1.
+
+For PASSIVE classifications where the heuristic is uncertain, the `classify_intent` edge function (149 lines) acts as a second opinion. Claude Haiku 4.5 receives the message (truncated to 500 chars), the Layer 1 scores, and the classification reason.
+
+**Output taxonomy**: MEMORY_QUERY (fire pipeline, threshold 0.50) or NO_RETRIEVAL (skip pipeline).
+
+**Rate limiting**: Tier-aware via `getTierLimits(tier)` from `tier-check.ts`. Only PASSIVE intents reach this stage, so volume is naturally bounded.
+
+**Why a separate edge function**: Keeps the LLM call server-side (no API key in client), and the 2s latency is acceptable since PASSIVE queries are inherently ambiguous -- better to spend 2s confirming than 12-18s on a wasted pipeline run.
+
+### A2: Routing & Edge Function Call
 
 **Entry format**: Intent classification result + raw user message.
 
-If intent is SKIP, return empty immediately. Otherwise, construct request:
+If intent is SKIP, return empty immediately. Otherwise, `src/context-retrieval.js` dispatches:
 
-```typescript
-{
-  query: userMessage,
-  userId: string,           // From auth session
-  profileId: string,        // MVP: same as userId
-  topK: 5,                  // Default
-  fast: false,              // true only for MCP hooks
-  confidenceThreshold: 0.45, // From intent classifier
-  synthesisLambda: 0.35,    // If scoreSynthesisIntent >= 0.5, else 0.5
-  includeMetadata: boolean,  // Debug mode
-  platform: 'chatgpt'|'claude'|'gemini'|'claude-code'  // Caller identity
-}
-```
+- **Authenticated users** (edge mode): POST to `search_memories` edge function with query, userId, profileId, topK (20), confidenceThreshold, mmrLambda, fast flag.
+- **MCP hook path**: Same edge function with fast=true (skip HyDE, reranking, entity search).
+- **Legacy path** (still active): Unauthenticated -> local BM25 + client-side HyDE. To be removed in Phase 5.
 
-Single HTTP POST to `search_memories` edge function (Supabase). Timeout: 30s (client-side). The server has its own internal stage timeouts.
-
-**Exit format**: `UnifiedRetrievalResponse` (items array + metadata object).
-
-**Error handling**: If edge function fails (network error, 5xx, timeout), return empty injection with error flag. Client never falls back to local search — local search path is deleted in Phase 5.
+**Current dual-path**: `getRoutingMode()` in `src/auth-config.js` returns 'edge' (JWT valid), 'legacy' (api_config exists, no JWT), or 'unconfigured'. Edge mode disables client-side query transformation. Both paths converge at the injection builder.
 
 ---
 
 ## Section B: Server-Side Pipeline (Retrieval Core)
 
+**Implementation**: `supabase/functions/_shared/get_relevant_memories.ts` (1077 lines). Called by `supabase/functions/search_memories/index.ts` (158 lines).
+
 ### B0: Preference Router
 
-**Entry format**: Query string + userId.
-
-Six regex patterns detect structured preference queries:
-1. "what is my favorite X" / "what are my preferred Y"
-2. "what X do I like/prefer/love"
-3. "tell me my favorite X"
-4. "do I like X" (value-based lookup)
-5. "which X is my favorite"
-6. "what kind of X do I like"
-
-**Qualifier stripping** (order matters):
+Six regex patterns detect structured preference queries. Qualifier stripping order matters:
 1. Strip "and why/how/when/where" suffixes FIRST
-2. Strip "of all time", "ever", "in the world", "in history" superlatives SECOND
+2. Strip "of all time", "ever", "in the world" superlatives SECOND
 
-This ordering ensures "favorite movie of all time and why" → "movie" (not "movie of all time").
+This ensures "favorite movie of all time and why" -> "movie".
 
-**RPC call**: `lookup_user_preferences(p_user_id, p_category, p_limit: 3, p_profile_id)`.
+**RPC call**: `lookup_user_preferences(p_user_id, p_category, p_limit: 10, p_profile_id)`.
 
-**Short-circuit logic**:
-- Pure preference (no qualifier) → Synthesize items, return immediately. 0ms pipeline.
-- Preference + qualifier ("and why") → Save preference items, continue to vector pipeline. Merge at Stage F3.
+**Short-circuit**: Pure preference match -> synthesize items (`"User's favorite {category}: {value}. Recorded: {date}."` with `score = confidence * 0.9`), return immediately.
 
-**Synthesized item format**: `"User's favorite {category}: {value}. Recorded: {date}."` with similarity = (confidence × 0.9) ≈ 0.72.
+### B1: Query Embedding
 
-### B1: Query Embedding + Transformation
+**Model**: Qwen3-Embedding-8B via Scaleway (HuggingFace router). Input: query string. Output: 4096d vector, Matryoshka-truncated to 1024d, L2-normalized. ~150ms typical latency. Embedding and batch support via `HuggingFaceClient` (163 lines).
 
-**Parallel execution** — both start simultaneously:
-
-**Embedding**: Qwen3-Embedding-8B via Scaleway API. Input: query string. Output: 4096d vector, Matryoshka-truncated to 1024d, L2-normalized. ~150ms typical latency.
-
-**Query transformation**: Claude Haiku 4.5 (temp=0.3, 3s timeout). Rewrites query for better retrieval signal. Example: "what was that thing about cars" → "user's car preferences and automotive discussions". Falls back to raw query on timeout or failure.
-
-**Why parallel**: Embedding takes ~150ms, transformation takes ~1-3s. Starting both simultaneously means transformation is "free" if it completes before the next parallel stage needs it. If it's slower, we use the raw query — no pipeline stall.
-
-**Exit format**: `[embedding: Float32Array(1024), transformedQuery: string | null]`
+**Fast path** (`fast=true`): Single vector search -> echo filter -> gravity scores as rerank_score -> BM25 boost -> quality penalties -> confidence filter. Target: <300ms total. Used by MCP hook for low-latency context injection.
 
 ### B2: Entity Search + HyDE + Concept Detection
 
-**Three-way parallel execution**:
+Three-way parallel execution via `Promise.all()`:
 
 **Entity search** (dual-arm):
-- Embedding arm: `search_entities_by_embedding(embedding, userId, matchCount: 10, threshold: 0.8)`
-- Text arm: `search_entities_by_text(query, userId, matchCount: 10)` — trigram matching with `ENTITY_CONCEPT_SYNONYMS` expansion (level↔mode↔tier)
-- Results merged, deduplicated by canonical_name
-- Platform entities (gemini, chatgpt, claude) excluded from boost set when query mentions a platform name. Rationale: "gemini" entity has 87+ mentions (all dev talk), drowning topic entities like "Walter Payton"
+- Embedding arm: `search_entities_by_embedding(embedding, userId, matchCount: 5, threshold: 0.8)`
+- Text arm: `search_entities_by_text(expandedQuery, userId, matchCount: 5)` with `CONCEPT_SYNONYMS` expansion (level<->mode<->tier, nfl<->football<->player, diet<->weight<->nutrition)
+- Results merged, deduplicated by ID
+- Platform entities excluded from boost set when query mentions a platform
 
-**HyDE generation**: Claude Haiku 4.5 (temp=0.7, 8s timeout).
+**HyDE generation** (`hyde-generator.ts`, 177 lines):
+- Claude Haiku 4.5 (temp=0.7, 8s timeout, maxTokens: 300, maxRetries: 2)
 - Prompt: "Imagine a past conversation where the user discussed [query]. Write a realistic excerpt..."
-- **Drift gate validation**: Generated document must contain ≥1 non-stop-word from the original query. 18 stop words filtered. If no overlap → drift detected → discard HyDE document. This prevents HyDE hallucination from polluting the retrieval pipeline.
-- Circuit breaker: In-memory rate limit tracker. On API errors, skip subsequent HyDE calls for 1-5min (exponential backoff: 60s, 120s, 300s).
+- Format validation: must contain "User:" and "Assistant:"
+- Drift gate: >=1 non-stop-word from original query must appear in output (85 stop words)
+- On failure: returns null, pipeline continues with raw query only
 
-**Concept detection**: Searches for CONCEPT, ANALOGY, THEME entity types. Catches abstract queries ("3 levels of memory") that text entity search would miss because the entity name doesn't match query terms.
+**Concept detection**: Text search for CONCEPT, ANALOGY, THEME entity types. Catches abstract queries ("3 levels of memory") that entity text search misses.
 
-**Exit format**: `[entities: Entity[], hydeDocument: string | null, conceptEntities: Entity[]]`
+### B2b: Graph Walk
 
-### B3: Adaptive Short-Circuit + Vector Search + Graph Walk
+After entity search produces boost IDs, `graph_walk_from_entities` RPC traverses `entity_relationships`:
+- Parameters: entity IDs, userId, maxDepth=2, maxIntermediate=20
+- Returns chat_turns connected by shared entities
+- Results scored by relationship_strength, tagged with entity_boost=true
 
-**Short-circuit decision**: If top entity confidence ≥ 0.85 (or ≥ 0.80 for PERSON entities):
-- Skip HyDE embedding (save 150ms)
-- Skip dual vector search (run only raw embedding search)
-- Skip reranking (use gravity scores directly)
-- **Total savings**: 2-4s
+### B3: Adaptive Short-Circuit + Vector Search
 
-**Vector search** (via `match_messages_with_gravity` RPC):
-- Uses HNSW index on 1024d embeddings
+**Short-circuit decision** (lines 610-689): If top entity confidence >= 0.85 (or >= 0.80 for PERSON entities) after excluding platform entities:
+- Skip HyDE embedding
+- Single vector search with raw embedding only
+- Still applies reranking (unlike Phase 5 spec which proposed skipping it)
+- Savings: 2-4s from skipping dual search
+
+**Vector search** via `match_messages_with_gravity` RPC:
+- HNSW index on 1024d embeddings (pgvector)
 - Returns candidates with gravity_score computed as:
-  ```
-  gravity = similarity × (1 + impact/100 + intimacy×0.2) × time_decay × rehearsal_bonus
-  ```
-- **Time decay** is adaptive based on impact level:
-  - High importance: `1 / (1 + ln(1 + days/30))` — logarithmic, ~20% after 365 days
-  - Medium: `1 / (1 + days/60)` — linear, ~50% after 60 days
-  - Low: `exp(-days/30)` — exponential, ~13.5% after 60 days
-- **Rehearsal bonus**: `min(1 + access_count × 0.05, 1.5)` — frequently accessed memories get up to 50% boost
+  `gravity = similarity * (1 + impact/100 + intimacy*0.2) * time_decay * rehearsal_bonus`
+- Time decay adaptive by impact level: logarithmic (high), linear (medium), exponential (low)
+- Rehearsal bonus: `min(1 + access_count * 0.05, 1.5)`
+- Optional `p_platform` filter for platform-specific rescue searches
 
-**If not short-circuited**: Dual vector search — raw embedding + HyDE embedding in parallel. Each returns scored candidates.
-
-**Graph walk** (parallel with vector search):
-- `graph_walk_from_entities(entityIds, userId, maxDepth=2, maxIntermediate=20)`
-- 2-depth traversal through `entity_relationships` table
-- Finds content connected by shared entities — catches items that share concepts but not vocabulary
-- Example: "Walter Peyton" → entity bridge → "Walter Payton" (typo correction via entity linking)
-
-**Exit format**: Up to 3 ranked lists (raw, HyDE, graph) ready for fusion.
+**If not short-circuited**: Dual parallel vector search (raw + HyDE embeddings), each with same parameters.
 
 ---
 
 ## Section C: Fusion & Reranking
 
-### C1: RRF Merge
+### C1: RRF Merge (`rrf.ts`, 152 lines)
 
-**Reciprocal Rank Fusion** combines 2-3 ranked lists into a single candidate pool.
+`reciprocalRankFusion()` combines 2-3 ranked lists.
 
-**Formula**: `RRF_score(d) = Σ (weight_i / (k + rank_i(d)))` where k=60 (standard smoothing constant).
+**Formula**: `RRF_score(d) = SUM(weight_i / (k + rank_i(d)))`, k=60.
 
 **Weights**:
-- 2-way (no graph results): HyDE 0.60, Raw 0.40
-- 3-way (with graph): HyDE 0.48, Raw 0.32, Graph 0.20
+- 3-way (HyDE + Raw + Graph): 0.48, 0.32, 0.20
+- 2-way (HyDE + Raw): 0.60, 0.40
+- 2-way (Raw + Graph): 0.80, 0.20
+- Raw only: no fusion needed
 
-**Why k=60**: Industry standard from the original Cormack et al. 2009 paper. Prevents top-1 rank from dominating — with k=60, rank 1 gets score 1/61 ≈ 0.0164 and rank 10 gets 1/70 ≈ 0.0143. The difference between adjacent ranks is small, so multiple signals must agree for an item to score high.
+Items appearing in multiple lists have scores summed (not duplicated).
 
-**Why HyDE-weighted**: HyDE bridges vocabulary gaps (user says "that car thing" → HyDE generates "automotive preferences") but can hallucinate. 60/40 weighting means HyDE failures are recoverable — raw results always participate.
-
-**Deduplication**: Items appearing in multiple lists are merged (scores summed), not duplicated.
+**Exported helpers**: `mergeHydeAndRawResults()` (convenience 2-way wrapper, default 0.6/0.4), `fallbackToRawResults()` (when HyDE fails).
 
 ### C1b: Entity Timeline Guarantee
 
-After RRF merge, the pool may be missing recent entity mentions (older, semantically richer content dominates embedding space). For each entity in the boost set, `get_newest_turns_for_entities` RPC fetches the most recent mention. If not already in the pool, it's injected with a synthetic RRF score.
-
-**Why this matters**: Consider the sequence "Jerry is real" → "Jerry is not real" → "Jerry is now real". Embedding similarity for all three is nearly identical. Without timeline guarantee, the reranker may surface any of them. With it, the newest statement is always available for consideration.
+After RRF merge, `get_newest_turns_for_entities` RPC fetches the most recent mention for each entity in the boost set. If not already in the pool, injected with entity_timeline metadata (entity_id, canonical_name, entity_type, created_at). This ensures contradictory memory chains always surface the newest statement.
 
 ### C1c: Query Echo Filter
 
-Removes candidates <80 characters with >70% word overlap with the query, after filtering 38 common stop words. This prevents the user's own question from being retrieved as a "relevant memory."
+Removes candidates <80 chars with >70% word overlap with the query, after filtering 50+ stop words. Content with <3 non-stop words is too sparse for reliable echo detection and is kept.
 
-### C2: Jina Cross-Encoder Reranking
+### C2: Cross-Encoder Reranking
 
-**Model**: BGE-Reranker-v2-m3 (via Jina API)
-**Input**: Query + up to 25 candidate documents
-**Timeout**: 5s
-**Output**: `rerank_score` (0.0–1.0) per candidate
+**Model**: BAAI/bge-reranker-v2-m3 (via HuggingFace Scaleway router, `HuggingFaceClient.rerank()`)
+**Input**: Query + all candidates (no hard cap in current code, but typically 20-40)
+**Output**: `rerank_score` (0.0-1.0) per candidate
 
-**Key detail**: Uses `contextual_content` when available. Contextual content is an LLM-generated prefix attached at write time (via `context-generator.ts`): "This conversation excerpt discusses the user's favorite movie, The Sound of Music, mentioned in a ChatGPT conversation on 2026-02-15." This gives the cross-encoder richer context than raw message text alone.
+Uses `contextual_content` when available -- LLM-generated context prefix from `context-generator.ts` gives the cross-encoder richer signal than raw message text alone.
 
-**Fallback**: If Jina is unavailable, scores fall back to: gravity_score → rrf_score → 0.5 (static).
+**Fallback chain**: gravity_score -> rrf_score -> 0.5 (static).
 
-### C3: BM25 Keyword Boost
+### C3: BM25 Keyword Boost + Entity Boost
 
-Post-reranking adjustment: `rerank_score += (matched_terms / total_terms) × 0.3`.
-
-**Rationale**: Cross-encoders capture semantic relevance but can underweight exact keyword matches. If the user asks "Walter Payton" and a document contains exactly "Walter Payton", it should rank higher than a semantically similar document about "NFL running backs" that doesn't mention the name.
-
-**Max effect**: +0.3 (if all query terms appear in the document). Additive, not multiplicative — can push a 0.35 score to 0.65, crossing the default threshold.
+Post-reranking: `rerank_score += (0.3 * term_hits / max_hits)`. Additional +0.1 for entity_boost flagged items. Uses `contextual_content` for matching when available.
 
 ---
 
-## Section D: Post-Retrieval Quality Filters
+## Section D: Quality Penalties (`quality-penalties.ts`, 524 lines)
 
-These 8 filters were previously client-only. In Phase 5, they run server-side after reranking but before diversity selection.
+These 8 penalties run server-side after reranking. Ordered cheapest-to-most-expensive. Total compiled regex count: 66 patterns across all penalty categories.
 
-**Design principle**: Ordered from cheapest/most-decisive to most-expensive/most-nuanced:
-1. D1-D3: Boolean hard drops (O(1) flag/string checks)
-2. D4: Pattern matching with scoring (33 patterns)
-3. D5-D6: Regex batteries with query guards (12 + 23 patterns)
-4. D7: Platform comparison (O(1))
-5. D8: Length-aware regex (7 patterns with length branching)
+**Hard drops first**:
+1. **Recursion guard**: Drops items with injection protocol markers
+2. **Meta flag filter**: Drops items where `meta === true`
+3. **Deflection penalty**: 36 deflection + 5 assistant echo patterns. Confidence 0.30-0.95 based on pattern count + message length + position. Opening-only hedge (long messages, patterns in first 150 chars) = 0.30. Hard drop >= 0.85.
 
-**Total cost**: All 8 filters together are pure regex/string matching — microseconds on 25 candidates. Zero API calls.
+**Score penalties**:
+4. **Meta-conversation**: 4 patterns, 0.3x. Query guard: 3 KYT_QUERY_PATTERNS.
+5. **Diagnostic**: 23 patterns, 0.5x. Query guard: 3 RETRIEVAL_QUERY_PATTERNS.
+6. **Echo**: 7 stored-data patterns. Length-scaled: <300 chars=0.50x, 300-800=0.70x, >800=0.90x.
 
-**Query guards** prevent over-filtering: When the user IS asking about K.Y.T. operations (D5 guard), or IS asking about retrieval diagnostics (D6 guard), those penalties are skipped. This is implemented via 3+3 regex patterns that match the query string before applying content penalties.
+**More hard drops**:
+7. **Bare question filter**: <120 chars, no "Assistant:" block, ends with "?" or matches INTERROGATIVE_RE.
+
+**Time adjustment**:
+8. **Recency multiplier**: Half-life 30 days. `score = score * 0.85 + score * exp(-days/30) * 0.15`.
+
+All penalties pure regex/string matching -- microseconds on typical candidate sets. Zero API calls.
 
 ---
 
 ## Section E: Diversity & Ranking
 
-### E3: Entity-Aware Recency Resolution
+### E1: Content Deduplication (`mmr.ts:deduplicateByContent`)
 
-Items are grouped by shared entities (using entity enrichment data attached during retrieval). Within each entity group:
+Exact match on normalized content (trim + lowercase). Keeps first (highest-scored) occurrence. Applied after penalties so duplicates with different penalty-adjusted scores keep the highest.
 
-1. Sort by timestamp descending
-2. Newest item: `rerank_score *= 1.5` (capped at 1.0)
-3. Older items: `rerank_score *= 0.8`
+### E2: MMR Diversity Reranking (`mmr.ts:applyServerMMR`)
 
-**Confidence gate**: If an older item outscores the newest by >0.2, skip recency resolution for that group. This protects high-quality older content from being displaced by low-quality recent mentions. Example: a detailed 2000-word car discussion (score 0.85) shouldn't lose to a brief "yeah I like that car" mention (score 0.45) just because it's newer.
-
-### E4: MMR Diversity Reranking
-
-**Algorithm**: Greedy selection. For each slot in the output:
+Greedy selection algorithm:
 ```
-selected = argmax_d [ λ × relevance(d) - (1-λ) × max_{s∈S} similarity(d, s) ]
+selected = argmax_d [ lambda * relevance(d) - (1-lambda) * max_{s in S} similarity(d, s) ]
 ```
-where S is the already-selected set.
 
-**Similarity measure**:
-- Primary: Cosine similarity on 1024d embeddings (when available on candidates)
-- Fallback: Jaccard similarity on word sets (content overlap)
+**Similarity**: Per-pair hybrid -- cosine on 1024d embeddings when both candidates have them, Jaccard on word sets otherwise. Relevance normalized to [0,1] range. Similarity normalized from [-1,1] to [0,1].
 
-**Lambda values**:
-- 0.5 (default): Balanced relevance/diversity
-- 0.35 (synthesis queries): Favor diversity — "compare what I said about X on ChatGPT vs Claude" needs items from different platforms, not the 3 most relevant items from one platform
+**Lambda**: 0.5 (default), 0.35 (synthesis queries -- "compare what I said about X on ChatGPT vs Claude").
 
-**Boost function** (applied before selection):
-- +0.50 for CLI source (rare, high-value technical content)
-- +0.25 for reference data (explicitly saved)
-- +0.20 for instructions/how-to content
-- +0.15 for user preferences and factual notes
-- +0.10 for Gemini source (new platform, boost discoverability)
+**Output cap**: maxResults (default 5).
+
+### E3: Post-MMR Keyword Boost (`mmr.ts:applyKeywordBoost`)
+
+After MMR selects the final set: `score += (0.15 * hits / maxHits) * score`. Max 15% boost. Uses contextual_content when available.
 
 ---
 
 ## Section F: Confidence & Output
 
-### F1: Confidence Threshold + Rescue
+### F1: Platform-Mismatch Penalty
 
-Three-tier logic:
+When query mentions a platform, non-matching items get 0.3x penalty on `rerank_score`. Items below threshold removed. If all results killed:
+- **Platform rescue search**: Second `match_messages_with_gravity` call with `p_platform` filter, threshold 0.35
+- Rescue results go through echo filter + reranking
 
-**Tier 1 (Normal pass)**: `rerank_score >= threshold` (0.40 default, or classifier override). Items passing → included in response.
+### F2: Confidence Threshold
 
-**Tier 2 (Rescue)**: If nothing passes AND the intent classifier didn't raise the threshold above default:
-- Rescue top 2 items if `rerank_score >= 0.10`
-- Platform-aware: if query mentions a platform, loosen rescue floor to 0.25 for matching-platform items
-- No rescuing deflection-dropped items
+Applied in `rerankAndFilter()`: `rerank_score >= threshold` (0.40 default, overridable by intent classifier).
 
-**Tier 3 (Block)**: If the intent classifier raised threshold (e.g., 0.65 for ambiguous directive+memory queries) AND nothing passes → return empty. The classifier determined this query is unlikely to benefit from memory injection. Respecting that signal prevents noisy, low-confidence injections.
+No explicit rescue tier in current implementation. Low-confidence items are simply filtered. BM25 boost can push borderline items above threshold (+0.3 max).
 
-### F5: Response Construction
+### F3: Entity Enrichment
 
-**Exit format**:
-```typescript
-{
-  items: [{
-    id, content, platform, role, created_at,
-    rerank_score, source_type, entities[], contextual_content
-  }],
-  metadata: {
-    query_original, query_transformed, pipeline_ms,
-    stages_completed, items_before_filter, items_after_filter,
-    used_hyde, used_short_circuit, entity_count, routing_mode
-  }
-}
-```
+Batch query `entity_mentions` + `entities` tables for final result set. Attaches `entities: [{canonical_name, entity_type}]` to each result. Also incorporates entity_timeline data from C1b injection.
 
 ---
 
 ## Section G: Client-Side Output
 
-### G1: Injection Builder
+### G1: Client Post-Processing
 
-**Sanitization** (14 bracket patterns + 2 text patterns):
-- Structural delimiters: `[SYSTEM]`, `[INST]`, `<system>`, `<|im_start|>` → replaced with `_`
-- Separator patterns: `={10,}`, box-drawing characters → neutralized
-- Prompt injection vectors: `\n\nHuman:`, `\n\nAssistant:` → `\n\n_Human_:`, `\n\n_Assistant_:`
+Client receives server results and applies remaining stages:
+- **Temporal+synthesis fallback**: If query mentions a platform with temporal intent (scoreTemporalReference >= 0.4) and no results from that platform -> `getRecentByPlatform` via edge function
+- **Preference + vector merge**: If preference router found results and query had qualifier
+- **Entity-aware recency resolution**: Groups items by shared entities, boosts newest (1.5x), penalizes older (0.8x) with confidence gate (skip if older outscores newest by >0.2)
 
-**Confidence tier routing** (based on max rerank_score across items):
-- ≥ 0.5: "ALWAYS use K.Y.T. data first, suppress web search, quote stored text"
-- 0.25–0.5: "Review items, incorporate relevant info, combine with own knowledge"
-- < 0.25: "Mention only if clearly related, frame as possibly discussed"
+### G2: Injection Builder
 
-**Platform-specific formatting**:
-- ChatGPT: Injected as system message prefix
-- Claude Web: Prepended to Human turn
-- Gemini: Injected into XHR request body (StreamGenerate payload)
-- Claude Code: Hook context block (system-reminder format)
+**Sanitization**: Structural delimiters (`[SYSTEM]`, `[INST]`, `<system>`, `<|im_start|>`) -> replaced with `_`. Separator patterns and prompt injection vectors neutralized.
+
+**Confidence tier routing** (based on max rerank_score):
+- >= 0.5: "ALWAYS use K.Y.T. data first, suppress web search"
+- 0.25-0.5: "Review items, incorporate relevant info"
+- < 0.25: "Mention only if clearly related"
+
+**Platform-specific**:
+- ChatGPT: system message prefix
+- Claude Web: Human turn prefix
+- Gemini: XHR StreamGenerate payload injection
+- Claude Code: system-reminder hook context
 
 ---
 
@@ -949,63 +736,71 @@ Three-tier logic:
 
 ## Strengths
 
-**1. The single-pipeline architecture is the correct long-term choice.**
+**1. Server-side quality penalties eliminate the MCP quality gap.**
 
-The before-state (two divergent pipelines: 4,076 lines client-side, 1,045 lines server-side, ~60% shared logic) is a maintenance nightmare for a solo developer. Every quality improvement (the meta-echo fix, the Sound of Music qualifier stripping, the diagnostic pattern broadening) had to be implemented in one place and mentally tracked as missing from the other. The Phase 5 architecture eliminates this entirely — one pipeline, one set of regression tests, one place to tune.
+Before the `quality-penalties.ts` migration, MCP consumers (Claude Code) received raw results without deflection filtering, meta-echo suppression, or recency adjustment. The same penalties that protected ChatGPT/Claude users were client-only in `context-retrieval.js`. Now all consumers get identical quality treatment. This is the single biggest improvement in the current architecture.
 
-**2. The penalty/filter ordering is well-reasoned.**
+**2. The penalty ordering is textbook filtration design.**
 
-The pipeline applies filters in cost order: cheapest first (boolean flag checks), then string comparisons, then regex batteries, then scoring with query guards. This is textbook filtration pipeline design. Each stage reduces the candidate set, so expensive stages operate on fewer items.
+Hard drops first (recursion guard, meta flag, high-confidence deflection), then score penalties (meta, diagnostic, echo), then more hard drops (bare questions), then time adjustment. Each stage reduces the candidate set so expensive stages operate on fewer items. Total cost: microseconds on 20-40 candidates. 66 compiled regexes is manageable -- regex compilation is a one-time cost per edge function cold start.
 
 **3. Gravity scoring is genuinely novel for personal memory systems.**
 
-Most RAG systems treat all documents equally from a temporal perspective. K.Y.T.'s gravity scoring with adaptive decay curves (logarithmic for high-impact memories, exponential for low-impact) and rehearsal bonuses maps to how human memory actually works. This isn't a theoretical nicety — it directly prevents the "everything fades equally" problem that makes most memory systems useless after 6 months.
+Most RAG systems treat all documents equally from a temporal perspective. K.Y.T.'s gravity scoring with adaptive decay curves (logarithmic for high-impact memories, exponential for low-impact) and rehearsal bonuses maps to how human memory actually works. The "Jerry problem" solution (entity timeline guarantee) addresses a real failure mode of pure vector similarity.
 
-**4. The drift gate on HyDE is critical and often missing.**
+**4. The drift gate on HyDE prevents a class of silent failures.**
 
-HyDE is powerful but dangerous — it can fabricate entities that don't exist in the corpus. Most implementations trust HyDE output blindly. K.Y.T.'s drift gate (≥1 original query term must appear in HyDE output) is a simple, effective guardrail. The circuit breaker with exponential backoff (60s/120s/300s) prevents cascading failures during API outages.
+HyDE is powerful but dangerous -- it can fabricate entities that don't exist in the corpus. Most implementations trust HyDE output blindly. K.Y.T.'s drift gate (>=1 original query term must appear, 85 stop words filtered) is simple and effective. Combined with the adaptive short-circuit (skip HyDE when entity confidence is high), HyDE is used only when it adds value.
 
-**5. The confidence tier routing in injection is subtle and important.**
+**5. Three-way RRF fusion with graph walk is well-designed.**
 
-Most RAG systems either inject everything above a threshold or nothing. K.Y.T.'s three-tier routing (high → "use this data", medium → "consider this", low → "maybe relevant") gives the downstream LLM appropriate epistemic framing. This reduces hallucination from low-confidence injections while still surfacing potentially useful context.
+The graph walk provides a retrieval signal that both embedding similarity and lexical matching miss: shared entity connections. The "Walter Peyton" -> "Walter Payton" typo bridging via entity relationships is a concrete example. RRF with k=60 prevents any single arm from dominating.
 
-## Potential Weaknesses
+**6. The Layer 2 intent judge is a smart use of LLM budget.**
 
-**1. No offline/degraded mode after Phase 5.**
+Spending ~2s of Haiku 4.5 time on ambiguous PASSIVE cases to avoid 12-18s of wasted pipeline execution is excellent cost engineering. The tiered approach (cheap heuristic for 80% of cases, LLM judge for 20%) is more efficient than either pure-heuristic or pure-LLM classification.
 
-The current dual-path architecture has an accidental benefit: if the server is down, local BM25 still works (poorly, but it works). After Phase 5, a Supabase outage means zero retrieval for all clients. Mitigation: Supabase Edge Functions have 99.9% SLA and the client already depends on Supabase for sync — this isn't a new risk category, but it IS a newly total dependency.
+## Weaknesses & Technical Debt
 
-**2. Cold start latency on low-traffic periods.**
+**1. Dual-path architecture is still active.**
 
-Supabase Edge Functions cold start at ~200ms. For active users this is invisible (functions stay warm). For users who query once a day, the first query pays cold start on potentially 3 functions (search_memories, llm_completion for HyDE, HuggingFace embedding). Combined cold start could add 400-600ms. Negligible against the 3-8s total, but worth monitoring.
+`src/context-retrieval.js` still contains the legacy local BM25+HyDE path for unauthenticated users, plus client-side mirrors of server-side logic (preference router, platform penalty). This creates maintenance burden: every server-side improvement must be mentally tracked as potentially missing from the client path. Phase 5's goal of deleting the client retrieval path entirely is the right call.
 
-**3. The penalty stack is deep and interactions are hard to reason about.**
+**2. The penalty stack interactions are hard to debug.**
 
-8 sequential penalties, each modifying `rerank_score` multiplicatively, means a document can be penalized by multiple stages. A meta-conversation about retrieval diagnostics from the wrong platform: `score × 0.3 (meta) × 0.5 (diagnostic) × 0.3 (platform) = score × 0.045`. The interactions are correct (you DO want severe penalty for triple-flagged content) but debugging "why did this item score 0.02?" requires tracing through all 8 stages. The `includeMetadata` flag helps, but consider adding per-stage score snapshots to the diagnostics.
+8 sequential penalties, each modifying `rerank_score` multiplicatively, means a document can be penalized by multiple stages. A meta-conversation about retrieval diagnostics from the wrong platform: `score * 0.3 * 0.5 * 0.3 = score * 0.045`. The quality-penalties module logs each penalty application, but there's no aggregate per-item penalty trace in the response. Adding per-stage score snapshots to the response metadata would help debugging.
 
-**4. MMR with Jaccard fallback is weaker than embedding-based similarity.**
+**3. MMR Jaccard fallback is weaker than cosine similarity.**
 
-Option B (Jaccard on word sets) is a reasonable starting point, but it misses semantic similarity between different phrasings of the same topic. Two items about "car preferences" and "automotive favorites" have low Jaccard overlap but high semantic similarity. Upgrading to Option A (cosine on embeddings) requires plumbing embeddings through the pipeline, which is straightforward but was deferred for simplicity. Recommend upgrading after Phase 5 stabilizes.
+When candidates lack embeddings (graph walk results, rescue search results), MMR falls back to Jaccard similarity on word sets. Two items about "car preferences" and "automotive favorites" have low Jaccard overlap but high semantic similarity. The per-pair hybrid approach (cosine when both have embeddings, Jaccard otherwise) is correct, but graph walk results often lack embeddings.
 
-**5. Entity enrichment happens twice.**
+**4. No explicit rescue tier in confidence filter.**
 
-Currently entity data is fetched for timeline guarantee (Stage C1b), then fetched again for enrichment (Stage F4). This is two database round-trips for the same data. Consider caching the entity data from C1b and reusing it in F4.
+The Phase 5 spec describes a 3-tier confidence system (normal/rescue/block). Current implementation only has a single threshold. When the intent classifier raises the threshold to 0.65 and nothing passes, the result is empty. A rescue tier (top 2 items if score >= 0.10, respecting classifier signal) would prevent silent failures on edge cases.
 
-## Scalability Considerations
+**5. Entity enrichment runs twice in some paths.**
 
-**The pipeline is API-call-bound, not data-bound.** This is the most important scalability property. At 3,163 messages, vector search is ~82ms (HNSW). At 30,000 messages, it would be ~100ms. At 300,000, ~150ms. The bottleneck is always the three sequential external API calls: HyDE generation (Haiku, 2-4s) + Reranking (Jina, 2-4s) + Embedding (Qwen3, 150ms). These costs are per-query, not per-document.
+Entity data is fetched for timeline guarantee (C1b), then fetched again for enrichment (F3). The second query hits `entity_mentions` for all result IDs, including ones that already have entity_timeline data from C1b. Caching the C1b data and passing it to F3 would save one DB round-trip.
 
-**At 100K+ messages**: Consider adding a pre-filter by conversation recency (last 6 months) before vector search, with fallback to full corpus if results are sparse. This reduces the HNSW search space without losing older content.
+**6. context-generator.ts is ready but not yet integrated into ingestion.**
 
-**At 1M+ messages**: Would need to partition the HNSW index (by user, by time period, or by topic cluster). Supabase pgvector supports this via partial indexes. Not needed before 100K.
+The Anthropic contextual retrieval technique is implemented (171 lines) but `contextual_content` is only populated for rows that were explicitly backfilled. New ingestion doesn't generate it yet. This means the cross-encoder and BM25 boost stages operate on raw text for recent messages, losing the 67% precision improvement Anthropic reports.
 
-## Alternative Architectural Patterns
+## Scalability
 
-**Agent-based RAG** (LangChain/LlamaIndex agent loop): An LLM decides which tools to call iteratively. More flexible but 3-5x more expensive (multiple LLM round-trips per query) and 5-10x slower. K.Y.T.'s fixed pipeline is the right choice for a latency-sensitive injection use case where the retrieval pattern is well-understood.
+**API-call-bound, not data-bound.** At 3,163 messages, vector search is ~82ms (HNSW). At 30K messages, ~100ms. At 300K, ~150ms. The bottleneck is always the three sequential external API calls: HyDE generation (Haiku, 2-4s) + Reranking (BGE, 2-4s) + Embedding (Qwen3, 150ms).
 
-**Multi-index retrieval** (separate indexes per content type): Could partition memories by platform, content type, or time period with specialized indexes per partition. Useful at scale but premature at 3K messages. The unified HNSW index with gravity scoring handles heterogeneous content well.
+**At 100K+ messages**: Add pre-filter by conversation recency or content_type before vector search, with fallback to full corpus if sparse.
 
-**Streaming/progressive retrieval**: Return partial results as each stage completes. The user sees BM25 results immediately (100ms), then vector results refine them (1s), then reranked results replace them (4s). Appealing for UX but complex to implement in an injection-based system where the context block is consumed atomically by the downstream LLM.
+**At 1M+ messages**: Partition HNSW index (by user, by time period). Supabase pgvector supports this via partial indexes.
+
+## Comparison to Alternative Patterns
+
+**Agent-based RAG** (LLM decides tools iteratively): More flexible but 3-5x more expensive and 5-10x slower. K.Y.T.'s fixed pipeline is correct for latency-sensitive injection.
+
+**Multi-index retrieval** (separate indexes per content type): Premature at 3K messages. Unified HNSW + gravity scoring handles heterogeneous content well.
+
+**Streaming/progressive retrieval**: Return partial results as stages complete. Appealing for UX but complex in injection-based systems where context is consumed atomically.
 
 ---
 
@@ -1016,129 +811,144 @@ Currently entity data is fetched for timeline guarantee (Stage C1b), then fetche
 **"Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"**
 - Type: Research paper (NeurIPS 2020)
 - Authors: Lewis et al. (Facebook AI Research)
-- The foundational RAG paper. Establishes the retrieve-then-generate paradigm K.Y.T. builds on. Essential for understanding why retrieval + generation outperforms generation-only for factual recall.
+- The foundational RAG paper. Establishes retrieve-then-generate paradigm. Essential for understanding why retrieval + generation outperforms generation-only for factual recall.
 
 **"A Survey on Retrieval-Augmented Text Generation"**
 - Type: Research paper (arXiv 2024)
 - Authors: Gao et al.
-- Comprehensive taxonomy of RAG architectures: naive RAG, advanced RAG (K.Y.T.'s category), and modular RAG. The pre-retrieval/post-retrieval framework used in K.Y.T.'s pipeline maps directly to this paper's "Advanced RAG" category.
+- Comprehensive taxonomy: naive RAG, advanced RAG (K.Y.T.'s category), modular RAG. K.Y.T.'s pre-retrieval/post-retrieval pipeline maps to "Advanced RAG."
 
-**LlamaIndex Documentation — "Building Performant RAG Applications"**
-- Type: Documentation
-- Source: LlamaIndex (docs.llamaindex.ai)
-- Practical engineering guide covering query transformations, reranking, and hybrid search. K.Y.T.'s HyDE + vector + BM25 hybrid architecture is a specific instantiation of patterns documented here.
+**LlamaIndex Documentation -- "Building Performant RAG Applications"**
+- Type: Documentation (docs.llamaindex.ai)
+- Practical engineering guide covering query transformations, reranking, hybrid search. K.Y.T.'s architecture is a specific instantiation of these patterns.
 
 ## 2. Single Pipeline Architecture
 
 **"Rethinking RAG Pipeline Complexity"**
-- Type: Technical blog
-- Source: Pinecone (pinecone.io/learn)
-- Makes the case for simplified, single-path retrieval pipelines over multi-agent architectures. Directly relevant to K.Y.T.'s Phase 5 consolidation decision — reducing from 2 divergent pipelines to 1.
+- Type: Technical blog (Pinecone, pinecone.io/learn)
+- Makes the case for simplified single-path retrieval over multi-agent architectures. Directly relevant to K.Y.T.'s Phase 5 consolidation.
 
 **"Building Production RAG Systems" (Stanford CS 329S)**
-- Type: Course materials
-- Source: Stanford University
-- Covers the engineering discipline of production RAG: observability, testing, and the maintenance cost of pipeline complexity. Validates K.Y.T.'s decision to unify pipelines based on maintenance burden.
+- Type: Course materials (Stanford University)
+- Covers observability, testing, and maintenance cost of pipeline complexity. Validates K.Y.T.'s unification decision.
 
 ## 3. Pre-retrieval Techniques
 
 **"Precise Zero-Shot Dense Retrieval without Relevance Labels" (HyDE)**
 - Type: Research paper (ACL 2023)
 - Authors: Gao et al.
-- The paper introducing Hypothetical Document Embeddings. K.Y.T.'s HyDE implementation (generate hypothetical conversation, embed it, search with it) is a direct application. The drift gate validation is K.Y.T.'s novel addition to prevent HyDE hallucination.
+- The paper introducing Hypothetical Document Embeddings. K.Y.T.'s drift gate validation is a novel addition not in the original paper.
 
 **"Query2doc: Query Expansion with Large Language Models"**
 - Type: Research paper (EMNLP 2023)
 - Authors: Wang et al.
-- Generalized query expansion via LLM generation. K.Y.T.'s query transformation (Haiku 4.5 rewriting queries for better retrieval signal) implements this pattern. Provides theoretical grounding for why LLM-rewritten queries outperform raw queries.
+- Theoretical grounding for LLM-rewritten queries outperforming raw queries. K.Y.T.'s query transformation implements this pattern.
 
 ## 4. Retrieval Methods
 
 **"Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods"**
 - Type: Research paper (SIGIR 2009)
-- Authors: Cormack, Clarke, Büttcher
-- The original RRF paper. K.Y.T. uses the standard formula with k=60 (from this paper) for fusing HyDE, raw, and graph retrieval arms. Essential reading for understanding why rank-based fusion outperforms score-based fusion for heterogeneous retrieval signals.
+- Authors: Cormack, Clarke, Buttcher
+- Original RRF paper. K.Y.T. uses standard formula with k=60. Essential for understanding rank-based vs score-based fusion.
 
 **pgvector Documentation**
-- Type: Documentation
-- Source: github.com/pgvector/pgvector
-- K.Y.T.'s vector search runs on pgvector with HNSW indexes (1024d cosine distance). The documentation covers index tuning (m, ef_construction parameters) relevant to K.Y.T.'s scaling path.
+- Type: Documentation (github.com/pgvector/pgvector)
+- K.Y.T.'s vector search runs on pgvector with HNSW indexes (1024d cosine distance). Covers index tuning parameters (m, ef_construction).
 
 **"Matryoshka Representation Learning"**
 - Type: Research paper (NeurIPS 2022)
 - Authors: Kusupati et al.
-- The technique K.Y.T. uses to truncate Qwen3's 4096d embeddings to 1024d without retraining. Enables HNSW indexing at 4x lower storage while maintaining retrieval quality at the truncated dimension.
+- The technique K.Y.T. uses to truncate Qwen3's 4096d embeddings to 1024d without retraining. 4x lower storage while maintaining quality.
 
 ## 5. Post-retrieval Processing
 
 **"Improving RAG Effectiveness with Reranking"**
-- Type: Technical documentation
-- Source: Jina AI (jina.ai/reranker)
-- Documents the BGE-Reranker-v2-m3 cross-encoder used by K.Y.T. Explains why cross-encoder reranking after bi-encoder retrieval improves precision — the bi-encoder (Qwen3) retrieves broadly, the cross-encoder (BGE) scores precisely.
+- Type: Technical documentation (Jina AI, jina.ai/reranker)
+- Documents BGE-Reranker-v2-m3 used by K.Y.T. Explains why cross-encoder after bi-encoder improves precision.
 
 **"The Carbonell & Goldstein MMR Paper: Reducing Redundancy"**
 - Type: Research paper (SIGIR 1998)
 - Authors: Carbonell, Goldstein
-- The original Maximal Marginal Relevance paper. K.Y.T.'s MMR implementation (greedy selection, λ trade-off, cosine similarity) is a direct implementation. The synthesis-query lambda adjustment (0.35 for cross-topic queries) is K.Y.T.'s extension.
+- Original MMR paper. K.Y.T.'s synthesis-query lambda adjustment (0.35) is a novel extension.
 
 **"Contextual Retrieval" (Anthropic)**
-- Type: Technical blog
-- Source: Anthropic (anthropic.com/news/contextual-retrieval)
-- K.Y.T.'s `context-generator.ts` implements this technique: at write time, an LLM generates a context prefix for each chunk ("This excerpt discusses..."). At reranking time, the cross-encoder scores against this enriched text. The blog demonstrates 67% reduction in retrieval failures — K.Y.T. applies this to conversation memory specifically.
+- Type: Technical blog (anthropic.com/news/contextual-retrieval)
+- K.Y.T.'s `context-generator.ts` implements this: LLM-generated context prefix at write time, used by cross-encoder at search time. Reported 67% reduction in retrieval failures.
 
 ## 6. Generation Strategies
 
 **"Prompt Engineering Guide"**
-- Type: Documentation
-- Source: Anthropic (docs.anthropic.com)
-- K.Y.T.'s injection builder implements structured prompting: confidence-tiered instructions, structured item formatting, and sanitization against prompt injection. The Anthropic guide covers the principles behind these choices.
+- Type: Documentation (Anthropic, docs.anthropic.com)
+- K.Y.T.'s injection builder implements confidence-tiered instructions and sanitization. Covers principles behind these choices.
 
 **"Deconstructing RAG" (NVIDIA Technical Blog)**
-- Type: Technical blog
-- Source: NVIDIA
-- Covers the generation-side considerations of RAG: how to frame retrieved context for the LLM, when to instruct "use this data" vs "consider this data", and how to handle low-confidence retrievals. Directly relevant to K.Y.T.'s three-tier confidence routing.
+- Type: Technical blog (NVIDIA)
+- How to frame retrieved context for the LLM, when to use "use this" vs "consider this." Directly relevant to K.Y.T.'s three-tier confidence routing.
 
 ## 7. Evaluation & Monitoring
 
 **"RAGAS: Automated Evaluation of Retrieval Augmented Generation"**
 - Type: Research paper + framework (arXiv 2023)
 - Authors: Es et al.
-- Framework for evaluating RAG systems on faithfulness, answer relevancy, context precision, and context recall. K.Y.T.'s 8 regression test queries (tennis players, Sound of Music, 3 levels, etc.) are a manual version of this — RAGAS could formalize the evaluation.
+- Framework for faithfulness, answer relevancy, context precision, context recall. K.Y.T.'s regression test queries are a manual version -- RAGAS could formalize evaluation.
 
 **"Evaluating RAG Applications with RAGAs"**
-- Type: Documentation
-- Source: ragas.io
-- Practical guide to implementing RAGAS metrics. Useful for K.Y.T.'s next step: automated regression testing beyond the current 8 manual queries.
+- Type: Documentation (ragas.io)
+- Practical implementation guide for RAGAS metrics. Next step for K.Y.T.'s automated testing.
 
 ## 8. Advanced Topics
 
 **"Self-RAG: Learning to Retrieve, Generate, and Critique"**
 - Type: Research paper (ICLR 2024)
 - Authors: Asai et al.
-- Explores LLM self-assessment of retrieval quality. K.Y.T.'s intent classifier (deciding WHETHER to retrieve) and confidence filter (deciding WHETHER to inject) are lightweight versions of Self-RAG's retrieve/critique loop. Future K.Y.T. evolution could incorporate the LLM-as-critic pattern for quality assessment.
+- K.Y.T.'s intent classifier (whether to retrieve) and confidence filter (whether to inject) are lightweight versions of Self-RAG's critique loop. The Layer 2 LLM judge adds a degree of self-reflection.
 
 **"Dense Passage Retrieval for Open-Domain Question Answering" (DPR)**
 - Type: Research paper (EMNLP 2020)
 - Authors: Karpukhin et al.
-- Foundational bi-encoder retrieval paper. K.Y.T.'s Qwen3 embedding + pgvector HNSW search is a specific instantiation of the DPR pattern. Understanding DPR helps reason about when bi-encoder retrieval fails (vocabulary mismatch → solved by HyDE) and when it excels (semantic similarity).
+- Foundational bi-encoder retrieval. Helps reason about when bi-encoder fails (vocabulary mismatch -> solved by HyDE) and when it excels.
 
 **"Lost in the Middle: How Language Models Use Long Contexts"**
 - Type: Research paper (TMLR 2024)
 - Authors: Liu et al. (Stanford/UC Berkeley)
-- Demonstrates that LLMs attend more to the beginning and end of long contexts. K.Y.T.'s MMR diversity selection + confidence-tiered ordering (strongest matches first) accounts for this — ensuring the most relevant items appear in the attention-favored positions.
+- LLMs attend more to beginning/end of long contexts. K.Y.T.'s MMR diversity selection + confidence-tiered ordering places strongest matches first.
 
 **"Adaptive Retrieval-Augmented Generation" (Adaptive-RAG)**
 - Type: Research paper (2024)
 - Authors: Jeong et al.
-- Proposes routing queries to different retrieval strategies based on complexity. K.Y.T.'s intent classifier + preference router + adaptive short-circuit implement a version of this: simple preference queries skip the entire pipeline, high-entity-confidence queries skip HyDE, and ambiguous queries get the full pipeline with raised thresholds.
+- Routing queries to different strategies based on complexity. K.Y.T.'s intent classifier + preference router + adaptive short-circuit implement this pattern.
 
 </documentation>
 
 ---
 
-The documentation is written to `/home/penguinzyue/kyt-validation-sprint/docs/unified-pipeline-technical-documentation.md` (724 lines). It covers:
+## Implementation File Map
 
-- **Flowchart**: 14 pipeline stages across 7 sections (A-G) with data flow, position rationale, and change documentation for each component
-- **Walkthrough**: Senior-engineer-level detail on every algorithm, formula, threshold, model, and error handling path
-- **Expert opinion**: 5 strengths, 5 weaknesses, scalability analysis, and 3 alternative architecture comparisons
-- **Resources**: 18 resources across 8 categories, each with specific relevance to K.Y.T.'s implementation choices
+| Component | File | Lines |
+|-----------|------|-------|
+| Intent Classifier | `src/intent-classifier.js` | 425 |
+| Context Retrieval (client) | `src/context-retrieval.js` | 795 |
+| Auth Config + Routing | `src/auth-config.js` | 90 |
+| Injection Builder | `kyt-memory-injection-builder.js` | 381 |
+| Edge Function Entry | `supabase/functions/search_memories/index.ts` | 158 |
+| Layer 2 Intent Judge | `supabase/functions/classify_intent/index.ts` | 149 |
+| LLM Completion Proxy | `supabase/functions/llm_completion/index.ts` | 251 |
+| Main Pipeline | `supabase/functions/_shared/get_relevant_memories.ts` | 1077 |
+| RRF Fusion | `supabase/functions/_shared/rrf.ts` | 152 |
+| Quality Penalties | `supabase/functions/_shared/quality-penalties.ts` | 524 |
+| MMR + Dedup + Keyword Boost | `supabase/functions/_shared/mmr.ts` | 199 |
+| HyDE Generator | `supabase/functions/_shared/hyde-generator.ts` | 177 |
+| Context Generator | `supabase/functions/_shared/context-generator.ts` | 171 |
+| Entity Extractor | `supabase/functions/_shared/entity-extractor.ts` | 649 |
+| Memory Classifier | `supabase/functions/_shared/memory-classifier.ts` | 191 |
+| HuggingFace Client | `supabase/functions/_shared/huggingface-client.ts` | 163 |
+| Anthropic Client | `supabase/functions/_shared/anthropic-client.ts` | 189 |
+| Conversation Chunker | `supabase/functions/_shared/conversation-chunker.ts` | 296 |
+| Rate Limiter | `supabase/functions/_shared/rate-limit.ts` | 55 |
+| Tier Check | `supabase/functions/_shared/tier-check.ts` | 62 |
+| Cost Monitor + Utils | `supabase/functions/_shared/utils.ts` | 128 |
+| Security Headers | `supabase/functions/_shared/headers.ts` | 29 |
+
+**Total server-side retrieval logic**: 2,129 lines (get_relevant_memories + quality-penalties + mmr + hyde-generator + rrf)
+**Total shared infrastructure**: 4,841 lines (all `_shared/` modules)
+**Total client-side pipeline**: 1,691 lines (context-retrieval + intent-classifier + auth-config + injection-builder)

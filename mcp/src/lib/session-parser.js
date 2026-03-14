@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -131,15 +131,56 @@ export function findSessionFile(projectDir, sessionId) {
 }
 
 export function getMostRecentSession(projectDir) {
+  // First try: scan actual .jsonl files on disk (catches active sessions not in index)
+  const newestFile = scanForNewestJsonl(projectDir);
+
+  // Also check the index
   const index = getSessionIndex(projectDir);
-  if (index.length === 0) return null;
+  let newestIndexEntry = null;
+  if (index.length > 0) {
+    const sorted = [...index].sort((a, b) => {
+      const dateA = new Date(a.modified || a.created || 0);
+      const dateB = new Date(b.modified || b.created || 0);
+      return dateB - dateA;
+    });
+    newestIndexEntry = sorted[0];
+  }
 
-  // Sort by modified date descending
-  const sorted = [...index].sort((a, b) => {
-    const dateA = new Date(a.modified || a.created || 0);
-    const dateB = new Date(b.modified || b.created || 0);
-    return dateB - dateA;
-  });
+  // Compare: pick whichever is more recent
+  if (newestFile && newestIndexEntry) {
+    const fileMtime = newestFile.modified ? new Date(newestFile.modified) : new Date(0);
+    const indexMtime = new Date(newestIndexEntry.modified || newestIndexEntry.created || 0);
+    return fileMtime > indexMtime ? newestFile : newestIndexEntry;
+  }
 
-  return sorted[0];
+  return newestFile || newestIndexEntry || null;
+}
+
+function scanForNewestJsonl(projectDir) {
+  try {
+    const files = readdirSync(projectDir)
+      .filter(f => f.endsWith('.jsonl'));
+
+    if (files.length === 0) return null;
+
+    let newest = null;
+    let newestMtime = 0;
+
+    for (const file of files) {
+      const fullPath = join(projectDir, file);
+      const stat = statSync(fullPath);
+      if (stat.mtimeMs > newestMtime) {
+        newestMtime = stat.mtimeMs;
+        newest = {
+          sessionId: file.replace('.jsonl', ''),
+          fullPath,
+          modified: stat.mtime.toISOString(),
+        };
+      }
+    }
+
+    return newest;
+  } catch {
+    return null;
+  }
 }
