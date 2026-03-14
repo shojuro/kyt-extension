@@ -640,6 +640,64 @@ body {
   background: rgba(138, 138, 148, 0.1);
 }
 
+/* === Project Section === */
+.project-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.project-dropdown {
+  flex: 1;
+  padding: 6px 10px;
+  background: var(--charcoal, #1a1a2e);
+  color: var(--silver, #c0c0c0);
+  border: 1px solid var(--gunmetal, #2c3e50);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.project-dropdown:focus {
+  border-color: var(--neon-green, #00ff41);
+  outline: none;
+}
+
+.btn-icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: var(--charcoal, #1a1a2e);
+  color: var(--neon-green, #00ff41);
+  border: 1px solid var(--gunmetal, #2c3e50);
+  border-radius: 4px;
+  font-size: 18px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-icon:hover {
+  background: var(--gunmetal, #2c3e50);
+  border-color: var(--neon-green, #00ff41);
+}
+
+.vault-badge {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 8px;
+  background: rgba(255, 68, 68, 0.15);
+  color: #ff4444;
+  border: 1px solid rgba(255, 68, 68, 0.3);
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
 /* --- Hidden utility --- */
 .hidden {
   display: none !important;

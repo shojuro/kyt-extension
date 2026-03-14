@@ -21,6 +21,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
 import { getActiveProfileId } from './profile-manager.js';
+import { getActiveProject } from './project-manager.js';
 import { getRecentTopics } from './recent-topic-cache.js';
 
 /**
@@ -173,11 +174,13 @@ export async function lookupPreferencesViaREST(category, apiConfig) {
   };
 
   const url = `${SUPABASE_URL}/rest/v1/rpc/lookup_user_preferences`;
+  const { id: prefProjectId } = await getActiveProject();
   const body = JSON.stringify({
     p_user_id: userId,
     p_category: category,
     p_limit: 3,  // Cap at 3 — dedup concern: 7 car rows floods injection, 3 suffices
     p_profile_id: await getActiveProfileId() || null,
+    p_project_id: prefProjectId || null,
   });
 
   try {
@@ -470,6 +473,9 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
       }
     }
 
+    // Extract platform mention early (needed by topic enrichment + temporal fallback)
+    const targetPlatform = extractPlatformMention(userMessage);
+
     // ===== RECENT TOPIC ENRICHMENT (implicit/vague query boost) =====
     // When the query is short/vague and has temporal language, enrich with
     // recently discussed topics to ground the retrieval.
@@ -494,6 +500,9 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
 
       console.log(`🔍 Context Retrieval: Using query "${queryToUse}"`);
 
+      // Get active project for scoped search
+      const { id: activeProjectId } = await getActiveProject();
+
       // Dual-path: edge function vs legacy client-side search
       if (routingMode === 'edge') {
         // ─── Edge function path (authenticated users) ───
@@ -504,6 +513,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
             confidenceThreshold: contextConfig.confidenceThreshold || undefined,
             recentTopics: recentTopicBoost || undefined,
             conversationWindow: contextConfig.conversationWindow || undefined,
+            projectId: activeProjectId || undefined,
           });
           diagnostics.edgeItems = contextItems.length;
           console.log(`✅ Context Retrieval (edge): Found ${contextItems.length} items (pool: ${contextConfig.candidatePoolSize}, inject cap: ${contextConfig.maxContextItems})`);
@@ -515,6 +525,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
               topK: contextConfig.candidatePoolSize,
               fast: true,
               confidenceThreshold: contextConfig.confidenceThreshold || undefined,
+              projectId: activeProjectId || undefined,
             });
             console.log(`🔄 Retry (edge) result: ${contextItems.length} items`);
           }
@@ -588,7 +599,6 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
     // temporal intent and main search found nothing from that platform, fetch
     // recent items directly via ORDER BY created_at DESC.
     const temporalScore = scoreTemporalReference(userMessage.toLowerCase());
-    const targetPlatform = extractPlatformMention(userMessage);
     const hasTargetPlatformItems = targetPlatform &&
       contextItems.some(item => (item.source || item.platform) === targetPlatform);
 
@@ -598,6 +608,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
         const recencyItems = await searchViaEdgeFunction(userMessage, {
           topK: 3,
           recentByPlatform: targetPlatform,
+          projectId: activeProjectId || undefined,
         });
         if (recencyItems.length > 0) {
           const existingIds = new Set(contextItems.map(i => i.id));
@@ -621,6 +632,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
         const synthItems = await searchViaEdgeFunction(userMessage, {
           topK: 5,
           recentByPlatform: targetPlatform,
+          projectId: activeProjectId || undefined,
         });
         if (synthItems.length > 0) {
           const existingIds = new Set(contextItems.map(i => i.id));

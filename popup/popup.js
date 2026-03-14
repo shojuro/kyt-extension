@@ -39,6 +39,9 @@ const authLoggedOut = document.getElementById('authLoggedOut');
 const userEmailEl = document.getElementById('userEmail');
 const signInBtn = document.getElementById('signInBtn');
 const signOutBtnEl = document.getElementById('signOutBtn');
+const projectSelect = document.getElementById('projectSelect');
+const newProjectBtn = document.getElementById('newProjectBtn');
+const projectVaultBadge = document.getElementById('projectVaultBadge');
 
 // Tier descriptions for display
 const TIER_INFO = {
@@ -797,6 +800,98 @@ async function handleDeleteAll() {
   }
 }
 
+// ============================================
+// Project Management
+// ============================================
+
+async function loadProjects() {
+  try {
+    const result = await chrome.storage.local.get(['auth_session']);
+    const session = result.auth_session;
+    if (!session?.access_token) return;
+
+    // Fetch projects from Supabase REST API
+    const supabaseUrl = session.supabase_url || (await chrome.runtime.sendMessage({ type: 'GET_SUPABASE_URL' }))?.url;
+    if (!supabaseUrl) return;
+
+    const response = await fetch(
+      `${supabaseUrl}/rest/v1/projects?user_id=eq.${session.user.id}&is_archived=eq.false&order=name`,
+      {
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': session.anon_key || session.access_token,
+        },
+      }
+    );
+
+    if (!response.ok) return;
+    const projects = await response.json();
+
+    // Populate dropdown
+    projectSelect.innerHTML = '<option value="">General (all memories)</option>';
+    for (const proj of projects) {
+      const opt = document.createElement('option');
+      opt.value = proj.id;
+      opt.textContent = proj.name + (proj.is_vault ? ' \u{1F512}' : '');
+      opt.dataset.vault = proj.is_vault;
+      opt.dataset.name = proj.name;
+      projectSelect.appendChild(opt);
+    }
+
+    // Restore active project selection
+    const activeResult = await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PROJECT' });
+    if (activeResult?.success && activeResult.project?.id) {
+      projectSelect.value = activeResult.project.id;
+      if (activeResult.project.isVault) {
+        projectVaultBadge.classList.remove('hidden');
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to load projects:', e);
+  }
+}
+
+projectSelect.addEventListener('change', async () => {
+  const selectedOption = projectSelect.selectedOptions[0];
+  if (!selectedOption || !selectedOption.value) {
+    // General mode
+    await chrome.runtime.sendMessage({ type: 'SET_ACTIVE_PROJECT', data: { id: null } });
+    projectVaultBadge.classList.add('hidden');
+  } else {
+    const isVault = selectedOption.dataset.vault === 'true';
+    const name = selectedOption.dataset.name;
+    await chrome.runtime.sendMessage({
+      type: 'SET_ACTIVE_PROJECT',
+      data: { id: selectedOption.value, name, isVault }
+    });
+    if (isVault) {
+      projectVaultBadge.classList.remove('hidden');
+    } else {
+      projectVaultBadge.classList.add('hidden');
+    }
+  }
+});
+
+newProjectBtn.addEventListener('click', async () => {
+  const name = prompt('Project name:');
+  if (!name || !name.trim()) return;
+  const isVault = confirm('Make this a Vault project? (Vault items never surface in general search)');
+
+  const result = await chrome.runtime.sendMessage({
+    type: 'CREATE_PROJECT',
+    data: { name: name.trim(), isVault }
+  });
+
+  if (result?.success) {
+    await loadProjects();
+    // Auto-select the new project
+    projectSelect.value = result.project.id;
+    projectSelect.dispatchEvent(new Event('change'));
+  } else {
+    alert('Failed to create project: ' + (result?.error || 'Unknown error'));
+  }
+});
+
 // Event listeners
 forceSyncBtn.addEventListener('click', forceResync);
 upgradeBtn.addEventListener('click', handleUpgrade);
@@ -860,6 +955,7 @@ checkFirstInstallRedirect().then(redirecting => {
     loadAuthStatus();
     loadMemoryMode();
     loadProfile();
+    loadProjects();
     loadStats();
     loadConfig();
     loadDebugMode();

@@ -15,6 +15,7 @@ import { classifyIntent } from './intent-classifier.js';
 import { classifyWithHaiku, isHaikuEnabled } from './haiku-tiebreaker.js';
 import { getMemoryMode, setMemoryMode } from './memory-mode.js';
 import { getActiveProfileId } from './profile-manager.js';
+import { getActiveProject, setActiveProject, clearActiveProject } from './project-manager.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
 
@@ -1037,6 +1038,67 @@ export function registerMessageHandler(deps) {
           } catch (error) {
             console.error('TOGGLE_EXCLUDE_CONVERSATION failed:', error);
             sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
+      case 'SET_ACTIVE_PROJECT':
+        (async () => {
+          try {
+            if (message.data?.id) {
+              await setActiveProject(message.data.id, message.data.name, message.data.isVault);
+            } else {
+              await clearActiveProject();
+            }
+            sendResponse({ success: true });
+          } catch (e) {
+            sendResponse({ success: false, error: e.message });
+          }
+        })();
+        return true;
+
+      case 'GET_ACTIVE_PROJECT':
+        (async () => {
+          try {
+            const project = await getActiveProject();
+            sendResponse({ success: true, project });
+          } catch (e) {
+            sendResponse({ success: false, error: e.message });
+          }
+        })();
+        return true;
+
+      case 'CREATE_PROJECT':
+        (async () => {
+          try {
+            const session = (await chrome.storage.local.get(['auth_session'])).auth_session;
+            if (!session?.access_token) {
+              sendResponse({ success: false, error: 'Not authenticated' });
+              return;
+            }
+            const res = await fetch(`${SUPABASE_URL}/rest/v1/projects`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`,
+                'apikey': SUPABASE_ANON_KEY,
+                'Prefer': 'return=representation',
+              },
+              body: JSON.stringify({
+                user_id: session.user.id,
+                name: message.data.name,
+                description: message.data.description || null,
+                is_vault: message.data.isVault || false,
+              }),
+            });
+            if (!res.ok) {
+              const errBody = await res.json().catch(() => ({}));
+              throw new Error(errBody.message || `HTTP ${res.status}`);
+            }
+            const [project] = await res.json();
+            sendResponse({ success: true, project });
+          } catch (e) {
+            sendResponse({ success: false, error: e.message });
           }
         })();
         return true;

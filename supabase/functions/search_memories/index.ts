@@ -46,6 +46,7 @@ serve(async (req) => {
             mmrLambda,            // MMR diversity/relevance (0.35 synthesis, 0.5 default)
             recentTopics,         // Recent topic words for implicit query enrichment
             conversationWindow,   // Recent messages from current conversation for coreference resolution
+            projectId,            // Project scoping for K.Y.T. Vault
         } = body;
 
         // Extract user from JWT if present (authenticated mode)
@@ -133,7 +134,7 @@ serve(async (req) => {
         // 6. Rerank → BM25 → Entity boost → Confidence filter → Top-5
         // MVP: profileId = userId (1:1). Future: pass to RPC calls for multi-profile isolation.
         const profileId = bodyProfileId || userId;
-        const results = await getRelevantMemories(query, userId, options, requestId, profileId);
+        const results = await getRelevantMemories(query, userId, options, requestId, profileId, projectId || undefined);
 
         Logger.info("Search completed", {
             requestId,

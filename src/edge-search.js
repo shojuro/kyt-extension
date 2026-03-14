@@ -33,6 +33,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
     mmrLambda = undefined,
     recentTopics = undefined,
     conversationWindow = undefined,
+    projectId = undefined,
   } = options;
 
   if (!query || query.trim().length === 0) {
@@ -57,6 +58,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
     topK,
     fast,
   };
+  if (projectId) body.projectId = projectId;
   if (recentByPlatform) body.recentByPlatform = recentByPlatform;
   if (confidenceThreshold != null) body.confidenceThreshold = confidenceThreshold;
   if (mmrLambda != null) body.mmrLambda = mmrLambda;

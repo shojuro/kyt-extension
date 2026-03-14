@@ -374,7 +374,7 @@ async function batchClassifyChunks(
  * Returns events as: data: {...json...}\n\n
  */
 async function handleSSEStream(req: Request, body: any): Promise<Response> {
-  const { messages = [], user_id, platform = 'chatgpt', resume_token, skip_ai = false } = body;
+  const { messages = [], user_id, platform = 'chatgpt', resume_token, skip_ai = false, project_id } = body;
 
   const encoder = new TextEncoder();
 
@@ -521,6 +521,7 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
             content_type: 'imported',
             entities_extracted: false,
             profile_id: chunk.user_id,  // MVP: profile_id = user_id
+            project_id: project_id || null,
             // Classification: only for single-speaker chunks
             ...(chunk.speakers?.length === 1 && chunk.speakers[0] === 'user'
               ? { is_question: detectIsQuestion(chunk.content) }
@@ -589,6 +590,7 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
               first_message_at: info.minTs > 0 ? new Date(info.minTs).toISOString() : null,
               last_message_at: info.maxTs > 0 ? new Date(info.maxTs).toISOString() : null,
               is_imported: true,
+              project_id: project_id || null,
             }));
 
             const { error: convError } = await supabase
@@ -649,7 +651,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { messages, user_id, platform = 'chatgpt', resume_token, skip_ai = false, stream_progress = false } = body;
+    const { messages, user_id, platform = 'chatgpt', resume_token, skip_ai = false, stream_progress = false, project_id } = body;
 
     // ==========================================================================
     // SSE Streaming Support
@@ -926,6 +928,7 @@ Deno.serve(async (req) => {
         content_type: 'imported',
         entities_extracted: false,
         profile_id: chunk.user_id,  // MVP: profile_id = user_id
+        project_id: project_id || null,
         // Classification: only for single-speaker chunks
         ...(chunk.speakers?.length === 1 && chunk.speakers[0] === 'user'
           ? { is_question: detectIsQuestion(chunk.content) }
@@ -1010,6 +1013,7 @@ Deno.serve(async (req) => {
           first_message_at: info.minTs > 0 ? new Date(info.minTs).toISOString() : null,
           last_message_at: info.maxTs > 0 ? new Date(info.maxTs).toISOString() : null,
           is_imported: true,
+          project_id: project_id || null,
         }));
 
         const { error: convError } = await supabase

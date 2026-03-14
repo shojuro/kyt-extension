@@ -1,5 +1,5 @@
 import { callEdgeFunction, getUserId } from '../lib/supabase-client.js';
-import { getMemoryMode } from '../lib/config.js';
+import { getMemoryMode, getActiveProjectId } from '../lib/config.js';
 import { scoreTemporalReference } from '../lib/intent-classifier.js';
 import { extractPlatformMention } from '../lib/platform-utils.js';
 
@@ -13,7 +13,7 @@ export const QUERY_MEMORY_SCHEMA = {
   },
 };
 
-export async function queryMemory({ query, topK = 5, useHyde = true, platform = 'all', fast = false }) {
+export async function queryMemory({ query, topK = 5, useHyde = true, platform = 'all', fast = false, project }) {
   const mode = getMemoryMode();
   if (mode === 'incognito' || mode === 'clean_room') {
     return {
@@ -30,6 +30,9 @@ export async function queryMemory({ query, topK = 5, useHyde = true, platform = 
 
   const userId = getUserId();
 
+  // Resolve project: explicit param > config > null
+  const projectId = project || getActiveProjectId();
+
   const body = {
     query: query.trim(),
     userId,
@@ -37,6 +40,7 @@ export async function queryMemory({ query, topK = 5, useHyde = true, platform = 
     topK,
     fast,
   };
+  if (projectId) body.projectId = projectId;
 
   const result = await callEdgeFunction('search_memories', body);
 

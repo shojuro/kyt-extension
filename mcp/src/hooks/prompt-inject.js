@@ -195,6 +195,13 @@ async function main() {
 
     // Temporal+platform detection: if user asks about a specific platform
     // with temporal intent, use recentByPlatform for fast recency path
+    // Read active project from config
+    let activeProjectId = null;
+    try {
+      const config = JSON.parse(readFileSync(join(homedir(), '.kyt', 'config.json'), 'utf-8'));
+      activeProjectId = config.activeProjectId || null;
+    } catch { /* no active project */ }
+
     const searchBody = {
       query: trimmed.substring(0, 500),
       userId,
@@ -203,6 +210,7 @@ async function main() {
       fast: true,
       confidenceThreshold: classification.confidenceThreshold || 0.40,
     };
+    if (activeProjectId) searchBody.projectId = activeProjectId;
     const temporalScore = scoreTemporalReference(trimmed.toLowerCase());
     const targetPlatform = extractPlatformMention(trimmed);
     if (temporalScore >= 0.4 && targetPlatform) {

@@ -37,6 +37,11 @@ export function setMemoryMode(mode) {
   return mode;
 }
 
+export function getActiveProjectId() {
+  const config = readJson(CONFIG_PATH, {});
+  return config.activeProjectId || null;
+}
+
 export function getIngestedSessions() {
   return readJson(INGESTED_PATH, {});
 }

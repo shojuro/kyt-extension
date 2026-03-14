@@ -16,6 +16,11 @@ import { getPreferences } from './tools/get-preferences.js';
 import { setMemoryMode } from './tools/set-memory-mode.js';
 import { ingestSession } from './tools/ingest-session.js';
 import { queryCosts } from './tools/query-costs.js';
+import { createProject } from './tools/create-project.js';
+import { listProjects } from './tools/list-projects.js';
+import { setActiveProject } from './tools/set-active-project.js';
+import { assignToProject } from './tools/assign-to-project.js';
+import { projectDebrief } from './tools/project-debrief.js';
 
 const server = new McpServer({
   name: 'kyt-memory',
@@ -33,6 +38,7 @@ server.tool(
     platform: z.enum(['all', 'chatgpt', 'claude', 'claude-code', 'cli', 'gemini']).optional().default('all')
       .describe('Filter by platform'),
     fast: z.boolean().optional().default(false).describe('Fast search (no HyDE/reranking, <1s)'),
+    project: z.string().optional().describe('Project UUID to scope search to (default: active project or all)'),
   },
   async (args) => queryMemory(args),
 );
@@ -101,6 +107,62 @@ server.tool(
       .describe('Group costs by this dimension'),
   },
   async (args) => queryCosts(args),
+);
+
+// --- Tool: create_project ---
+server.tool(
+  'create_project',
+  'Create a new K.Y.T. project to organize memories by topic, goal, or context. Vault projects are private and excluded from general search.',
+  {
+    name: z.string().describe('Project name'),
+    description: z.string().optional().describe('Optional project description'),
+    isVault: z.boolean().optional().default(false).describe('Make this a vault (private, excluded from general search)'),
+  },
+  async (args) => createProject(args),
+);
+
+// --- Tool: list_projects ---
+server.tool(
+  'list_projects',
+  'List all K.Y.T. projects with item counts. Shows name, vault status, item count, and creation date.',
+  {
+    includeArchived: z.boolean().optional().default(false).describe('Include archived projects'),
+  },
+  async (args) => listProjects(args),
+);
+
+// --- Tool: set_active_project ---
+server.tool(
+  'set_active_project',
+  'Set the active K.Y.T. project. When active, queries and prompt injection are scoped to this project. Pass null projectId to clear.',
+  {
+    projectId: z.string().nullable().describe('Project UUID to activate (null to clear)'),
+    projectName: z.string().optional().describe('Project name for display'),
+  },
+  async (args) => setActiveProject(args),
+);
+
+// --- Tool: assign_to_project ---
+server.tool(
+  'assign_to_project',
+  'Search for memories and assign them to a project. First call with confirm=false to preview matches, then confirm=true to assign.',
+  {
+    query: z.string().describe('Search query to find memories'),
+    projectId: z.string().describe('Project UUID to assign items to'),
+    confirm: z.boolean().optional().default(false).describe('Confirm assignment (false = preview only)'),
+  },
+  async (args) => assignToProject(args),
+);
+
+// --- Tool: project_debrief ---
+server.tool(
+  'project_debrief',
+  'Get a summary/debrief of a K.Y.T. project: item count, platforms, top entities, and recent items.',
+  {
+    projectId: z.string().describe('Project UUID to debrief'),
+    limit: z.number().optional().default(20).describe('Max items in summary (default: 20)'),
+  },
+  async (args) => projectDebrief(args),
 );
 
 // Start the server

@@ -42,6 +42,7 @@ import {
 } from './src/context-retrieval.js';
 import { registerPortHandler, registerMessageHandler } from './src/message-handlers.js';
 import { getMemoryMode, updateBadge } from './src/memory-mode.js';
+import { getActiveProject } from './src/project-manager.js';
 
 self.HistoryImporter = HistoryImporter; // Expose for debugging
 
@@ -313,6 +314,10 @@ async function _saveMessageCore(messageData) {
       ...(isQuestion ? { is_question: true } : {}),
       ...(hadInjection ? { is_injection: true } : {})
     };
+
+    // Stamp active project at capture time (not sync time)
+    const { id: activeProjectId } = await getActiveProject();
+    if (activeProjectId) newMessage.project_id = activeProjectId;
 
     messages.push(newMessage);
 

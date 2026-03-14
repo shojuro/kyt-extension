@@ -268,7 +268,8 @@ async function vectorSearch(
     boostEntityIds: string[],
     topK: number,
     requestId?: string,
-    profileId?: string
+    profileId?: string,
+    projectId?: string
 ): Promise<Candidate[]> {
     const { data, error } = await supabase
         .rpc("match_messages_with_gravity", {
@@ -278,7 +279,8 @@ async function vectorSearch(
             exclude_recent_seconds: 120,
             p_user_id: userId,
             boost_entity_ids: boostEntityIds,
-            p_profile_id: profileId
+            p_profile_id: profileId,
+            p_project_id: projectId || null
         });
 
     if (error) {
@@ -377,7 +379,8 @@ async function searchEntities(
     queryText: string,
     requestId?: string,
     profileId?: string,
-    dynamicSynonyms?: Record<string, string[]>
+    dynamicSynonyms?: Record<string, string[]>,
+    projectId?: string
 ): Promise<{ ids: string[]; entities: any[] }> {
     // Run embedding and text search in PARALLEL (Gap 2: entity bridging)
     // Text search always runs — catches entities that embedding similarity misses
@@ -390,13 +393,15 @@ async function searchEntities(
             match_threshold: 0.8,
             match_count: 5,
             p_user_id: userId,
-            p_profile_id: profileId
+            p_profile_id: profileId,
+            p_project_id: projectId || null
         }),
         supabase.rpc("search_entities_by_text", {
             p_query_text: expandedQuery,
             p_user_id: userId,
             p_match_count: 5,
-            p_profile_id: profileId
+            p_profile_id: profileId,
+            p_project_id: projectId || null
         }),
     ]);
 
@@ -499,14 +504,16 @@ async function lookupPreferencesAsCandidates(
     userId: string,
     category: string,
     requestId?: string,
-    profileId?: string
+    profileId?: string,
+    projectId?: string
 ): Promise<CandidateWithScore[]> {
     const { data, error } = await supabase
         .rpc("lookup_user_preferences", {
             p_user_id: userId,
             p_category: category,
             p_limit: 10,
-            p_profile_id: profileId
+            p_profile_id: profileId,
+            p_project_id: projectId || null
         });
 
     if (error) {
@@ -548,7 +555,8 @@ async function detectConceptEntities(
     query: string,
     userId: string,
     requestId?: string,
-    profileId?: string
+    profileId?: string,
+    projectId?: string
 ): Promise<string[]> {
     const conceptTypes = new Set(["CONCEPT", "ANALOGY", "THEME", "TOPIC"]);
 
@@ -558,7 +566,8 @@ async function detectConceptEntities(
                 p_query_text: query,
                 p_user_id: userId,
                 p_match_count: 10,  // Fetch more, filter to concepts
-                p_profile_id: profileId
+                p_profile_id: profileId,
+                p_project_id: projectId || null
             });
 
         if (error) {
@@ -601,7 +610,8 @@ export async function getRelevantMemories(
     userId: string,
     optionsOrTopK: SearchOptions | number = {},
     requestId?: string,
-    profileId?: string
+    profileId?: string,
+    projectId?: string
 ): Promise<CandidateWithScore[]> {
     // Handle legacy signature (topK as number)
     const options: SearchOptions = typeof optionsOrTopK === "number"
@@ -653,7 +663,7 @@ export async function getRelevantMemories(
     const prefCategory = detectPreferenceQuery(query);
     if (prefCategory) {
         Logger.info(`Preference router activated: category="${prefCategory}"`, { requestId });
-        const prefResults = await lookupPreferencesAsCandidates(supabase, userId, prefCategory, requestId, resolvedProfileId);
+        const prefResults = await lookupPreferencesAsCandidates(supabase, userId, prefCategory, requestId, resolvedProfileId, projectId);
         if (prefResults.length > 0) {
             Logger.info(`Preference router: returning ${prefResults.length} results (short-circuit)`, { requestId });
             return prefResults;
@@ -756,7 +766,7 @@ export async function getRelevantMemories(
         const fastCandidates = await vectorSearch(
             supabase, rawEmbedding, userId, [],
             Math.max(topK, 10),
-            requestId, resolvedProfileId
+            requestId, resolvedProfileId, projectId
         );
 
         const echoFiltered = filterQueryEchoes(query, fastCandidates);
@@ -800,11 +810,11 @@ export async function getRelevantMemories(
     const dynamicSynonyms = await loadDynamicSynonyms(supabase, userId, requestId);
 
     const [entityResult, hydeResult, conceptEntityIds] = await Promise.all([
-        searchEntities(supabase, rawEmbedding, userId, entitySearchQuery, requestId, resolvedProfileId, dynamicSynonyms),
+        searchEntities(supabase, rawEmbedding, userId, entitySearchQuery, requestId, resolvedProfileId, dynamicSynonyms, projectId),
         useHyde && anthropicApiKey
             ? generateHyDEWithFallback(query, anthropicApiKey, requestId, costContext)
             : Promise.resolve({ hydeDoc: null, usedHyde: false }),
-        detectConceptEntities(supabase, query, userId, requestId, resolvedProfileId)
+        detectConceptEntities(supabase, query, userId, requestId, resolvedProfileId, projectId)
     ]);
 
     const { ids: embeddingEntityIds, entities } = entityResult;
@@ -846,7 +856,8 @@ export async function getRelevantMemories(
                 p_max_results: vectorSearchCount,
                 p_max_depth: 3,
                 p_max_intermediate: 20,
-                p_profile_id: resolvedProfileId
+                p_profile_id: resolvedProfileId,
+                p_project_id: projectId || null
             });
             if (error) {
                 Logger.warn("Graph walk RPC failed", { requestId, error: error.message });
@@ -890,7 +901,7 @@ export async function getRelevantMemories(
 
         // Single vector search with raw query + graph results
         const vectorCandidates = await vectorSearch(
-            supabase, rawEmbedding, userId, boostEntityIds, vectorSearchCount, requestId, resolvedProfileId
+            supabase, rawEmbedding, userId, boostEntityIds, vectorSearchCount, requestId, resolvedProfileId, projectId
         );
 
         // Merge vector + graph candidates, dedup by id
@@ -931,6 +942,7 @@ export async function getRelevantMemories(
                     boost_entity_ids: boostEntityIds,
                     p_profile_id: resolvedProfileId,
                     p_platform: queryTargetPlatform,
+                    p_project_id: projectId || null,
                 });
             if (!rescueError && rescueData && rescueData.length > 0) {
                 const rescueCandidates = rescueData as Candidate[];
@@ -972,12 +984,12 @@ export async function getRelevantMemories(
 
     // Parallel vector searches
     const searchPromises: Promise<Candidate[]>[] = [
-        vectorSearch(supabase, rawEmbedding, userId, boostEntityIds, vectorSearchCount, requestId, resolvedProfileId)
+        vectorSearch(supabase, rawEmbedding, userId, boostEntityIds, vectorSearchCount, requestId, resolvedProfileId, projectId)
     ];
 
     if (hydeEmbedding) {
         searchPromises.push(
-            vectorSearch(supabase, hydeEmbedding, userId, boostEntityIds, vectorSearchCount, requestId, resolvedProfileId)
+            vectorSearch(supabase, hydeEmbedding, userId, boostEntityIds, vectorSearchCount, requestId, resolvedProfileId, projectId)
         );
     }
 
@@ -1070,7 +1082,8 @@ export async function getRelevantMemories(
                     p_user_id: userId,
                     p_exclude_turn_ids: existingTurnIds,
                     p_max_per_entity: 1,
-                    p_profile_id: resolvedProfileId
+                    p_profile_id: resolvedProfileId,
+                    p_project_id: projectId || null
                 });
 
             if (timelineError) {
@@ -1165,6 +1178,7 @@ export async function getRelevantMemories(
                 boost_entity_ids: boostEntityIds,
                 p_profile_id: resolvedProfileId,
                 p_platform: queryTargetPlatform,
+                p_project_id: projectId || null,
             });
         if (!rescueError && rescueData && rescueData.length > 0) {
             const rescueCandidates = rescueData as Candidate[];

@@ -75,6 +75,26 @@ serve(async (req) => {
             }
         }
 
+        // Validate project_id ownership for all distinct project_ids in batch
+        const distinctProjectIds = [...new Set(
+            turns.map((t: any) => t.project_id).filter(Boolean)
+        )];
+        if (distinctProjectIds.length > 0) {
+            const { data: ownedProjects } = await supabase
+                .from('projects')
+                .select('id')
+                .in('id', distinctProjectIds)
+                .eq('user_id', turns[0].user_id);
+            const ownedIds = new Set((ownedProjects || []).map((p: any) => p.id));
+            const unowned = distinctProjectIds.filter(id => !ownedIds.has(id));
+            if (unowned.length > 0) {
+                return new Response(JSON.stringify({ error: `Project(s) not found or not owned by user: ${unowned.join(', ')}` }), {
+                    status: 403,
+                    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+                });
+            }
+        }
+
         // Rate limit by user_id from first turn
         const rateLimitKey = turns[0]?.user_id || req.headers.get('x-forwarded-for') || 'anonymous';
         const tier = await getUserTier(rateLimitKey);
@@ -200,6 +220,7 @@ serve(async (req) => {
                     is_question: detectIsQuestion(turn),
                     deflection: detectDeflection(turn),
                     profile_id: turn.profile_id || turn.user_id,
+                    project_id: turn.project_id || null,
                 };
             });
 
@@ -274,6 +295,7 @@ serve(async (req) => {
                             deflection: null, // Questions can't be deflections
                             context_generated: true, // Skip backfill too
                             profile_id: turn.profile_id || turn.user_id,
+                            project_id: turn.project_id || null,
                         }, {
                             onConflict: 'user_id,conversation_id,platform,start_timestamp',
                             ignoreDuplicates: true
@@ -344,6 +366,7 @@ serve(async (req) => {
                     is_question: false, // Already verified above (questions short-circuit)
                     deflection: detectDeflection(turn),
                     profile_id: turn.profile_id || turn.user_id,
+                    project_id: turn.project_id || null,
                 };
 
                 // Add contextual retrieval fields if context was generated
