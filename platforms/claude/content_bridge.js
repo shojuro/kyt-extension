@@ -144,8 +144,8 @@ async function captureMessage(messageData) {
 // ===== LOCALSTORAGE RECOVERY ON STARTUP =====
 // Drain kyt_emergency_localStorage_queue via sendMessage to background.
 // The service worker has no window.localStorage access, so recovery must happen here.
-(function recoverLocalStorageQueue() {
-  if (!chrome.runtime?.id) return; // Can't recover without valid context
+(async function recoverLocalStorageQueue() {
+  if (!chrome.runtime?.id) return;
 
   try {
     const stored = window.localStorage.getItem(LOCALSTORAGE_EMERGENCY_KEY);
@@ -156,29 +156,40 @@ async function captureMessage(messageData) {
 
     console.log(`🔄 BRIDGE: Recovering ${queue.length} messages from emergency localStorage`);
 
-    // Clear immediately to prevent double-recovery from another bridge instance
+    // Clear immediately to prevent double-recovery
     window.localStorage.removeItem(LOCALSTORAGE_EMERGENCY_KEY);
 
-    // Send each recovered message to background
+    // Await all sends — no 2s gap where queue is empty
+    const results = await Promise.allSettled(
+      queue.map(msg =>
+        chrome.runtime.sendMessage({ type: 'SAVE_MESSAGE', data: msg })
+      )
+    );
+
+    // Generation check: if a newer bridge was injected while we awaited,
+    // don't re-write failures — the new bridge owns recovery now
+    if (window.__kytBridgeGeneration !== BRIDGE_GENERATION) {
+      console.log('🔵 BRIDGE: Stale generation after recovery — skipping failure re-queue');
+      return;
+    }
+
+    // Collect and re-store failures immediately (no setTimeout gap)
     const failures = [];
-    queue.forEach(msg => {
-      chrome.runtime.sendMessage({ type: 'SAVE_MESSAGE', data: msg }).catch(err => {
-        console.warn(`⚠️ BRIDGE: Failed to recover message ${msg.id}:`, err.message);
-        failures.push(msg);
-      });
+    results.forEach((result, i) => {
+      if (result.status === 'rejected') {
+        console.warn(`⚠️ BRIDGE: Failed to recover message ${queue[i].id}:`, result.reason?.message);
+        failures.push(queue[i]);
+      }
     });
 
-    // Re-store any failures (best effort, async)
-    setTimeout(() => {
-      if (failures.length > 0) {
-        try {
-          window.localStorage.setItem(LOCALSTORAGE_EMERGENCY_KEY, JSON.stringify(failures));
-          console.warn(`⚠️ BRIDGE: ${failures.length} messages re-queued to localStorage`);
-        } catch (e) {
-          // Give up
-        }
+    if (failures.length > 0) {
+      try {
+        window.localStorage.setItem(LOCALSTORAGE_EMERGENCY_KEY, JSON.stringify(failures));
+        console.warn(`⚠️ BRIDGE: ${failures.length} messages re-queued to localStorage`);
+      } catch (e) {
+        // Give up
       }
-    }, 2000);
+    }
   } catch (e) {
     console.warn('⚠️ BRIDGE: localStorage recovery failed:', e.message);
   }
