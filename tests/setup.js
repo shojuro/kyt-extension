@@ -30,6 +30,11 @@ const createStorageMock = () => {
         storage = {};
         return Promise.resolve();
       }),
+      remove: vi.fn((keys) => {
+        const keyList = Array.isArray(keys) ? keys : [keys];
+        keyList.forEach(k => delete storage[k]);
+        return Promise.resolve();
+      }),
       QUOTA_BYTES: 10485760 // 10MB default quota
     },
     // Helper for tests to directly access storage
@@ -105,16 +110,23 @@ export const setupChromeMocks = () => {
   const runtimeMock = createRuntimeMock();
   const alarmsMock = createAlarmsMock();
 
+  const actionMock = {
+    setBadgeText: vi.fn(() => Promise.resolve()),
+    setBadgeBackgroundColor: vi.fn(() => Promise.resolve()),
+  };
+
   global.chrome = {
     storage: storageMock,
     runtime: runtimeMock,
-    alarms: alarmsMock
+    alarms: alarmsMock,
+    action: actionMock,
   };
 
   return {
     storage: storageMock,
     runtime: runtimeMock,
-    alarms: alarmsMock
+    alarms: alarmsMock,
+    action: actionMock,
   };
 };
 
