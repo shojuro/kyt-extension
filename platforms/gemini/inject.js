@@ -290,6 +290,19 @@
           }
         }
       }
+
+      // Evict stale RPC entries (>30 min old) and enforce max size
+      if (capturedParams.rpcIds.size > 200) {
+        const cutoff = Date.now() - 30 * 60 * 1000;
+        for (const [id, entry] of capturedParams.rpcIds) {
+          if (entry.lastSeen < cutoff) capturedParams.rpcIds.delete(id);
+        }
+        // Hard cap if still over limit (delete oldest first — Map is insertion-ordered)
+        while (capturedParams.rpcIds.size > 200) {
+          const oldest = capturedParams.rpcIds.keys().next().value;
+          capturedParams.rpcIds.delete(oldest);
+        }
+      }
     } catch (_) {
       // Non-fatal — sniffing is best-effort
     }
@@ -767,6 +780,9 @@
 
     // Skip if we already captured this conversation
     if (_capturedConversationIds.has(conversationId)) return;
+    if (_capturedConversationIds.size >= 500) {
+      _capturedConversationIds.clear(); // Reset — re-capturing a conv is harmless (deduplicator catches content)
+    }
     _capturedConversationIds.add(conversationId);
 
     console.log('📜 KYT Gemini: History load — ' + messages.length + ' messages from ' + conversationId);
@@ -867,6 +883,11 @@
   const CONTEXT_TIMEOUT_MS = 28000;
 
   function requestContext(userMessage) {
+    // Safety valve: reject if too many pending (bridge is broken or overloaded)
+    if (pendingContextRequests.size >= 10) {
+      return Promise.resolve(null); // fail-open: send without context
+    }
+
     return new Promise((resolve) => {
       const requestId = 'ctx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 

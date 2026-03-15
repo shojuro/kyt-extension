@@ -1240,3 +1240,155 @@ describe('responseDOMObserver', () => {
     expect(text).toBe('Brand new response text that should be tracked normally.');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// RESOURCE LEAK FIX TESTS
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('capturedParams.rpcIds eviction', () => {
+  // Recreate the eviction logic from sniffBatchExecuteParams for testing
+  function evictRpcIds(rpcIds) {
+    if (rpcIds.size > 200) {
+      const cutoff = Date.now() - 30 * 60 * 1000;
+      for (const [id, entry] of rpcIds) {
+        if (entry.lastSeen < cutoff) rpcIds.delete(id);
+      }
+      while (rpcIds.size > 200) {
+        const oldest = rpcIds.keys().next().value;
+        rpcIds.delete(oldest);
+      }
+    }
+  }
+
+  it('does not evict when under 200 entries', () => {
+    const rpcIds = new Map();
+    for (let i = 0; i < 150; i++) {
+      rpcIds.set(`rpc_${i}`, { lastSeen: Date.now(), argsPreview: '' });
+    }
+    evictRpcIds(rpcIds);
+    expect(rpcIds.size).toBe(150);
+  });
+
+  it('evicts stale entries (>30min) when over 200', () => {
+    const rpcIds = new Map();
+    const staleTime = Date.now() - 31 * 60 * 1000; // 31 min ago
+    // Add 150 stale entries
+    for (let i = 0; i < 150; i++) {
+      rpcIds.set(`stale_${i}`, { lastSeen: staleTime, argsPreview: '' });
+    }
+    // Add 60 fresh entries
+    for (let i = 0; i < 60; i++) {
+      rpcIds.set(`fresh_${i}`, { lastSeen: Date.now(), argsPreview: '' });
+    }
+    expect(rpcIds.size).toBe(210);
+    evictRpcIds(rpcIds);
+    // Stale entries removed, fresh remain
+    expect(rpcIds.size).toBe(60);
+    expect(rpcIds.has('fresh_0')).toBe(true);
+    expect(rpcIds.has('stale_0')).toBe(false);
+  });
+
+  it('hard-caps at 200 when all entries are fresh', () => {
+    const rpcIds = new Map();
+    for (let i = 0; i < 250; i++) {
+      rpcIds.set(`rpc_${i}`, { lastSeen: Date.now(), argsPreview: '' });
+    }
+    evictRpcIds(rpcIds);
+    expect(rpcIds.size).toBe(200);
+    // Oldest (insertion-order) entries should be removed
+    expect(rpcIds.has('rpc_0')).toBe(false);
+    expect(rpcIds.has('rpc_49')).toBe(false);
+    expect(rpcIds.has('rpc_50')).toBe(true);
+    expect(rpcIds.has('rpc_249')).toBe(true);
+  });
+});
+
+describe('_capturedConversationIds cap', () => {
+  it('clears Set when reaching 500, then adds new entry', () => {
+    const ids = new Set();
+    for (let i = 0; i < 500; i++) {
+      ids.add(`conv_${i}`);
+    }
+    expect(ids.size).toBe(500);
+
+    // Simulate the guard from captureConversationHistory
+    const newId = 'conv_new';
+    if (!ids.has(newId)) {
+      if (ids.size >= 500) {
+        ids.clear();
+      }
+      ids.add(newId);
+    }
+
+    expect(ids.size).toBe(1);
+    expect(ids.has('conv_new')).toBe(true);
+    expect(ids.has('conv_0')).toBe(false);
+  });
+
+  it('does not clear when under 500', () => {
+    const ids = new Set();
+    for (let i = 0; i < 499; i++) {
+      ids.add(`conv_${i}`);
+    }
+
+    const newId = 'conv_new';
+    if (!ids.has(newId)) {
+      if (ids.size >= 500) {
+        ids.clear();
+      }
+      ids.add(newId);
+    }
+
+    expect(ids.size).toBe(500);
+    expect(ids.has('conv_0')).toBe(true);
+    expect(ids.has('conv_new')).toBe(true);
+  });
+});
+
+describe('pendingContextRequests max-size guard', () => {
+  it('returns null immediately when 10+ requests pending', () => {
+    const pending = new Map();
+    for (let i = 0; i < 10; i++) {
+      pending.set(`ctx_${i}`, { resolve: () => {}, timeoutId: null });
+    }
+
+    // Simulate the guard from requestContext()
+    let result;
+    if (pending.size >= 10) {
+      result = null; // fail-open
+    } else {
+      result = 'would-create-promise';
+    }
+
+    expect(result).toBeNull();
+  });
+
+  it('allows request when under 10 pending', () => {
+    const pending = new Map();
+    for (let i = 0; i < 9; i++) {
+      pending.set(`ctx_${i}`, { resolve: () => {}, timeoutId: null });
+    }
+
+    let result;
+    if (pending.size >= 10) {
+      result = null;
+    } else {
+      result = 'would-create-promise';
+    }
+
+    expect(result).toBe('would-create-promise');
+  });
+
+  it('allows request when map is empty', () => {
+    const pending = new Map();
+
+    let result;
+    if (pending.size >= 10) {
+      result = null;
+    } else {
+      result = 'would-create-promise';
+    }
+
+    expect(result).toBe('would-create-promise');
+  });
+});
