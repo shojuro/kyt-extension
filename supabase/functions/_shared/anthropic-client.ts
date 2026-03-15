@@ -84,7 +84,10 @@ export class AnthropicClient {
             const data = await response.json();
             const content = data.content?.[0]?.text?.trim() || "";
 
-            await this.logCost(data, operation, requestId);
+            // Fire-and-forget: cost logging must never block the completion
+            this.logCost(data, operation, requestId).catch(err =>
+                Logger.warn(`Cost logging failed (non-fatal): ${err.message}`, { requestId })
+            );
 
             return content;
         }, { maxRetries, baseDelayMs: 300, timeoutMs });
@@ -148,7 +151,10 @@ export class AnthropicClient {
             // Prepend the '{' we used as prefill
             const jsonString = "{" + rawContent;
 
-            await this.logCost(data, operation, requestId);
+            // Fire-and-forget: cost logging must never block the completion
+            this.logCost(data, operation, requestId).catch(err =>
+                Logger.warn(`Cost logging failed (non-fatal): ${err.message}`, { requestId })
+            );
 
             try {
                 return JSON.parse(jsonString) as T;

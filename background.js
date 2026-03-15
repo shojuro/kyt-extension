@@ -565,7 +565,7 @@ chrome.runtime.onSuspend.addListener(() => {
   chrome.storage.local.set({
     kyt_last_suspend: Date.now(),
     kyt_api_metrics: apiMetrics,
-  });
+  }).catch(err => console.error('❌ Failed to persist metrics on suspend:', err.message));
 });
 
 // ===== LIFECYCLE: onUpdateAvailable =====
@@ -634,7 +634,9 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 chrome.runtime.onStartup.addListener(() => {
   try {
     queueProcessor.initialize();
-    queueProcessor.processQueue();
+    queueProcessor.processQueue().catch(err =>
+      console.error('❌ processQueue rejected on startup:', err.message)
+    );
     processPendingLocalQueues();
     getMemoryMode().then(updateBadge);
   } catch (error) {
@@ -651,7 +653,9 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.runtime.onInstalled.addListener(() => {
   try {
     queueProcessor.initialize();
-    queueProcessor.processQueue();
+    queueProcessor.processQueue().catch(err =>
+      console.error('❌ processQueue rejected on install:', err.message)
+    );
     processPendingLocalQueues();
   } catch (error) {
     console.error('❌ Failed to initialize queue processor on install:', error);
@@ -996,7 +1000,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   switch (alarm.name) {
     case 'processQueue':
       try {
-        queueProcessor.processQueue();
+        await queueProcessor.processQueue();
         processPendingLocalQueues();
       } catch (error) {
         console.error('❌ Failed to process queue on alarm:', error);
