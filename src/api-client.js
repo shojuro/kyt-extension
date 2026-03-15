@@ -8,6 +8,7 @@
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 import { getAccessToken, getSession, refreshSession } from './auth/auth-service.js';
 import { fetchWithTimeout } from './utils/fetch.js';
+import { TIMEOUT_EDGE_FUNCTION_MS } from './constants.js';
 
 /**
  * Call a Supabase Edge Function.
@@ -15,11 +16,11 @@ import { fetchWithTimeout } from './utils/fetch.js';
  * @param {string} functionName - e.g. 'search_memories', 'save_chat_turn_batch'
  * @param {Object} body - JSON request body
  * @param {Object} [options]
- * @param {number} [options.timeoutMs=30000] - Request timeout
+ * @param {number} [options.timeoutMs=TIMEOUT_EDGE_FUNCTION_MS] - Request timeout (default 20s)
  * @returns {Promise<Object>} Parsed JSON response
  */
 export async function callEdgeFunction(functionName, body, options = {}) {
-  const { timeoutMs = 30000 } = options;
+  const { timeoutMs = TIMEOUT_EDGE_FUNCTION_MS } = options;
 
   // 1. Resolve auth: prefer JWT session, fall back to legacy anon key
   let bearerToken;

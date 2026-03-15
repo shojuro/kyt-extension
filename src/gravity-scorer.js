@@ -15,6 +15,7 @@
  */
 
 import { callEdgeFunction } from './api-client.js';
+import { EDGE_FN } from './edge-functions.js';
 
 /**
  * Calculate Gravity Score
@@ -46,7 +47,7 @@ export function calculateGravityScore(impact, hoursPassed, gravity = 1.8) {
  */
 export async function classifyImpact(text) {
     try {
-        const result = await callEdgeFunction('llm_completion', {
+        const result = await callEdgeFunction(EDGE_FN.LLM_COMPLETION, {
             system: `You are an expert psychologist specializing in the Holmes-Rahe Stress Scale.
 Your task is to rate the "Life Impact" of a given user memory on a scale of 0-100.
 

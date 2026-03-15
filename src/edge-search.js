@@ -9,6 +9,8 @@
  */
 
 import { callEdgeFunction } from './api-client.js';
+import { EDGE_FN } from './edge-functions.js';
+import { TIMEOUT_SYNC_API_MS } from './constants.js';
 
 /**
  * Search memories via the search_memories edge function.
@@ -18,7 +20,7 @@ import { callEdgeFunction } from './api-client.js';
  * @param {number} [options.topK=5] - Number of results to return
  * @param {boolean} [options.useHyde=true] - Enable HyDE query expansion
  * @param {number} [options.hydeWeight=0.6] - HyDE weight in RRF merge
- * @param {number} [options.timeoutMs=30000] - Request timeout
+ * @param {number} [options.timeoutMs=TIMEOUT_SYNC_API_MS] - Request timeout (default 30s)
  * @returns {Promise<Array>} Array of search result objects
  */
 export async function searchViaEdgeFunction(query, options = {}) {
@@ -26,7 +28,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
     topK = 5,
     useHyde = true,
     hydeWeight = 0.6,
-    timeoutMs = 30000,
+    timeoutMs = TIMEOUT_SYNC_API_MS,
     recentByPlatform = null,
     fast = false,
     confidenceThreshold = undefined,
@@ -68,7 +70,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
   if (queryType) body.queryType = queryType;
 
   const response = await callEdgeFunction(
-    'search_memories',
+    EDGE_FN.SEARCH_MEMORIES,
     body,
     { timeoutMs },
   );

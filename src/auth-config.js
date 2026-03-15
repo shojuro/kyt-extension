@@ -7,11 +7,11 @@
 
 import { AUTH_SESSION_KEY, getSession } from './auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
+import { CONFIG_CACHE_TTL_MS } from './constants.js';
 
 // ===== CONFIG CACHE =====
 let cachedApiConfig = null;
 let configLoadTime = 0;
-const CONFIG_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Get API config with caching to survive service worker sleep
@@ -21,7 +21,7 @@ export async function getApiConfig() {
   const testFlags = await chrome.storage.local.get(['kyt_test_mode', 'kyt_test_user_id']);
   const testModeActive = !!(testFlags.kyt_test_mode && testFlags.kyt_test_user_id);
 
-  if (cachedApiConfig && (Date.now() - configLoadTime) < CONFIG_CACHE_TTL) {
+  if (cachedApiConfig && (Date.now() - configLoadTime) < CONFIG_CACHE_TTL_MS) {
     // If test mode changed, invalidate cache
     if (testModeActive !== !!cachedApiConfig._testMode) {
       cachedApiConfig = null;

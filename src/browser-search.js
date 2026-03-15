@@ -23,6 +23,13 @@ import { fetchWithTimeout } from './utils/fetch.js';
 import { generateHyDEDocument, hydeCB } from './hyde-search-generator.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { callEdgeFunction } from './api-client.js';
+import { EDGE_FN } from './edge-functions.js';
+import {
+  TIMEOUT_HUGGINGFACE_MS,
+  TIMEOUT_JINA_RERANK_MS,
+  TIMEOUT_SEMANTIC_SEARCH_MS,
+  TIMEOUT_HYDE_CHAIN_MS,
+} from './constants.js';
 
 // Defensive flags: set after first error indicating profile_id migrations aren't applied.
 // Once set, all subsequent calls skip profile_id params for this SW lifecycle.
@@ -35,12 +42,12 @@ const _profileCompat = {
 const queryExpander = new QueryExpander();
 
 // API timeout settings (prevent Chrome message channel timeout)
-const API_TIMEOUT_MS = 8000; // 8 seconds max for HuggingFace calls
+const API_TIMEOUT_MS = TIMEOUT_HUGGINGFACE_MS; // 8 seconds max for HuggingFace calls
 const API_RETRY_DELAY_MS = 500; // 500ms between retries
 const API_MAX_RETRIES = 2; // Max retries for transient failures
 
 // Jina reranker settings — capped at 5s to stay within 10s injection budget
-const JINA_TIMEOUT_MS = 5000;  // 5s timeout (was 15s, exceeded injection deadline)
+const JINA_TIMEOUT_MS = TIMEOUT_JINA_RERANK_MS;  // 5s timeout (was 15s, exceeded injection deadline)
 const MAX_RERANK_DOCS = 25;    // Send all merged results to Jina (was 10 — missed relevant items at rank 11+)
 const MAX_JINA_ATTEMPTS = 1;   // No retry — cold-start recovery not worth 5s on tight pipeline budget
 
@@ -88,7 +95,7 @@ async function generateQueryEmbedding(query, _apiKey) {
   }
 
   try {
-    const result = await callEdgeFunction('generate_embeddings', {
+    const result = await callEdgeFunction(EDGE_FN.GENERATE_EMBEDDINGS, {
       texts: [query],
     }, { timeoutMs: API_TIMEOUT_MS });
 
@@ -118,7 +125,7 @@ export async function prewarmEmbeddingModel() {
     if (circuitStatus.open) return false;
 
     // Pre-warm via edge function (HF key stays server-side)
-    const result = await callEdgeFunction('generate_embeddings', {
+    const result = await callEdgeFunction(EDGE_FN.GENERATE_EMBEDDINGS, {
       texts: ['warmup'],
     }, { timeoutMs: API_TIMEOUT_MS });
 
@@ -236,7 +243,7 @@ export async function searchMessages(query, options = {}) {
 
     // Build query — with AbortController timeout to prevent Supabase's 30s
     // statement_timeout from blocking the entire pipeline
-    const SEMANTIC_FETCH_TIMEOUT_MS = 10000;
+    const SEMANTIC_FETCH_TIMEOUT_MS = TIMEOUT_SEMANTIC_SEARCH_MS;
     const controller = new AbortController();
     const fetchTimer = setTimeout(() => controller.abort(), SEMANTIC_FETCH_TIMEOUT_MS);
 
@@ -1126,7 +1133,7 @@ export async function searchHybrid(query, options = {}) {
       // Start HyDE generation → embedding → search as a single compound promise
       // that runs concurrently with all other searches (not sequentially after them).
       // Budget: 12s total for the entire HyDE chain (doc gen + embedding + Supabase RPC).
-      const HYDE_CHAIN_TIMEOUT_MS = 12000;
+      const HYDE_CHAIN_TIMEOUT_MS = TIMEOUT_HYDE_CHAIN_MS;
       let hydeChainPromise = null;
       if (enableHyDE) {
         const cbStatus = await hydeCB.isOpen();

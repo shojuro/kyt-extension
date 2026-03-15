@@ -12,8 +12,10 @@
  */
 
 import { callEdgeFunction } from './api-client.js';
+import { EDGE_FN } from './edge-functions.js';
+import { TIMEOUT_HAIKU_TIEBREAKER_MS } from './constants.js';
 
-const HAIKU_TIMEOUT_MS = 2000;
+const HAIKU_TIMEOUT_MS = TIMEOUT_HAIKU_TIEBREAKER_MS;
 const DAILY_HAIKU_LIMIT = 100;
 
 /**
@@ -36,7 +38,7 @@ export async function classifyWithHaiku(message, heuristicScores, reason) {
 
   try {
     const result = await Promise.race([
-      callEdgeFunction('classify_intent', {
+      callEdgeFunction(EDGE_FN.CLASSIFY_INTENT, {
         message: message.slice(0, 500),
         scores: heuristicScores,
         reason,

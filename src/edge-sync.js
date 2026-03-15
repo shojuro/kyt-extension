@@ -7,8 +7,10 @@
  */
 
 import { callEdgeFunction } from './api-client.js';
+import { EDGE_FN } from './edge-functions.js';
+import { BATCH_SIZE_EDGE_SYNC } from './constants.js';
 
-const BATCH_SIZE = 50; // save_chat_turn_batch limit
+const BATCH_SIZE = BATCH_SIZE_EDGE_SYNC; // save_chat_turn_batch limit
 
 /**
  * Sync messages to Supabase via the save_chat_turn_batch edge function.
@@ -55,7 +57,7 @@ export async function syncViaEdgeFunction(messages, options = {}) {
     }));
 
     try {
-      const response = await callEdgeFunction('save_chat_turn_batch', {
+      const response = await callEdgeFunction(EDGE_FN.SAVE_CHAT_TURN_BATCH, {
         turns,
         skip_ai_processing: skipAiProcessing,
       });

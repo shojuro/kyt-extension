@@ -15,6 +15,7 @@
  */
 
 import { callEdgeFunction } from './api-client.js';
+import { EDGE_FN } from './edge-functions.js';
 
 // ── In-memory rate limit tracker ────────────────────────────────────────
 // Prevents wasting service worker time on doomed API calls when rate-limited.
@@ -60,7 +61,7 @@ export async function generateHypotheticalQuestions(turnChunk, _unused, question
     console.log(`🔮 Generating ${questionCount} hypothetical questions for chunk...`);
 
     // Call via edge function (no API key needed client-side)
-    const result = await callEdgeFunction('llm_completion', {
+    const result = await callEdgeFunction(EDGE_FN.LLM_COMPLETION, {
       system: 'You are a memory recall assistant. Generate search queries, conceptual labels, and recall phrases for a conversation. Think about how someone would search for this content months later — they\'ll remember the concept or analogy, not the exact words.',
       user: prompt,
       provider: 'openai',

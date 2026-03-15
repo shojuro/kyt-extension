@@ -6,13 +6,12 @@
  */
 
 import { syncToSupabase } from './browser-sync.js';
+import { SYNC_DEBOUNCE_MS, SYNC_MAX_WAIT_MS } from './constants.js';
 
 // ===== DEBOUNCED SYNC SCHEDULING =====
 // Replaces per-message immediate sync with batched debounce
 let syncDebounceTimer = null;
 let syncMaxWaitTimer = null;
-const SYNC_DEBOUNCE_MS = 5000;   // 5 seconds after last save
-const SYNC_MAX_WAIT_MS = 30000;  // Force sync after 30 seconds of continuous saves
 
 /**
  * Schedule a debounced sync to Supabase.

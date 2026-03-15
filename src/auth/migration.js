@@ -4,6 +4,7 @@
  */
 
 import { callEdgeFunction } from '../api-client.js';
+import { EDGE_FN } from '../edge-functions.js';
 
 /**
  * Check if the user has legacy data under a different userId and migrate it.
@@ -21,7 +22,7 @@ export async function checkAndMigrateLegacyData(authUserId) {
   }
 
   // 2. Call claim_user_data edge function
-  const response = await callEdgeFunction('claim_user_data', {
+  const response = await callEdgeFunction(EDGE_FN.CLAIM_USER_DATA, {
     oldUserId: legacyUserId,
   });
 

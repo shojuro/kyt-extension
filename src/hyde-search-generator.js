@@ -13,6 +13,7 @@
 
 import { createCircuitBreaker } from './embedding-circuit-breaker.js';
 import { callEdgeFunction } from './api-client.js';
+import { EDGE_FN } from './edge-functions.js';
 
 // ── Circuit breaker for HyDE API calls ────────────────────────────────────
 const HYDE_CB_STORAGE_KEY = 'kyt_hyde_circuit_breaker';
@@ -48,7 +49,7 @@ export async function generateHyDEDocument(query) {
 
   try {
     const result = await Promise.race([
-      callEdgeFunction('llm_completion', {
+      callEdgeFunction(EDGE_FN.LLM_COMPLETION, {
         system: HYDE_SYSTEM_PROMPT,
         user: `Search query: "${query}"\n\nIMPORTANT: The user's stored conversations are about software development, AI products, startups, and personal knowledge management. Interpret ambiguous terms in this context (e.g., "shipping" means releasing software, not mailing packages; "models" means AI/LLM models, not fashion models).\n\nGenerate a hypothetical conversation that this query might be trying to find:`,
         provider: 'openai',
