@@ -23,6 +23,7 @@ import { AUTH_SESSION_KEY } from './auth/auth-service.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { getActiveProject } from './project-manager.js';
 import { getRecentTopics } from './recent-topic-cache.js';
+import { TIMEOUT_PIPELINE_MS } from './constants.js';
 
 /**
  * Extract which platform is mentioned in a query (null if none or cross-platform).
@@ -272,9 +273,8 @@ export function synthesizePreferenceItems(prefRows) {
  * @param {string} userMessage - User's message text
  * @param {Object} config - Context injection configuration
  * @param {Object} deps - Injectable dependencies from background.js
- * @param {Function} deps.isCircuitBreakerOpen - Check if API circuit breaker is open
- * @param {number} deps.circuitBreakerOpenUntil - Timestamp when CB resets
- * @param {number} deps.consecutiveApiFailures - Failure count
+ * @param {Function} deps.isCircuitBreakerOpen - Check if API circuit breaker is open (async)
+ * @param {Function} deps.getCircuitBreakerDiagnostics - Get CB state for diagnostics (async)
  * @param {Function} deps.syncBeforeSearch - Flush pending sync (fire-and-forget)
  * @param {Object} deps.apiMetrics - API performance metrics object
  * @param {Function} deps.logApiMetrics - Log metrics function
@@ -286,13 +286,12 @@ export async function getContextForInjection(userMessage, config, deps = {}) {
 
   // Overall pipeline timeout — must complete before content.js port timeout (26s).
   // 22s gives 4s margin for message serialization + port communication.
-  const PIPELINE_TIMEOUT_MS = 22000;
 
   try {
     const pipelineResult = await Promise.race([
       _runContextPipeline(userMessage, config, deps, startTime),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Pipeline timeout')), PIPELINE_TIMEOUT_MS)
+        setTimeout(() => reject(new Error('Pipeline timeout')), TIMEOUT_PIPELINE_MS)
       )
     ]);
     return pipelineResult;
@@ -410,15 +409,18 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
       console.warn('⚠️ Preference router failed (non-fatal), falling through:', prefError.message);
     }
 
-    // Check in-memory circuit breaker — only affects API-dependent paths
+    // Check storage-backed circuit breaker — only affects API-dependent paths
     // BM25 keyword search is local and always available even when CB is open
-    const apiAvailable = deps.isCircuitBreakerOpen ? !deps.isCircuitBreakerOpen() : true;
+    const apiAvailable = deps.isCircuitBreakerOpen ? !(await deps.isCircuitBreakerOpen()) : true;
     diagnostics.apiCircuitBreakerOpen = !apiAvailable;
-    if (!apiAvailable) {
-      const waitSeconds = Math.ceil(((deps.circuitBreakerOpenUntil || 0) - Date.now()) / 1000);
+    if (!apiAvailable && deps.getCircuitBreakerDiagnostics) {
+      const cbDiag = await deps.getCircuitBreakerDiagnostics();
+      const waitSeconds = cbDiag.openedAt
+        ? Math.ceil((cbDiag.cooldownMs - (Date.now() - cbDiag.openedAt)) / 1000)
+        : 0;
       console.warn(
         `⚠️ Circuit breaker is OPEN — API paths disabled, BM25 still active. ` +
-        `Resets in ${waitSeconds}s (${deps.consecutiveApiFailures || 0} failures)`
+        `Resets in ${waitSeconds}s (${cbDiag.consecutiveFailures || 0} failures)`
       );
     }
 
@@ -640,7 +642,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
           totalResults: contextItems.length,
           semanticAvailable: contextItems.metadata?.semanticAvailable,
           jinaReranked: contextItems.metadata?.jinaReranked,
-          embeddingCBOpen: deps.isCircuitBreakerOpen ? deps.isCircuitBreakerOpen() : false,
+          embeddingCBOpen: deps.isCircuitBreakerOpen ? (await deps.isCircuitBreakerOpen()) : false,
           apiAvailable,
         }));
 

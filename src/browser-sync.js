@@ -23,6 +23,8 @@ import {
 import { fetchWithTimeout } from './utils/fetch.js';
 import { normalizePlatform } from './utils/normalize-platform.js';
 import { callEdgeFunction } from './api-client.js';
+import { EDGE_FN } from './edge-functions.js';
+import { TIMEOUT_SYNC_API_MS } from './constants.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { refreshSession } from './auth/auth-service.js';
 import { stripInjectionPrefix } from './context-retrieval.js';
@@ -31,11 +33,29 @@ import { stripInjectionPrefix } from './context-retrieval.js';
 // Once set, all subsequent syncs skip profile_id for this SW lifecycle.
 let _syncProfileIdUnavailable = false;
 
-// SYNC LOCK: Prevent race conditions when multiple syncs happen in parallel
-let syncInProgress = false;
+// SYNC LOCK: Storage-backed to survive service worker restarts.
+// TTL-based so stale locks from crashed SWs auto-expire.
+const SYNC_LOCK_KEY = 'kyt_sync_lock';
+const SYNC_LOCK_TTL_MS = 120_000; // 2 minutes
+
+async function acquireSyncLock() {
+  const result = await chrome.storage.local.get([SYNC_LOCK_KEY]);
+  const lock = result[SYNC_LOCK_KEY];
+  if (lock && (Date.now() - lock.acquiredAt) < SYNC_LOCK_TTL_MS) {
+    return false; // lock held and not stale
+  }
+  await chrome.storage.local.set({
+    [SYNC_LOCK_KEY]: { acquiredAt: Date.now() }
+  });
+  return true;
+}
+
+async function releaseSyncLock() {
+  await chrome.storage.local.remove(SYNC_LOCK_KEY);
+}
 
 // API timeout settings (prevent Chrome message channel timeout)
-const SYNC_API_TIMEOUT_MS = 30000; // 30 seconds for sync (batch operations need more time)
+const SYNC_API_TIMEOUT_MS = TIMEOUT_SYNC_API_MS; // 30 seconds for sync (batch operations need more time)
 
 /**
  * Get API configuration from chrome.storage
@@ -221,7 +241,7 @@ async function generateEmbeddings(texts, _apiKey) {
     console.log(`   Batch ${i + 1}/${batches.length}: ${batch.length} texts`);
 
     try {
-      const result = await callEdgeFunction('generate_embeddings', {
+      const result = await callEdgeFunction(EDGE_FN.GENERATE_EMBEDDINGS, {
         texts: batch,
       }, { timeoutMs: SYNC_API_TIMEOUT_MS });
 
@@ -847,9 +867,9 @@ export async function syncMessages(messagesToSync) {
 async function triggerEntityBackfill(config) {
   console.log('🔗 Triggering entity backfill...');
   try {
-    const response = await callEdgeFunction('backfill_entities', {
+    const response = await callEdgeFunction(EDGE_FN.BACKFILL_ENTITIES, {
       limit: 10 // Process up to 10 turns per sync cycle (20 timed out at 30s)
-    }, { timeoutMs: 30000 });
+    }, { timeoutMs: SYNC_API_TIMEOUT_MS });
 
     if (response.success) {
       const count = response.processed || 0;
@@ -874,16 +894,15 @@ async function triggerEntityBackfill(config) {
  * @returns {Promise<Object>} Sync result
  */
 export async function syncToSupabase() {
-  if (syncInProgress) {
+  if (!await acquireSyncLock()) {
     return { success: true, synced: 0, message: 'Sync already in progress' };
   }
 
-  syncInProgress = true;
   try {
     const messagesToSync = await getMessagesToSync();
     return await syncMessages(messagesToSync);
   } finally {
-    syncInProgress = false;
+    await releaseSyncLock();
   }
 }
 
