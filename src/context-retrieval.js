@@ -626,7 +626,10 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
     // "relate") and mentions a platform, ensure platform-specific content is available
     // for the LLM to bridge topics.
     const synthesisScore = scoreSynthesisIntent(userMessage);
-    if (synthesisScore >= 0.5 && targetPlatform && !hasTargetPlatformItems) {
+    // Recalculate after temporal fallback may have mutated contextItems
+    const hasTargetPlatformItemsNow = targetPlatform &&
+      contextItems.some(item => (item.source || item.platform) === targetPlatform);
+    if (synthesisScore >= 0.5 && targetPlatform && !hasTargetPlatformItemsNow) {
       console.log(`🔗 Synthesis+platform fallback: "${userMessage.substring(0, 40)}..." → ${targetPlatform} (synthesis: ${synthesisScore})`);
       try {
         const synthItems = await searchViaEdgeFunction(userMessage, {
@@ -771,9 +774,9 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
           timestamp: (() => { const d = new Date(item.msg_timestamp || item.timestamp); return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString(); })(),
           similarity: item.cross_encoder_score != null
             ? item.cross_encoder_score
-            : item.distance != null
+            : (item.distance != null && !isNaN(item.distance))
               ? Math.max(0, 1 - item.distance)
-              : (item.weighted_score || item.rrf_score || 0.5),
+              : (item.weighted_score ?? item.rrf_score ?? 0.5),
           source_type: item.source || 'conversation'
         })),
         latencyMs: elapsedTime,

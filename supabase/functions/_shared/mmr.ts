@@ -138,17 +138,18 @@ export function applyServerMMR(
                 const selEmb = (sel as any).embedding;
                 if (Array.isArray(candidateEmb) && candidateEmb.length > 0 &&
                     Array.isArray(selEmb) && selEmb.length > 0) {
-                    sim = cosineSimilarity(candidateEmb, selEmb);
+                    // Normalize cosine [-1,1] to [0,1] at the source
+                    sim = (cosineSimilarity(candidateEmb, selEmb) + 1) / 2;
                 } else {
+                    // Jaccard contentSimilarity already returns [0,1]
                     sim = contentSimilarity(candidate.content, sel.content);
                 }
                 if (sim > maxSim) maxSim = sim;
             }
 
             // MMR score: λ * relevance - (1-λ) * max_similarity
-            // Normalize similarity from [-1,1] to [0,1]
-            const normalizedSim = (maxSim + 1) / 2;
-            const mmrScore = lambda * relevance - (1 - lambda) * normalizedSim;
+            // maxSim is already in [0,1] (cosine normalized at call site, Jaccard native)
+            const mmrScore = lambda * relevance - (1 - lambda) * maxSim;
 
             if (mmrScore > bestMMR) {
                 bestMMR = mmrScore;
