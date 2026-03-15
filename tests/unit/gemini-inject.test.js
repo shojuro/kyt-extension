@@ -1392,3 +1392,86 @@ describe('pendingContextRequests max-size guard', () => {
     expect(result).toBe('would-create-promise');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// REQUEST CONTEXT CANCELLATION (RC-4)
+// Extracted cancellation logic from inject.js requestContext()
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('requestContext cancellation', () => {
+  it('cancels previous request when new one arrives', () => {
+    const pendingContextRequests = new Map();
+    let activeContextRequestId = null;
+
+    // Simulate first request
+    const resolve1 = { called: false, value: undefined };
+    const timeout1 = 12345;
+    activeContextRequestId = 'ctx_first';
+    pendingContextRequests.set('ctx_first', {
+      resolve: (v) => { resolve1.called = true; resolve1.value = v; },
+      timeoutId: timeout1
+    });
+
+    // Simulate second request arriving — cancellation logic
+    if (activeContextRequestId) {
+      const prev = pendingContextRequests.get(activeContextRequestId);
+      if (prev) {
+        // clearTimeout(prev.timeoutId) would be called in real code
+        pendingContextRequests.delete(activeContextRequestId);
+        prev.resolve(null); // fail-open
+      }
+    }
+    activeContextRequestId = 'ctx_second';
+    pendingContextRequests.set('ctx_second', { resolve: () => {}, timeoutId: 99999 });
+
+    // Verify: old request was resolved with null, removed from map
+    expect(resolve1.called).toBe(true);
+    expect(resolve1.value).toBeNull();
+    expect(pendingContextRequests.has('ctx_first')).toBe(false);
+    // New request is active
+    expect(pendingContextRequests.has('ctx_second')).toBe(true);
+    expect(activeContextRequestId).toBe('ctx_second');
+  });
+
+  it('clears activeContextRequestId on response', () => {
+    const pendingContextRequests = new Map();
+    let activeContextRequestId = 'ctx_active';
+
+    const resolve1 = { called: false };
+    pendingContextRequests.set('ctx_active', {
+      resolve: (v) => { resolve1.called = true; },
+      timeoutId: 11111
+    });
+
+    // Simulate KYT_CONTEXT_RESPONSE handler
+    const detail = { requestId: 'ctx_active', formattedContext: 'some context' };
+    const pending = pendingContextRequests.get(detail.requestId);
+    if (pending) {
+      // clearTimeout(pending.timeoutId);
+      pendingContextRequests.delete(detail.requestId);
+      if (activeContextRequestId === detail.requestId) activeContextRequestId = null;
+      pending.resolve(detail.formattedContext || null);
+    }
+
+    expect(resolve1.called).toBe(true);
+    expect(activeContextRequestId).toBeNull();
+    expect(pendingContextRequests.size).toBe(0);
+  });
+
+  it('does not cancel when no active request exists', () => {
+    const pendingContextRequests = new Map();
+    let activeContextRequestId = null;
+
+    // Cancellation logic should be a no-op
+    if (activeContextRequestId) {
+      const prev = pendingContextRequests.get(activeContextRequestId);
+      if (prev) {
+        pendingContextRequests.delete(activeContextRequestId);
+        prev.resolve(null);
+      }
+    }
+
+    expect(pendingContextRequests.size).toBe(0);
+    expect(activeContextRequestId).toBeNull();
+  });
+});

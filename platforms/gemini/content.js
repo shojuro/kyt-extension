@@ -142,6 +142,9 @@
   // CONTEXT INJECTION — Port-based GET_CONTEXT (same as ChatGPT)
   // ═══════════════════════════════════════════════════════════════════════
 
+  let activeContextPort = null;
+  let activeContextTimeout = null;
+
   window.addEventListener('KYT_CONTEXT_REQUEST', function (event) {
     if (!isCurrentGeneration()) return;
 
@@ -162,14 +165,27 @@
       return;
     }
 
+    // Cancel any pending context request — only latest message matters
+    if (activeContextPort) {
+      try {
+        clearTimeout(activeContextTimeout);
+        activeContextPort.disconnect();
+      } catch (_) {}
+      activeContextPort = null;
+      activeContextTimeout = null;
+    }
+
     // Port-based context request — avoids "message channel closed" errors
     try {
       const port = chrome.runtime.connect({ name: 'kyt-context' });
+      activeContextPort = port;
       let responded = false;
 
       const timeoutId = setTimeout(function () {
         if (responded) return;
         responded = true;
+        activeContextPort = null;
+        activeContextTimeout = null;
         try { port.disconnect(); } catch (_) {}
         console.warn('⚠️ KYT Gemini Content: Context request timed out (26s)');
         dispatchContextResponse(requestId, {
@@ -179,10 +195,13 @@
           error: 'Context request timed out'
         });
       }, 26000);
+      activeContextTimeout = timeoutId;
 
       port.onMessage.addListener(function (response) {
         if (responded) return;
         responded = true;
+        activeContextPort = null;
+        activeContextTimeout = null;
         clearTimeout(timeoutId);
         try { port.disconnect(); } catch (_) {}
 
@@ -200,6 +219,8 @@
       port.onDisconnect.addListener(function () {
         if (responded) return;
         responded = true;
+        activeContextPort = null;
+        activeContextTimeout = null;
         clearTimeout(timeoutId);
         const err = chrome.runtime.lastError?.message || 'Port disconnected';
         console.warn('⚠️ KYT Gemini Content: Context port disconnected:', err);

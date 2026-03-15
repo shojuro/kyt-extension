@@ -881,6 +881,7 @@
 
   const pendingContextRequests = new Map();
   const CONTEXT_TIMEOUT_MS = 28000;
+  let activeContextRequestId = null;
 
   function requestContext(userMessage) {
     // Safety valve: reject if too many pending (bridge is broken or overloaded)
@@ -888,10 +889,22 @@
       return Promise.resolve(null); // fail-open: send without context
     }
 
+    // Cancel any active request — only the latest message matters for injection
+    if (activeContextRequestId) {
+      const prev = pendingContextRequests.get(activeContextRequestId);
+      if (prev) {
+        clearTimeout(prev.timeoutId);
+        pendingContextRequests.delete(activeContextRequestId);
+        prev.resolve(null); // fail-open: previous request gets no context
+      }
+    }
+
     return new Promise((resolve) => {
       const requestId = 'ctx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      activeContextRequestId = requestId;
 
       const timeoutId = setTimeout(() => {
+        if (activeContextRequestId === requestId) activeContextRequestId = null;
         pendingContextRequests.delete(requestId);
         resolve(null); // fail-open: send without context
       }, CONTEXT_TIMEOUT_MS);
@@ -914,6 +927,7 @@
 
     clearTimeout(pending.timeoutId);
     pendingContextRequests.delete(detail.requestId);
+    if (activeContextRequestId === detail.requestId) activeContextRequestId = null;
     pending.resolve(detail.formattedContext || null);
   });
 
