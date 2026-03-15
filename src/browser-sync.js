@@ -824,6 +824,7 @@ export async function backfillNullEmbeddings(options = {}) {
     let totalErrors = 0;
     let hasMore = true;
     let offset = 0;
+    let lastBatchIds = new Set();
 
     while (hasMore) {
       // Query messages with null embeddings
@@ -912,9 +913,15 @@ export async function backfillNullEmbeddings(options = {}) {
       if (messages.length < batchSize) {
         hasMore = false;
       } else {
-        // Don't increment offset — we're patching nulls, so the next query
-        // at offset=0 will return the next batch of unpatched rows
-        // But guard against infinite loops if patches aren't taking effect
+        // Patched rows should vanish from is.null filter, so offset stays at 0.
+        // But guard against infinite loops if patches aren't taking effect.
+        const currentIds = new Set(messages.map(m => m.message_id));
+        const overlap = [...currentIds].filter(id => lastBatchIds.has(id)).length;
+        if (overlap > currentIds.size * 0.5) {
+          console.warn(`⚠️ backfillNullEmbeddings: >50% overlap with previous batch — breaking to avoid infinite loop`);
+          hasMore = false;
+        }
+        lastBatchIds = currentIds;
         offset = 0;
       }
 
@@ -994,6 +1001,7 @@ export async function backfillNullChatTurnEmbeddings(options = {}) {
     let totalBackfilled = 0;
     let totalErrors = 0;
     let hasMore = true;
+    let lastBatchIds = new Set();
 
     while (hasMore) {
       // Query chat_turns with null embeddings
@@ -1077,8 +1085,17 @@ export async function backfillNullChatTurnEmbeddings(options = {}) {
       // If we got fewer than batchSize, we're done
       if (rows.length < batchSize) {
         hasMore = false;
+      } else {
+        // Patched rows should vanish from is.null filter, so offset stays at 0.
+        // But guard against infinite loops if patches aren't taking effect.
+        const currentIds = new Set(rows.map(r => r.id));
+        const overlap = [...currentIds].filter(id => lastBatchIds.has(id)).length;
+        if (overlap > currentIds.size * 0.5) {
+          console.warn(`⚠️ backfillNullChatTurnEmbeddings: >50% overlap — breaking to avoid infinite loop`);
+          hasMore = false;
+        }
+        lastBatchIds = currentIds;
       }
-      // Don't increment offset — patched rows disappear from IS NULL result set
 
       // Delay between batches
       if (hasMore) {

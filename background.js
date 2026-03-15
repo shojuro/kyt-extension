@@ -422,10 +422,17 @@ async function evictOldMessages() {
       const newSize = JSON.stringify(currentMessages).length;
       if (newSize <= targetSize) break;
 
+      const target = sorted[evictedCount];
+      const targetHash = target.contentHash;
+      const targetTime = target.capturedAt || target.timestamp || 0;
+
       const oldestIndex = currentMessages.findIndex(msg => {
+        if (targetHash && msg.contentHash) {
+          return msg.contentHash === targetHash;
+        }
+        // Fallback for messages without contentHash: match by timestamp + content prefix
         const time = msg.capturedAt || msg.timestamp || 0;
-        const oldestTime = sorted[evictedCount].capturedAt || sorted[evictedCount].timestamp || 0;
-        return time === oldestTime;
+        return time === targetTime && msg.content?.slice(0, 50) === target.content?.slice(0, 50);
       });
 
       if (oldestIndex !== -1) {
@@ -1097,6 +1104,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         }
       } catch (error) {
         console.error('❌ Backfill retry alarm error:', error.message);
+        // Reschedule so transient errors don't permanently stall backfill
+        chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 5 });
       }
       break;
 
