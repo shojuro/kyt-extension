@@ -36,7 +36,7 @@
       const normalized = content.trim().replace(/\s+/g, ' ').toLowerCase();
       const hash = this._hash(normalized);
       const now = Date.now();
-      const confidence = captureMethod === 'xhr' || captureMethod === 'fetch' ? 95 : 50;
+      const confidence = captureMethod === 'xhr' || captureMethod === 'xhr-response' || captureMethod === 'fetch' || captureMethod === 'fetch-response' ? 95 : 50;
 
       if (this.recentMessages.has(hash)) {
         const last = this.recentMessages.get(hash);
@@ -83,6 +83,108 @@
   }
 
   const deduplicator = new MessageDeduplicator();
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DOM OBSERVER — Captures assistant responses via MutationObserver
+  // ═══════════════════════════════════════════════════════════════════════
+
+  const responseDOMObserver = {
+    observer: null,
+    pendingConvId: null,
+    lastTextLength: 0,
+    stableTimeoutId: null,
+    STABLE_DELAY_MS: 2500,
+    MAX_WAIT_MS: 120000,
+    startTimeoutId: null,
+    _baselineElement: null,
+
+    RESPONSE_SELECTORS: [
+      'message-content.model-response-text',
+      'message-content[data-content-type="response"]',
+      '.model-response-text',
+      'message-content',
+      '.conversation-container',
+    ],
+
+    _findLastResponseElement() {
+      for (const selector of this.RESPONSE_SELECTORS) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) return elements[elements.length - 1];
+      }
+      return null;
+    },
+
+    start(conversationId) {
+      this._flushPending(); // flush previous response before resetting
+      this.stop();
+      this.pendingConvId = conversationId;
+      this.lastTextLength = 0;
+      this._baselineElement = this._findLastResponseElement();
+
+      const target = document.querySelector('main') || document.body;
+
+      this.observer = new MutationObserver(() => this._onMutation());
+      this.observer.observe(target, { childList: true, subtree: true, characterData: true });
+
+      this.startTimeoutId = setTimeout(() => this.stop(), this.MAX_WAIT_MS);
+
+      console.log('👁️ KYT Gemini: DOM observer started for response capture');
+    },
+
+    _onMutation() {
+      const text = this._getLastResponseText();
+      if (!text || text.length <= this.lastTextLength) return;
+
+      this.lastTextLength = text.length;
+
+      if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
+      this.stableTimeoutId = setTimeout(() => this._onStable(), this.STABLE_DELAY_MS);
+    },
+
+    _getLastResponseText() {
+      for (const selector of this.RESPONSE_SELECTORS) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) {
+          const last = elements[elements.length - 1];
+          if (last === this._baselineElement) return null; // still the old element
+          const text = last.innerText?.trim();
+          if (text && text.length > 20) return text;
+        }
+      }
+      return null;
+    },
+
+    _onStable() {
+      if (this.lastTextLength === 0) return; // already flushed
+      const text = this._getLastResponseText();
+      if (!text || text.length < 20) { this.stop(); return; }
+
+      console.log('📥 KYT Gemini: DOM response captured (' + text.length + ' chars, conv=' + (this.pendingConvId || 'unknown') + ')');
+      dispatchCapture(text, 'assistant', 'dom-observer', this.pendingConvId);
+      this.stop();
+    },
+
+    _flushPending() {
+      if (!this.pendingConvId || this.lastTextLength === 0) return;
+      const text = this._getLastResponseText();
+      if (!text || text.length < 20) return;
+      console.log('📥 KYT Gemini: DOM response flushed (' + text.length + ' chars)');
+      dispatchCapture(text, 'assistant', 'dom-observer', this.pendingConvId);
+    },
+
+    stop() {
+      if (this.observer) { this.observer.disconnect(); this.observer = null; }
+      if (this.stableTimeoutId) { clearTimeout(this.stableTimeoutId); this.stableTimeoutId = null; }
+      if (this.startTimeoutId) { clearTimeout(this.startTimeoutId); this.startTimeoutId = null; }
+      this.pendingConvId = null;
+      this.lastTextLength = 0;
+      this._baselineElement = null;
+    }
+  };
+
+  window.addEventListener('beforeunload', function () {
+    responseDOMObserver._flushPending();
+  });
 
   // ═══════════════════════════════════════════════════════════════════════
   // BATCHEXECUTE PARAMETER SNIFFER — Captures live bl + RPC IDs
@@ -417,13 +519,13 @@
       const raw = extractTextFromFrame(frame);
       if (!raw || raw.length < 5) continue;
 
-      // Strip injection blocks (response may echo injected context)
       const stripped = stripInjectionBlock(raw);
       const candidate = stripped && stripped.length >= 5 ? stripped : raw;
 
-      // Strip leading base64-like tokens (auth/session tokens embedded in response)
       const cleanCandidate = candidate.replace(/^[A-Za-z0-9_\-+=\/]{20,}\s+/, '');
       const final = cleanCandidate.length >= 5 ? cleanCandidate : candidate;
+
+      if (isGeminiLocationMetadata(final)) continue;
 
       if (isNaturalLanguage(final)) {
         textParts.push(final);
@@ -433,9 +535,6 @@
       }
     }
 
-    // Deduplicate progressive streaming: Gemini may send cumulative frames where
-    // each frame contains all previous text plus new text. Remove any part that
-    // is a substring of a longer part (progressive overlap).
     if (textParts.length > 1) {
       const deduped = textParts.filter((part, i) =>
         !textParts.some((other, j) => j !== i && other.length > part.length && other.includes(part))
@@ -445,18 +544,21 @@
         // All other frames were substrings of the longest — progressive streaming
         const result = stripInjectionBlock(deduped[0]);
         const final = result && result.length >= 20 ? result : deduped[0];
-        if (final.length >= 20 && isNaturalLanguage(final)) return final;
+        if (final.length >= 20 && isNaturalLanguage(final)) return stripGeminiLocationPrefix(final);
       } else if (deduped.length > 1) {
         // Multiple non-overlapping parts — true multi-frame (delta streaming)
-        const combined = deduped.join(' ');
+        // Filter out any location metadata that survived to this point
+        const contentParts = deduped.filter(p => !isGeminiLocationMetadata(p));
+        const combined = (contentParts.length > 0 ? contentParts : deduped).join(' ');
         const strippedCombined = stripInjectionBlock(combined);
         const result = strippedCombined && strippedCombined.length >= 20 ? strippedCombined : combined;
-        if (result.length >= 20 && isNaturalLanguage(result)) return result;
+        if (result.length >= 20 && isNaturalLanguage(result)) return stripGeminiLocationPrefix(result);
       }
     }
 
     // Fallback: single best frame (non-streaming or single-frame response)
-    if (longestSingle.length >= 10) return longestSingle;
+    if (longestSingle.length >= 10) return stripGeminiLocationPrefix(longestSingle);
+
     return null;
   }
 
@@ -474,25 +576,21 @@
     let pos = 0;
 
     while (pos < sourceBytes.length) {
-      // Skip whitespace/newlines between frames (0x0A=\n, 0x0D=\r)
       while (pos < sourceBytes.length && (sourceBytes[pos] === 0x0A || sourceBytes[pos] === 0x0D)) pos++;
       if (pos >= sourceBytes.length) break;
 
-      // Read the length prefix digits (0x30='0' through 0x39='9')
       let numStr = '';
       while (pos < sourceBytes.length && sourceBytes[pos] >= 0x30 && sourceBytes[pos] <= 0x39) {
         numStr += String.fromCharCode(sourceBytes[pos++]);
       }
-      if (!numStr) { pos++; continue; } // skip unexpected byte
+      if (!numStr) { pos++; continue; }
       const len = parseInt(numStr, 10);
       if (isNaN(len) || len <= 0 || len > 500000) continue;
 
       // NOTE: Do NOT skip \n here — Google's length prefix INCLUDES
       // the \n before the frame content in its byte count.
-      // We read len bytes (which starts with \n), then .trim() it off.
 
-      // Read exactly len UTF-8 bytes, then decode to string
-      if (pos + len > sourceBytes.length) break; // not enough data
+      if (pos + len > sourceBytes.length) break;
       const frameBytes = sourceBytes.slice(pos, pos + len);
       const frameStr = decoder.decode(frameBytes).trim();
       pos += len;
@@ -536,6 +634,52 @@
       if (raw) return raw;
     }
     return null;
+  }
+
+  /**
+   * Detect Gemini location metadata (e.g., "Vancouver, BC, Canada").
+   * Gemini includes the user's location as a short text fragment in its response JSON.
+   * collectTextFragments picks this up as a separate branch and prepends it to content.
+   * Returns true if the string is ONLY a geographic location label (not content).
+   */
+  function isGeminiLocationMetadata(str) {
+    if (!str || str.length > 60) return false;
+    const trimmed = str.trim();
+    // Pattern: "City, State/Province, Country" or "City, Country"
+    // Comma-separated segments, each is 1+ title-cased words. Use literal space (not \s)
+    // to prevent greedy consumption of content text.
+    if (!/^[A-Z][a-zA-Z.'-]*(?: [A-Z][a-zA-Z.'-]*)*(?:,\s*[A-Z][a-zA-Z.'-]*(?: [A-Z][a-zA-Z.'-]*)*){1,3}$/.test(trimmed)) return false;
+    // Must NOT contain sentence-like words (articles, verbs, prepositions)
+    if (/\b(?:the|is|are|was|were|in|on|at|for|and|but|or|with|this|that|from)\b/i.test(trimmed)) return false;
+    return true;
+  }
+
+  /**
+   * Strip Gemini location prefix from captured text.
+   * When collectTextFragments accumulates all branches, location metadata like
+   * "Vancouver, BC, Canada" gets prepended to the actual response content.
+   */
+  function stripGeminiLocationPrefix(text) {
+    if (!text) return text;
+    // Try each space position as a location/content boundary.
+    // Use isGeminiLocationMetadata on the prefix — it has the $ anchor so it
+    // won't greedily consume content words like "In" after the location.
+    let lastMatch = -1;
+    let searchFrom = 0;
+    while (searchFrom < Math.min(text.length, 60)) {
+      const spaceIdx = text.indexOf(' ', searchFrom);
+      if (spaceIdx < 0 || spaceIdx >= 60) break;
+      const prefix = text.substring(0, spaceIdx);
+      if (prefix.includes(',') && isGeminiLocationMetadata(prefix)) {
+        lastMatch = spaceIdx;
+      }
+      searchFrom = spaceIdx + 1;
+    }
+    if (lastMatch > 0) {
+      const rest = text.substring(lastMatch + 1);
+      if (rest.length >= 20) return rest;
+    }
+    return text;
   }
 
   /**
@@ -1104,37 +1248,8 @@
     console.log('📤 KYT Gemini: User message captured via XHR (' + parseResult.userMessage.length + ' chars)');
     dispatchCapture(parseResult.userMessage, 'user', 'xhr', parseResult.conversationId);
 
-    // Capture assistant response when XHR completes
-    const conversationId = parseResult.conversationId;
-    this.addEventListener('load', function () {
-      try {
-        const rt = this.responseText;
-        if (!rt) {
-          // Try arraybuffer fallback
-          if (this.response && this.responseType === 'arraybuffer') {
-            try {
-              const decoded = new TextDecoder('utf-8').decode(this.response);
-              const assistantText = extractAssistantResponse(decoded);
-              if (assistantText) {
-                dispatchCapture(assistantText, 'assistant', 'xhr', conversationId);
-              }
-            } catch (_) {}
-          }
-          return;
-        }
-
-        const assistantText = extractAssistantResponse(rt);
-        if (assistantText) {
-          console.log('📥 KYT Gemini: Assistant response captured (' + assistantText.length + ' chars)');
-          dispatchCapture(assistantText, 'assistant', 'xhr', conversationId);
-        } else {
-          console.warn('⚠️ KYT Gemini: Response extraction returned null (' +
-            rt.length + ' bytes, conv=' + (conversationId || 'unknown') + ')');
-        }
-      } catch (e) {
-        console.error('⚠️ KYT Gemini: Response capture error:', e.message);
-      }
-    }, { once: true });
+    // Start DOM observer to capture assistant response when it stabilizes
+    responseDOMObserver.start(parseResult.conversationId);
 
     // Context injection: defer send until context resolves
     const xhr = this;
@@ -1221,6 +1336,9 @@
     console.log('📤 KYT Gemini: User message captured via fetch (' + parseResult.userMessage.length + ' chars)');
     dispatchCapture(parseResult.userMessage, 'user', 'fetch', parseResult.conversationId);
 
+    // Start DOM observer to capture assistant response (if not already started by XHR)
+    responseDOMObserver.start(parseResult.conversationId);
+
     // Context injection
     const formattedContext = await requestContext(parseResult.userMessage);
     let finalInit = init || {};
@@ -1233,23 +1351,7 @@
     }
 
     // Send the (possibly modified) request
-    const response = await originalFetch.call(this, input, finalInit);
-
-    // Capture assistant response (non-blocking)
-    const conversationId = parseResult.conversationId;
-    try {
-      const cloned = response.clone();
-      const responseText = await cloned.text();
-      if (responseText) {
-        const assistantText = extractAssistantResponse(responseText);
-        if (assistantText) {
-          console.log('📥 KYT Gemini: Assistant response captured via fetch (' + assistantText.length + ' chars)');
-          dispatchCapture(assistantText, 'assistant', 'fetch', conversationId);
-        }
-      }
-    } catch (e) { /* non-fatal */ }
-
-    return response;
+    return originalFetch.call(this, input, finalInit);
   };
 
   // ═══════════════════════════════════════════════════════════════════════

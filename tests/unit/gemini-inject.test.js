@@ -105,21 +105,20 @@ function extractAssistantResponse(responseText) {
   const frames = parseLengthPrefixedFrames(cleaned);
 
   // Extract text from ALL wrb.fr frames and concatenate.
-  // Gemini streaming splits the response across many frames, each with a small
-  // text fragment. We must collect them all, not just pick the longest.
   const textParts = [];
   let longestSingle = '';
   for (const frame of frames) {
     const raw = extractTextFromFrame(frame);
     if (!raw || raw.length < 5) continue;
 
-    // Strip injection blocks (response may echo injected context)
     const stripped = stripInjectionBlock(raw);
     const candidate = stripped && stripped.length >= 5 ? stripped : raw;
 
-    // Strip leading base64-like tokens (auth/session tokens embedded in response)
     const cleanCandidate = candidate.replace(/^[A-Za-z0-9_\-+=\/]{20,}\s+/, '');
     const final = cleanCandidate.length >= 5 ? cleanCandidate : candidate;
+
+    // Skip Gemini location metadata (e.g., "Vancouver, BC, Canada")
+    if (isGeminiLocationMetadata(final)) continue;
 
     if (isNaturalLanguage(final)) {
       textParts.push(final);
@@ -129,30 +128,25 @@ function extractAssistantResponse(responseText) {
     }
   }
 
-  // Deduplicate progressive streaming: Gemini may send cumulative frames where
-  // each frame contains all previous text plus new text. Remove any part that
-  // is a substring of a longer part (progressive overlap).
   if (textParts.length > 1) {
     const deduped = textParts.filter((part, i) =>
       !textParts.some((other, j) => j !== i && other.length > part.length && other.includes(part))
     );
 
     if (deduped.length === 1) {
-      // All other frames were substrings of the longest — progressive streaming
       const result = stripInjectionBlock(deduped[0]);
       const final2 = result && result.length >= 20 ? result : deduped[0];
-      if (final2.length >= 20 && isNaturalLanguage(final2)) return final2;
+      if (final2.length >= 20 && isNaturalLanguage(final2)) return stripGeminiLocationPrefix(final2);
     } else if (deduped.length > 1) {
-      // Multiple non-overlapping parts — true multi-frame (delta streaming)
-      const combined = deduped.join(' ');
+      const contentParts = deduped.filter(p => !isGeminiLocationMetadata(p));
+      const combined = (contentParts.length > 0 ? contentParts : deduped).join(' ');
       const strippedCombined = stripInjectionBlock(combined);
       const result = strippedCombined && strippedCombined.length >= 20 ? strippedCombined : combined;
-      if (result.length >= 20 && isNaturalLanguage(result)) return result;
+      if (result.length >= 20 && isNaturalLanguage(result)) return stripGeminiLocationPrefix(result);
     }
   }
 
-  // Fallback: single best frame (non-streaming or single-frame response)
-  if (longestSingle.length >= 10) return longestSingle;
+  if (longestSingle.length >= 10) return stripGeminiLocationPrefix(longestSingle);
   return null;
 }
 
@@ -232,6 +226,34 @@ function findLongestRawText(val) {
     if (found.length > longest.length) longest = found;
   }
   return longest;
+}
+
+function isGeminiLocationMetadata(str) {
+  if (!str || str.length > 60) return false;
+  const trimmed = str.trim();
+  if (!/^[A-Z][a-zA-Z.'-]*(?: [A-Z][a-zA-Z.'-]*)*(?:,\s*[A-Z][a-zA-Z.'-]*(?: [A-Z][a-zA-Z.'-]*)*){1,3}$/.test(trimmed)) return false;
+  if (/\b(?:the|is|are|was|were|in|on|at|for|and|but|or|with|this|that|from)\b/i.test(trimmed)) return false;
+  return true;
+}
+
+function stripGeminiLocationPrefix(text) {
+  if (!text) return text;
+  let lastMatch = -1;
+  let searchFrom = 0;
+  while (searchFrom < Math.min(text.length, 60)) {
+    const spaceIdx = text.indexOf(' ', searchFrom);
+    if (spaceIdx < 0 || spaceIdx >= 60) break;
+    const prefix = text.substring(0, spaceIdx);
+    if (prefix.includes(',') && isGeminiLocationMetadata(prefix)) {
+      lastMatch = spaceIdx;
+    }
+    searchFrom = spaceIdx + 1;
+  }
+  if (lastMatch > 0) {
+    const rest = text.substring(lastMatch + 1);
+    if (rest.length >= 20) return rest;
+  }
+  return text;
 }
 
 function isNaturalLanguage(str) {
@@ -373,6 +395,55 @@ function fnvHash(content) {
     hash = Math.imul(hash, FNV_PRIME);
   }
   return (hash >>> 0).toString(16);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// MESSAGE DEDUPLICATOR (copied from inject.js for testability)
+// ═══════════════════════════════════════════════════════════════════════
+
+class MessageDeduplicator {
+  constructor() {
+    this.recentMessages = new Map();
+    this.dedupeWindow = 5000;
+    this.maxMapSize = 1000;
+    this.stats = { totalAttempts: 0, captured: 0, duplicatesSkipped: 0, upgradeCaptures: 0 };
+  }
+  shouldCapture(content, captureMethod) {
+    if (!content || typeof content !== 'string') return true;
+    this.stats.totalAttempts++;
+    const normalized = content.trim().replace(/\s+/g, ' ').toLowerCase();
+    const hash = this._hash(normalized);
+    const now = Date.now();
+    const confidence = captureMethod === 'xhr' || captureMethod === 'xhr-response' || captureMethod === 'fetch' || captureMethod === 'fetch-response' ? 95 : 50;
+    if (this.recentMessages.has(hash)) {
+      const last = this.recentMessages.get(hash);
+      if (now - last.timestamp < this.dedupeWindow) {
+        if (confidence > last.confidence) {
+          this.recentMessages.set(hash, { timestamp: now, confidence });
+          this.stats.upgradeCaptures++;
+          return true;
+        }
+        this.stats.duplicatesSkipped++;
+        return false;
+      }
+    }
+    if (this.recentMessages.size >= this.maxMapSize) {
+      const oldestKey = this.recentMessages.keys().next().value;
+      this.recentMessages.delete(oldestKey);
+    }
+    this.recentMessages.set(hash, { timestamp: now, confidence });
+    this.stats.captured++;
+    return true;
+  }
+  _hash(content) {
+    const FNV_PRIME = 0x01000193;
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < content.length; i++) {
+      hash ^= content.charCodeAt(i);
+      hash = Math.imul(hash, FNV_PRIME);
+    }
+    return (hash >>> 0).toString(16);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1278,6 +1349,34 @@ describe('MessageDeduplicator (FNV-1a hash)', () => {
   });
 });
 
+describe('MessageDeduplicator confidence and dedup logic', () => {
+  it('xhr-response at confidence 95 deduplicates later dom-observer at 50', () => {
+    const dedup = new MessageDeduplicator();
+    expect(dedup.shouldCapture('assistant response long enough for testing', 'xhr-response')).toBe(true);
+    expect(dedup.shouldCapture('assistant response long enough for testing', 'dom-observer')).toBe(false);
+    expect(dedup.stats.duplicatesSkipped).toBe(1);
+  });
+
+  it('dom-observer at 50 is upgraded by later xhr-response at 95', () => {
+    const dedup = new MessageDeduplicator();
+    expect(dedup.shouldCapture('assistant response long enough for testing', 'dom-observer')).toBe(true);
+    expect(dedup.shouldCapture('assistant response long enough for testing', 'xhr-response')).toBe(true);
+    expect(dedup.stats.upgradeCaptures).toBe(1);
+  });
+
+  it('fetch-response at confidence 95 deduplicates later dom-observer', () => {
+    const dedup = new MessageDeduplicator();
+    expect(dedup.shouldCapture('assistant response long enough for testing', 'fetch-response')).toBe(true);
+    expect(dedup.shouldCapture('assistant response long enough for testing', 'dom-observer')).toBe(false);
+  });
+
+  it('two xhr-response captures of same text are deduped', () => {
+    const dedup = new MessageDeduplicator();
+    expect(dedup.shouldCapture('same text here for both captures', 'xhr-response')).toBe(true);
+    expect(dedup.shouldCapture('same text here for both captures', 'xhr-response')).toBe(false);
+  });
+});
+
 describe('bodyToString', () => {
   it('returns string as-is', () => {
     expect(bodyToString('hello')).toBe('hello');
@@ -1417,5 +1516,347 @@ describe('findAllStrings', () => {
   it('skips strings <= 3 chars', () => {
     const result = findAllStrings(['ab', 'abcd']);
     expect(result).toEqual(['abcd']);
+  });
+});
+
+describe('isGeminiLocationMetadata', () => {
+  it('detects "Vancouver, BC, Canada" as location metadata', () => {
+    expect(isGeminiLocationMetadata('Vancouver, BC, Canada')).toBe(true);
+  });
+
+  it('detects other city/country patterns', () => {
+    expect(isGeminiLocationMetadata('New York, NY')).toBe(true);
+    expect(isGeminiLocationMetadata('London, United Kingdom')).toBe(true);
+    expect(isGeminiLocationMetadata('San Francisco, CA, USA')).toBe(true);
+    expect(isGeminiLocationMetadata('Tokyo, Japan')).toBe(true);
+  });
+
+  it('rejects actual content starting with capitalized words', () => {
+    expect(isGeminiLocationMetadata('This is a normal sentence with commas')).toBe(false);
+    expect(isGeminiLocationMetadata('The answer to your question is quite interesting')).toBe(false);
+  });
+
+  it('rejects strings with sentence words (articles, verbs, prepositions)', () => {
+    expect(isGeminiLocationMetadata('Bay Area in California')).toBe(false);
+    expect(isGeminiLocationMetadata('North and South Dakota')).toBe(false);
+  });
+
+  it('rejects strings longer than 60 chars', () => {
+    expect(isGeminiLocationMetadata('A'.repeat(61))).toBe(false);
+  });
+
+  it('rejects null/empty/short', () => {
+    expect(isGeminiLocationMetadata(null)).toBe(false);
+    expect(isGeminiLocationMetadata('')).toBe(false);
+  });
+});
+
+describe('stripGeminiLocationPrefix', () => {
+  it('strips "Vancouver, BC, Canada" prefix from response text', () => {
+    const input = 'Vancouver, BC, Canada In 2026, the metaphor of the "Justice League" vs the "League of Evil" is apt';
+    const result = stripGeminiLocationPrefix(input);
+    expect(result).toBe('In 2026, the metaphor of the "Justice League" vs the "League of Evil" is apt');
+  });
+
+  it('strips other location prefixes', () => {
+    const input = 'San Francisco, CA, USA The Golden Gate Bridge is a suspension bridge spanning the Golden Gate strait';
+    const result = stripGeminiLocationPrefix(input);
+    expect(result).toBe('The Golden Gate Bridge is a suspension bridge spanning the Golden Gate strait');
+  });
+
+  it('does not strip when remainder is too short', () => {
+    const input = 'Vancouver, BC, Canada Yes';
+    expect(stripGeminiLocationPrefix(input)).toBe(input);
+  });
+
+  it('does not strip when prefix contains sentence words', () => {
+    const input = 'The Bay Area is a wonderful place to live and work every day';
+    expect(stripGeminiLocationPrefix(input)).toBe(input);
+  });
+
+  it('returns input unchanged when no location prefix', () => {
+    const input = 'In 2026 the finance world is locked in an AI arms race today';
+    expect(stripGeminiLocationPrefix(input)).toBe(input);
+  });
+
+  it('handles null/empty', () => {
+    expect(stripGeminiLocationPrefix(null)).toBeNull();
+    expect(stripGeminiLocationPrefix('')).toBe('');
+  });
+});
+
+describe('extractAssistantResponse — location metadata filtering', () => {
+  it('filters out location-only frame and returns content frame', () => {
+    // Frame 1: location metadata
+    const locInner = JSON.stringify([['Vancouver, BC, Canada']]);
+    const locFrame = [['wrb.fr', 'loc', locInner]];
+    // Frame 2: actual content
+    const contentInner = JSON.stringify([['The history of rogue traders is fascinating and complex in many ways']]);
+    const contentFrame = [['wrb.fr', 'content', contentInner]];
+    const response = makeMultiFrameResponse([locFrame, contentFrame]);
+    const result = extractAssistantResponse(response);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain('Vancouver');
+    expect(result).toContain('rogue traders');
+  });
+
+  it('strips location prefix from combined multi-frame text', () => {
+    // If location somehow survives as a prefix in the combined result
+    const frame1Inner = JSON.stringify([['Vancouver, BC, Canada']]);
+    const frame1 = [['wrb.fr', 'a', frame1Inner]];
+    const frame2Inner = JSON.stringify([['To understand how Nick Leeson broke a 233 year old bank you must look at his strategy and the controls he bypassed']]);
+    const frame2 = [['wrb.fr', 'b', frame2Inner]];
+    const response = makeMultiFrameResponse([frame1, frame2]);
+    const result = extractAssistantResponse(response);
+    expect(result).not.toBeNull();
+    expect(result).not.toMatch(/^Vancouver/);
+    expect(result).toContain('Nick Leeson');
+  });
+
+  it('returns null when only location metadata exists (no content)', () => {
+    const locInner = JSON.stringify([['Vancouver, BC, Canada']]);
+    const locFrame = [['wrb.fr', 'loc', locInner]];
+    const response = makeMultiFrameResponse([locFrame]);
+    const result = extractAssistantResponse(response);
+    // Location alone is too short and filtered — should return null
+    expect(result).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// DOM OBSERVER TESTS
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('responseDOMObserver', () => {
+  function createObserver() {
+    const dispatched = [];
+    const obs = {
+      observer: null,
+      pendingConvId: null,
+      lastTextLength: 0,
+      stableTimeoutId: null,
+      STABLE_DELAY_MS: 2500,
+      MAX_WAIT_MS: 120000,
+      startTimeoutId: null,
+      _baselineElement: null,
+      dispatched,
+
+      RESPONSE_SELECTORS: [
+        'message-content.model-response-text',
+        'message-content[data-content-type="response"]',
+        '.model-response-text',
+        'message-content',
+        '.conversation-container',
+      ],
+
+      _findLastResponseElement() {
+        // In test environment, return this._mockBaselineElement
+        return this._mockBaselineElement || null;
+      },
+
+      start(conversationId) {
+        this._flushPending();
+        this.stop();
+        this.pendingConvId = conversationId;
+        this.lastTextLength = 0;
+        this._baselineElement = this._findLastResponseElement();
+        // Skip actual MutationObserver in tests — test _onMutation/_onStable/_getLastResponseText directly
+        this.startTimeoutId = setTimeout(() => this.stop(), this.MAX_WAIT_MS);
+      },
+
+      _onMutation() {
+        const text = this._getLastResponseText();
+        if (!text || text.length <= this.lastTextLength) return;
+
+        this.lastTextLength = text.length;
+
+        if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
+        this.stableTimeoutId = setTimeout(() => this._onStable(), this.STABLE_DELAY_MS);
+      },
+
+      _getLastResponseText() {
+        // In test environment, use this._mockText instead of DOM queries
+        // Simulate baseline element check: if _mockElement equals _baselineElement, return null
+        if (this._mockElement && this._mockElement === this._baselineElement) return null;
+        return this._mockText || null;
+      },
+
+      _onStable() {
+        if (this.lastTextLength === 0) return; // already flushed
+        const text = this._getLastResponseText();
+        if (!text || text.length < 20) { this.stop(); return; }
+        dispatched.push({ text, convId: this.pendingConvId });
+        this.stop();
+      },
+
+      _flushPending() {
+        if (!this.pendingConvId || this.lastTextLength === 0) return;
+        const text = this._getLastResponseText();
+        if (!text || text.length < 20) return;
+        dispatched.push({ text, convId: this.pendingConvId, flushed: true });
+      },
+
+      stop() {
+        if (this.observer) { this.observer.disconnect(); this.observer = null; }
+        if (this.stableTimeoutId) { clearTimeout(this.stableTimeoutId); this.stableTimeoutId = null; }
+        if (this.startTimeoutId) { clearTimeout(this.startTimeoutId); this.startTimeoutId = null; }
+        this.pendingConvId = null;
+        this.lastTextLength = 0;
+        this._baselineElement = null;
+      }
+    };
+    return obs;
+  }
+
+  it('_onStable dispatches text when response has stabilized', () => {
+    const obs = createObserver();
+    obs.start('c_abc123');
+    obs._mockText = 'This is a complete assistant response with enough content for testing.';
+    obs._onMutation(); // sets lastTextLength > 0 (required for _onStable dedup guard)
+    obs._onStable();
+    expect(obs.dispatched).toHaveLength(1);
+    expect(obs.dispatched[0].text).toBe('This is a complete assistant response with enough content for testing.');
+    expect(obs.dispatched[0].convId).toBe('c_abc123');
+  });
+
+  it('_onStable stops without dispatching when text is too short', () => {
+    const obs = createObserver();
+    obs.start('c_abc123');
+    obs._mockText = 'Short.';
+    obs.lastTextLength = 1; // simulate that _onMutation had tracked some growth
+    obs._onStable();
+    expect(obs.dispatched).toHaveLength(0);
+    expect(obs.pendingConvId).toBeNull(); // stop() was called
+  });
+
+  it('_onMutation tracks growing text length', () => {
+    const obs = createObserver();
+    obs.start('c_abc123');
+    obs._mockText = 'First part of the response that is long enough.';
+    obs._onMutation();
+    expect(obs.lastTextLength).toBe(obs._mockText.length);
+
+    // Text grows
+    obs._mockText = 'First part of the response that is long enough. And now it got even longer with more words.';
+    obs._onMutation();
+    expect(obs.lastTextLength).toBe(obs._mockText.length);
+  });
+
+  it('_onMutation ignores when text has not grown', () => {
+    const obs = createObserver();
+    obs.start('c_abc123');
+    obs._mockText = 'Response text that does not change.';
+    obs._onMutation();
+    const len = obs.lastTextLength;
+
+    // Same text, same length — should not update
+    obs._onMutation();
+    expect(obs.lastTextLength).toBe(len);
+  });
+
+  it('stop cleans up all state', () => {
+    const obs = createObserver();
+    obs.start('c_abc123');
+    obs._mockText = 'Some text to make things active for testing.';
+    obs._onMutation();
+    expect(obs.pendingConvId).toBe('c_abc123');
+
+    obs.stop();
+    expect(obs.pendingConvId).toBeNull();
+    expect(obs.lastTextLength).toBe(0);
+    expect(obs.stableTimeoutId).toBeNull();
+    expect(obs.startTimeoutId).toBeNull();
+    expect(obs._baselineElement).toBeNull();
+  });
+
+  it('multiple start calls flush previous pending response', () => {
+    const obs = createObserver();
+    obs.start('c_first');
+    obs._mockText = 'Text from first conversation that is long enough.';
+    obs._onMutation();
+
+    // Start again with new conversation — should flush c_first's response, then reset
+    obs.start('c_second');
+    expect(obs.pendingConvId).toBe('c_second');
+    expect(obs.lastTextLength).toBe(0);
+    expect(obs.dispatched).toHaveLength(1); // flushed from c_first
+    expect(obs.dispatched[0].convId).toBe('c_first');
+    expect(obs.dispatched[0].flushed).toBe(true);
+  });
+
+  it('_getLastResponseText returns null when no mock text set', () => {
+    const obs = createObserver();
+    expect(obs._getLastResponseText()).toBeNull();
+  });
+
+  it('_flushPending dispatches pending text', () => {
+    const obs = createObserver();
+    obs.start('c_flush');
+    obs._mockText = 'A response that was being tracked and has enough content.';
+    obs._onMutation(); // sets lastTextLength > 0
+    expect(obs.lastTextLength).toBeGreaterThan(0);
+
+    obs._flushPending();
+    expect(obs.dispatched).toHaveLength(1);
+    expect(obs.dispatched[0].text).toBe('A response that was being tracked and has enough content.');
+    expect(obs.dispatched[0].convId).toBe('c_flush');
+    expect(obs.dispatched[0].flushed).toBe(true);
+  });
+
+  it('_flushPending is no-op when no pending text', () => {
+    const obs = createObserver();
+    obs.start('c_empty');
+    // lastTextLength is 0 — nothing tracked yet
+    obs._flushPending();
+    expect(obs.dispatched).toHaveLength(0);
+  });
+
+  it('_flushPending is no-op when no conversation', () => {
+    const obs = createObserver();
+    // Never started — pendingConvId is null
+    obs._flushPending();
+    expect(obs.dispatched).toHaveLength(0);
+  });
+
+  it('_onStable is no-op after flush (dedup guard)', () => {
+    const obs = createObserver();
+    obs.start('c_dedup');
+    obs._mockText = 'Response text that gets flushed then onStable fires.';
+    obs._onMutation();
+
+    obs._flushPending();
+    expect(obs.dispatched).toHaveLength(1);
+
+    // Simulate stop() resetting state (as start() would call stop() after flush)
+    obs.lastTextLength = 0;
+    obs._onStable(); // should be no-op since lastTextLength === 0
+    expect(obs.dispatched).toHaveLength(1); // no duplicate
+  });
+
+  it('baseline element prevents old response from being tracked', () => {
+    const obs = createObserver();
+    const oldElement = { id: 'old-response' };
+    obs._mockBaselineElement = oldElement;
+    obs.start('c_baseline');
+
+    // Simulate DOM still showing old element (baseline)
+    obs._mockElement = oldElement; // _getLastResponseText will check this against baseline
+    obs._mockText = 'Old response text that should not be tracked as new content.';
+    const text = obs._getLastResponseText();
+    expect(text).toBeNull(); // blocked by baseline check
+  });
+
+  it('new element after baseline is tracked normally', () => {
+    const obs = createObserver();
+    const oldElement = { id: 'old-response' };
+    obs._mockBaselineElement = oldElement;
+    obs.start('c_baseline2');
+
+    // New element appears — different from baseline
+    const newElement = { id: 'new-response' };
+    obs._mockElement = newElement;
+    obs._mockText = 'Brand new response text that should be tracked normally.';
+    const text = obs._getLastResponseText();
+    expect(text).toBe('Brand new response text that should be tracked normally.');
   });
 });
