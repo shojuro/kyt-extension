@@ -204,11 +204,11 @@ function extractTextFromFrame(frame) {
 
     // Strategy 1: Collect and concatenate text fragments from leaf arrays
     const collected = collectTextFragments(inner);
-    if (collected) return collected;
-
     // Strategy 2: Find a single long natural-language string
     const natural = findLongestNaturalText(inner);
-    if (natural) return natural;
+    // Pick the longer of the two strategies (defense-in-depth)
+    const best = (collected || '').length >= (natural || '').length ? collected : natural;
+    if (best) return best;
 
     // Strategy 3: Fallback to raw longest
     const raw = findLongestRawText(inner);
@@ -242,7 +242,9 @@ function isNaturalLanguage(str) {
   const trimmed = str.trimStart();
   if (/^[\[{]/.test(trimmed) || /^-?\d+$/.test(trimmed)) return false;
   if (/^(c_|r_|rc_|af\.)/.test(trimmed)) return false;
-  if (/https?:\/\/[^\s]{20,}/.test(str)) return false;
+  const urlMatches = str.match(/https?:\/\/[^\s]+/g) || [];
+  const totalUrlLength = urlMatches.reduce((sum, u) => sum + u.length, 0);
+  if (totalUrlLength > str.length * 0.5) return false;
   if (/retrieve_personal_data|personalization in progress/i.test(str)) return false;
   const identifiers = words.filter(w => /^[a-z]+[A-Z]|_[a-z]/.test(w));
   if (identifiers.length > words.length * 0.5) return false;
@@ -268,22 +270,32 @@ function collectTextFragments(val, depth = 0) {
 
   const allStrings = val.length > 0 && val.every(item => typeof item === 'string');
   if (allStrings) {
-    const wordyFragments = val.filter(s => /\s/.test(s) || (s.length > 2 && /^[a-zA-Z]/.test(s) && !/^https?:\/\//.test(s)));
-    if (wordyFragments.length < val.length * 0.5) return '';
+    const wordyFragments = val.filter(s => /\s/.test(s) || (s.length > 1 && /^[a-zA-Z]/.test(s) && !/^https?:\/\//.test(s)));
+    if (wordyFragments.length < val.length * 0.3) return '';
 
     const joined = val.join('');
-    if (/https?:\/\/(www\.)?(gstatic|googleapis|google)\.\w+/.test(joined)) return '';
+    const withoutGoogleUrls = joined.replace(/https?:\/\/(www\.)?(gstatic|googleapis|google)\.\w+[^\s]*/g, ' ').replace(/\s+/g, ' ').trim();
+    if (withoutGoogleUrls.length < 20 || !isNaturalLanguage(withoutGoogleUrls)) {
+      return '';
+    }
+    if (withoutGoogleUrls !== joined) {
+      return withoutGoogleUrls;
+    }
     if (joined.length >= 20 && isNaturalLanguage(joined)) {
       return joined;
     }
   }
 
-  let longest = '';
+  const parts = [];
   for (const item of val) {
     const found = collectTextFragments(item, depth + 1);
-    if (found.length > longest.length) longest = found;
+    if (found) parts.push(found);
   }
-  return longest;
+  if (parts.length === 0) return '';
+  const deduped = parts.filter((part, i) =>
+    !parts.some((other, j) => j !== i && other.length > part.length && other.includes(part))
+  );
+  return deduped.join(' ');
 }
 
 function stripInjectionBlock(content) {
@@ -868,6 +880,7 @@ describe('isNaturalLanguage', () => {
 
   it('rejects strings with embedded long URLs (UI metadata)', () => {
     expect(isNaturalLanguage('Personalization in progresshttps://www.gstatic.com/images/branding/productlogos/gemini_2025_blue/v1/192px.svgretrieve_personal_data')).toBe(false);
+    // URL dominates (>50% of string length) — still rejected
     expect(isNaturalLanguage('Loading content from https://example.com/very/long/path/to/resource/here')).toBe(false);
   });
 
@@ -883,6 +896,14 @@ describe('isNaturalLanguage', () => {
 
   it('accepts normal text that happens to contain short URLs', () => {
     expect(isNaturalLanguage('Check out http://ex.co for more details today')).toBe(true);
+  });
+
+  it('accepts text where URL is less than 50% of string length', () => {
+    expect(isNaturalLanguage('For more information visit https://en.wikipedia.org/wiki/Walter_Payton and read the full article about his career')).toBe(true);
+  });
+
+  it('rejects text where URLs dominate the string', () => {
+    expect(isNaturalLanguage('https://www.example.com/very/long/path/to/resource/here/with/many/segments')).toBe(false);
   });
 });
 
@@ -953,7 +974,14 @@ describe('collectTextFragments', () => {
     expect(collectTextFragments(data)).toBe('');
   });
 
-  it('rejects arrays containing Google infrastructure URLs', () => {
+  it('strips Google infrastructure URLs but keeps surrounding text', () => {
+    const data = [[['Here is some helpful information about the topic ', 'https://www.gstatic.com/some/resource.png', ' and more details follow here']]];
+    const result = collectTextFragments(data);
+    expect(result).toContain('Here is some helpful information about the topic');
+    expect(result).not.toContain('gstatic.com');
+  });
+
+  it('rejects when only Google URLs remain after stripping', () => {
     const data = [[['Personalization in progress', 'https://www.gstatic.com/some/resource.png']]];
     expect(collectTextFragments(data)).toBe('');
   });
@@ -968,6 +996,27 @@ describe('collectTextFragments', () => {
     let nested = ['deep enough text to pass the threshold check'];
     for (let i = 0; i < 17; i++) nested = [nested];
     expect(collectTextFragments(nested)).toBe('');
+  });
+
+  it('accumulates text from sibling branches (not just longest)', () => {
+    const data = [
+      [['Walter Payton was one of', ' the greatest running backs']],
+      [['He played for the Chicago Bears', ' during his entire career']]
+    ];
+    const result = collectTextFragments(data);
+    expect(result).toContain('Walter Payton was one of the greatest running backs');
+    expect(result).toContain('He played for the Chicago Bears during his entire career');
+  });
+
+  it('deduplicates progressive streaming fragments', () => {
+    // Streaming: first chunk is substring of second
+    const data = [
+      [['Walter Payton']],
+      [['Walter Payton was one of the greatest running backs in NFL history']]
+    ];
+    const result = collectTextFragments(data);
+    // Should not contain "Walter Payton" twice — shorter is a substring of longer
+    expect(result).toBe('Walter Payton was one of the greatest running backs in NFL history');
   });
 });
 

@@ -525,11 +525,11 @@
       // Strategy 1: Collect and concatenate text fragments from leaf arrays
       // (Gemini stores response text as arrays of short string segments)
       const collected = collectTextFragments(inner);
-      if (collected) return collected;
-
       // Strategy 2: Find a single long natural-language string
       const natural = findLongestNaturalText(inner);
-      if (natural) return natural;
+      // Pick the longer of the two strategies (defense-in-depth)
+      const best = (collected || '').length >= (natural || '').length ? collected : natural;
+      if (best) return best;
 
       // Strategy 3: Fallback to raw longest (may include metadata, filtered later by isNaturalLanguage)
       const raw = findLongestRawText(inner);
@@ -553,8 +553,10 @@
     const trimmed = str.trimStart();
     if (/^[\[{]/.test(trimmed) || /^-?\d+$/.test(trimmed)) return false;
     if (/^(c_|r_|rc_|af\.)/.test(trimmed)) return false;
-    // Reject strings with embedded URLs (UI metadata like "Personalization in progress<url>")
-    if (/https?:\/\/[^\s]{20,}/.test(str)) return false;
+    // Reject strings where URLs dominate (UI metadata like "Personalization in progress<url>")
+    const urlMatches = str.match(/https?:\/\/[^\s]+/g) || [];
+    const totalUrlLength = urlMatches.reduce((sum, u) => sum + u.length, 0);
+    if (totalUrlLength > str.length * 0.5) return false;
     // Reject Gemini UI metadata patterns
     if (/retrieve_personal_data|personalization in progress/i.test(str)) return false;
     // Reject strings where most "words" are camelCase/snake_case identifiers
@@ -618,24 +620,37 @@
     if (allStrings) {
       // Quality gate: at least half the fragments must look like words (contain spaces)
       // This filters out arrays of URLs, IDs, or single tokens that happen to concatenate
-      const wordyFragments = val.filter(s => /\s/.test(s) || (s.length > 2 && /^[a-zA-Z]/.test(s) && !/^https?:\/\//.test(s)));
-      if (wordyFragments.length < val.length * 0.5) return '';
+      const wordyFragments = val.filter(s => /\s/.test(s) || (s.length > 1 && /^[a-zA-Z]/.test(s) && !/^https?:\/\//.test(s)));
+      if (wordyFragments.length < val.length * 0.3) return '';
 
       const joined = val.join('');
       // Reject if result contains infrastructure URLs (gstatic, googleapis = Google UI metadata)
-      if (/https?:\/\/(www\.)?(gstatic|googleapis|google)\.\w+/.test(joined)) return '';
+      // Strip Google infrastructure URLs instead of dropping everything
+      const withoutGoogleUrls = joined.replace(/https?:\/\/(www\.)?(gstatic|googleapis|google)\.\w+[^\s]*/g, ' ').replace(/\s+/g, ' ').trim();
+      if (withoutGoogleUrls.length < 20 || !isNaturalLanguage(withoutGoogleUrls)) {
+        return '';
+      }
+      // Use cleaned version (Google URLs stripped) for the natural language check below
+      if (withoutGoogleUrls !== joined) {
+        return withoutGoogleUrls;
+      }
       if (joined.length >= 20 && isNaturalLanguage(joined)) {
         return joined;
       }
     }
 
-    // Recurse into sub-arrays, collecting the longest concatenated result
-    let longest = '';
+    // Recurse into sub-arrays, accumulating ALL text branches
+    const parts = [];
     for (const item of val) {
       const found = collectTextFragments(item, depth + 1);
-      if (found.length > longest.length) longest = found;
+      if (found) parts.push(found);
     }
-    return longest;
+    if (parts.length === 0) return '';
+    // Deduplicate: if one part is a substring of another (progressive streaming), keep only the longer
+    const deduped = parts.filter((part, i) =>
+      !parts.some((other, j) => j !== i && other.length > part.length && other.includes(part))
+    );
+    return deduped.join(' ');
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1110,7 +1125,11 @@
 
         const assistantText = extractAssistantResponse(rt);
         if (assistantText) {
+          console.log('📥 KYT Gemini: Assistant response captured (' + assistantText.length + ' chars)');
           dispatchCapture(assistantText, 'assistant', 'xhr', conversationId);
+        } else {
+          console.warn('⚠️ KYT Gemini: Response extraction returned null (' +
+            rt.length + ' bytes, conv=' + (conversationId || 'unknown') + ')');
         }
       } catch (e) {
         console.error('⚠️ KYT Gemini: Response capture error:', e.message);
