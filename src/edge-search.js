@@ -77,7 +77,11 @@ export async function searchViaEdgeFunction(query, options = {}) {
 
   // The edge function returns results with content, similarity scores, etc.
   // Map to the format expected by getContextForInjection
-  const mapped = (response.results || []).map((item) => ({
+  const rawResults = Array.isArray(response.results) ? response.results : [];
+  if (response.results && !Array.isArray(response.results)) {
+    console.warn(`⚠️ searchViaEdgeFunction: unexpected results type: ${typeof response.results}`);
+  }
+  const mapped = rawResults.map((item) => ({
     id: item.id,
     message_id: item.message_id || item.id,
     content: item.content,

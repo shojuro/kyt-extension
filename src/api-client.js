@@ -89,7 +89,9 @@ export async function callEdgeFunction(functionName, body, options = {}) {
         const errBody = await retryRes.json().catch(() => ({}));
         throw new Error(errBody.error || `Edge function ${functionName} returned ${retryRes.status}`);
       }
-      return retryRes.json();
+      return retryRes.json().catch(() => {
+        throw new Error(`Edge function ${functionName} returned non-JSON response (status ${retryRes.status})`);
+      });
     } catch (refreshErr) {
       throw new Error(`Authentication failed: ${refreshErr.message}`);
     }
@@ -100,5 +102,7 @@ export async function callEdgeFunction(functionName, body, options = {}) {
     throw new Error(errBody.error || `Edge function ${functionName} returned ${res.status}`);
   }
 
-  return res.json();
+  return res.json().catch(() => {
+    throw new Error(`Edge function ${functionName} returned non-JSON response (status ${res.status})`);
+  });
 }
