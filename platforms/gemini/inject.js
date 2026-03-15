@@ -84,6 +84,12 @@
 
   const deduplicator = new MessageDeduplicator();
 
+  // Debug gate — MAIN world can't access chrome.storage, so use localStorage.
+  // Enable via devtools: localStorage.setItem('KYT_GEMINI_DEBUG', '1')
+  const _kytDebug = () => {
+    try { return localStorage.getItem('KYT_GEMINI_DEBUG') === '1'; } catch { return false; }
+  };
+
   // ═══════════════════════════════════════════════════════════════════════
   // DOM OBSERVER — Captures assistant responses via MutationObserver
   // ═══════════════════════════════════════════════════════════════════════
@@ -128,7 +134,7 @@
 
       this.startTimeoutId = setTimeout(() => this.stop(), this.MAX_WAIT_MS);
 
-      console.log('👁️ KYT Gemini: DOM observer started for response capture');
+      _kytDebug() && console.log('👁️ KYT Gemini: DOM observer started for response capture');
     },
 
     _onMutation() {
@@ -159,7 +165,7 @@
       const text = this._getLastResponseText();
       if (!text || text.length < 20) { this.stop(); return; }
 
-      console.log('📥 KYT Gemini: DOM response captured (' + text.length + ' chars, conv=' + (this.pendingConvId || 'unknown') + ')');
+      _kytDebug() && console.log('📥 KYT Gemini: DOM response captured (' + text.length + ' chars, conv=' + (this.pendingConvId || 'unknown') + ')');
       dispatchCapture(text, 'assistant', 'dom-observer', this.pendingConvId);
       this.stop();
     },
@@ -169,7 +175,7 @@
       const text = this._getLastResponseText();
       if (!text || text.length < 20) return;
 
-      console.log('📥 KYT Gemini: DOM response flushed (' + text.length + ' chars)');
+      _kytDebug() && console.log('📥 KYT Gemini: DOM response flushed (' + text.length + ' chars)');
       dispatchCapture(text, 'assistant', 'dom-observer', this.pendingConvId);
     },
 
@@ -311,6 +317,8 @@
   /**
    * Called when we get a batchexecute response that contains conversation list data.
    * Associates the RPC ID with "conversation list" functionality.
+   * Single call site (XHR batchexecute sniffing) — retained for future
+   * conversation-list filtering when Gemini surfaces stable RPC IDs.
    */
   function markConversationListRpc(rpcId) {
     if (rpcId) {
@@ -682,7 +690,7 @@
     }
 
     if (!innerConversationData || !Array.isArray(innerConversationData)) {
-      return extractConversationMessagesFallback(cleaned, frames);
+      return extractConversationMessagesFallback(frames);
     }
 
     // Walk conversation turn structure
@@ -732,7 +740,7 @@
 
     // Last resort: heuristic string extraction
     if (messages.length === 0) {
-      return extractConversationMessagesFallback(cleaned, frames, innerConversationData);
+      return extractConversationMessagesFallback(frames, innerConversationData);
     }
 
     return messages;
@@ -741,7 +749,7 @@
   /**
    * Fallback: extract messages by finding all long natural-language strings.
    */
-  function extractConversationMessagesFallback(cleaned, frames, innerData) {
+  function extractConversationMessagesFallback(frames, innerData) {
     const allStrs = innerData
       ? findAllStrings(innerData, 20)
       : frames.flatMap(f => findAllStrings(f, 15));
@@ -785,7 +793,7 @@
     }
     _capturedConversationIds.add(conversationId);
 
-    console.log('📜 KYT Gemini: History load — ' + messages.length + ' messages from ' + conversationId);
+    _kytDebug() && console.log('📜 KYT Gemini: History load — ' + messages.length + ' messages from ' + conversationId);
 
     let captured = 0;
     for (let i = 0; i < messages.length; i++) {
@@ -802,7 +810,7 @@
       captured++;
     }
 
-    console.log('📜 KYT Gemini: Captured ' + captured + '/' + messages.length + ' from ' + conversationId);
+    _kytDebug() && console.log('📜 KYT Gemini: Captured ' + captured + '/' + messages.length + ' from ' + conversationId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1044,7 +1052,7 @@
       return originalXHRSend.apply(this, arguments);
     }
 
-    console.log('📤 KYT Gemini: User message captured via XHR (' + parseResult.userMessage.length + ' chars)');
+    _kytDebug() && console.log('📤 KYT Gemini: User message captured via XHR (' + parseResult.userMessage.length + ' chars)');
     dispatchCapture(parseResult.userMessage, 'user', 'xhr', parseResult.conversationId);
 
     // Start DOM observer to capture assistant response when it stabilizes
@@ -1055,7 +1063,7 @@
     this.addEventListener('load', function () {
       try {
         if (this.responseText && this.responseText.length > 100) {
-          console.log('📡 KYT Gemini: XHR StreamGenerate response complete (' + this.responseText.length + ' bytes)');
+          _kytDebug() && console.log('📡 KYT Gemini: XHR StreamGenerate response complete (' + this.responseText.length + ' bytes)');
           responseDOMObserver.notifyResponseComplete();
         }
       } catch (_) {}
@@ -1069,7 +1077,7 @@
       if (formattedContext) {
         const modified = reEncodeFReq(bodyStr, formattedContext, parseResult);
         if (modified) {
-          console.log('💉 KYT Gemini: Context injected into XHR request');
+          _kytDebug() && console.log('💉 KYT Gemini: Context injected into XHR request');
           originalXHRSend.call(xhr, modified);
           return;
         }
@@ -1143,7 +1151,7 @@
       return originalFetch.apply(this, arguments);
     }
 
-    console.log('📤 KYT Gemini: User message captured via fetch (' + parseResult.userMessage.length + ' chars)');
+    _kytDebug() && console.log('📤 KYT Gemini: User message captured via fetch (' + parseResult.userMessage.length + ' chars)');
     dispatchCapture(parseResult.userMessage, 'user', 'fetch', parseResult.conversationId);
 
     // Start DOM observer to capture assistant response (if not already started by XHR)
@@ -1155,7 +1163,7 @@
     if (formattedContext && bodyStr) {
       const modified = reEncodeFReq(bodyStr, formattedContext, parseResult);
       if (modified) {
-        console.log('💉 KYT Gemini: Context injected into fetch request');
+        _kytDebug() && console.log('💉 KYT Gemini: Context injected into fetch request');
         finalInit = { ...finalInit, body: modified };
       }
     }
@@ -1163,7 +1171,7 @@
     const fetchResponse = await originalFetch.call(this, input, finalInit);
     try {
       responseDOMObserver.notifyResponseComplete();
-      console.log('📡 KYT Gemini: Fetch StreamGenerate response complete');
+      _kytDebug() && console.log('📡 KYT Gemini: Fetch StreamGenerate response complete');
     } catch (_) {}
     return fetchResponse;
   };
@@ -1188,5 +1196,5 @@
     };
   };
 
-  console.log('✅ KYT Gemini: inject.js loaded (live capture + history-load interception)');
+  _kytDebug() && console.log('✅ KYT Gemini: inject.js loaded (live capture + history-load interception)');
 })();

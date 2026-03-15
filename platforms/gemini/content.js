@@ -232,7 +232,7 @@
         });
       });
 
-      const conversationWindow = scrapeConversationWindow(5);
+      const conversationWindow = scrapeConversationWindow();
       port.postMessage({
         requestId: requestId,
         userMessage: detail.userMessage,

@@ -385,7 +385,7 @@ function extractConversationMessages(responseText) {
   }
 
   if (!innerConversationData || !Array.isArray(innerConversationData)) {
-    return extractConversationMessagesFallback(cleaned, frames);
+    return extractConversationMessagesFallback(frames);
   }
 
   const messages = [];
@@ -417,13 +417,13 @@ function extractConversationMessages(responseText) {
   }
 
   if (messages.length === 0) {
-    return extractConversationMessagesFallback(cleaned, frames, innerConversationData);
+    return extractConversationMessagesFallback(frames, innerConversationData);
   }
 
   return messages;
 }
 
-function extractConversationMessagesFallback(cleaned, frames, innerData) {
+function extractConversationMessagesFallback(frames, innerData) {
   const allStrs = innerData
     ? findAllStrings(innerData, 20)
     : frames.flatMap(f => findAllStrings(f, 15));
