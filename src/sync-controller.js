@@ -55,6 +55,7 @@ export function scheduleDebouncedSync() {
  * Uses browser-sync.js which syncs to both messages + chat_turns tables.
  */
 export async function executeDebouncedSync() {
+  chrome.storage.local.set({ kyt_sync_running: Date.now() });
   try {
     console.log('🔄 Debounced sync triggered');
 
@@ -66,20 +67,22 @@ export async function executeDebouncedSync() {
     if (syncResult.success) {
       console.log(`✅ Debounced sync: ${syncResult.synced} messages synced (embeddings: ${syncResult.embeddingsGenerated ?? 'n/a'})`);
       chrome.storage.local.remove('kyt_sync_auth_failed');
+      // Only clear pending flag on SUCCESS — failed sync leaves flag for periodicSync retry
+      chrome.storage.local.set({ kyt_sync_pending: false });
     } else {
       console.warn('⚠️ Debounced sync failed:', syncResult.error || syncResult.message);
+      // Leave kyt_sync_pending = true so periodicSync alarm retries
     }
   } catch (err) {
     console.warn('⚠️ Debounced sync error:', err.message);
-    // Surface auth failures so UI/popup can detect and display the issue
+    // Leave kyt_sync_pending = true so periodicSync alarm retries
     if (err.message?.includes('Not authenticated') || err.message?.includes('No authenticated user')) {
       chrome.storage.local.set({
         kyt_sync_auth_failed: { timestamp: Date.now(), error: err.message },
       });
     }
-  } finally {
-    chrome.storage.local.set({ kyt_sync_pending: false });
   }
+  chrome.storage.local.remove('kyt_sync_running');
 }
 
 /**

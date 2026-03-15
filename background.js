@@ -691,7 +691,7 @@ chrome.runtime.onStartup.addListener(async () => {
     console.warn('⚠️ Auth session refresh on startup failed:', err.message);
   }
 
-  const result = await chrome.storage.local.get(['api_config', AUTH_SESSION_KEY, 'kyt_sync_pending', 'kyt_last_save_time']);
+  const result = await chrome.storage.local.get(['api_config', AUTH_SESSION_KEY, 'kyt_sync_pending', 'kyt_sync_running', 'kyt_last_save_time']);
   const hasAuth = result[AUTH_SESSION_KEY]?.access_token;
   const hasConfig = result.api_config?.supabaseUrl;
 
@@ -701,11 +701,18 @@ chrome.runtime.onStartup.addListener(async () => {
     console.log(`Restored lastSaveTime from storage: ${Math.floor((Date.now() - lastSaveTime) / 1000)}s ago`);
   }
 
-  // Clear stale locks from previous SW lifecycle (unconditional — even without auth config)
+  // Clear stale sync-running lock from previous SW lifecycle
+  if (result.kyt_sync_running) {
+    const staleSec = (Date.now() - result.kyt_sync_running) / 1000;
+    console.warn(`🔒 Found stale sync-running lock (${staleSec.toFixed(0)}s old) — clearing`);
+    await chrome.storage.local.remove('kyt_sync_running');
+  }
+
+  // Check for pending sync from previous SW lifecycle — don't clear flag here,
+  // executeDebouncedSync clears on success only
   const hadPendingSync = result.kyt_sync_pending;
   if (hadPendingSync) {
-    console.warn('Clearing stale sync lock from previous lifecycle');
-    await chrome.storage.local.set({ kyt_sync_pending: false });
+    console.log('🔄 Found pending sync from previous lifecycle — will attempt recovery');
   }
 
   if (!hasAuth && !hasConfig) {
@@ -999,7 +1006,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         const pendingResult = await chrome.storage.local.get(['kyt_sync_pending']);
         if (pendingResult.kyt_sync_pending) {
           console.log('⏰ Periodic sync: recovering pending debounced sync');
-          await chrome.storage.local.set({ kyt_sync_pending: false });
+          // Don't clear flag here — executeDebouncedSync clears on success only
         }
         await executeDebouncedSync();
       } catch (error) {
@@ -1031,7 +1038,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         });
         if (parseFloat(stats.usagePercent) > STORAGE_CONFIG.MAX_USAGE_PERCENT) {
           console.warn(`⚠️ Storage usage > ${STORAGE_CONFIG.MAX_USAGE_PERCENT}% - triggering eviction`);
-          evictOldMessages().then(evictionResult => {
+          const evictPromise = _saveQueue.then(() => evictOldMessages());
+          _saveQueue = evictPromise.catch(() => {});
+          evictPromise.then(evictionResult => {
             if (evictionResult.evicted > 0) {
               console.log(`✅ Health check eviction: ${evictionResult.evicted} messages removed`);
             }
