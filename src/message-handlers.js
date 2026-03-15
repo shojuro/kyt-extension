@@ -40,7 +40,18 @@ async function escalateToLayer2(message, classification) {
     return classification;
   }
 
-  const haiku = await classifyWithHaiku(message, classification.scores, classification.reason);
+  let haiku;
+  try {
+    haiku = await classifyWithHaiku(message, classification.scores, classification.reason);
+  } catch (err) {
+    console.warn('⚠️ Haiku tiebreaker failed:', err.message);
+    return classification;
+  }
+
+  if (!haiku || typeof haiku.classification !== 'string') {
+    console.warn('⚠️ Haiku returned invalid result — falling back to v2');
+    return classification;
+  }
 
   if (haiku.classification === 'MEMORY_QUERY') {
     const s = classification.scores;
