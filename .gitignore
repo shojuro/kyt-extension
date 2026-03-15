@@ -168,3 +168,4 @@ test_*.js
 test_output*.txt
 import_result.json
 generate_*.js
+.worktrees/
