@@ -165,7 +165,12 @@ export class HuggingFaceClient {
                 edgeFunction: this.context.edgeFunction,
             });
 
-            return data.results || data;
+            const results = data.results ?? data;
+            if (!Array.isArray(results)) {
+                Logger.warn(`Rerank returned non-array: ${typeof results}`, { requestId });
+                return [];
+            }
+            return results;
         });
     }
 }

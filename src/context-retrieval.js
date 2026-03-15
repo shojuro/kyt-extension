@@ -521,13 +521,18 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
           // Retry with original query if transformed returned 0
           if (contextItems.length === 0 && transformationMetadata.transformed) {
             console.log('🔄 Retry (edge): retrying with original query...');
-            contextItems = await searchViaEdgeFunction(userMessage, {
-              topK: contextConfig.candidatePoolSize,
-              fast: true,
-              confidenceThreshold: contextConfig.confidenceThreshold || undefined,
-              projectId: activeProjectId || undefined,
-            });
-            console.log(`🔄 Retry (edge) result: ${contextItems.length} items`);
+            try {
+              contextItems = await searchViaEdgeFunction(userMessage, {
+                topK: contextConfig.candidatePoolSize,
+                fast: true,
+                confidenceThreshold: contextConfig.confidenceThreshold || undefined,
+                projectId: activeProjectId || undefined,
+              });
+              console.log(`🔄 Retry (edge) result: ${contextItems.length} items`);
+            } catch (retryErr) {
+              console.warn(`⚠️ Edge retry failed: ${retryErr.message}`);
+              contextItems = [];
+            }
           }
         } catch (edgeError) {
           console.warn(`⚠️ Edge function search failed, falling back to legacy: ${edgeError.message}`);
