@@ -1366,8 +1366,20 @@
       }
     }
 
-    // Send the (possibly modified) request
-    return originalFetch.call(this, input, finalInit);
+    // Send the (possibly modified) request and capture assistant response
+    const fetchResponse = await originalFetch.call(this, input, finalInit);
+    try {
+      const rt = await fetchResponse.clone().text();
+      if (rt && rt.length > 100) {
+        const assistantText = extractAssistantResponse(rt);
+        if (assistantText && assistantText.length >= 20) {
+          console.log('📥 KYT Gemini: Assistant response captured via fetch (' + assistantText.length + ' chars)');
+          dispatchCapture(assistantText, 'assistant', 'fetch-response', parseResult.conversationId);
+          responseDOMObserver.stop();
+        }
+      }
+    } catch (_) {}
+    return fetchResponse;
   };
 
   // ═══════════════════════════════════════════════════════════════════════
