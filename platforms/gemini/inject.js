@@ -1251,6 +1251,22 @@
     // Start DOM observer to capture assistant response when it stabilizes
     responseDOMObserver.start(parseResult.conversationId);
 
+    // Belt-and-suspenders: capture assistant response from XHR response body
+    const xhrConvId = parseResult.conversationId;
+    this.addEventListener('load', function () {
+      try {
+        const rt = this.responseText;
+        if (rt && rt.length > 100) {
+          const assistantText = extractAssistantResponse(rt);
+          if (assistantText && assistantText.length >= 20) {
+            console.log('📥 KYT Gemini: Assistant response captured via XHR load (' + assistantText.length + ' chars)');
+            dispatchCapture(assistantText, 'assistant', 'xhr-response', xhrConvId);
+            responseDOMObserver.stop();
+          }
+        }
+      } catch (_) {}
+    }, { once: true });
+
     // Context injection: defer send until context resolves
     const xhr = this;
     const originalBody = body;
