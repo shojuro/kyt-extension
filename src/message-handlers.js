@@ -410,8 +410,8 @@ export function registerMessageHandler(deps) {
         const ctxStorageKey = 'kyt_ctx_' + ctxRequestId;
         // Fire-and-forget: pipeline runs independently of message channel
         handleGetContextAsync(message, getContextForInjection)
-          .then(result => chrome.storage.local.set({ [ctxStorageKey]: result }))
-          .catch(err => chrome.storage.local.set({ [ctxStorageKey]: { success: false, error: err.message } }));
+          .then(result => chrome.storage.local.set({ [ctxStorageKey]: { ...result, timestamp: Date.now() } }))
+          .catch(err => chrome.storage.local.set({ [ctxStorageKey]: { success: false, error: err.message, timestamp: Date.now() } }));
         // Immediate sync response — channel closes, pipeline continues via storage
         sendResponse({ acknowledged: true, requestId: ctxRequestId });
         return false;
@@ -426,6 +426,7 @@ export function registerMessageHandler(deps) {
             message: message.error,
             timestamp: message.timestamp
           });
+          if (errors.length > 100) errors.splice(0, errors.length - 100);
           chrome.storage.local.set({ error_log: errors });
         });
         sendResponse({ acknowledged: true });
