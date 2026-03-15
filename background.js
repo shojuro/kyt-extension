@@ -42,6 +42,7 @@ import {
 } from './src/context-retrieval.js';
 import { registerPortHandler, registerMessageHandler } from './src/message-handlers.js';
 import { getMemoryMode, updateBadge } from './src/memory-mode.js';
+import { withStorageMutex } from './src/utils/storage-mutex.js';
 import { getActiveProject } from './src/project-manager.js';
 
 self.HistoryImporter = HistoryImporter; // Expose for debugging
@@ -1004,11 +1005,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         processPendingLocalQueues();
       } catch (error) {
         console.error('❌ Failed to process queue on alarm:', error);
-        chrome.storage.local.get(['error_log'], (result) => {
-          const errors = result.error_log || [];
+        withStorageMutex('error_log', (errors) => {
           errors.push({ timestamp: Date.now(), context: 'queue_processor_alarm', error: error.message, stack: error.stack });
-          chrome.storage.local.set({ error_log: errors });
-        });
+          if (errors.length > 50) errors.splice(0, errors.length - 50);
+          return errors;
+        }, []);
       }
       break;
 

@@ -18,6 +18,7 @@ import { getActiveProfileId } from './profile-manager.js';
 import { getActiveProject, setActiveProject, clearActiveProject } from './project-manager.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
+import { withStorageMutex } from './utils/storage-mutex.js';
 
 // ===== LAYER 2 INTENT CLASSIFICATION (LLM Judge) =====
 
@@ -137,48 +138,39 @@ async function getAuthConfig() {
 const INJECTION_STATS_KEY = 'kyt_injection_stats';
 
 export async function updateInjectionStats(update) {
-  const result = await chrome.storage.local.get([INJECTION_STATS_KEY]);
-  const stats = result[INJECTION_STATS_KEY] || {
-    totalAttempts: 0,
-    successful: 0,
-    empty: 0,
-    timeouts: 0,
-    errors: 0,
-    totalItemsReturned: 0,
-    totalLatencyMs: 0,
-    lastAttempt: null,
-    lastSuccess: null,
-    recentResults: [] // Last 10 results for popup display
-  };
+  await withStorageMutex(INJECTION_STATS_KEY, (stats) => {
+    if (update.attempt) {
+      stats.totalAttempts++;
+      stats.lastAttempt = Date.now();
+    }
+    if (update.success) {
+      stats.successful++;
+      stats.lastSuccess = Date.now();
+      stats.totalItemsReturned += update.itemCount || 0;
+    }
+    if (update.empty) stats.empty++;
+    if (update.timeout) stats.timeouts++;
+    if (update.error) stats.errors++;
+    if (update.latencyMs) stats.totalLatencyMs += update.latencyMs;
 
-  if (update.attempt) {
-    stats.totalAttempts++;
-    stats.lastAttempt = Date.now();
-  }
-  if (update.success) {
-    stats.successful++;
-    stats.lastSuccess = Date.now();
-    stats.totalItemsReturned += update.itemCount || 0;
-  }
-  if (update.empty) stats.empty++;
-  if (update.timeout) stats.timeouts++;
-  if (update.error) stats.errors++;
-  if (update.latencyMs) stats.totalLatencyMs += update.latencyMs;
+    if (update.result) {
+      stats.recentResults = stats.recentResults || [];
+      stats.recentResults.unshift({
+        timestamp: Date.now(),
+        success: !!update.success,
+        items: update.itemCount || 0,
+        latencyMs: update.latencyMs || 0,
+        empty: !!update.empty,
+        error: update.errorMsg || null
+      });
+      if (stats.recentResults.length > 10) stats.recentResults.pop();
+    }
 
-  if (update.result) {
-    stats.recentResults.unshift({
-      timestamp: Date.now(),
-      success: !!update.success,
-      items: update.itemCount || 0,
-      latencyMs: update.latencyMs || 0,
-      empty: !!update.empty,
-      error: update.errorMsg || null
-    });
-    if (stats.recentResults.length > 10) stats.recentResults.pop();
-  }
-
-  await chrome.storage.local.set({ [INJECTION_STATS_KEY]: stats });
-  return stats;
+    return stats;
+  }, {
+    totalAttempts: 0, successful: 0, empty: 0, timeouts: 0, errors: 0,
+    totalItemsReturned: 0, totalLatencyMs: 0, lastAttempt: null, lastSuccess: null, recentResults: []
+  });
 }
 
 /**
@@ -437,16 +429,15 @@ export function registerMessageHandler(deps) {
 
       case 'EXTRACTION_ERROR':
         console.error('⚠️ Content script extraction error:', message.error);
-        chrome.storage.local.get(['error_log'], (result) => {
-          const errors = result.error_log || [];
+        withStorageMutex('error_log', (errors) => {
           errors.push({
             type: 'EXTRACTION_ERROR',
             message: message.error,
             timestamp: message.timestamp
           });
           if (errors.length > 100) errors.splice(0, errors.length - 100);
-          chrome.storage.local.set({ error_log: errors });
-        });
+          return errors;
+        }, []);
         sendResponse({ acknowledged: true });
         return true;
 
@@ -478,12 +469,11 @@ export function registerMessageHandler(deps) {
         if (message.restartAttempts > 0) {
           console.log(`   Restart attempts: ${message.restartAttempts}`);
         }
-        chrome.storage.local.get(['kyt_stats'], (result) => {
-          const stats = result.kyt_stats || {};
+        withStorageMutex('kyt_stats', (stats) => {
           stats.observerStatus = message.status;
           stats.observerRestarts = message.restartAttempts;
           stats.lastObserverUpdate = Date.now();
-          chrome.storage.local.set({ kyt_stats: stats });
+          return stats;
         });
         sendResponse({ acknowledged: true });
         return true;
