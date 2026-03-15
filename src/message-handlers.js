@@ -422,7 +422,14 @@ export function registerMessageHandler(deps) {
         // Fire-and-forget: pipeline runs independently of message channel
         handleGetContextAsync(message, getContextForInjection)
           .then(result => chrome.storage.local.set({ [ctxStorageKey]: { ...result, timestamp: Date.now() } }))
-          .catch(err => chrome.storage.local.set({ [ctxStorageKey]: { success: false, error: err.message, timestamp: Date.now() } }));
+          .catch(err => {
+            console.error('❌ Context pipeline failed:', err.message);
+            chrome.storage.local.set({
+              [ctxStorageKey]: { success: false, error: err.message, timestamp: Date.now() }
+            }).catch(writeErr =>
+              console.error('❌ Failed to write error to storage:', writeErr.message)
+            );
+          });
         // Immediate sync response — channel closes, pipeline continues via storage
         sendResponse({ acknowledged: true, requestId: ctxRequestId });
         return false;
@@ -546,6 +553,10 @@ export function registerMessageHandler(deps) {
             ? Math.round((stats.successful / stats.totalAttempts) * 100)
             : 0;
           sendResponse(stats);
+        }).catch(err => {
+          console.error('❌ Failed to read injection stats:', err.message);
+          sendResponse({ totalAttempts: 0, successful: 0, empty: 0, timeouts: 0, errors: 0,
+            totalItemsReturned: 0, totalLatencyMs: 0, recentResults: [], error: err.message });
         });
         return true;
 

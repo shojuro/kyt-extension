@@ -543,8 +543,10 @@ export async function syncMessages(messagesToSync) {
       );
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(`Supabase error (batch ${i + 1}): ${error.message || response.statusText}`);
+        const error = await response.json().catch(() => ({}));
+        console.error(`❌ Batch ${i + 1}/${batches.length} failed: ${error.message || response.statusText}`);
+        failCount += batch.length;
+        continue;
       }
 
       // Log Supabase response to verify what was actually inserted
@@ -566,7 +568,7 @@ export async function syncMessages(messagesToSync) {
     const userId = config.userId;
     if (!userId) {
       console.warn('⚠️ No userId available — skipping chat_turns sync');
-      return { success: true, synced: successCount, message: 'Messages synced, chat_turns skipped (no userId)' };
+      return { success: true, synced: successCount, failed: failCount, message: 'Messages synced, chat_turns skipped (no userId)' };
     }
 
     console.log('📦 Creating conversation-turn chunks...');
@@ -725,6 +727,7 @@ export async function syncMessages(messagesToSync) {
     return {
       success: true,
       synced: deflectionFiltered.length,
+      failed: failCount,
       chunks: chunkCount,
       embeddingsGenerated: embeddingsAvailable,
       message: `Successfully synced ${deflectionFiltered.length} messages + ${chunkCount} turn chunks`
