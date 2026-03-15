@@ -84,6 +84,9 @@
 
   const deduplicator = new MessageDeduplicator();
 
+  // Wire capture fallback timer — fires only when DOM observer fails to capture
+  let wireFallbackTimer = null;
+
   // ═══════════════════════════════════════════════════════════════════════
   // DOM OBSERVER — Captures assistant responses via MutationObserver
   // ═══════════════════════════════════════════════════════════════════════
@@ -159,6 +162,9 @@
       const text = this._getLastResponseText();
       if (!text || text.length < 20) { this.stop(); return; }
 
+      // DOM captured full text — cancel wire fallback (it would be truncated)
+      if (wireFallbackTimer) { clearTimeout(wireFallbackTimer); wireFallbackTimer = null; }
+
       console.log('📥 KYT Gemini: DOM response captured (' + text.length + ' chars, conv=' + (this.pendingConvId || 'unknown') + ')');
       dispatchCapture(text, 'assistant', 'dom-observer', this.pendingConvId);
       this.stop();
@@ -168,8 +174,22 @@
       if (!this.pendingConvId || this.lastTextLength === 0) return;
       const text = this._getLastResponseText();
       if (!text || text.length < 20) return;
+
+      // DOM flushed full text — cancel wire fallback
+      if (wireFallbackTimer) { clearTimeout(wireFallbackTimer); wireFallbackTimer = null; }
+
       console.log('📥 KYT Gemini: DOM response flushed (' + text.length + ' chars)');
       dispatchCapture(text, 'assistant', 'dom-observer', this.pendingConvId);
+    },
+
+    /**
+     * Signal that response streaming is complete (called from XHR load / fetch).
+     * Forces a mutation check so the stabilization timer starts from the final state,
+     * even if MutationObserver missed the last DOM update.
+     */
+    notifyResponseComplete() {
+      if (!this.observer) return;
+      this._onMutation();
     },
 
     stop() {
@@ -1251,7 +1271,9 @@
     // Start DOM observer to capture assistant response when it stabilizes
     responseDOMObserver.start(parseResult.conversationId);
 
-    // Belt-and-suspenders: capture assistant response from XHR response body
+    // Wire fallback: extract assistant text from XHR response body.
+    // DOM observer is primary (captures full rendered text). Wire capture is
+    // a delayed fallback that only fires if DOM observer fails to capture.
     const xhrConvId = parseResult.conversationId;
     this.addEventListener('load', function () {
       try {
@@ -1259,9 +1281,18 @@
         if (rt && rt.length > 100) {
           const assistantText = extractAssistantResponse(rt);
           if (assistantText && assistantText.length >= 20) {
-            console.log('📥 KYT Gemini: Assistant response captured via XHR load (' + assistantText.length + ' chars)');
-            dispatchCapture(assistantText, 'assistant', 'xhr-response', xhrConvId);
-            responseDOMObserver.stop();
+            console.log('📡 KYT Gemini: XHR response received (' + assistantText.length + ' chars), DOM observer has priority');
+            // Notify DOM observer that streaming is complete — resets stabilization timer
+            responseDOMObserver.notifyResponseComplete();
+            // Set delayed fallback — only fires if DOM observer doesn't capture within 8s
+            if (wireFallbackTimer) clearTimeout(wireFallbackTimer);
+            const fallbackText = assistantText;
+            const fallbackConvId = xhrConvId;
+            wireFallbackTimer = setTimeout(function () {
+              console.log('📥 KYT Gemini: Wire fallback dispatch (' + fallbackText.length + ' chars, DOM observer did not capture)');
+              dispatchCapture(fallbackText, 'assistant', 'xhr-response', fallbackConvId);
+              wireFallbackTimer = null;
+            }, 8000);
           }
         }
       } catch (_) {}
@@ -1366,16 +1397,23 @@
       }
     }
 
-    // Send the (possibly modified) request and capture assistant response
+    // Send the (possibly modified) request; wire capture is delayed fallback for DOM observer
     const fetchResponse = await originalFetch.call(this, input, finalInit);
     try {
       const rt = await fetchResponse.clone().text();
       if (rt && rt.length > 100) {
         const assistantText = extractAssistantResponse(rt);
         if (assistantText && assistantText.length >= 20) {
-          console.log('📥 KYT Gemini: Assistant response captured via fetch (' + assistantText.length + ' chars)');
-          dispatchCapture(assistantText, 'assistant', 'fetch-response', parseResult.conversationId);
-          responseDOMObserver.stop();
+          console.log('📡 KYT Gemini: Fetch response received (' + assistantText.length + ' chars), DOM observer has priority');
+          responseDOMObserver.notifyResponseComplete();
+          if (wireFallbackTimer) clearTimeout(wireFallbackTimer);
+          const fallbackText = assistantText;
+          const fallbackConvId = parseResult.conversationId;
+          wireFallbackTimer = setTimeout(function () {
+            console.log('📥 KYT Gemini: Wire fallback dispatch (' + fallbackText.length + ' chars, DOM observer did not capture)');
+            dispatchCapture(fallbackText, 'assistant', 'fetch-response', fallbackConvId);
+            wireFallbackTimer = null;
+          }, 8000);
         }
       }
     } catch (_) {}
