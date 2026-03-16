@@ -720,9 +720,16 @@ export async function syncMessages(messagesToSync) {
     // Fire-and-forget — don't block the sync result.
     // No delay needed: PostgREST commits before responding, so data is available.
     // No setTimeout: unreliable in MV3 (SW may terminate before timer fires).
-    triggerEntityBackfill(config).catch(err =>
-      console.warn('⚠️ Entity backfill trigger failed (non-fatal):', err.message)
-    );
+    // Check pause flag before triggering entity backfill
+    chrome.storage.local.get('kyt_backfill_paused', ({ kyt_backfill_paused }) => {
+      if (!kyt_backfill_paused) {
+        triggerEntityBackfill(config).catch(err =>
+          console.warn('⚠️ Entity backfill trigger failed (non-fatal):', err.message)
+        );
+      } else {
+        console.log('⏸️ Entity backfill paused — skipping post-sync trigger');
+      }
+    });
 
     return {
       success: true,
