@@ -40,17 +40,29 @@ export async function queryCosts({ days = 7, groupBy = 'provider' }) {
 
   // Format summary table
   let output = `## Cost Summary (last ${days} days, grouped by ${groupBy})\n\n`;
-  output += '| Group | Requests | Input Tokens | Output Tokens | Cost (USD) |\n';
-  output += '|-------|----------|-------------|---------------|------------|\n';
+  output += '| Group | Requests | Input Tokens | Output Tokens | Cache Write | Cache Read | Cost (USD) |\n';
+  output += '|-------|----------|-------------|---------------|-------------|------------|------------|\n';
 
   let totalCost = 0;
   let totalRequests = 0;
+  let totalCacheWrite = 0;
+  let totalCacheRead = 0;
   for (const row of (summary || [])) {
     totalCost += parseFloat(row.total_cost_usd || 0);
     totalRequests += parseInt(row.request_count || 0);
-    output += `| ${row.group_key} | ${Number(row.request_count).toLocaleString()} | ${Number(row.total_input_tokens).toLocaleString()} | ${Number(row.total_output_tokens).toLocaleString()} | $${parseFloat(row.total_cost_usd).toFixed(4)} |\n`;
+    const cacheWrite = Number(row.total_cache_creation_tokens || 0);
+    const cacheRead = Number(row.total_cache_read_tokens || 0);
+    totalCacheWrite += cacheWrite;
+    totalCacheRead += cacheRead;
+    output += `| ${row.group_key} | ${Number(row.request_count).toLocaleString()} | ${Number(row.total_input_tokens).toLocaleString()} | ${Number(row.total_output_tokens).toLocaleString()} | ${cacheWrite.toLocaleString()} | ${cacheRead.toLocaleString()} | $${parseFloat(row.total_cost_usd).toFixed(4)} |\n`;
   }
-  output += `| **Total** | **${totalRequests.toLocaleString()}** | | | **$${totalCost.toFixed(4)}** |\n`;
+  output += `| **Total** | **${totalRequests.toLocaleString()}** | | | **${totalCacheWrite.toLocaleString()}** | **${totalCacheRead.toLocaleString()}** | **$${totalCost.toFixed(4)}** |\n`;
+
+  // Cache hit rate
+  if (totalCacheWrite > 0 || totalCacheRead > 0) {
+    const hitRate = totalCacheRead > 0 ? ((totalCacheRead / (totalCacheWrite + totalCacheRead)) * 100).toFixed(1) : '0.0';
+    output += `\n**Cache hit rate**: ${hitRate}% (${totalCacheRead.toLocaleString()} read / ${(totalCacheWrite + totalCacheRead).toLocaleString()} total cache tokens)\n`;
+  }
 
   // Fixed costs section
   if (fixedCosts && fixedCosts.length > 0) {

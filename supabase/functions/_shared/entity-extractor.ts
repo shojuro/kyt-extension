@@ -110,6 +110,130 @@ DO NOT extract preferences from questions:
 "Do I like Ferraris?"                   → NO preference extraction (this is a question)
 "Tell me about my food preferences"     → NO preference extraction (this is a question)
 
+CANONICAL NAME CONSTRUCTION:
+The canonical name is constructed as normalized_name + "_" + relationship (e.g., "jennifer_trainer"). This is the primary deduplication key. Follow these rules strictly:
+- Always lowercase the normalized_name
+- Replace spaces with underscores
+- Remove punctuation and special characters
+- Use the most specific relationship available: prefer "trainer" over "unknown"
+- If a person's role is ambiguous, use "unknown" — it can be updated later when more context emerges
+- For organizations, projects, locations: always use relationship "unknown" unless the user explicitly states a connection
+- For CONCEPT/ANALOGY/THEME: always use "discussed" as relationship
+- For TOPIC: always use "discussed" as relationship with context_category "general" unless a more specific category applies
+- Compound names: "New York City" → "new_york_city_unknown", not "new_york_city" or "nyc_unknown"
+- Abbreviations: expand if unambiguous ("NYC" → "new_york_city"), keep abbreviated if ambiguous ("MIT" stays "mit" since it could be multiple institutions)
+
+RELATIONSHIP INFERENCE RULES:
+Infer relationship from conversational context, not just explicit statements:
+- "I was talking to Jennifer at the gym" → relationship: "trainer" or "friend" depending on context
+- "Jennifer helped me with my deadlift form" → relationship: "trainer" (service context)
+- "Jennifer called me about Thanksgiving" → relationship: relative/friend (family context)
+- "I told my boss Jennifer about the project" → relationship: "boss"
+- "Jennifer from accounting sent the report" → relationship: "colleague"
+- When the same name appears with different relationships in the same message, create SEPARATE entities: "jennifer_trainer" AND "jennifer_sister" are distinct
+- If truly ambiguous with no context clues, use "unknown" — do not guess
+
+CONTEXT CATEGORY ASSIGNMENT:
+Assign the most specific category that fits. Categories are free-form but should be consistent:
+- work, career, business — professional contexts
+- family, parenting, relationships — personal/family
+- health, fitness, nutrition, medical — health-related
+- tech, programming, web_development, devops — technology
+- entertainment, music, movies, gaming — entertainment
+- finance, investing, budgeting — financial
+- education, learning, study — educational
+- travel, food, cooking — lifestyle
+- general — only when no specific category applies
+
+MULTI-ENTITY MESSAGES:
+Some messages mention many entities. Apply these limits:
+- Extract up to 15 entities per message (prioritize PERSON and named entities over TOPIC)
+- Extract up to 5 preferences per message
+- If a message is very long (1000+ words), focus on entities from the USER's statements, not assistant responses
+- Deduplicate within a single extraction: if "Python" appears 5 times in one message, extract it once
+
+TEMPORAL AND SENTIMENT SIGNALS:
+Pay attention to temporal language that modifies entity relationships:
+- "I used to work with Jennifer" → relationship could be "former_colleague" but normalize to "colleague" for merging
+- "We just hired Sarah" → relationship: "colleague" (new hire implies work context)
+- "I stopped seeing Dr. Miller" → still extract as PERSON with relationship "doctor" (the mention still matters)
+- "Jennifer is no longer my trainer" → still extract as "jennifer_trainer" (historical relationship persists for knowledge graph)
+
+COMPOUND ENTITY HANDLING:
+- "Jennifer and Mike went to the gym" → TWO entities: jennifer + mike, both in fitness context
+- "The React/Next.js stack" → TWO entities: react (TECH) + nextjs (TECH), not one compound entity
+- "Dr. Sarah Miller, my cardiologist" → ONE entity: "sarah_miller" with relationship "doctor", context "medical"
+- "Google/Alphabet" → ONE entity: use the more commonly referenced name ("google")
+
+CROSS-PLATFORM ENTITY MERGING:
+Users may discuss the same topic across ChatGPT, Claude, Gemini, and Claude Code sessions. Use consistent canonical names so entities merge correctly across platforms:
+- Same person mentioned on different platforms → same normalized_name + relationship (e.g., "jennifer_trainer" whether mentioned in ChatGPT or Claude)
+- Same project discussed across sessions → same normalized_name (e.g., "kyt_project" not "kyt" vs "know_your_things")
+- Technology entities should use official names: "React" not "react.js" or "ReactJS", "Python" not "python3", "TypeScript" not "TS"
+- Location normalization: use the most common English name ("Tokyo" not "東京", "New York" not "NYC")
+
+MULTI-LANGUAGE ENTITY HANDLING:
+When conversations contain non-English text:
+- Extract entity names in their original language AND provide an English normalized_name when possible
+- Japanese names: use romanized form for normalized_name (e.g., entity_text: "田中太郎", normalized_name: "tanaka_taro")
+- Mixed-language references to the same entity should merge (e.g., "東京" and "Tokyo" → normalized_name: "tokyo")
+- For concepts without clear English equivalents, use the romanized original (e.g., "ikigai", "hygge")
+
+K.Y.T. INJECTION BLOCK AWARENESS:
+Messages may contain a "K.Y.T. — User's Personal Knowledge Base" block prepended to the user's actual message. This block contains previously retrieved items from the user's knowledge base. IMPORTANT:
+- Do NOT extract entities or preferences from the K.Y.T. injection block — only from the user's actual message after the "---" separator
+- If you see retrieved items mentioning preferences (e.g., "User's favorite car is Lamborghini"), do NOT re-extract these — they are echoes, not new statements
+- The injection block may contain entity names — ignore them for extraction purposes; they are context, not new mentions
+- If no "---" separator is found, treat the entire message as user content
+
+EDGE CASES FOR ENTITY TYPE CLASSIFICATION:
+- Brand names that are also common words: "Apple" (tech company) → ORG, "apple" (fruit) → use context to decide; if discussing food → TOPIC "fruit", if discussing tech → ORG
+- Fictional characters discussed as examples: classify as PERSON with relationship "discussed" (e.g., "Walter White" → PERSON, discussed, entertainment)
+- Song/movie/book titles: classify as MISC with appropriate context_category (e.g., "The Sound of Music" → MISC, discussed, entertainment)
+- Subreddit or online community names: classify as ORG (e.g., "r/programming" → ORG)
+- Medical conditions or diagnoses: classify as TOPIC with context_category "health" (e.g., "ADHD" → TOPIC, discussed, health)
+- Diet/exercise programs: classify as TOPIC with context_category "health" (e.g., "intermittent fasting" → TOPIC, discussed, health)
+
+PREFERENCE DISAMBIGUATION — STATEMENTS vs QUESTIONS vs HYPOTHETICALS:
+Users often discuss preferences in nuanced ways. Only extract from clear statements:
+- "I think Rust is better than Go" → preference (category: "programming_language", value: "Rust", sentiment: "positive")
+- "I've been considering switching to Rust" → NOT a preference (considering ≠ decided)
+- "Everyone says Rust is great" → NOT a preference (third-party opinion, not user's)
+- "If I had to choose, I'd pick Rust" → preference (conditional but indicates preference)
+- "I used to love Java but now I prefer Kotlin" → TWO preferences: (java, negative) + (kotlin, positive)
+- "What do you think about Rust?" → NOT a preference (asking for opinion)
+- "Rust is interesting" → NOT a preference (observation, not strong opinion)
+- "I absolutely love Rust" → preference (strong positive signal)
+
+COMMON EXTRACTION MISTAKES TO AVOID:
+1. Do NOT extract generic pronouns as entities ("he", "she", "they", "it") — only named references
+2. Do NOT extract the assistant's name ("Claude", "ChatGPT", "Gemini") as PERSON entities — these are platforms, not people. If explicitly discussed as tools, extract as TECH
+3. Do NOT extract partial entity names from compound sentences: "I love New York pizza" → preference (food, "New York pizza", positive), NOT a LOCATION entity for "New York"
+4. Do NOT extract entities from code blocks, stack traces, or error messages — these are artifacts, not conversational references
+5. Do NOT extract numbers, dates, or measurements as entities unless they are named: "2024" is not an entity, but "Year of the Dragon" could be CONCEPT
+6. Do NOT extract the user themselves as a PERSON entity — the user is implicit
+7. Do NOT extract assistant-originated entities from multi-turn chunks where the assistant introduces a topic the user didn't ask about
+8. Do NOT extract entities from URLs, file paths, or code variable names (e.g., "getUserById" is not a PERSON entity)
+9. Do NOT extract single common words as CONCEPT entities: "good", "bad", "interesting" are adjectives, not concepts. Concepts should be substantive ideas: "growth mindset", "compound interest", "test-driven development"
+10. Do NOT extract brand names mentioned only in passing without user engagement: "I saw an ad for Nike" → no preference; "I always buy Nike" → preference
+
+CONFIDENCE AND AMBIGUITY HANDLING:
+- When entity type is ambiguous, prefer the more specific type: "Python" in a programming discussion → TECH, not MISC
+- When relationship is ambiguous between two possible roles, pick the one with the strongest contextual evidence
+- When a name could refer to multiple known entities, use context to disambiguate: "Apple" in a cooking conversation → probably the fruit, not the company
+- Extract entities even from brief mentions: "I talked to Sarah" → PERSON entity even without much context
+- Do NOT skip entities just because they seem minor — mention frequency is tracked separately and determines entity importance over time
+- Handle nicknames and abbreviated names: "Jen" when referring to a known "Jennifer" should use the full form "jennifer" as normalized_name if context makes the connection clear
+
+TOPIC EXTRACTION GUIDELINES:
+Extract 1-3 TOPIC entities per message to categorize its subject matter. Use short, general labels (1-3 words). Examples:
+- Discussing workout routines → TOPIC: "fitness"
+- Talking about a React component → TOPIC: "web_development"
+- Planning a vacation → TOPIC: "travel"
+- Debugging a database query → TOPIC: "database"
+- Discussing a child's school progress → TOPIC: "parenting", "education"
+- Comparing phone cameras → TOPIC: "photography", "mobile_devices"
+
 Return ONLY valid JSON (no markdown):
 {
   "entities": [
@@ -310,6 +434,7 @@ export async function extractEntities(
         maxRetries: 2,
         timeoutMs: 8000,
         operation: 'entity_extraction',
+        enableCache: true,
       }
     );
 

@@ -16,6 +16,7 @@ export interface CompletionOptions {
     maxRetries?: number;
     timeoutMs?: number;
     operation?: string;
+    enableCache?: boolean;
 }
 
 export interface ClientContext {
@@ -67,7 +68,9 @@ export class AnthropicClient {
                 },
                 body: JSON.stringify({
                     model: AnthropicClient.MODEL,
-                    system: systemPrompt,
+                    system: options.enableCache
+                        ? [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }]
+                        : systemPrompt,
                     messages: [
                         { role: "user", content: userPrompt }
                     ],
@@ -130,7 +133,9 @@ export class AnthropicClient {
                 },
                 body: JSON.stringify({
                     model: AnthropicClient.MODEL,
-                    system: systemPrompt,
+                    system: options.enableCache
+                        ? [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }]
+                        : systemPrompt,
                     messages: [
                         { role: "user", content: userPrompt },
                         { role: "assistant", content: "{" }
@@ -173,14 +178,21 @@ export class AnthropicClient {
      * Log API usage cost to the cost_tracking table.
      */
     private async logCost(
-        data: { usage?: { input_tokens?: number; output_tokens?: number } },
+        data: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
         operation: string,
         requestId?: string
     ): Promise<void> {
-        // Haiku 4.5 pricing: $0.80/1M input, $4.00/1M output
         const inputTokens = data.usage?.input_tokens || 0;
         const outputTokens = data.usage?.output_tokens || 0;
-        const estimatedCost = (inputTokens * 0.0000008) + (outputTokens * 0.000004);
+        const cacheCreationTokens = data.usage?.cache_creation_input_tokens || 0;
+        const cacheReadTokens = data.usage?.cache_read_input_tokens || 0;
+
+        // Haiku 4.5 pricing: $1.00/MTok input, $5.00/MTok output, $1.25/MTok cache write, $0.10/MTok cache read
+        const estimatedCost =
+            (inputTokens * 0.000001) +
+            (outputTokens * 0.000005) +
+            (cacheCreationTokens * 0.00000125) +
+            (cacheReadTokens * 0.0000001);
 
         await CostMonitor.logUsage({
             service: "anthropic",
@@ -191,6 +203,8 @@ export class AnthropicClient {
             userId: this.context.userId,
             inputTokens,
             outputTokens,
+            cacheCreationTokens,
+            cacheReadTokens,
             edgeFunction: this.context.edgeFunction,
         });
 
@@ -200,6 +214,8 @@ export class AnthropicClient {
             operation,
             inputTokens,
             outputTokens,
+            cacheCreationTokens,
+            cacheReadTokens,
             estimatedCost
         });
     }

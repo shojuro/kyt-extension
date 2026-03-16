@@ -65,6 +65,8 @@ export interface CostLogEntry {
     userId?: string;
     inputTokens?: number;
     outputTokens?: number;
+    cacheCreationTokens?: number;
+    cacheReadTokens?: number;
     edgeFunction?: string;
     latencyMs?: number;
 }
@@ -107,6 +109,8 @@ export class CostMonitor {
                 user_id: entry.userId,
                 input_tokens: entry.inputTokens || 0,
                 output_tokens: entry.outputTokens || 0,
+                cache_creation_tokens: entry.cacheCreationTokens || 0,
+                cache_read_tokens: entry.cacheReadTokens || 0,
                 edge_function: entry.edgeFunction || null,
                 latency_ms: entry.latencyMs || null,
             });
