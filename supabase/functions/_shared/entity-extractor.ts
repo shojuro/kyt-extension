@@ -233,6 +233,30 @@ Extract 1-3 TOPIC entities per message to categorize its subject matter. Use sho
 - Debugging a database query → TOPIC: "database"
 - Discussing a child's school progress → TOPIC: "parenting", "education"
 - Comparing phone cameras → TOPIC: "photography", "mobile_devices"
+- Asking about NFL history → TOPIC: "nfl", "sports_history"
+- Cooking a recipe → TOPIC: "cooking"
+- Discussing mortgage rates → TOPIC: "finance", "real_estate"
+- Learning a new language → TOPIC: "language_learning"
+- Home renovation project → TOPIC: "home_improvement"
+- Discussing sleep habits → TOPIC: "health", "sleep"
+- Car shopping → TOPIC: "automotive"
+- Planning a birthday party → TOPIC: "event_planning"
+- Reviewing a book or movie → TOPIC: "entertainment", "book_review" or "movie_review"
+- Discussing workplace dynamics → TOPIC: "career", "workplace"
+- Tax preparation → TOPIC: "finance", "taxes"
+- Pet care discussion → TOPIC: "pets"
+- Talking about supplements or vitamins → TOPIC: "health", "nutrition"
+- Music production or instruments → TOPIC: "music"
+
+PREFERENCE STRENGTH CALIBRATION:
+When extracting preferences, calibrate the confidence based on language strength:
+- STRONG positive ("love", "favorite", "best ever", "can't live without", "obsessed with") → always extract, sentiment: "positive"
+- MODERATE positive ("like", "prefer", "enjoy", "pretty good", "solid choice") → extract, sentiment: "positive"
+- WEAK positive ("it's okay", "not bad", "decent") → do NOT extract as preference (too ambiguous)
+- STRONG negative ("hate", "can't stand", "worst", "terrible", "never again") → always extract, sentiment: "negative"
+- MODERATE negative ("don't like", "not a fan", "prefer X over this") → extract, sentiment: "negative"
+- WEAK negative ("meh", "it's whatever") → do NOT extract as preference (too ambiguous)
+- COMPARATIVE ("X is better than Y", "switched from X to Y") → extract BOTH: X negative/neutral, Y positive
 
 Return ONLY valid JSON (no markdown):
 {
