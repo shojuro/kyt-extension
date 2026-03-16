@@ -1134,6 +1134,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     case 'backfillEntities':
       try {
+        // Check pause flag — set via KYT_DEBUG.pauseBackfill() / resumeBackfill()
+        const { kyt_backfill_paused } = await chrome.storage.local.get('kyt_backfill_paused');
+        if (kyt_backfill_paused) {
+          console.log('⏸️ Entity backfill PAUSED (kyt_backfill_paused=true). Use KYT_DEBUG.resumeBackfill() to resume.');
+          break;
+        }
         console.log('⏰ Entity backfill alarm fired');
         const entResult = await callEdgeFunction('backfill_entities', { fast_mode: true, max_rows: 50 }, { timeoutMs: 120000 });
         console.log(`✅ Entity backfill: ${entResult.processed} processed, ${entResult.entities_created} entities, ${entResult.remaining} remaining`);
@@ -1421,6 +1427,18 @@ globalThis.KYT_DEBUG = {
     console.log(`✅ Re-included conversation ${conversationId}: ${d1.length} chat_turns, ${d2.length} messages`);
     return { chat_turns: d1.length, messages: d2.length };
   },
+  pauseBackfill: async () => {
+    await chrome.storage.local.set({ kyt_backfill_paused: true });
+    await chrome.alarms.clear('backfillEntities');
+    console.log('⏸️ Entity backfill PAUSED. Alarm cleared. Use KYT_DEBUG.resumeBackfill() to resume.');
+    return { paused: true };
+  },
+  resumeBackfill: async () => {
+    await chrome.storage.local.set({ kyt_backfill_paused: false });
+    chrome.alarms.create('backfillEntities', { delayInMinutes: 1 });
+    console.log('▶️ Entity backfill RESUMED. Next run in 1 minute.');
+    return { paused: false };
+  },
   forceSyncAll: async () => {
     // Reset last_successful_sync_time to 0 so ALL local messages become sync candidates.
     // The DB-side dedup (queryExistingIds) prevents actual duplicates.
@@ -1472,6 +1490,8 @@ console.log('   - KYT_DEBUG.backfillGravity(maxRows?) - Backfill impact_score + 
 console.log('   - KYT_DEBUG.backfillPostImport() - Full post-import chain (contextual → entities → gravity)');
 console.log('   - KYT_DEBUG.backfillImported() - Full post-import backfill: contextual → embeddings → entities → gravity');
 console.log('   - KYT_DEBUG.forceSyncAll() - Reset sync timestamp and sync ALL local messages (deduped)');
+console.log('   - KYT_DEBUG.pauseBackfill() - Pause entity backfill alarm (saves API costs)');
+console.log('   - KYT_DEBUG.resumeBackfill() - Resume entity backfill alarm');
 console.log('   - KYT_DEBUG.excludeConversation(id) - Hide a conversation from search (reversible)');
 console.log('   - KYT_DEBUG.includeConversation(id) - Un-hide a conversation from search');
 console.log('   Note: chrome.runtime.sendMessage() from service worker to itself does not work');
