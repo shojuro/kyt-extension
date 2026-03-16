@@ -10,7 +10,9 @@ ALTER TABLE cost_tracking
 COMMENT ON COLUMN cost_tracking.cache_creation_tokens IS 'Tokens written to Anthropic prompt cache (1.25x input price)';
 COMMENT ON COLUMN cost_tracking.cache_read_tokens IS 'Tokens read from Anthropic prompt cache (0.1x input price)';
 
--- Update get_cost_summary to include cache token aggregation
+-- Must drop first: return type changed (added cache token columns)
+DROP FUNCTION IF EXISTS get_cost_summary(INT, TEXT);
+
 CREATE OR REPLACE FUNCTION get_cost_summary(
   p_days INT DEFAULT 7,
   p_group_by TEXT DEFAULT 'provider'
