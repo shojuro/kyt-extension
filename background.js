@@ -1143,12 +1143,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         console.log('⏰ Entity backfill alarm fired');
         const entResult = await callEdgeFunction('backfill_entities', { fast_mode: true, max_rows: 50 }, { timeoutMs: 120000 });
         console.log(`✅ Entity backfill: ${entResult.processed} processed, ${entResult.entities_created} entities, ${entResult.remaining} remaining`);
-        if (entResult.remaining > 0) {
+        if (entResult.remaining > 0 && !kyt_backfill_paused) {
           chrome.alarms.create('backfillEntities', { delayInMinutes: 3 });
         }
       } catch (error) {
         console.error('❌ Entity backfill alarm error:', error.message);
-        chrome.alarms.create('backfillEntities', { delayInMinutes: 10 });
+        if (!kyt_backfill_paused) {
+          chrome.alarms.create('backfillEntities', { delayInMinutes: 10 });
+        }
       }
       break;
 
@@ -1178,13 +1180,21 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         } else {
           // Contextual done → start entity + gravity backfill chains
           console.log('✅ Contextual complete — starting entity + gravity backfill chains');
-          chrome.alarms.create('backfillEntities', { delayInMinutes: 0.5 });
+          const { kyt_backfill_paused: pausedPost } = await chrome.storage.local.get('kyt_backfill_paused');
+          if (!pausedPost) {
+            chrome.alarms.create('backfillEntities', { delayInMinutes: 0.5 });
+          } else {
+            console.log('⏸️ Entity backfill paused — skipping alarm creation');
+          }
           chrome.alarms.create('backfillGravity', { delayInMinutes: 1 });
         }
       } catch (error) {
         console.error('❌ Post-import backfill error:', error.message);
         // Still try entity + gravity backfill even if contextual check fails
-        chrome.alarms.create('backfillEntities', { delayInMinutes: 3 });
+        const { kyt_backfill_paused: pausedErr } = await chrome.storage.local.get('kyt_backfill_paused');
+        if (!pausedErr) {
+          chrome.alarms.create('backfillEntities', { delayInMinutes: 3 });
+        }
         chrome.alarms.create('backfillGravity', { delayInMinutes: 4 });
       }
       break;
@@ -1388,8 +1398,9 @@ globalThis.KYT_DEBUG = {
       gravResult = { classified: 0, remaining: -1, error: err.message };
     }
     // Schedule follow-ups for remaining work
+    const { kyt_backfill_paused: pausedImport } = await chrome.storage.local.get('kyt_backfill_paused');
     if (ctxResult.remaining > 0) chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
-    if (entResult.remaining > 0) chrome.alarms.create('backfillEntities', { delayInMinutes: 1 });
+    if (entResult.remaining > 0 && !pausedImport) chrome.alarms.create('backfillEntities', { delayInMinutes: 1 });
     if (gravResult.remaining > 0) chrome.alarms.create('backfillGravity', { delayInMinutes: 1.5 });
     return { contextual: ctxResult, embeddings: embResult, entities: entResult, gravity: gravResult };
   },
