@@ -947,8 +947,15 @@ chrome.runtime.onInstalled.addListener((details) => {
       } catch (err) {
         console.error('❌ Update backfill error:', err.message);
       }
-      chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
-      console.log('⏰ Contextual backfill alarm set (2 minutes post-update)');
+      // Only start backfill chain if not paused
+      chrome.storage.local.get('kyt_backfill_paused', ({ kyt_backfill_paused: paused }) => {
+        if (!paused) {
+          chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
+          console.log('⏰ Contextual backfill alarm set (2 minutes post-update)');
+        } else {
+          console.log('⏸️ Backfill paused — skipping post-update contextual alarm');
+        }
+      });
     }, 3000);
 
     // Migration: Set Phase 1 default for existing users
@@ -1116,6 +1123,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     case 'backfillContextual':
       try {
+        const { kyt_backfill_paused: ctxPaused } = await chrome.storage.local.get('kyt_backfill_paused');
+        if (ctxPaused) {
+          console.log('⏸️ Contextual backfill PAUSED (kyt_backfill_paused=true).');
+          break;
+        }
         console.log('⏰ Contextual backfill alarm fired');
         const ctxResult = await callEdgeFunction('backfill_contextual', { limit: 20 }, { timeoutMs: 120000 });
         if (ctxResult.context_generated > 0) {
@@ -1128,7 +1140,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         }
       } catch (error) {
         console.error('❌ Contextual backfill alarm error:', error.message);
-        chrome.alarms.create('backfillContextual', { delayInMinutes: 10 });
+        const { kyt_backfill_paused: ctxPausedErr } = await chrome.storage.local.get('kyt_backfill_paused');
+        if (!ctxPausedErr) {
+          chrome.alarms.create('backfillContextual', { delayInMinutes: 10 });
+        }
       }
       break;
 
@@ -1441,13 +1456,18 @@ globalThis.KYT_DEBUG = {
   pauseBackfill: async () => {
     await chrome.storage.local.set({ kyt_backfill_paused: true });
     await chrome.alarms.clear('backfillEntities');
-    console.log('⏸️ Entity backfill PAUSED. Alarm cleared. Use KYT_DEBUG.resumeBackfill() to resume.');
+    await chrome.alarms.clear('backfillContextual');
+    await chrome.alarms.clear('backfillGravity');
+    await chrome.alarms.clear('postImportBackfill');
+    console.log('⏸️ ALL backfills PAUSED. Alarms cleared. Use KYT_DEBUG.resumeBackfill() to resume.');
     return { paused: true };
   },
   resumeBackfill: async () => {
     await chrome.storage.local.set({ kyt_backfill_paused: false });
     chrome.alarms.create('backfillEntities', { delayInMinutes: 1 });
-    console.log('▶️ Entity backfill RESUMED. Next run in 1 minute.');
+    chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
+    chrome.alarms.create('backfillGravity', { delayInMinutes: 3 });
+    console.log('▶️ ALL backfills RESUMED. Entity in 1min, contextual in 2min, gravity in 3min.');
     return { paused: false };
   },
   forceSyncAll: async () => {
