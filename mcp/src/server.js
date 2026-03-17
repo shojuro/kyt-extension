@@ -16,6 +16,7 @@ import { getPreferences } from './tools/get-preferences.js';
 import { setMemoryMode } from './tools/set-memory-mode.js';
 import { ingestSession } from './tools/ingest-session.js';
 import { queryCosts } from './tools/query-costs.js';
+import { queryTokenStats } from './tools/query-token-stats.js';
 import { createProject } from './tools/create-project.js';
 import { listProjects } from './tools/list-projects.js';
 import { setActiveProject } from './tools/set-active-project.js';
@@ -108,6 +109,18 @@ server.tool(
       .describe('Group costs by this dimension'),
   },
   async (args) => queryCosts(args),
+);
+
+// --- Tool: query_token_stats ---
+server.tool(
+  'query_token_stats',
+  'Show token count statistics for captured memories grouped by platform, speaker, or month. Shows coverage (counted vs total rows) and per-group breakdowns.',
+  {
+    days: z.number().optional().default(30).describe('Number of days to look back (default: 30)'),
+    groupBy: z.enum(['platform', 'speaker', 'month']).optional().default('platform')
+      .describe('Group stats by this dimension'),
+  },
+  async (args) => queryTokenStats(args),
 );
 
 // --- Tool: create_project ---

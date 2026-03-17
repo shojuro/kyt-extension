@@ -175,6 +175,31 @@ export class AnthropicClient {
     }
 
     /**
+     * Count tokens in a text string using the Anthropic token counting API.
+     * This endpoint is FREE with separate rate limits (100-8000 RPM by tier).
+     */
+    async countTokens(text: string): Promise<number> {
+        const response = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
+            method: "POST",
+            headers: {
+                "x-api-key": this.apiKey,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model: AnthropicClient.MODEL,
+                messages: [{ role: "user", content: text }]
+            })
+        });
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Token count API error: ${response.status} - ${errorText}`);
+        }
+        const data = await response.json();
+        return data.input_tokens;
+    }
+
+    /**
      * Log API usage cost to the cost_tracking table.
      */
     private async logCost(

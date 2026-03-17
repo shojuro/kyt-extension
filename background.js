@@ -951,9 +951,10 @@ chrome.runtime.onInstalled.addListener((details) => {
       chrome.storage.local.get('kyt_backfill_paused', ({ kyt_backfill_paused: paused }) => {
         if (!paused) {
           chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
-          console.log('⏰ Contextual backfill alarm set (2 minutes post-update)');
+          chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 5 });
+          console.log('⏰ Contextual + token count backfill alarms set (2min, 5min post-update)');
         } else {
-          console.log('⏸️ Backfill paused — skipping post-update contextual alarm');
+          console.log('⏸️ Backfill paused — skipping post-update backfill alarms');
         }
       });
     }, 3000);
@@ -1202,15 +1203,33 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             console.log('⏸️ Entity backfill paused — skipping alarm creation');
           }
           chrome.alarms.create('backfillGravity', { delayInMinutes: 1 });
+          chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 2 });
         }
       } catch (error) {
         console.error('❌ Post-import backfill error:', error.message);
-        // Still try entity + gravity backfill even if contextual check fails
+        // Still try entity + gravity + token count backfill even if contextual check fails
         const { kyt_backfill_paused: pausedErr } = await chrome.storage.local.get('kyt_backfill_paused');
         if (!pausedErr) {
           chrome.alarms.create('backfillEntities', { delayInMinutes: 3 });
         }
         chrome.alarms.create('backfillGravity', { delayInMinutes: 4 });
+        chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 5 });
+      }
+      break;
+
+    case 'backfillTokenCounts':
+      try {
+        const { kyt_backfill_paused: tcPaused } = await chrome.storage.local.get('kyt_backfill_paused');
+        if (tcPaused) { console.log('⏸️ Token count backfill PAUSED'); break; }
+        console.log('⏰ Token count backfill alarm fired');
+        const tcResult = await callEdgeFunction('backfill_token_counts', { max_rows: 50 }, { timeoutMs: 60000 });
+        console.log(`✅ Token count backfill: ${tcResult.processed} processed, ${tcResult.remaining} remaining`);
+        if (tcResult.remaining > 0) {
+          chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 3 });
+        }
+      } catch (error) {
+        console.error('❌ Token count backfill error:', error.message);
+        chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 10 });
       }
       break;
 
@@ -1368,6 +1387,9 @@ globalThis.KYT_DEBUG = {
     console.log('⚖️ Gravity backfill complete:', summary);
     return summary;
   },
+  backfillTokenCounts: (maxRows = 50) => callEdgeFunction('backfill_token_counts', { max_rows: maxRows }, { timeoutMs: 60000 })
+    .then(result => { console.log('🔢 Token count backfill result:', result); return result; })
+    .catch(err => { console.error('❌ Token count backfill failed:', err.message); return { success: false, error: err.message }; }),
   backfillPostImport: () => {
     console.log('🔄 Starting post-import backfill chain...');
     chrome.alarms.create('backfillContextual', { delayInMinutes: 0.1 });
@@ -1417,6 +1439,7 @@ globalThis.KYT_DEBUG = {
     if (ctxResult.remaining > 0) chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
     if (entResult.remaining > 0 && !pausedImport) chrome.alarms.create('backfillEntities', { delayInMinutes: 1 });
     if (gravResult.remaining > 0) chrome.alarms.create('backfillGravity', { delayInMinutes: 1.5 });
+    chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 2 });
     return { contextual: ctxResult, embeddings: embResult, entities: entResult, gravity: gravResult };
   },
   excludeConversation: async (conversationId) => {
@@ -1458,6 +1481,7 @@ globalThis.KYT_DEBUG = {
     await chrome.alarms.clear('backfillEntities');
     await chrome.alarms.clear('backfillContextual');
     await chrome.alarms.clear('backfillGravity');
+    await chrome.alarms.clear('backfillTokenCounts');
     await chrome.alarms.clear('postImportBackfill');
     console.log('⏸️ ALL backfills PAUSED. Alarms cleared. Use KYT_DEBUG.resumeBackfill() to resume.');
     return { paused: true };
@@ -1467,7 +1491,8 @@ globalThis.KYT_DEBUG = {
     chrome.alarms.create('backfillEntities', { delayInMinutes: 1 });
     chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
     chrome.alarms.create('backfillGravity', { delayInMinutes: 3 });
-    console.log('▶️ ALL backfills RESUMED. Entity in 1min, contextual in 2min, gravity in 3min.');
+    chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 4 });
+    console.log('▶️ ALL backfills RESUMED. Entity in 1min, contextual in 2min, gravity in 3min, tokens in 4min.');
     return { paused: false };
   },
   forceSyncAll: async () => {
@@ -1518,7 +1543,8 @@ console.log('   - KYT_DEBUG.backfillChatTurnEmbeddings(platform?) - Backfill nul
 console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
 console.log('   - KYT_DEBUG.backfillContextual() - Generate context summaries + re-embed');
 console.log('   - KYT_DEBUG.backfillGravity(maxRows?) - Backfill impact_score + intimacy_level + topics');
-console.log('   - KYT_DEBUG.backfillPostImport() - Full post-import chain (contextual → entities → gravity)');
+console.log('   - KYT_DEBUG.backfillTokenCounts(maxRows?) - Count tokens for chat_turns (free Anthropic API)');
+console.log('   - KYT_DEBUG.backfillPostImport() - Full post-import chain (contextual → entities → gravity → tokens)');
 console.log('   - KYT_DEBUG.backfillImported() - Full post-import backfill: contextual → embeddings → entities → gravity');
 console.log('   - KYT_DEBUG.forceSyncAll() - Reset sync timestamp and sync ALL local messages (deduped)');
 console.log('   - KYT_DEBUG.pauseBackfill() - Pause entity backfill alarm (saves API costs)');
