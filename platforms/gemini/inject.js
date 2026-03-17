@@ -612,10 +612,11 @@
   const HISTORY_CAPTURE_START = Date.now();
   const HISTORY_CAPTURE_INIT_MS = 5000; // Skip captures during initial page load
 
-  // Track live-captured conversations to prevent batchexecute doubling.
-  // Maps conversationId → timestamp of last live capture.
-  const _liveCapturedConvIds = new Map();
-  const LIVE_CAPTURE_GUARD_MS = 60000; // Block history-load for 60s after live capture
+  // Global guard: block batchexecute history-load when user is actively chatting.
+  // Time-based (not ID-based) because conversation IDs often don't match between
+  // StreamGenerate and batchexecute paths.
+  let _lastLiveCaptureTime = 0;
+  const LIVE_CAPTURE_GUARD_MS = 30000; // Block history-load for 30s after any live capture
 
   /**
    * Detect if a POST request is a Gemini conversation-history load (batchexecute).
@@ -805,10 +806,9 @@
 
     const conversationId = metadata.conversationIdHint || 'history_' + Date.now();
 
-    // Skip if this conversation was recently live-captured (prevents batchexecute doubling)
-    const liveCapturedAt = _liveCapturedConvIds.get(conversationId);
-    if (liveCapturedAt && (Date.now() - liveCapturedAt) < LIVE_CAPTURE_GUARD_MS) {
-      _kytDebug() && console.log('📜 KYT Gemini: Skipping history-load for recently live-captured conversation ' + conversationId);
+    // Skip if user is actively chatting (any live capture in last 30s)
+    if ((Date.now() - _lastLiveCaptureTime) < LIVE_CAPTURE_GUARD_MS) {
+      _kytDebug() && console.log('📜 KYT Gemini: Skipping history-load — active live capture (' + Math.round((Date.now() - _lastLiveCaptureTime) / 1000) + 's ago)');
       return;
     }
 
@@ -993,16 +993,9 @@
 
     if (!deduplicator.shouldCapture(content, captureMethod)) return;
 
-    // Track live-captured conversations to block redundant history-loads
-    if (captureMethod !== 'history' && conversationId) {
-      _liveCapturedConvIds.set(conversationId, Date.now());
-      // Evict stale entries
-      if (_liveCapturedConvIds.size > 50) {
-        const cutoff = Date.now() - LIVE_CAPTURE_GUARD_MS;
-        for (const [id, ts] of _liveCapturedConvIds) {
-          if (ts < cutoff) _liveCapturedConvIds.delete(id);
-        }
-      }
+    // Track live captures to block redundant batchexecute history-loads
+    if (captureMethod !== 'history') {
+      _lastLiveCaptureTime = Date.now();
     }
 
     const messageData = {

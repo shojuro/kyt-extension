@@ -1417,66 +1417,41 @@ describe('dispatchCapture content cleaning', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// LIVE CAPTURE GUARD TESTS (prevents batchexecute doubling)
+// LIVE CAPTURE GUARD TESTS (time-based, prevents batchexecute doubling)
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('live capture guard (anti-doubling)', () => {
-  it('blocks history capture for recently live-captured conversation', () => {
-    const liveCapturedConvIds = new Map();
-    const GUARD_MS = 60000;
-    const convId = 'c_abc123';
-
-    // Simulate live capture
-    liveCapturedConvIds.set(convId, Date.now());
-
-    // Check guard
-    const liveCapturedAt = liveCapturedConvIds.get(convId);
-    const blocked = liveCapturedAt && (Date.now() - liveCapturedAt) < GUARD_MS;
+describe('live capture time-based guard (anti-doubling)', () => {
+  it('blocks history capture when live capture happened recently', () => {
+    let lastLiveCaptureTime = Date.now(); // just happened
+    const GUARD_MS = 30000;
+    const blocked = (Date.now() - lastLiveCaptureTime) < GUARD_MS;
     expect(blocked).toBe(true);
   });
 
-  it('allows history capture for conversation not recently live-captured', () => {
-    const liveCapturedConvIds = new Map();
-    const GUARD_MS = 60000;
-    const convId = 'c_def456';
-
-    // No live capture for this conversation
-    const liveCapturedAt = liveCapturedConvIds.get(convId);
-    const blocked = liveCapturedAt && (Date.now() - liveCapturedAt) < GUARD_MS;
-    expect(blocked).toBeFalsy();
-  });
-
-  it('allows history capture after guard window expires', () => {
-    const liveCapturedConvIds = new Map();
-    const GUARD_MS = 60000;
-    const convId = 'c_ghi789';
-
-    // Simulate live capture 2 minutes ago
-    liveCapturedConvIds.set(convId, Date.now() - 120000);
-
-    const liveCapturedAt = liveCapturedConvIds.get(convId);
-    const blocked = liveCapturedAt && (Date.now() - liveCapturedAt) < GUARD_MS;
+  it('allows history capture when no recent live capture', () => {
+    let lastLiveCaptureTime = 0; // never happened
+    const GUARD_MS = 30000;
+    const blocked = (Date.now() - lastLiveCaptureTime) < GUARD_MS;
     expect(blocked).toBe(false);
   });
 
-  it('evicts stale entries when map exceeds 50', () => {
-    const liveCapturedConvIds = new Map();
-    const GUARD_MS = 60000;
+  it('allows history capture after guard window expires', () => {
+    let lastLiveCaptureTime = Date.now() - 60000; // 60s ago
+    const GUARD_MS = 30000;
+    const blocked = (Date.now() - lastLiveCaptureTime) < GUARD_MS;
+    expect(blocked).toBe(false);
+  });
 
-    // Fill with 51 stale entries
-    for (let i = 0; i < 51; i++) {
-      liveCapturedConvIds.set('c_' + i, Date.now() - 120000); // 2 min ago
-    }
+  it('guard works regardless of conversation ID matching', () => {
+    // The key insight: time-based guard doesn't need conversation IDs to match
+    let lastLiveCaptureTime = Date.now() - 5000; // 5s ago
+    const GUARD_MS = 30000;
 
-    // Eviction logic
-    if (liveCapturedConvIds.size > 50) {
-      const cutoff = Date.now() - GUARD_MS;
-      for (const [id, ts] of liveCapturedConvIds) {
-        if (ts < cutoff) liveCapturedConvIds.delete(id);
-      }
-    }
-
-    expect(liveCapturedConvIds.size).toBe(0); // all evicted (all stale)
+    // Different conversation ID from the one being history-loaded
+    const historyConvId = 'c_different_id';
+    // Guard doesn't check historyConvId at all — just time
+    const blocked = (Date.now() - lastLiveCaptureTime) < GUARD_MS;
+    expect(blocked).toBe(true);
   });
 });
 
