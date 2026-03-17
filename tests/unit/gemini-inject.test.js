@@ -1417,45 +1417,6 @@ describe('dispatchCapture content cleaning', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// LIVE CAPTURE GUARD TESTS (time-based, prevents batchexecute doubling)
-// ═══════════════════════════════════════════════════════════════════════
-
-describe('live capture time-based guard (anti-doubling)', () => {
-  it('blocks history capture when live capture happened recently', () => {
-    let lastLiveCaptureTime = Date.now(); // just happened
-    const GUARD_MS = 30000;
-    const blocked = (Date.now() - lastLiveCaptureTime) < GUARD_MS;
-    expect(blocked).toBe(true);
-  });
-
-  it('allows history capture when no recent live capture', () => {
-    let lastLiveCaptureTime = 0; // never happened
-    const GUARD_MS = 30000;
-    const blocked = (Date.now() - lastLiveCaptureTime) < GUARD_MS;
-    expect(blocked).toBe(false);
-  });
-
-  it('allows history capture after guard window expires', () => {
-    let lastLiveCaptureTime = Date.now() - 60000; // 60s ago
-    const GUARD_MS = 30000;
-    const blocked = (Date.now() - lastLiveCaptureTime) < GUARD_MS;
-    expect(blocked).toBe(false);
-  });
-
-  it('guard works regardless of conversation ID matching', () => {
-    // The key insight: time-based guard doesn't need conversation IDs to match
-    let lastLiveCaptureTime = Date.now() - 5000; // 5s ago
-    const GUARD_MS = 30000;
-
-    // Different conversation ID from the one being history-loaded
-    const historyConvId = 'c_different_id';
-    // Guard doesn't check historyConvId at all — just time
-    const blocked = (Date.now() - lastLiveCaptureTime) < GUARD_MS;
-    expect(blocked).toBe(true);
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════
 // RESOURCE LEAK FIX TESTS
 // ═══════════════════════════════════════════════════════════════════════
 

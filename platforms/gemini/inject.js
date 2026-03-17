@@ -612,11 +612,10 @@
   const HISTORY_CAPTURE_START = Date.now();
   const HISTORY_CAPTURE_INIT_MS = 5000; // Skip captures during initial page load
 
-  // Global guard: block batchexecute history-load when user is actively chatting.
-  // Time-based (not ID-based) because conversation IDs often don't match between
-  // StreamGenerate and batchexecute paths.
-  let _lastLiveCaptureTime = 0;
-  const LIVE_CAPTURE_GUARD_MS = 30000; // Block history-load for 30s after any live capture
+  // NOTE: Time-based and ID-based history-load guards were removed (2026-03-17).
+  // They caused message DROPS by blocking batchexecute, which is the reliable backup
+  // when the DOM observer fails. Doubling is preferable to data loss.
+  // TODO: Smart dedup that handles truncated vs complete pairs (prefix matching).
 
   /**
    * Detect if a POST request is a Gemini conversation-history load (batchexecute).
@@ -806,12 +805,6 @@
 
     const conversationId = metadata.conversationIdHint || 'history_' + Date.now();
 
-    // Skip if user is actively chatting (any live capture in last 30s)
-    if ((Date.now() - _lastLiveCaptureTime) < LIVE_CAPTURE_GUARD_MS) {
-      _kytDebug() && console.log('📜 KYT Gemini: Skipping history-load — active live capture (' + Math.round((Date.now() - _lastLiveCaptureTime) / 1000) + 's ago)');
-      return;
-    }
-
     // Skip if we already captured this conversation via history-load
     if (_capturedConversationIds.has(conversationId)) return;
     if (_capturedConversationIds.size >= 500) {
@@ -993,10 +986,6 @@
 
     if (!deduplicator.shouldCapture(content, captureMethod)) return;
 
-    // Track live captures to block redundant batchexecute history-loads
-    if (captureMethod !== 'history') {
-      _lastLiveCaptureTime = Date.now();
-    }
 
     const messageData = {
       content: content.trim(),
