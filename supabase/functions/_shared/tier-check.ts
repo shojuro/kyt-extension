@@ -7,19 +7,20 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-export const TIER_LIMITS: Record<string, TierLimits> = {
-  free:    { searchesPerMin: 10,  savesPerMin: 20,  importsPerDay: 1,  llmCallsPerMin: 5   },
-  pro:     { searchesPerMin: 60,  savesPerMin: 100, importsPerDay: 10, llmCallsPerMin: 30  },
-  founder: { searchesPerMin: 60,  savesPerMin: 100, importsPerDay: 10, llmCallsPerMin: 30  },
-  dev:     { searchesPerMin: 200, savesPerMin: 500, importsPerDay: 50, llmCallsPerMin: 100 },
-};
-
 export interface TierLimits {
   searchesPerMin: number;
   savesPerMin: number;
   importsPerDay: number;
   llmCallsPerMin: number;
+  turnsPerDay: number; // -1 = unlimited
 }
+
+export const TIER_LIMITS: Record<string, TierLimits> = {
+  free:    { searchesPerMin: 10,  savesPerMin: 20,  importsPerDay: 1,  llmCallsPerMin: 5,   turnsPerDay: 20  },
+  pro:     { searchesPerMin: 60,  savesPerMin: 100, importsPerDay: 10, llmCallsPerMin: 30,  turnsPerDay: 75  },
+  founder: { searchesPerMin: 60,  savesPerMin: 100, importsPerDay: 10, llmCallsPerMin: 30,  turnsPerDay: 75  },
+  max:     { searchesPerMin: 200, savesPerMin: 500, importsPerDay: 50, llmCallsPerMin: 100, turnsPerDay: -1  },
+};
 
 // In-memory tier cache with 5-minute TTL
 const tierCache = new Map<string, { tier: string; fetchedAt: number }>();

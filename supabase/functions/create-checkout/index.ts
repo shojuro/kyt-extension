@@ -35,8 +35,33 @@ const corsHeaders = {
 }
 
 // Checkout redirect URLs - configure via environment or use defaults
-const SUCCESS_URL = Deno.env.get('CHECKOUT_SUCCESS_URL') || 'https://kyt.memory/checkout/success'
-const CANCEL_URL = Deno.env.get('CHECKOUT_CANCEL_URL') || 'https://kyt.memory/checkout/cancel'
+const SUCCESS_URL = Deno.env.get('CHECKOUT_SUCCESS_URL') || 'https://keepyourthoughts.xyz/checkout/success'
+const CANCEL_URL = Deno.env.get('CHECKOUT_CANCEL_URL') || 'https://keepyourthoughts.xyz/pricing'
+
+// Tier + interval → Stripe price ID mapping
+// TODO: Replace with real Stripe price IDs after creating them in dashboard
+const TIER_PRICES: Record<string, Record<string, string>> = {
+  pro: {
+    monthly: 'price_xxx_pro_monthly',
+    annual: 'price_xxx_pro_annual',
+  },
+  max: {
+    monthly: 'price_xxx_max_monthly',
+    annual: 'price_xxx_max_annual',
+  },
+}
+
+function resolvePriceId(tier?: string, interval?: string, priceId?: string): string {
+  // Direct priceId takes precedence (backward compat)
+  if (priceId) return priceId
+  if (!tier) throw new Error('Either priceId or tier is required')
+  const tierPrices = TIER_PRICES[tier]
+  if (!tierPrices) throw new Error(`Unknown tier: ${tier}`)
+  const resolvedInterval = interval || 'monthly'
+  const resolved = tierPrices[resolvedInterval]
+  if (!resolved) throw new Error(`Unknown interval: ${resolvedInterval}`)
+  return resolved
+}
 
 Deno.serve(async (req) => {
   // Handle CORS preflight
@@ -45,17 +70,16 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { userId, priceId, couponCode } = await req.json()
+    const { userId, priceId, tier, interval, couponCode } = await req.json()
 
     // Validate required fields
     if (!userId) {
       throw new Error('userId is required')
     }
-    if (!priceId) {
-      throw new Error('priceId is required')
-    }
 
-    console.log(`Creating checkout session for user ${userId}, price ${priceId}`)
+    const resolvedPriceId = resolvePriceId(tier, interval, priceId)
+
+    console.log(`Creating checkout session for user ${userId}, price ${resolvedPriceId}`)
 
     // Check if user already has a Stripe customer
     const { data: existingCustomer } = await supabase
@@ -104,7 +128,7 @@ Deno.serve(async (req) => {
     const sessionOptions: Stripe.Checkout.SessionCreateParams = {
       customer: customerId,
       mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
+      line_items: [{ price: resolvedPriceId, quantity: 1 }],
       success_url: `${SUCCESS_URL}?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: CANCEL_URL,
       allow_promotion_codes: true, // Allow users to enter coupon codes at checkout

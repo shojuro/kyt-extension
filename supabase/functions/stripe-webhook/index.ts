@@ -36,8 +36,10 @@ const supabase = createClient(
 
 // Price ID to tier mapping - UPDATE with real price IDs after Stripe Dashboard setup
 const PRICE_TO_TIER: Record<string, string> = {
-  'price_xxx_pro': 'pro',   // TODO: Replace with real Pro price ID
-  'price_xxx_dev': 'dev',   // TODO: Replace with real Dev price ID
+  'price_xxx_pro_monthly': 'pro',  // TODO: Replace with real Pro monthly price ID
+  'price_xxx_pro_annual': 'pro',   // TODO: Replace with real Pro annual price ID
+  'price_xxx_max_monthly': 'max',  // TODO: Replace with real Max monthly price ID
+  'price_xxx_max_annual': 'max',   // TODO: Replace with real Max annual price ID
 }
 
 // Founder's List price IDs (one-time purchase, not subscription)

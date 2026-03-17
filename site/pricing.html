@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Pricing — K.Y.T.</title>
-  <meta name="description" content="K.Y.T. pricing tiers: Free, Pro, and Dev. Start free with 500 memories. Upgrade for more capacity and speed.">
+  <meta name="description" content="K.Y.T. pricing tiers: Free, Pro, and Max. Start free with 20 turns/day. Upgrade for more capacity and speed.">
 
   <meta property="og:title" content="K.Y.T. Pricing — Plans for Every User">
-  <meta property="og:description" content="Free tier with 500 memories. Pro and Dev tiers for power users.">
+  <meta property="og:description" content="Free tier with 20 turns/day. Pro and Max tiers for power users.">
   <meta property="og:type" content="website">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -39,6 +39,19 @@
     </div>
   </section>
 
+  <!-- BILLING TOGGLE -->
+  <section class="section" style="padding-bottom: 0;">
+    <div class="container" style="text-align: center;">
+      <div class="billing-toggle reveal">
+        <span class="billing-toggle__label" id="billing-monthly-label">Monthly</span>
+        <button class="billing-toggle__switch" id="billing-toggle" role="switch" aria-checked="false" aria-label="Toggle annual billing">
+          <span class="billing-toggle__knob"></span>
+        </button>
+        <span class="billing-toggle__label" id="billing-annual-label">Annual <span class="billing-toggle__save">Save&nbsp;up&nbsp;to&nbsp;20%</span></span>
+      </div>
+    </div>
+  </section>
+
   <!-- TIER CARDS -->
   <section class="section" aria-label="Pricing tiers">
     <div class="container">
@@ -46,8 +59,9 @@
         <!-- FREE -->
         <div class="tier reveal">
           <h2 class="tier__name">Free</h2>
-          <div class="tier__price">$0</div>
+          <div class="tier__price">$0<span class="tier__period">/month</span></div>
           <ul class="tier__features">
+            <li class="tier__feature">Turns / day <span class="tier__feature-value">20</span></li>
             <li class="tier__feature">Memory cap <span class="tier__feature-value">500</span></li>
             <li class="tier__feature">Searches / min <span class="tier__feature-value">10</span></li>
             <li class="tier__feature">Saves / min <span class="tier__feature-value">20</span></li>
@@ -62,8 +76,9 @@
         <!-- PRO -->
         <div class="tier tier--featured reveal">
           <h2 class="tier__name">Pro</h2>
-          <div class="tier__price">TBD</div>
+          <div class="tier__price"><span id="pro-price">$7</span><span class="tier__period" id="pro-period">/month</span></div>
           <ul class="tier__features">
+            <li class="tier__feature">Turns / day <span class="tier__feature-value">75</span></li>
             <li class="tier__feature">Memory cap <span class="tier__feature-value">5,000</span></li>
             <li class="tier__feature">Searches / min <span class="tier__feature-value">60</span></li>
             <li class="tier__feature">Saves / min <span class="tier__feature-value">100</span></li>
@@ -72,14 +87,15 @@
             <li class="tier__feature">Backfill speed <span class="tier__feature-value">200 / batch</span></li>
             <li class="tier__feature">Privacy modes <span class="tier__feature-value">All 3</span></li>
           </ul>
-          <a href="/" class="tier__cta">Join Waitlist</a>
+          <button class="tier__cta" id="pro-cta" data-tier="pro">Upgrade to Pro</button>
         </div>
 
-        <!-- DEV -->
+        <!-- MAX -->
         <div class="tier reveal">
-          <h2 class="tier__name">Dev</h2>
-          <div class="tier__price">TBD</div>
+          <h2 class="tier__name">Max</h2>
+          <div class="tier__price"><span id="max-price">$15</span><span class="tier__period" id="max-period">/month</span></div>
           <ul class="tier__features">
+            <li class="tier__feature">Turns / day <span class="tier__feature-value">Unlimited</span></li>
             <li class="tier__feature">Memory cap <span class="tier__feature-value">Unlimited</span></li>
             <li class="tier__feature">Searches / min <span class="tier__feature-value">200</span></li>
             <li class="tier__feature">Saves / min <span class="tier__feature-value">500</span></li>
@@ -88,7 +104,7 @@
             <li class="tier__feature">Backfill speed <span class="tier__feature-value">Unlimited</span></li>
             <li class="tier__feature">Privacy modes <span class="tier__feature-value">All 3</span></li>
           </ul>
-          <a href="/" class="tier__cta">Join Waitlist</a>
+          <button class="tier__cta" id="max-cta" data-tier="max">Upgrade to Max</button>
         </div>
       </div>
     </div>
@@ -101,8 +117,8 @@
 
       <div class="faq-list reveal">
         <div class="faq-item">
-          <button class="faq-q" aria-expanded="false">What happens when I hit 500 memories?</button>
-          <div class="faq-a"><p>New conversations still get captured, but older memories are archived. You can always search archived memories&nbsp;&mdash;&nbsp;they just won't be auto-injected into new conversations. Upgrade to Pro for 10x the capacity.</p></div>
+          <button class="faq-q" aria-expanded="false">What happens when I hit my daily turn limit?</button>
+          <div class="faq-a"><p>K.Y.T. pauses memory capture for the rest of the day. Your existing memories still work&nbsp;&mdash;&nbsp;you just won't capture new ones until tomorrow. Upgrade to Pro for 75 turns/day, or Max for unlimited.</p></div>
         </div>
         <div class="faq-item">
           <button class="faq-q" aria-expanded="false">Can I upgrade later?</button>
