@@ -11,7 +11,6 @@
   'use strict';
 
   var DISMISS_KEY = 'kyt_upgrade_banner_dismissed';
-  var PRICING_URL = 'https://keepyourthoughts.xyz/pricing';
   var bannerId = 'kyt-upgrade-banner-host';
   var bannerShown = false;
 
@@ -81,15 +80,34 @@
       '  <span>K.Y.T. memory paused \u2014 ' + used + '/' + limit + ' turns used today</span>',
       '</div>',
       '<div class="actions">',
-      '  <a class="upgrade-btn" href="' + PRICING_URL + '" target="_blank" rel="noopener">',
+      '  <button class="upgrade-btn">',
       '    Upgrade to ' + tierLabel + ' \u2014 ' + tierPrice,
-      '  </a>',
+      '  </button>',
       '  <button class="dismiss" aria-label="Dismiss">\u00D7</button>',
       '</div>',
     ].join('');
 
     shadow.appendChild(style);
     shadow.appendChild(banner);
+
+    var upgradeBtn = banner.querySelector('.upgrade-btn');
+    upgradeBtn.addEventListener('click', function () {
+      upgradeBtn.textContent = 'Loading\u2026';
+      upgradeBtn.disabled = true;
+      chrome.runtime.sendMessage({
+        type: 'KYT_START_CHECKOUT',
+        tier: tier === 'free' ? 'pro' : 'max',
+        interval: 'monthly'
+      }, function (resp) {
+        if (resp && resp.success) {
+          host.remove();
+          bannerShown = false;
+        } else {
+          upgradeBtn.textContent = 'Upgrade to ' + tierLabel + ' \u2014 ' + tierPrice;
+          upgradeBtn.disabled = false;
+        }
+      });
+    });
 
     var dismissBtn = banner.querySelector('.dismiss');
     dismissBtn.addEventListener('click', function () {

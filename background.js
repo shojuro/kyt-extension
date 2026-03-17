@@ -42,6 +42,7 @@ import {
 } from './src/context-retrieval.js';
 import { registerPortHandler, registerMessageHandler } from './src/message-handlers.js';
 import { getMemoryMode, updateBadge } from './src/memory-mode.js';
+import { syncUserTier } from './src/tier-sync.js';
 import { withStorageMutex } from './src/utils/storage-mutex.js';
 import { getActiveProject } from './src/project-manager.js';
 
@@ -980,6 +981,7 @@ chrome.runtime.onInstalled.addListener((details) => {
 chrome.alarms.create('health_check', { periodInMinutes: 5 });
 chrome.alarms.create('prewarmEmbedding', { delayInMinutes: 1, periodInMinutes: 30 });
 chrome.alarms.create('tokenRefresh', { periodInMinutes: 45 });
+chrome.alarms.create('syncTier', { delayInMinutes: 1, periodInMinutes: 5 });
 
 // ===== SYNC-ON-PLATFORM-SWITCH =====
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
@@ -1250,6 +1252,17 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         }
       } catch (error) {
         console.warn('⚠️ Token refresh alarm failed:', error.message);
+      }
+      break;
+
+    case 'syncTier':
+      try {
+        const tierResult = await syncUserTier();
+        if (tierResult?.changed) {
+          console.log(`🔄 [Tier Sync] Alarm detected tier change: ${tierResult.oldTier} → ${tierResult.newTier}`);
+        }
+      } catch (error) {
+        console.warn('⚠️ Tier sync alarm failed:', error.message);
       }
       break;
 

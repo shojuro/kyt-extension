@@ -15,6 +15,7 @@ import { classifyIntent } from './intent-classifier.js';
 import { classifyWithHaiku, isHaikuEnabled } from './haiku-tiebreaker.js';
 import { getMemoryMode, setMemoryMode } from './memory-mode.js';
 import { checkTurnLimit, incrementTurnCount, getTurnUsage } from './turn-limiter.js';
+import { startPostCheckoutPoll } from './tier-sync.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { getActiveProject, setActiveProject, clearActiveProject } from './project-manager.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
@@ -200,6 +201,26 @@ async function handleGetContextAsync(message, getContextForInjection) {
     diag.steps.push('memMode:' + memMode);
     if (memMode !== 'full') {
       return { success: true, items: [], formattedContext: null, modeBlocked: true, mode: memMode };
+    }
+
+    // Turn limit: capture always proceeds, but retrieval pauses when limit hit
+    const turnCheck = await checkTurnLimit();
+    diag.steps.push('turns:' + turnCheck.used + '/' + turnCheck.limit);
+    if (!turnCheck.allowed) {
+      diag.steps.push('turn_limit_reached');
+      await diagSave();
+      // Notify active tab to show upgrade banner
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.sendMessage(tabs[0].id, {
+            type: 'KYT_TURN_LIMIT_REACHED',
+            used: turnCheck.used,
+            limit: turnCheck.limit,
+            tier: turnCheck.tier
+          }).catch(() => {});
+        }
+      });
+      return { success: true, items: [], formattedContext: null, turnLimitReached: true, used: turnCheck.used, limit: turnCheck.limit, tier: turnCheck.tier };
     }
 
     let classification = classifyIntent(message.userMessage);
@@ -388,31 +409,6 @@ export function registerMessageHandler(deps) {
             if (mode === 'incognito') {
               console.log('👻 Incognito mode — message not captured');
               sendResponse({ success: true, queued: false, reason: 'incognito_mode' });
-              return;
-            }
-
-            // Turn limit check
-            const turnCheck = await checkTurnLimit();
-            if (!turnCheck.allowed) {
-              console.log(`🚫 Turn limit reached: ${turnCheck.used}/${turnCheck.limit} (${turnCheck.tier})`);
-              sendResponse({
-                success: false,
-                reason: 'turn_limit_reached',
-                used: turnCheck.used,
-                limit: turnCheck.limit,
-                tier: turnCheck.tier
-              });
-              // Notify active tab to show upgrade banner
-              chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-                if (tabs[0]?.id) {
-                  chrome.tabs.sendMessage(tabs[0].id, {
-                    type: 'KYT_TURN_LIMIT_REACHED',
-                    used: turnCheck.used,
-                    limit: turnCheck.limit,
-                    tier: turnCheck.tier
-                  }).catch(() => {}); // Tab may not have content script
-                }
-              });
               return;
             }
 
@@ -870,6 +866,36 @@ export function registerMessageHandler(deps) {
             const usage = await getTurnUsage();
             sendResponse({ success: true, ...usage });
           } catch (error) {
+            sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
+      case 'KYT_START_CHECKOUT':
+        (async () => {
+          try {
+            const auth = await getAuthConfig();
+            if (!auth.userId) {
+              sendResponse({ success: false, error: 'Not authenticated' });
+              return;
+            }
+            const tier = message.tier || 'pro';
+            const interval = message.interval || 'monthly';
+            const resp = await fetch(`${auth.supabaseUrl}/functions/v1/create-checkout`, {
+              method: 'POST',
+              headers: auth.headers,
+              body: JSON.stringify({ userId: auth.userId, tier, interval }),
+            });
+            if (!resp.ok) {
+              const err = await resp.json().catch(() => ({}));
+              throw new Error(err.error || 'Checkout request failed');
+            }
+            const { url } = await resp.json();
+            chrome.tabs.create({ url });
+            startPostCheckoutPoll();
+            sendResponse({ success: true });
+          } catch (error) {
+            console.error('Checkout error:', error);
             sendResponse({ success: false, error: error.message });
           }
         })();
