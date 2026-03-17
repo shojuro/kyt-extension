@@ -105,11 +105,7 @@
     _baselineElement: null,
 
     RESPONSE_SELECTORS: [
-      'message-content.model-response-text',
-      'message-content[data-content-type="response"]',
-      '.model-response-text',
-      'message-content',
-      '.conversation-container',
+      'div[id^="model-response-message-content"]', // Primary: Angular ID prefix (model-response only, confirmed 2026-03)
     ],
 
     _findLastResponseElement() {
@@ -129,15 +125,33 @@
 
       const target = document.querySelector('main') || document.body;
 
-      this.observer = new MutationObserver(() => this._onMutation());
-      this.observer.observe(target, { childList: true, subtree: true, characterData: true });
+      this.observer = new MutationObserver((mutations) => this._onMutation(mutations));
+      this.observer.observe(target, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-busy'] });
 
       this.startTimeoutId = setTimeout(() => this.stop(), this.MAX_WAIT_MS);
 
       _kytDebug() && console.log('👁️ KYT Gemini: DOM observer started for response capture');
     },
 
-    _onMutation() {
+    _onMutation(mutations) {
+      // Fast path: aria-busy="false" means Google says streaming is complete
+      // Use 300ms confirmation delay (not instant) — DOM may still be rendering
+      if (mutations) {
+        for (const m of mutations) {
+          if (m.type === 'attributes' && m.attributeName === 'aria-busy') {
+            if (m.target.getAttribute('aria-busy') === 'false' && m.target !== this._baselineElement) {
+              _kytDebug() && console.log('👁️ KYT Gemini: aria-busy=false detected, confirming in 300ms');
+              // Mark as having content so _onStable won't bail on the dedup guard
+              if (this.lastTextLength === 0) this.lastTextLength = 1;
+              if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
+              this.stableTimeoutId = setTimeout(() => this._onStable(), 300);
+              return;
+            }
+          }
+        }
+      }
+
+      // Debounce path (fallback when aria-busy not available)
       const text = this._getLastResponseText();
       if (!text || text.length <= this.lastTextLength) return;
 
@@ -945,6 +959,15 @@
 
   function dispatchCapture(content, role, captureMethod, conversationId, optionalTimestamp) {
     if (!content || typeof content !== 'string' || content.trim().length < 2) return;
+
+    // Clean content: strip K.Y.T. injection blocks + role labels (defense-in-depth)
+    content = stripInjectionBlock(content) || content;
+    content = content.replace(/^(?:You said|Gemini said|User|Assistant)\s*:?\s*/i, '').trim();
+
+    // Reject conversation dumps (both user and assistant labels = grabbed container)
+    if (/\bYou said\b/i.test(content) && /\bGemini said\b/i.test(content)) return;
+
+    if (!content || content.length < 2) return;
 
     // Final safety net: reject raw JSON arrays/objects that slipped through extraction
     const t = content.trimStart();

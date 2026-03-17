@@ -1022,11 +1022,7 @@ describe('responseDOMObserver', () => {
       dispatched,
 
       RESPONSE_SELECTORS: [
-        'message-content.model-response-text',
-        'message-content[data-content-type="response"]',
-        '.model-response-text',
-        'message-content',
-        '.conversation-container',
+        'div[id^="model-response-message-content"]', // Primary: Angular ID prefix (model-response only)
       ],
 
       _findLastResponseElement() {
@@ -1044,7 +1040,23 @@ describe('responseDOMObserver', () => {
         this.startTimeoutId = setTimeout(() => this.stop(), this.MAX_WAIT_MS);
       },
 
-      _onMutation() {
+      _onMutation(mutations) {
+        // Fast path: aria-busy="false" — 300ms confirmation delay
+        if (mutations) {
+          for (const m of mutations) {
+            if (m.type === 'attributes' && m.attributeName === 'aria-busy') {
+              if (m.target.getAttribute('aria-busy') === 'false' && m.target !== this._baselineElement) {
+                if (this.lastTextLength === 0) this.lastTextLength = 1;
+                if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
+                this.stableTimeoutId = setTimeout(() => this._onStable(), 300);
+                dispatched._ariaBusyTriggered = true;
+                return;
+              }
+            }
+          }
+        }
+
+        // Debounce path (fallback when aria-busy not available)
         const text = this._getLastResponseText();
         if (!text || text.length <= this.lastTextLength) return;
 
@@ -1238,6 +1250,156 @@ describe('responseDOMObserver', () => {
     obs._mockText = 'Brand new response text that should be tracked normally.';
     const text = obs._getLastResponseText();
     expect(text).toBe('Brand new response text that should be tracked normally.');
+  });
+
+  it('aria-busy=false schedules 300ms confirmation (not instant capture)', () => {
+    const obs = createObserver();
+    obs.start('c_aria');
+    obs._mockText = 'Complete assistant response captured via aria-busy signal with enough text.';
+
+    const mockElement = {
+      getAttribute: (attr) => attr === 'aria-busy' ? 'false' : null,
+    };
+    const mutations = [{
+      type: 'attributes',
+      attributeName: 'aria-busy',
+      target: mockElement,
+    }];
+
+    obs._onMutation(mutations);
+    // Should schedule _onStable via stableTimeoutId, NOT dispatch immediately
+    expect(obs.stableTimeoutId).not.toBeNull();
+    expect(obs.dispatched).toHaveLength(0); // not yet — waiting 300ms confirmation
+
+    // Simulate 300ms passing by calling _onStable directly
+    obs._onStable();
+    expect(obs.dispatched).toHaveLength(1);
+    expect(obs.dispatched[0].text).toBe('Complete assistant response captured via aria-busy signal with enough text.');
+  });
+
+  it('aria-busy=true does not trigger capture', () => {
+    const obs = createObserver();
+    obs.start('c_busy');
+    obs._mockText = 'Partial response still streaming from the model right now.';
+
+    const mockElement = {
+      getAttribute: (attr) => attr === 'aria-busy' ? 'true' : null,
+    };
+    const mutations = [{
+      type: 'attributes',
+      attributeName: 'aria-busy',
+      target: mockElement,
+    }];
+
+    obs._onMutation(mutations);
+    expect(obs.dispatched).toHaveLength(0);
+    expect(obs.pendingConvId).toBe('c_busy'); // still active
+  });
+
+  it('aria-busy=false on baseline element is ignored', () => {
+    const obs = createObserver();
+    const oldElement = {
+      id: 'old-response',
+      getAttribute: (attr) => attr === 'aria-busy' ? 'false' : null,
+    };
+    obs._mockBaselineElement = oldElement;
+    obs.start('c_baseline_aria');
+    obs._mockText = 'Some text that should not be captured from the old element.';
+
+    const mutations = [{
+      type: 'attributes',
+      attributeName: 'aria-busy',
+      target: oldElement, // same as baseline
+    }];
+
+    obs._onMutation(mutations);
+    expect(obs.dispatched).toHaveLength(0); // ignored because target === baseline
+  });
+
+  it('non-aria-busy attribute mutations fall through to debounce', () => {
+    const obs = createObserver();
+    obs.start('c_other_attr');
+    obs._mockText = 'Response text that should be tracked via debounce path for capture.';
+
+    const mutations = [{
+      type: 'attributes',
+      attributeName: 'class',
+      target: { getAttribute: () => 'some-class' },
+    }];
+
+    obs._onMutation(mutations);
+    expect(obs.dispatched).toHaveLength(0); // not dispatched yet (in debounce)
+    expect(obs.lastTextLength).toBe(obs._mockText.length); // but text was tracked
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// DISPATCH CONTENT CLEANING TESTS
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('dispatchCapture content cleaning', () => {
+  it('strips "Assistant:" role label from start of content', () => {
+    const content = 'Assistant: This is the actual response text.';
+    const cleaned = content.replace(/^(?:You said|Gemini said|User|Assistant)\s*:?\s*/i, '').trim();
+    expect(cleaned).toBe('This is the actual response text.');
+  });
+
+  it('strips "User:" role label from start of content', () => {
+    const content = 'User: What is the meaning of life?';
+    const cleaned = content.replace(/^(?:You said|Gemini said|User|Assistant)\s*:?\s*/i, '').trim();
+    expect(cleaned).toBe('What is the meaning of life?');
+  });
+
+  it('strips "You said" Gemini UI label', () => {
+    const content = 'You said\nWhat is the meaning of life?';
+    const cleaned = content.replace(/^(?:You said|Gemini said|User|Assistant)\s*:?\s*/i, '').trim();
+    expect(cleaned).toBe('What is the meaning of life?');
+  });
+
+  it('strips "Gemini said" UI label', () => {
+    const content = 'Gemini said\nHere is the response.';
+    const cleaned = content.replace(/^(?:You said|Gemini said|User|Assistant)\s*:?\s*/i, '').trim();
+    expect(cleaned).toBe('Here is the response.');
+  });
+
+  it('does not strip "Assistant" mid-sentence', () => {
+    const content = 'The Assistant helped with the task.';
+    const cleaned = content.replace(/^(?:You said|Gemini said|User|Assistant)\s*:?\s*/i, '').trim();
+    expect(cleaned).toBe('The Assistant helped with the task.');
+  });
+
+  it('rejects conversation dumps with both "You said" and "Gemini said"', () => {
+    const content = 'You said\nHello\n\nGemini said\nHi there!';
+    const isDump = /\bYou said\b/i.test(content) && /\bGemini said\b/i.test(content);
+    expect(isDump).toBe(true);
+  });
+
+  it('does not reject content with only one label', () => {
+    const content = 'Gemini said something interesting about physics.';
+    const isDump = /\bYou said\b/i.test(content) && /\bGemini said\b/i.test(content);
+    expect(isDump).toBe(false);
+  });
+
+  it('strips injection block before saving', () => {
+    const content = '[SESSION_CONTEXT]\nK.Y.T. memory data\n===\nActual response about books.';
+    const cleaned = stripInjectionBlock(content);
+    expect(cleaned).toBe('Actual response about books.');
+    expect(cleaned).not.toContain('SESSION_CONTEXT');
+    expect(cleaned).not.toContain('K.Y.T.');
+  });
+
+  it('strips injection block AND role label together', () => {
+    let content = '[RETRIEVAL_CONTEXT]\nK.Y.T. retrieved items\n===\nAssistant: The real answer is here.';
+    content = stripInjectionBlock(content) || content;
+    content = content.replace(/^(?:You said|Gemini said|User|Assistant)\s*:?\s*/i, '').trim();
+    expect(content).toBe('The real answer is here.');
+  });
+
+  it('preserves clean content unchanged', () => {
+    const content = 'This transcript provides a structured curriculum consisting of 21 books.';
+    const afterStrip = stripInjectionBlock(content);
+    const afterLabel = afterStrip.replace(/^(?:You said|Gemini said|User|Assistant)\s*:?\s*/i, '').trim();
+    expect(afterLabel).toBe(content);
   });
 });
 
