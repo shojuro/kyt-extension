@@ -23,10 +23,12 @@
   class MessageDeduplicator {
     constructor() {
       this.recentMessages = new Map();
+      this.recentPrefixes = new Map(); // prefix hash → { contentHash, length, timestamp }
       this.dedupeWindow = 5000;
       this.maxMapSize = 1000;
+      this.prefixLength = 100;
       this.cleanupInterval = setInterval(() => this._cleanup(), 2000);
-      this.stats = { totalAttempts: 0, captured: 0, duplicatesSkipped: 0, upgradeCaptures: 0 };
+      this.stats = { totalAttempts: 0, captured: 0, duplicatesSkipped: 0, upgradeCaptures: 0, prefixUpgrades: 0 };
     }
 
     shouldCapture(content, captureMethod) {
@@ -38,6 +40,7 @@
       const now = Date.now();
       const confidence = captureMethod === 'xhr' || captureMethod === 'xhr-response' || captureMethod === 'fetch' || captureMethod === 'fetch-response' ? 95 : 50;
 
+      // Exact hash check (fast path)
       if (this.recentMessages.has(hash)) {
         const last = this.recentMessages.get(hash);
         if (now - last.timestamp < this.dedupeWindow) {
@@ -51,13 +54,40 @@
         }
       }
 
+      // Prefix check: handles wire+DOM race (truncated vs complete)
+      const prefixStr = normalized.slice(0, this.prefixLength);
+      const prefixHash = this._hash(prefixStr);
+      if (this.recentPrefixes.has(prefixHash)) {
+        const prev = this.recentPrefixes.get(prefixHash);
+        if (now - prev.timestamp < this.dedupeWindow) {
+          if (normalized.length > prev.length) {
+            // New content is longer → upgrade (complete replacing truncated)
+            this.recentMessages.delete(prev.contentHash);
+            this.recentPrefixes.set(prefixHash, { contentHash: hash, length: normalized.length, timestamp: now });
+            this._addToMessages(hash, now, confidence);
+            this.stats.prefixUpgrades++;
+            return true;
+          } else {
+            // New content is shorter/equal → reject as truncated duplicate
+            this.stats.duplicatesSkipped++;
+            return false;
+          }
+        }
+      }
+
+      // New entry
+      this.recentPrefixes.set(prefixHash, { contentHash: hash, length: normalized.length, timestamp: now });
+      this._addToMessages(hash, now, confidence);
+      this.stats.captured++;
+      return true;
+    }
+
+    _addToMessages(hash, timestamp, confidence) {
       if (this.recentMessages.size >= this.maxMapSize) {
         const oldestKey = this.recentMessages.keys().next().value;
         this.recentMessages.delete(oldestKey);
       }
-      this.recentMessages.set(hash, { timestamp: now, confidence });
-      this.stats.captured++;
-      return true;
+      this.recentMessages.set(hash, { timestamp, confidence });
     }
 
     _hash(content) {
@@ -75,10 +105,13 @@
       for (const [hash, entry] of this.recentMessages.entries()) {
         if (entry.timestamp < cutoff) this.recentMessages.delete(hash);
       }
+      for (const [hash, entry] of this.recentPrefixes.entries()) {
+        if (entry.timestamp < cutoff) this.recentPrefixes.delete(hash);
+      }
     }
 
     getStats() {
-      return { ...this.stats, mapSize: this.recentMessages.size };
+      return { ...this.stats, mapSize: this.recentMessages.size, prefixMapSize: this.recentPrefixes.size };
     }
   }
 
@@ -99,7 +132,7 @@
     pendingConvId: null,
     lastTextLength: 0,
     stableTimeoutId: null,
-    STABLE_DELAY_MS: 2500,
+    STABLE_DELAY_MS: 4000,
     MAX_WAIT_MS: 120000,
     startTimeoutId: null,
     _baselineElement: null,
@@ -167,7 +200,10 @@
         if (elements.length > 0) {
           const last = elements[elements.length - 1];
           if (last === this._baselineElement) return null; // still the old element
-          const text = last.innerText?.trim();
+          // Clone and strip UI artifacts before extracting text
+          const clone = last.cloneNode(true);
+          clone.querySelectorAll('button, [role="button"], .export-button, .action-bar, .response-actions').forEach(el => el.remove());
+          const text = clone.innerText?.trim();
           if (text && text.length > 20) return text;
         }
       }
@@ -794,6 +830,45 @@
   }
 
   /**
+   * Extract assistant text from a StreamGenerate XHR/fetch response.
+   * StreamGenerate sends progressive frames where each contains full text so far —
+   * the longest natural-language string across all frames is the complete response.
+   * Returns the extracted text or null if nothing usable found.
+   */
+  function extractAssistantFromStreamGenerate(responseText) {
+    if (!responseText || responseText.length < 50) return null;
+
+    // Strip anti-XSSI prefix
+    let text = responseText;
+    if (text.startsWith(')]}\'\n')) text = text.slice(5);
+    else if (text.startsWith(')]}\'')) text = text.slice(4);
+
+    const frames = parseLengthPrefixedFrames(text);
+    if (frames.length === 0) return null;
+
+    let longest = null;
+    let longestLen = 0;
+
+    for (const frame of frames) {
+      const strings = findAllStrings(frame, 10);
+      for (const s of strings) {
+        if (s.length < 20) continue;
+        if (s.length <= longestLen) continue;
+        if (!isNaturalLanguage(s)) continue;
+        // Skip strings that look like system IDs or metadata
+        if (/^(r_|rc_|c_|af\.)/.test(s)) continue;
+        if (/^[0-9a-f]{16,}$/i.test(s)) continue;
+        if (/^https?:\/\//.test(s)) continue;
+        if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) continue;
+        longest = s;
+        longestLen = s.length;
+      }
+    }
+
+    return longest && longestLen >= 20 ? longest : null;
+  }
+
+  /**
    * Capture all messages from a history-load response and dispatch events.
    */
   function captureConversationHistory(responseText, metadata) {
@@ -972,8 +1047,13 @@
     // Reject conversation dumps (both user and assistant labels = grabbed container)
     if (/\bYou said\b/i.test(content) && /\bGemini said\b/i.test(content)) return;
 
-    // Strip Gemini UI button text that leaks into innerText
-    content = content.replace(/\n?Export to Sheets\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    // Strip Gemini UI button text and artifacts that leak into innerText/wire
+    content = content.replace(/\n?Export to Sheets\n?/g, '\n').trim();
+    content = content.replace(/\n?(?:Sources|Related topics)\n.*$/s, '').trim();
+    content = content.replace(/\n?(?:Show drafts|Draft \d+ of \d+)\n?/g, '\n').trim();
+    content = content.replace(/(?:^|\n)(?:Share|Copy|Report|Like|Dislike)\s*$/gm, '').trim();
+    content = content.replace(/\[Image of .*?\]/g, '').trim();
+    content = content.replace(/\n{3,}/g, '\n\n').trim();
 
     if (!content || content.length < 2) return;
 
@@ -1090,15 +1170,24 @@
     // Start DOM observer to capture assistant response when it stabilizes
     responseDOMObserver.start(parseResult.conversationId);
 
-    // Signal DOM observer when streaming completes (no text dispatch —
-    // extractAssistantResponse produces garbled progressive-streaming fragments)
+    // Wire extraction primary, DOM observer fallback
     this.addEventListener('load', function () {
       try {
         if (this.responseText && this.responseText.length > 100) {
           _kytDebug() && console.log('📡 KYT Gemini: XHR StreamGenerate response complete (' + this.responseText.length + ' bytes)');
-          responseDOMObserver.notifyResponseComplete();
+          const wireText = extractAssistantFromStreamGenerate(this.responseText);
+          if (wireText && wireText.length >= 20) {
+            _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction success (' + wireText.length + ' chars)');
+            dispatchCapture(wireText, 'assistant', 'xhr-response', parseResult.conversationId);
+            responseDOMObserver.stop();
+          } else {
+            _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction failed, falling back to DOM observer');
+            responseDOMObserver.notifyResponseComplete();
+          }
         }
-      } catch (_) {}
+      } catch (_) {
+        responseDOMObserver.notifyResponseComplete();
+      }
     }, { once: true });
 
     // Context injection: defer send until context resolves
@@ -1202,9 +1291,21 @@
 
     const fetchResponse = await originalFetch.call(this, input, finalInit);
     try {
+      const responseClone = fetchResponse.clone();
+      const responseBody = await responseClone.text();
+      _kytDebug() && console.log('📡 KYT Gemini: Fetch StreamGenerate response complete (' + responseBody.length + ' bytes)');
+      const wireText = extractAssistantFromStreamGenerate(responseBody);
+      if (wireText && wireText.length >= 20) {
+        _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction success via fetch (' + wireText.length + ' chars)');
+        dispatchCapture(wireText, 'assistant', 'fetch-response', parseResult.conversationId);
+        responseDOMObserver.stop();
+      } else {
+        _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction failed via fetch, falling back to DOM observer');
+        responseDOMObserver.notifyResponseComplete();
+      }
+    } catch (_) {
       responseDOMObserver.notifyResponseComplete();
-      _kytDebug() && console.log('📡 KYT Gemini: Fetch StreamGenerate response complete');
-    } catch (_) {}
+    }
     return fetchResponse;
   };
 

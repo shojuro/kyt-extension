@@ -227,9 +227,11 @@ function fnvHash(content) {
 class MessageDeduplicator {
   constructor() {
     this.recentMessages = new Map();
+    this.recentPrefixes = new Map();
     this.dedupeWindow = 5000;
     this.maxMapSize = 1000;
-    this.stats = { totalAttempts: 0, captured: 0, duplicatesSkipped: 0, upgradeCaptures: 0 };
+    this.prefixLength = 100;
+    this.stats = { totalAttempts: 0, captured: 0, duplicatesSkipped: 0, upgradeCaptures: 0, prefixUpgrades: 0 };
   }
   shouldCapture(content, captureMethod) {
     if (!content || typeof content !== 'string') return true;
@@ -238,6 +240,7 @@ class MessageDeduplicator {
     const hash = this._hash(normalized);
     const now = Date.now();
     const confidence = captureMethod === 'xhr' || captureMethod === 'xhr-response' || captureMethod === 'fetch' || captureMethod === 'fetch-response' ? 95 : 50;
+    // Exact hash check (fast path)
     if (this.recentMessages.has(hash)) {
       const last = this.recentMessages.get(hash);
       if (now - last.timestamp < this.dedupeWindow) {
@@ -250,13 +253,36 @@ class MessageDeduplicator {
         return false;
       }
     }
+    // Prefix check: handles wire+DOM race (truncated vs complete)
+    const prefixStr = normalized.slice(0, this.prefixLength);
+    const prefixHash = this._hash(prefixStr);
+    if (this.recentPrefixes.has(prefixHash)) {
+      const prev = this.recentPrefixes.get(prefixHash);
+      if (now - prev.timestamp < this.dedupeWindow) {
+        if (normalized.length > prev.length) {
+          this.recentMessages.delete(prev.contentHash);
+          this.recentPrefixes.set(prefixHash, { contentHash: hash, length: normalized.length, timestamp: now });
+          this._addToMessages(hash, now, confidence);
+          this.stats.prefixUpgrades++;
+          return true;
+        } else {
+          this.stats.duplicatesSkipped++;
+          return false;
+        }
+      }
+    }
+    // New entry
+    this.recentPrefixes.set(prefixHash, { contentHash: hash, length: normalized.length, timestamp: now });
+    this._addToMessages(hash, now, confidence);
+    this.stats.captured++;
+    return true;
+  }
+  _addToMessages(hash, timestamp, confidence) {
     if (this.recentMessages.size >= this.maxMapSize) {
       const oldestKey = this.recentMessages.keys().next().value;
       this.recentMessages.delete(oldestKey);
     }
-    this.recentMessages.set(hash, { timestamp: now, confidence });
-    this.stats.captured++;
-    return true;
+    this.recentMessages.set(hash, { timestamp, confidence });
   }
   _hash(content) {
     const FNV_PRIME = 0x01000193;
@@ -267,6 +293,33 @@ class MessageDeduplicator {
     }
     return (hash >>> 0).toString(16);
   }
+}
+
+// extractAssistantFromStreamGenerate (copied from inject.js for testability)
+function extractAssistantFromStreamGenerate(responseText) {
+  if (!responseText || responseText.length < 50) return null;
+  let text = responseText;
+  if (text.startsWith(')]}\'\n')) text = text.slice(5);
+  else if (text.startsWith(')]}\'')) text = text.slice(4);
+  const frames = parseLengthPrefixedFrames(text);
+  if (frames.length === 0) return null;
+  let longest = null;
+  let longestLen = 0;
+  for (const frame of frames) {
+    const strings = findAllStrings(frame, 10);
+    for (const s of strings) {
+      if (s.length < 20) continue;
+      if (s.length <= longestLen) continue;
+      if (!isNaturalLanguage(s)) continue;
+      if (/^(r_|rc_|c_|af\.)/.test(s)) continue;
+      if (/^[0-9a-f]{16,}$/i.test(s)) continue;
+      if (/^https?:\/\//.test(s)) continue;
+      if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) continue;
+      longest = s;
+      longestLen = s.length;
+    }
+  }
+  return longest && longestLen >= 20 ? longest : null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1413,6 +1466,175 @@ describe('dispatchCapture content cleaning', () => {
     const content = 'Some table data here.\nExport to Sheets';
     const cleaned = content.replace(/\n?Export to Sheets\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
     expect(cleaned).toBe('Some table data here.');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// WIRE EXTRACTION TESTS
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('extractAssistantFromStreamGenerate', () => {
+  function buildLengthPrefixedFrame(jsonObj) {
+    const jsonStr = JSON.stringify(jsonObj);
+    const encoder = new TextEncoder();
+    const frameStr = '\n' + jsonStr;
+    const byteLen = encoder.encode(frameStr).length;
+    return byteLen + frameStr;
+  }
+
+  it('extracts the longest natural-language string from frames', () => {
+    const short = 'This is a short response to the user query here.';
+    const long = 'This is a much longer complete response that contains the full assistant answer with lots of detail about the topic at hand and additional context.';
+    const body = buildLengthPrefixedFrame([short, 'c_abc123def']) + buildLengthPrefixedFrame([long, 'r_token123']);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(long);
+  });
+
+  it('strips anti-XSSI prefix )]}\\\'\\n', () => {
+    const text = 'Walter Payton was one of the greatest running backs in NFL history and he was truly legendary.';
+    const body = ')]}\'\n' + buildLengthPrefixedFrame([text]);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(text);
+  });
+
+  it('strips anti-XSSI prefix without newline', () => {
+    const text = 'Walter Payton was one of the greatest running backs in NFL history and he was truly legendary.';
+    const body = ')]\}\'' + buildLengthPrefixedFrame([text]);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(text);
+  });
+
+  it('handles multi-byte UTF-8 characters', () => {
+    const text = 'これは日本語のテストです。自然言語処理のために長い文章が必要です。The parser must handle multi-byte UTF-8 correctly.';
+    const body = buildLengthPrefixedFrame([text]);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(text);
+  });
+
+  it('returns null for empty/short input', () => {
+    expect(extractAssistantFromStreamGenerate(null)).toBeNull();
+    expect(extractAssistantFromStreamGenerate('')).toBeNull();
+    expect(extractAssistantFromStreamGenerate('short')).toBeNull();
+  });
+
+  it('returns null when no natural language found', () => {
+    const body = buildLengthPrefixedFrame(['c_abc123def456', 'r_token_long_enough_to_test', 42]);
+    expect(extractAssistantFromStreamGenerate(body)).toBeNull();
+  });
+
+  it('filters out system IDs, URLs, and base64', () => {
+    const text = 'This is the real assistant response that should be captured by the extraction function.';
+    const body = buildLengthPrefixedFrame([
+      'c_abc123def456789',
+      'https://lh3.googleusercontent.com/a/default-user=s64-c',
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/',
+      text
+    ]);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(text);
+  });
+
+  it('picks longest when progressive frames have growing text', () => {
+    const frame1Text = 'Walter Payton was a great football player in the NFL.';
+    const frame2Text = 'Walter Payton was a great football player in the NFL. He played for the Chicago Bears and was nicknamed Sweetness.';
+    const frame3Text = 'Walter Payton was a great football player in the NFL. He played for the Chicago Bears and was nicknamed Sweetness. He rushed for over sixteen thousand yards in his career.';
+    const body = buildLengthPrefixedFrame([frame1Text]) + buildLengthPrefixedFrame([frame2Text]) + buildLengthPrefixedFrame([frame3Text]);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(frame3Text);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// PREFIX-MATCHING DEDUP TESTS
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('MessageDeduplicator prefix matching', () => {
+  it('allows upgrade from truncated to complete version', () => {
+    const dedup = new MessageDeduplicator();
+    const truncated = 'This is the beginning of a response that was captured by the DOM observer but unfortunately it got cut off before the full text could';
+    const complete = 'This is the beginning of a response that was captured by the DOM observer but unfortunately it got cut off before the full text could be rendered. Now the wire extraction has the complete version with all the remaining details.';
+
+    expect(dedup.shouldCapture(truncated, 'dom-observer')).toBe(true);
+    expect(dedup.shouldCapture(complete, 'xhr-response')).toBe(true);
+    expect(dedup.stats.prefixUpgrades).toBe(1);
+  });
+
+  it('rejects shorter duplicate after complete capture', () => {
+    const dedup = new MessageDeduplicator();
+    const complete = 'This is the complete wire-extracted response with full content that was captured first via the XHR load handler and has all the text.';
+    const truncated = 'This is the complete wire-extracted response with full content that was captured first via the XHR load handler';
+
+    expect(dedup.shouldCapture(complete, 'xhr-response')).toBe(true);
+    expect(dedup.shouldCapture(truncated, 'dom-observer')).toBe(false);
+    expect(dedup.stats.duplicatesSkipped).toBe(1);
+  });
+
+  it('passes through unrelated content', () => {
+    const dedup = new MessageDeduplicator();
+    expect(dedup.shouldCapture('First message about something entirely different and unrelated to everything else.', 'xhr')).toBe(true);
+    expect(dedup.shouldCapture('Second message about another topic that has nothing to do with the first one at all.', 'xhr')).toBe(true);
+    expect(dedup.stats.captured).toBe(2);
+    expect(dedup.stats.prefixUpgrades).toBe(0);
+    expect(dedup.stats.duplicatesSkipped).toBe(0);
+  });
+
+  it('exact duplicate still blocked (fast path)', () => {
+    const dedup = new MessageDeduplicator();
+    const msg = 'This exact message is sent twice with identical content and should be deduplicated on the fast path.';
+    expect(dedup.shouldCapture(msg, 'xhr-response')).toBe(true);
+    expect(dedup.shouldCapture(msg, 'xhr-response')).toBe(false);
+    expect(dedup.stats.duplicatesSkipped).toBe(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// EXPANDED CONTENT CLEANING TESTS
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('dispatchCapture expanded content cleaning', () => {
+  function cleanContent(content) {
+    content = content.replace(/\n?Export to Sheets\n?/g, '\n').trim();
+    content = content.replace(/\n?(?:Sources|Related topics)\n.*$/s, '').trim();
+    content = content.replace(/\n?(?:Show drafts|Draft \d+ of \d+)\n?/g, '\n').trim();
+    content = content.replace(/(?:^|\n)(?:Share|Copy|Report|Like|Dislike)\s*$/gm, '').trim();
+    content = content.replace(/\[Image of .*?\]/g, '').trim();
+    content = content.replace(/\n{3,}/g, '\n\n').trim();
+    return content;
+  }
+
+  it('strips Sources section at end', () => {
+    const content = 'The answer is 42.\n\nSources\nhttps://example.com\nhttps://other.com';
+    expect(cleanContent(content)).toBe('The answer is 42.');
+  });
+
+  it('strips Related topics section at end', () => {
+    const content = 'Some response text here.\n\nRelated topics\nTopic 1\nTopic 2\nTopic 3';
+    expect(cleanContent(content)).toBe('Some response text here.');
+  });
+
+  it('strips Draft indicators', () => {
+    const content = 'Show drafts\nHere is my response about the topic.\nDraft 1 of 3';
+    expect(cleanContent(content)).toBe('Here is my response about the topic.');
+  });
+
+  it('strips action button text at line end', () => {
+    const content = 'A great response.\nShare\nCopy';
+    expect(cleanContent(content)).toBe('A great response.');
+  });
+
+  it('strips [Image of ...] placeholders', () => {
+    const content = 'Look at this: [Image of a cat sitting on a keyboard] Pretty cute right?';
+    expect(cleanContent(content)).toBe('Look at this:  Pretty cute right?');
+  });
+
+  it('collapses excessive newlines', () => {
+    const content = 'Paragraph one.\n\n\n\n\nParagraph two.';
+    expect(cleanContent(content)).toBe('Paragraph one.\n\nParagraph two.');
+  });
+
+  it('preserves clean content', () => {
+    const content = 'This is a perfectly clean response with no artifacts.';
+    expect(cleanContent(content)).toBe(content);
   });
 });
 
