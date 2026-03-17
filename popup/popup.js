@@ -45,9 +45,10 @@ const projectVaultBadge = document.getElementById('projectVaultBadge');
 
 // Tier descriptions for display
 const TIER_INFO = {
-  free: { label: 'FREE', description: 'Basic features' },
-  pro: { label: 'PRO', description: 'Unlimited memories, priority support' },
-  dev: { label: 'DEV', description: 'API access, advanced features' }
+  free: { label: 'FREE', description: '20 turns/day' },
+  pro: { label: 'PRO', description: '75 turns/day, priority support' },
+  founder: { label: 'FOUNDER', description: '75 turns/day, lifetime Pro' },
+  max: { label: 'MAX', description: 'Unlimited turns, API access' }
 };
 
 // ============================================
@@ -426,6 +427,10 @@ async function loadSubscription() {
     if (tier === 'free') {
       upgradeBtn.classList.remove('hidden');
       manageBillingBtn.classList.add('hidden');
+    } else if (tier === 'founder') {
+      // Founders have lifetime Pro — no billing to manage
+      upgradeBtn.classList.add('hidden');
+      manageBillingBtn.classList.add('hidden');
     } else {
       upgradeBtn.classList.add('hidden');
       manageBillingBtn.classList.remove('hidden');
@@ -436,6 +441,45 @@ async function loadSubscription() {
     tierBadge.textContent = 'FREE';
     tierBadge.className = 'tier-badge tier-free';
     tierDescription.textContent = 'Basic features';
+  }
+}
+
+/**
+ * Load and display daily turn usage
+ */
+async function loadTurnUsage() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'GET_TURN_USAGE' });
+    if (!response || !response.success) return;
+
+    const { used, limit, tier } = response;
+    const container = document.getElementById('turnUsageContainer');
+    const fill = document.getElementById('turnUsageFill');
+    const text = document.getElementById('turnUsageText');
+    if (!container || !fill || !text) return;
+
+    if (limit === -1) {
+      // Unlimited — hide the bar
+      text.textContent = 'Unlimited turns';
+      fill.style.width = '0%';
+      fill.className = 'turn-usage__fill';
+      return;
+    }
+
+    const pct = Math.min((used / limit) * 100, 100);
+    fill.style.width = pct + '%';
+
+    // Color coding
+    fill.className = 'turn-usage__fill';
+    if (pct >= 100) {
+      fill.classList.add('turn-usage__fill--limit');
+    } else if (pct >= 75) {
+      fill.classList.add('turn-usage__fill--warning');
+    }
+
+    text.textContent = used + '/' + limit + ' turns today';
+  } catch (error) {
+    console.error('Error loading turn usage:', error);
   }
 }
 
@@ -474,7 +518,8 @@ async function handleUpgrade() {
       },
       body: JSON.stringify({
         userId: userId,
-        priceId: 'price_xxx_pro',
+        tier: 'pro',
+        interval: 'monthly',
       }),
     });
 
@@ -990,6 +1035,7 @@ checkFirstInstallRedirect().then(redirecting => {
     loadConfig();
     loadDebugMode();
     loadSubscription();
+    loadTurnUsage();
     loadSyncStatus();
     loadCircuitBreakerStatus();
 
@@ -997,6 +1043,7 @@ checkFirstInstallRedirect().then(redirecting => {
       loadStats();
       loadSyncStatus();
       loadCircuitBreakerStatus();
+      loadTurnUsage();
     }, 5000);
   }
 });

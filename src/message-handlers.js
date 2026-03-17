@@ -14,6 +14,7 @@ import { HistoryImporter } from './history-import/index.js';
 import { classifyIntent } from './intent-classifier.js';
 import { classifyWithHaiku, isHaikuEnabled } from './haiku-tiebreaker.js';
 import { getMemoryMode, setMemoryMode } from './memory-mode.js';
+import { checkTurnLimit, incrementTurnCount, getTurnUsage } from './turn-limiter.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { getActiveProject, setActiveProject, clearActiveProject } from './project-manager.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
@@ -389,9 +390,36 @@ export function registerMessageHandler(deps) {
               sendResponse({ success: true, queued: false, reason: 'incognito_mode' });
               return;
             }
+
+            // Turn limit check
+            const turnCheck = await checkTurnLimit();
+            if (!turnCheck.allowed) {
+              console.log(`🚫 Turn limit reached: ${turnCheck.used}/${turnCheck.limit} (${turnCheck.tier})`);
+              sendResponse({
+                success: false,
+                reason: 'turn_limit_reached',
+                used: turnCheck.used,
+                limit: turnCheck.limit,
+                tier: turnCheck.tier
+              });
+              // Notify active tab to show upgrade banner
+              chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                if (tabs[0]?.id) {
+                  chrome.tabs.sendMessage(tabs[0].id, {
+                    type: 'KYT_TURN_LIMIT_REACHED',
+                    used: turnCheck.used,
+                    limit: turnCheck.limit,
+                    tier: turnCheck.tier
+                  }).catch(() => {}); // Tab may not have content script
+                }
+              });
+              return;
+            }
+
             console.log(`📝 Captured message (mode: ${mode})`);
             const result = await saveMessage(message.data);
             if (result && result.saved !== false) {
+              await incrementTurnCount();
               scheduleDebouncedSync();
               sendResponse({ success: true, queued: true });
             } else {
@@ -830,6 +858,17 @@ export function registerMessageHandler(deps) {
           try {
             const mode = await getMemoryMode();
             sendResponse({ success: true, mode });
+          } catch (error) {
+            sendResponse({ success: false, error: error.message });
+          }
+        })();
+        return true;
+
+      case 'GET_TURN_USAGE':
+        (async () => {
+          try {
+            const usage = await getTurnUsage();
+            sendResponse({ success: true, ...usage });
           } catch (error) {
             sendResponse({ success: false, error: error.message });
           }

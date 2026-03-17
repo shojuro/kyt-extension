@@ -47,7 +47,8 @@
         "https://chat.openai.com/*"
       ],
       "js": [
-        "platforms/chatgpt/content.js"
+        "platforms/chatgpt/content.js",
+        "src/content/upgrade-banner.js"
       ],
       "run_at": "document_start",
       "all_frames": false
@@ -67,7 +68,8 @@
         "https://claude.ai/*"
       ],
       "js": [
-        "platforms/claude/content_bridge.js"
+        "platforms/claude/content_bridge.js",
+        "src/content/upgrade-banner.js"
       ],
       "run_at": "document_start",
       "all_frames": false
@@ -77,7 +79,8 @@
         "https://gemini.google.com/*"
       ],
       "js": [
-        "platforms/gemini/content.js"
+        "platforms/gemini/content.js",
+        "src/content/upgrade-banner.js"
       ],
       "run_at": "document_start",
       "all_frames": false
