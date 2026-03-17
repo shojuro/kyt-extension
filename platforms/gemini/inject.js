@@ -612,6 +612,11 @@
   const HISTORY_CAPTURE_START = Date.now();
   const HISTORY_CAPTURE_INIT_MS = 5000; // Skip captures during initial page load
 
+  // Track live-captured conversations to prevent batchexecute doubling.
+  // Maps conversationId → timestamp of last live capture.
+  const _liveCapturedConvIds = new Map();
+  const LIVE_CAPTURE_GUARD_MS = 60000; // Block history-load for 60s after live capture
+
   /**
    * Detect if a POST request is a Gemini conversation-history load (batchexecute).
    * Returns { rpcId, conversationIdHint } or false.
@@ -800,7 +805,14 @@
 
     const conversationId = metadata.conversationIdHint || 'history_' + Date.now();
 
-    // Skip if we already captured this conversation
+    // Skip if this conversation was recently live-captured (prevents batchexecute doubling)
+    const liveCapturedAt = _liveCapturedConvIds.get(conversationId);
+    if (liveCapturedAt && (Date.now() - liveCapturedAt) < LIVE_CAPTURE_GUARD_MS) {
+      _kytDebug() && console.log('📜 KYT Gemini: Skipping history-load for recently live-captured conversation ' + conversationId);
+      return;
+    }
+
+    // Skip if we already captured this conversation via history-load
     if (_capturedConversationIds.has(conversationId)) return;
     if (_capturedConversationIds.size >= 500) {
       _capturedConversationIds.clear(); // Reset — re-capturing a conv is harmless (deduplicator catches content)
@@ -967,6 +979,9 @@
     // Reject conversation dumps (both user and assistant labels = grabbed container)
     if (/\bYou said\b/i.test(content) && /\bGemini said\b/i.test(content)) return;
 
+    // Strip Gemini UI button text that leaks into innerText
+    content = content.replace(/\n?Export to Sheets\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+
     if (!content || content.length < 2) return;
 
     // Final safety net: reject raw JSON arrays/objects that slipped through extraction
@@ -977,6 +992,18 @@
     if (/^[A-Za-z ]{5,30}https?:\/\//.test(t)) return;
 
     if (!deduplicator.shouldCapture(content, captureMethod)) return;
+
+    // Track live-captured conversations to block redundant history-loads
+    if (captureMethod !== 'history' && conversationId) {
+      _liveCapturedConvIds.set(conversationId, Date.now());
+      // Evict stale entries
+      if (_liveCapturedConvIds.size > 50) {
+        const cutoff = Date.now() - LIVE_CAPTURE_GUARD_MS;
+        for (const [id, ts] of _liveCapturedConvIds) {
+          if (ts < cutoff) _liveCapturedConvIds.delete(id);
+        }
+      }
+    }
 
     const messageData = {
       content: content.trim(),
