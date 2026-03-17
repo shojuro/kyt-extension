@@ -844,24 +844,48 @@
     else if (text.startsWith(')]}\'')) text = text.slice(4);
 
     const frames = parseLengthPrefixedFrames(text);
+
+    if (_kytDebug()) {
+      const prefix = responseText.substring(0, 40).replace(/\n/g, '\\n');
+      console.log('🔍 KYT Wire: prefix="' + prefix + '", frames=' + frames.length + ', responseLen=' + responseText.length);
+    }
+
     if (frames.length === 0) return null;
 
     let longest = null;
     let longestLen = 0;
+    let debugTotal = 0, debugShort = 0, debugNatLang = 0, debugFiltered = 0;
 
     for (const frame of frames) {
       const strings = findAllStrings(frame, 10);
       for (const s of strings) {
-        if (s.length < 20) continue;
+        debugTotal++;
+        if (s.length < 20) { debugShort++; continue; }
         if (s.length <= longestLen) continue;
-        if (!isNaturalLanguage(s)) continue;
-        // Skip strings that look like system IDs or metadata
-        if (/^(r_|rc_|c_|af\.)/.test(s)) continue;
-        if (/^[0-9a-f]{16,}$/i.test(s)) continue;
-        if (/^https?:\/\//.test(s)) continue;
-        if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) continue;
+        if (/^(r_|rc_|c_|af\.)/.test(s)) { debugFiltered++; continue; }
+        if (/^[0-9a-f]{16,}$/i.test(s)) { debugFiltered++; continue; }
+        if (/^https?:\/\//.test(s)) { debugFiltered++; continue; }
+        if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) { debugFiltered++; continue; }
+        if (!isNaturalLanguage(s)) { debugNatLang++; continue; }
         longest = s;
         longestLen = s.length;
+      }
+    }
+
+    if (_kytDebug()) {
+      console.log('🔍 KYT Wire: strings=' + debugTotal + ', short=' + debugShort + ', natLangFail=' + debugNatLang + ', filtered=' + debugFiltered + ', longest=' + longestLen);
+      if (debugNatLang > 0 && longestLen === 0) {
+        // Show the top 3 longest strings that failed isNaturalLanguage to diagnose
+        const allStrs = frames.flatMap(f => findAllStrings(f, 10)).filter(s => s.length >= 20);
+        allStrs.sort((a, b) => b.length - a.length);
+        for (let i = 0; i < Math.min(3, allStrs.length); i++) {
+          const s = allStrs[i];
+          const words = s.split(/\s+/).filter(w => w.length > 0);
+          const hasLower = /[a-z]/.test(s);
+          const trimmed = s.trimStart();
+          const startsJson = /^[\[{]/.test(trimmed);
+          console.log('🔍 KYT Wire: rejected[' + i + '] len=' + s.length + ' words=' + words.length + ' hasLower=' + hasLower + ' startsJson=' + startsJson + ' first80="' + s.substring(0, 80) + '"');
+        }
       }
     }
 
