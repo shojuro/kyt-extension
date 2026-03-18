@@ -209,6 +209,161 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // DOM OBSERVER — Deferred capture for assistant responses
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  // Lesson from Gemini: streaming wire responses come in incremental frames
+  // that are unreliable to parse. The wire intercept tells us "a response is
+  // happening" — the DOM tells us what it actually says once rendering is done.
+  //
+  // Strategy: XHR captures user question (from request body — always clean).
+  // For assistant response, XHR triggers the DOM observer instead of parsing
+  // the wire. Observer watches the rendered answer, waits for it to stabilize
+  // (no new text for STABLE_DELAY_MS), then scrapes.
+
+  // WeakSet of already-captured response elements — prevents re-scrape
+  const capturedElements = new WeakSet();
+
+  // Selectors for NotebookLM's answer container (may change as Google updates UI)
+  const RESPONSE_SELECTORS = [
+    '.response-container',
+    '[data-response-id]',
+    '.chat-response',
+    '.model-response',
+    'message-content',
+  ];
+
+  const responseDOMObserver = {
+    observer: null,
+    pendingConvId: null,
+    lastTextLength: 0,
+    stableTimeoutId: null,
+    STABLE_DELAY_MS: 3000,
+    MAX_WAIT_MS: 120000,
+    maxWaitTimeoutId: null,
+    _baselineElement: null,
+
+    _findLastResponseElement() {
+      // Try specific selectors first
+      for (const selector of RESPONSE_SELECTORS) {
+        try {
+          const elements = document.querySelectorAll(selector);
+          if (elements.length > 0) return elements[elements.length - 1];
+        } catch { /* invalid selector */ }
+      }
+      // Fallback: find the last element with substantial text near the chat area
+      return null;
+    },
+
+    start(conversationId) {
+      this._flushPending();
+      this.stop();
+      this.pendingConvId = conversationId;
+      this.lastTextLength = 0;
+      this._baselineElement = this._findLastResponseElement();
+
+      const target = document.querySelector('main') || document.body;
+      this.observer = new MutationObserver((mutations) => this._onMutation(mutations));
+      this.observer.observe(target, {
+        childList: true, subtree: true, characterData: true,
+        attributes: true, attributeFilter: ['aria-busy'],
+      });
+
+      // Safety: max wait to prevent leaking observers
+      this.maxWaitTimeoutId = setTimeout(() => {
+        _debug() && console.log('⏰ KYT NLM: DOM observer max wait reached, flushing');
+        this._flushPending();
+        this.stop();
+      }, this.MAX_WAIT_MS);
+
+      _debug() && console.log('👁️ KYT NLM: DOM observer started for response capture');
+    },
+
+    _onMutation(mutations) {
+      // Fast path: aria-busy="false" = Google says streaming done
+      if (mutations) {
+        for (const m of mutations) {
+          if (m.type === 'attributes' && m.attributeName === 'aria-busy') {
+            if (m.target.getAttribute('aria-busy') === 'false' && m.target !== this._baselineElement) {
+              if (this.lastTextLength === 0) this.lastTextLength = 1;
+              if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
+              this.stableTimeoutId = setTimeout(() => this._onStable(), 500);
+              return;
+            }
+          }
+        }
+      }
+
+      // Debounce path: text is growing, wait for it to stop
+      const text = this._getLatestResponseText();
+      if (!text || text.length <= this.lastTextLength) return;
+      this.lastTextLength = text.length;
+
+      if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
+      this.stableTimeoutId = setTimeout(() => this._onStable(), this.STABLE_DELAY_MS);
+    },
+
+    _getLatestResponseText() {
+      for (const selector of RESPONSE_SELECTORS) {
+        try {
+          const elements = document.querySelectorAll(selector);
+          if (elements.length > 0) {
+            const last = elements[elements.length - 1];
+            if (last === this._baselineElement) continue;
+            if (capturedElements.has(last)) continue;
+            const clone = last.cloneNode(true);
+            clone.querySelectorAll('button, [role="button"], .action-bar, .toolbar').forEach(el => el.remove());
+            const text = clone.innerText?.trim();
+            if (text && text.length > 20) return text;
+          }
+        } catch { /* skip */ }
+      }
+      return null;
+    },
+
+    _onStable() {
+      if (this.lastTextLength === 0) return;
+      const text = this._getLatestResponseText();
+      if (!text || text.length < 20) { this.stop(); return; }
+
+      // Mark element as captured
+      const el = this._findLastResponseElement();
+      if (el && el !== this._baselineElement) capturedElements.add(el);
+
+      _debug() && console.log('📥 KYT NLM: DOM response captured (' + text.length + ' chars)');
+      dispatchCapture('Assistant: ' + text, 'assistant', 'dom-observer');
+      this.stop();
+    },
+
+    _flushPending() {
+      if (!this.pendingConvId || this.lastTextLength === 0) return;
+      const text = this._getLatestResponseText();
+      if (!text || text.length < 20) return;
+
+      const el = this._findLastResponseElement();
+      if (el && el !== this._baselineElement) capturedElements.add(el);
+
+      _debug() && console.log('📥 KYT NLM: DOM response flushed (' + text.length + ' chars)');
+      dispatchCapture('Assistant: ' + text, 'assistant', 'dom-observer');
+    },
+
+    stop() {
+      if (this.observer) { this.observer.disconnect(); this.observer = null; }
+      if (this.stableTimeoutId) { clearTimeout(this.stableTimeoutId); this.stableTimeoutId = null; }
+      if (this.maxWaitTimeoutId) { clearTimeout(this.maxWaitTimeoutId); this.maxWaitTimeoutId = null; }
+      this.pendingConvId = null;
+      this.lastTextLength = 0;
+      this._baselineElement = null;
+    },
+  };
+
+  // Safety nets: flush on leave
+  window.addEventListener('beforeunload', () => responseDOMObserver._flushPending());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') responseDOMObserver._flushPending();
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
   // DISPATCH — Send captured message to ISOLATED world via CustomEvent
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -262,27 +417,42 @@
       return originalXHRSend.apply(this, arguments);
     }
 
-    // Capture user question from request body
+    // Capture user question from request body (always clean — it's our own request)
     const bodyStr = bodyToString(body);
     const question = extractQuestion(bodyStr);
+    const notebookId = getNotebookIdFromUrl();
+    const convId = notebookId ? 'nlm-' + notebookId : null;
+
     if (question) {
       dispatchCapture('User: ' + question, 'user', 'xhr');
+      // Start DOM observer for the response — deferred capture is the primary path
+      responseDOMObserver.start(convId);
     }
 
-    // Capture assistant answer from response
+    // Wire fallback: if DOM observer doesn't fire (selectors miss), try parsing the response
     this.addEventListener('load', function () {
-      try {
-        const rt = this.responseText;
-        if (!rt || rt.length < 50) return;
+      // Signal DOM observer that streaming is done — it will capture from DOM
+      responseDOMObserver._onMutation && responseDOMObserver._onMutation(null);
 
-        const chunks = parseStreamingResponse(rt);
-        const answer = extractAnswer(chunks);
-        if (answer && answer.length > 20) {
-          dispatchCapture('Assistant: ' + answer, 'assistant', 'xhr-response');
+      // Only fall back to wire parsing if DOM observer hasn't captured yet
+      setTimeout(() => {
+        if (responseDOMObserver.lastTextLength > 0) return; // DOM observer got it
+
+        try {
+          const rt = this.responseText;
+          if (!rt || rt.length < 50) return;
+
+          const chunks = parseStreamingResponse(rt);
+          const answer = extractAnswer(chunks);
+          if (answer && answer.length > 20) {
+            _debug() && console.log('📥 KYT NLM: Wire fallback captured response (' + answer.length + ' chars)');
+            dispatchCapture('Assistant: ' + answer, 'assistant', 'xhr-response');
+            responseDOMObserver.stop(); // Don't double-capture
+          }
+        } catch (err) {
+          _debug() && console.error('❌ KYT NLM: Wire fallback error:', err.message);
         }
-      } catch (err) {
-        _debug() && console.error('❌ KYT NLM: Error parsing XHR response:', err.message);
-      }
+      }, 1500); // Give DOM observer 1.5s head start
     });
 
     return originalXHRSend.apply(this, arguments);
@@ -304,21 +474,34 @@
     // Capture question
     const bodyStr = bodyToString(init?.body);
     const question = extractQuestion(bodyStr);
+    const nbId = getNotebookIdFromUrl();
+    const fetchConvId = nbId ? 'nlm-' + nbId : null;
+
     if (question) {
       dispatchCapture('User: ' + question, 'user', 'fetch');
+      responseDOMObserver.start(fetchConvId);
     }
 
-    // Call original and capture response
+    // Call original and wire fallback
     const response = await originalFetch.apply(this, arguments);
     const cloned = response.clone();
 
     cloned.text().then(text => {
-      if (!text || text.length < 50) return;
-      const chunks = parseStreamingResponse(text);
-      const answer = extractAnswer(chunks);
-      if (answer && answer.length > 20) {
-        dispatchCapture('Assistant: ' + answer, 'assistant', 'fetch-response');
-      }
+      // Signal DOM observer
+      responseDOMObserver._onMutation && responseDOMObserver._onMutation(null);
+
+      // Wire fallback after 1.5s if DOM observer didn't capture
+      setTimeout(() => {
+        if (responseDOMObserver.lastTextLength > 0) return;
+        if (!text || text.length < 50) return;
+        const chunks = parseStreamingResponse(text);
+        const answer = extractAnswer(chunks);
+        if (answer && answer.length > 20) {
+          _debug() && console.log('📥 KYT NLM: Fetch wire fallback (' + answer.length + ' chars)');
+          dispatchCapture('Assistant: ' + answer, 'assistant', 'fetch-response');
+          responseDOMObserver.stop();
+        }
+      }, 1500);
     }).catch(() => { /* best-effort */ });
 
     return response;
