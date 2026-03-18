@@ -1178,31 +1178,21 @@
       return originalXHRSend.apply(this, arguments);
     }
 
+    // === DEFERRED CAPTURE: User is sending a new message.
+    // The previous assistant response has been on screen long enough to be fully rendered.
+    // Scrape any uncaptured response containers now.
+    scrapeAllUncaptured(parseResult.conversationId);
+
     _kytDebug() && console.log('📤 KYT Gemini: User message captured via XHR (' + parseResult.userMessage.length + ' chars)');
     dispatchCapture(parseResult.userMessage, 'user', 'xhr', parseResult.conversationId);
 
     // Start DOM observer to capture assistant response when it stabilizes
     responseDOMObserver.start(parseResult.conversationId);
 
-    // Wire extraction primary, DOM observer fallback
+    // When streaming completes, notify DOM observer so it can finalize
     this.addEventListener('load', function () {
-      try {
-        if (this.responseText && this.responseText.length > 100) {
-          _kytDebug() && console.log('📡 KYT Gemini: XHR StreamGenerate response complete (' + this.responseText.length + ' bytes)');
-          const wireText = extractAssistantFromStreamGenerate(this.responseText);
-          if (wireText && wireText.length >= 20) {
-            _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction success (' + wireText.length + ' chars)');
-            dispatchCapture(wireText, 'assistant', 'xhr-response', parseResult.conversationId);
-            // Don't stop DOM observer — let both capture, prefix dedup picks the longer one
-            responseDOMObserver.notifyResponseComplete();
-          } else {
-            _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction failed, falling back to DOM observer');
-            responseDOMObserver.notifyResponseComplete();
-          }
-        }
-      } catch (_) {
-        responseDOMObserver.notifyResponseComplete();
-      }
+      _kytDebug() && console.log('📡 KYT Gemini: XHR StreamGenerate complete (' + (this.responseText?.length || 0) + ' bytes)');
+      responseDOMObserver.notifyResponseComplete();
     }, { once: true });
 
     // Context injection: defer send until context resolves
@@ -1287,10 +1277,13 @@
       return originalFetch.apply(this, arguments);
     }
 
+    // === DEFERRED CAPTURE: scrape previous response before processing new turn
+    scrapeAllUncaptured(parseResult.conversationId);
+
     _kytDebug() && console.log('📤 KYT Gemini: User message captured via fetch (' + parseResult.userMessage.length + ' chars)');
     dispatchCapture(parseResult.userMessage, 'user', 'fetch', parseResult.conversationId);
 
-    // Start DOM observer to capture assistant response (if not already started by XHR)
+    // Start DOM observer to capture assistant response
     responseDOMObserver.start(parseResult.conversationId);
 
     // Context injection
@@ -1305,23 +1298,7 @@
     }
 
     const fetchResponse = await originalFetch.call(this, input, finalInit);
-    try {
-      const responseClone = fetchResponse.clone();
-      const responseBody = await responseClone.text();
-      _kytDebug() && console.log('📡 KYT Gemini: Fetch StreamGenerate response complete (' + responseBody.length + ' bytes)');
-      const wireText = extractAssistantFromStreamGenerate(responseBody);
-      if (wireText && wireText.length >= 20) {
-        _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction success via fetch (' + wireText.length + ' chars)');
-        dispatchCapture(wireText, 'assistant', 'fetch-response', parseResult.conversationId);
-        // Don't stop DOM observer — let both capture, prefix dedup picks the longer one
-        responseDOMObserver.notifyResponseComplete();
-      } else {
-        _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction failed via fetch, falling back to DOM observer');
-        responseDOMObserver.notifyResponseComplete();
-      }
-    } catch (_) {
-      responseDOMObserver.notifyResponseComplete();
-    }
+    responseDOMObserver.notifyResponseComplete();
     return fetchResponse;
   };
 
