@@ -266,6 +266,14 @@
 
   window.addEventListener('beforeunload', function () {
     responseDOMObserver._flushPending();
+    scrapeAllUncaptured(null);
+  });
+
+  // Capture uncaptured responses when user switches tabs (most common "leaving" signal)
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') {
+      scrapeAllUncaptured(null);
+    }
   });
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -881,6 +889,14 @@
       }
     }
   }
+
+  // Periodic sweep: captures any responses that weren't caught by next-turn trigger.
+  // Handles: last response before tab close, long reading pauses, single-turn conversations.
+  // Note: conversationId is null — Gemini URLs don't expose it in a parseable format.
+  // The next-turn trigger (which has the ID from parseFReq) is the primary capture path.
+  setInterval(function () {
+    scrapeAllUncaptured(null);
+  }, 60000);
 
   /**
    * Capture all messages from a history-load response and dispatch events.
