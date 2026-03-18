@@ -295,21 +295,50 @@ class MessageDeduplicator {
   }
 }
 
+// findDeepestNaturalString (copied from inject.js for testability)
+function findDeepestNaturalString(obj, maxDepth = 8) {
+  let best = null;
+  let bestLen = 0;
+  let bestPath = '';
+  function walk(val, depth, path) {
+    if (depth > maxDepth) return;
+    if (typeof val === 'string') {
+      const trimmed = val.trim();
+      if (trimmed.length > bestLen && trimmed.length >= 20 && isNaturalLanguage(trimmed)) {
+        best = trimmed;
+        bestLen = trimmed.length;
+        bestPath = path;
+      }
+      return;
+    }
+    if (Array.isArray(val)) {
+      for (let i = 0; i < val.length; i++) {
+        if (val[i] !== null && val[i] !== undefined) {
+          walk(val[i], depth + 1, path + '[' + i + ']');
+        }
+      }
+    }
+  }
+  walk(obj, 0, '');
+  return best ? { text: best, path: bestPath } : null;
+}
+
 // extractTextFromWrbPayload (copied from inject.js for testability)
 function extractTextFromWrbPayload(payload) {
   if (!Array.isArray(payload)) return null;
+  // Position 1: payload[4][0][1][0]
   try {
     const t = payload[4] && payload[4][0] && payload[4][0][1] && payload[4][0][1][0];
     if (typeof t === 'string' && t.trim().length > 0) return t.trim();
   } catch (_) {}
+  // Position 2: payload[3][0][0][1][0]
   try {
     const t = payload[3] && payload[3][0] && payload[3][0][0] && payload[3][0][0][1] && payload[3][0][0][1][0];
     if (typeof t === 'string' && t.trim().length > 0) return t.trim();
   } catch (_) {}
-  try {
-    const t = payload[0] && payload[0][0];
-    if (typeof t === 'string' && t.trim().length > 10 && isNaturalLanguage(t.trim())) return t.trim();
-  } catch (_) {}
+  // Position 3: Deep recursive search
+  const deep = findDeepestNaturalString(payload);
+  if (deep) return deep.text;
   return null;
 }
 
@@ -1692,7 +1721,7 @@ describe('extractTextFromWrbPayload', () => {
     expect(extractTextFromWrbPayload(42)).toBeNull();
   });
 
-  it('returns null when no text at known positions', () => {
+  it('returns null when no text anywhere', () => {
     const payload = [null, null, null, null, null];
     expect(extractTextFromWrbPayload(payload)).toBeNull();
   });
@@ -1707,6 +1736,63 @@ describe('extractTextFromWrbPayload', () => {
     const fallback = 'This is the fallback text that should not be returned when primary exists.';
     const payload = [null, null, null, [[[null, [fallback]]]], [[null, [primary]]]];
     expect(extractTextFromWrbPayload(payload)).toBe(primary);
+  });
+
+  it('uses deep search when text is at an unexpected position', () => {
+    const text = 'This response text is buried deeply in the payload at an unusual position that fixed paths cannot reach.';
+    // Text at [1][2][0][3] — no fixed path covers this
+    const payload = [null, [null, null, [null, null, null, text]], null, null, null];
+    expect(extractTextFromWrbPayload(payload)).toBe(text);
+  });
+
+  it('deep search picks longest natural-language string', () => {
+    const short = 'A short piece of metadata text here.';
+    const long = 'This is a much longer response that contains the actual content the user is looking for with detailed information about the topic.';
+    const payload = [null, [short, null, [long]], null, null, null];
+    expect(extractTextFromWrbPayload(payload)).toBe(long);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// findDeepestNaturalString UNIT TESTS
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('findDeepestNaturalString', () => {
+  it('finds the longest natural-language string in nested arrays', () => {
+    const obj = [null, ['short text', [null, 'This is a much longer piece of natural language text that should be found by the deep search.']]];
+    const result = findDeepestNaturalString(obj);
+    expect(result).not.toBeNull();
+    expect(result.text).toBe('This is a much longer piece of natural language text that should be found by the deep search.');
+    expect(result.path).toBe('[1][1][1]');
+  });
+
+  it('returns null for all-null payload', () => {
+    expect(findDeepestNaturalString([null, null, null])).toBeNull();
+  });
+
+  it('returns null for payload with only short strings', () => {
+    expect(findDeepestNaturalString(['abc', 'def', [1, 2]])).toBeNull();
+  });
+
+  it('skips non-natural-language strings', () => {
+    const obj = ['c_abc123def456789012345678', 'https://example.com/long/url/path/to/resource', 'This is actual natural language content that passes the natural language check.'];
+    const result = findDeepestNaturalString(obj);
+    expect(result).not.toBeNull();
+    expect(result.text).toBe('This is actual natural language content that passes the natural language check.');
+  });
+
+  it('respects maxDepth limit', () => {
+    // Build deeply nested structure (depth 10)
+    let obj = 'This deeply nested text should not be found with a shallow maxDepth limit applied here.';
+    for (let i = 0; i < 10; i++) obj = [obj];
+    expect(findDeepestNaturalString(obj, 3)).toBeNull();
+    expect(findDeepestNaturalString(obj, 10)).not.toBeNull();
+  });
+
+  it('tracks the correct path', () => {
+    const obj = [null, null, [null, [null, null, 'The target text is at position two zero one zero two and should be reported correctly.']]];
+    const result = findDeepestNaturalString(obj);
+    expect(result.path).toBe('[2][1][2]');
   });
 });
 

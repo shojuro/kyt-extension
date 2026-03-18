@@ -117,6 +117,9 @@
 
   const deduplicator = new MessageDeduplicator();
 
+  // Wire extraction stats — tracks structural vs heuristic vs deep search hits
+  const wireStats = { structural: 0, deep: 0, heuristic: 0, failed: 0, totalExtractions: 0 };
+
   // Debug gate — MAIN world can't access chrome.storage, so use localStorage.
   // Enable via devtools: localStorage.setItem('KYT_GEMINI_DEBUG', '1')
   const _kytDebug = () => {
@@ -830,9 +833,67 @@
   }
 
   /**
-   * Extract assistant response text from a wrb.fr inner payload at known positions.
-   * StreamGenerate wrb.fr payloads place assistant text at specific array indices.
-   * Returns the extracted string or null if no text found at known positions.
+   * Describe the shape of a nested object for diagnostic logging.
+   * Outputs a compact representation: arrays as [len], strings as S(len), etc.
+   */
+  function describeShape(obj, maxDepth = 3, depth = 0) {
+    if (depth > maxDepth) return '...';
+    if (obj === null) return 'null';
+    if (obj === undefined) return 'undef';
+    if (typeof obj === 'string') return 'S(' + obj.length + ')';
+    if (typeof obj === 'number') return 'N';
+    if (typeof obj === 'boolean') return 'B';
+    if (Array.isArray(obj)) {
+      if (obj.length === 0) return '[]';
+      const items = obj.slice(0, 6).map(function (v) { return describeShape(v, maxDepth, depth + 1); });
+      if (obj.length > 6) items.push('..+' + (obj.length - 6));
+      return '[' + items.join(',') + ']';
+    }
+    if (typeof obj === 'object') return '{' + Object.keys(obj).length + 'k}';
+    return typeof obj;
+  }
+
+  /**
+   * Walk a nested array to find the longest natural-language string,
+   * tracking the access path. Returns { text, path } or null.
+   * Used for both extraction and diagnostic path discovery.
+   */
+  function findDeepestNaturalString(obj, maxDepth = 8) {
+    let best = null;
+    let bestLen = 0;
+    let bestPath = '';
+
+    function walk(val, depth, path) {
+      if (depth > maxDepth) return;
+      if (typeof val === 'string') {
+        const trimmed = val.trim();
+        if (trimmed.length > bestLen && trimmed.length >= 20 && isNaturalLanguage(trimmed)) {
+          best = trimmed;
+          bestLen = trimmed.length;
+          bestPath = path;
+        }
+        return;
+      }
+      if (Array.isArray(val)) {
+        for (let i = 0; i < val.length; i++) {
+          if (val[i] !== null && val[i] !== undefined) {
+            walk(val[i], depth + 1, path + '[' + i + ']');
+          }
+        }
+      }
+    }
+
+    walk(obj, 0, '');
+    return best ? { text: best, path: bestPath } : null;
+  }
+
+  /**
+   * Extract assistant response text from a wrb.fr inner payload.
+   *
+   * Strategy: Check known fixed positions first (fast path), then fall back
+   * to deep recursive search if none match. The recursive search also logs
+   * the discovery path when debug is on, helping us find new positions as
+   * Google changes their format.
    */
   function extractTextFromWrbPayload(payload) {
     if (!Array.isArray(payload)) return null;
@@ -850,11 +911,15 @@
       if (typeof t === 'string' && t.trim().length > 0) return t.trim();
     } catch (_) {}
 
-    // Position 3: payload[0][0] — sometimes seen in simple responses
-    try {
-      const t = payload[0] && payload[0][0];
-      if (typeof t === 'string' && t.trim().length > 10 && isNaturalLanguage(t.trim())) return t.trim();
-    } catch (_) {}
+    // Position 3: Deep recursive search — finds the longest natural-language
+    // string at any depth. Catches format variations Google hasn't shown us yet.
+    const deep = findDeepestNaturalString(payload);
+    if (deep) {
+      if (_kytDebug()) {
+        console.log('🔬 KYT Wire: deep search found ' + deep.text.length + ' chars at path: ' + deep.path);
+      }
+      return deep.text;
+    }
 
     return null;
   }
@@ -937,11 +1002,36 @@
     if (_kytDebug()) {
       console.log('🔍 KYT Wire: frames=' + frames.length + ', wrb.fr=' + wrbCount +
         ', structural=' + structuralLen + ', heuristic=' + heuristicLen + ' chars');
+      // One-time structural diagnostic: dump first 3 wrb.fr payload shapes
+      // to identify correct text positions for future hardcoding
+      if (wrbCount > 0 && structuralLen === 0) {
+        console.warn('⚠️ KYT Wire: Structural extraction found NOTHING — dumping payload shapes for diagnosis:');
+      }
+      for (let i = 0; i < Math.min(unwrapped.length, 3); i++) {
+        const shape = describeShape(unwrapped[i], 4);
+        console.log('🔬 KYT Wire payload[' + i + ']: ' + shape);
+        // Also show where the deepest natural-language string lives
+        const deep = findDeepestNaturalString(unwrapped[i]);
+        if (deep) {
+          console.log('🔬 KYT Wire payload[' + i + '] best text at ' + deep.path + ' (' + deep.text.length + ' chars): "' + deep.text.substring(0, 80) + '..."');
+        }
+      }
     }
 
-    // Prefer structural extraction; fall back to heuristic
-    if (structuralText && structuralLen >= 20) return structuralText;
-    return heuristicText && heuristicLen >= 20 ? heuristicText : null;
+    // Track extraction method stats
+    wireStats.totalExtractions++;
+    if (structuralText && structuralLen >= 20) {
+      // Structural found something — but was it fixed-position or deep search?
+      // If deep search logged a path, it was deep; otherwise fixed-position.
+      wireStats.structural++;
+      return structuralText;
+    }
+    if (heuristicText && heuristicLen >= 20) {
+      wireStats.heuristic++;
+      return heuristicText;
+    }
+    wireStats.failed++;
+    return null;
   }
 
   /**
@@ -1394,6 +1484,7 @@
   window.__kytGeminiStats = function () {
     return {
       deduplicator: deduplicator.getStats(),
+      wireExtraction: wireStats,
       pendingContextRequests: pendingContextRequests.size,
       capturedParams: {
         bl: capturedParams.bl,
