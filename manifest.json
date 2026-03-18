@@ -88,6 +88,16 @@
       ],
       "run_at": "document_start",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "https://notebooklm.google.com/*"
+      ],
+      "js": [
+        "platforms/notebooklm/content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
     }
   ],
   "content_security_policy": {
@@ -122,6 +132,14 @@
     },
     {
       "resources": [
+        "platforms/notebooklm/inject.js"
+      ],
+      "matches": [
+        "https://notebooklm.google.com/*"
+      ]
+    },
+    {
+      "resources": [
         "src/content/queue-manager.js",
         "src/storage/local-queue.js",
         "src/utils/crypto.js",
@@ -132,7 +150,8 @@
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
         "https://claude.ai/*",
-        "https://gemini.google.com/*"
+        "https://gemini.google.com/*",
+        "https://notebooklm.google.com/*"
       ]
     }
   ]
