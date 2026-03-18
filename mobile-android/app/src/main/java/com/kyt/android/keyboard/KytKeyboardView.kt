@@ -61,6 +61,30 @@ class KytKeyboardView @JvmOverloads constructor(
     // Double-tap shift detection
     private var lastShiftTapTime = 0L
 
+    // Long-press accent popup
+    private var longPressTriggered = false
+    private var accentPopupChars: List<String> = emptyList()
+    private var accentPopupKeyRect: KeyRect? = null
+    private var accentPopupSelected: Int = -1
+    private val longPressRunnable = Runnable { showAccentPopup() }
+    companion object {
+        private const val LONG_PRESS_DELAY_MS = 300L
+
+        /** Accent characters available per letter on long-press */
+        val ACCENT_MAP: Map<String, List<String>> = mapOf(
+            "A" to listOf("à", "á", "â", "ä", "ã", "å", "æ"),
+            "C" to listOf("ç", "ć", "č"),
+            "E" to listOf("è", "é", "ê", "ë", "ę"),
+            "I" to listOf("ì", "í", "î", "ï"),
+            "N" to listOf("ñ", "ń"),
+            "O" to listOf("ò", "ó", "ô", "ö", "õ", "ø", "œ"),
+            "S" to listOf("ß", "ś", "š"),
+            "U" to listOf("ù", "ú", "û", "ü"),
+            "Y" to listOf("ý", "ÿ"),
+            "Z" to listOf("ź", "ž", "ż")
+        )
+    }
+
     // ── Paints ───────────────────────────────────────────────
 
     private val bgPaint = Paint().apply { color = KeyboardTheme.BG }
@@ -114,6 +138,14 @@ class KytKeyboardView @JvmOverloads constructor(
         typeface = Typeface.DEFAULT_BOLD
     }
 
+    private val popupBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = KeyboardTheme.KEY_SURFACE
+    }
+
+    private val popupSelectedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = KeyboardTheme.KEY_PRESSED
+    }
+
     // ── Measure ──────────────────────────────────────────────
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -155,6 +187,11 @@ class KytKeyboardView @JvmOverloads constructor(
 
         // Scanline overlay
         drawScanlines(canvas, density)
+
+        // Accent popup (drawn on top of everything)
+        if (accentPopupChars.isNotEmpty()) {
+            drawAccentPopup(canvas, density)
+        }
     }
 
     private fun drawContextBar(canvas: Canvas, density: Float) {
@@ -328,6 +365,7 @@ class KytKeyboardView @JvmOverloads constructor(
                 val key = findKeyAt(event.x, event.y)
                 if (key != null) {
                     pressedKey = key
+                    longPressTriggered = false
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     invalidate()
 
@@ -339,18 +377,32 @@ class KytKeyboardView @JvmOverloads constructor(
                             KeyboardTheme.BACKSPACE_INITIAL_DELAY_MS
                         )
                     }
+
+                    // Schedule long-press for accent chars
+                    if (key.def.type == KeyType.LETTER &&
+                        ACCENT_MAP.containsKey(key.def.label.uppercase())
+                    ) {
+                        handler.postDelayed(longPressRunnable, LONG_PRESS_DELAY_MS)
+                    }
                 }
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
+                // If accent popup is showing, update selection
+                if (accentPopupChars.isNotEmpty()) {
+                    updateAccentPopupSelection(event.x)
+                    return true
+                }
+
                 val key = findKeyAt(event.x, event.y)
                 if (key != pressedKey) {
-                    // Finger slid to different key — cancel backspace repeat
+                    // Finger slid to different key — cancel backspace repeat + long press
                     if (backspaceRepeating) {
                         handler.removeCallbacks(backspaceRepeatRunnable)
                         backspaceRepeating = false
                     }
+                    handler.removeCallbacks(longPressRunnable)
                     pressedKey = key
                     invalidate()
                 }
@@ -358,11 +410,27 @@ class KytKeyboardView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                handler.removeCallbacks(longPressRunnable)
+
+                // If accent popup is showing, commit selected accent
+                if (accentPopupChars.isNotEmpty()) {
+                    val selectedChar = dismissAccentPopup()
+                    if (selectedChar != null && event.actionMasked == MotionEvent.ACTION_UP) {
+                        // Create a temporary KeyDef for the accent char
+                        val accentDef = KeyDef(selectedChar, selectedChar[0].code, type = KeyType.LETTER)
+                        keyActionListener?.onKeyPress(accentDef)
+                    }
+                    pressedKey = null
+                    invalidate()
+                    return true
+                }
+
                 val key = pressedKey
-                if (key != null && event.actionMasked == MotionEvent.ACTION_UP) {
+                if (key != null && event.actionMasked == MotionEvent.ACTION_UP && !longPressTriggered) {
                     handleKeyAction(key)
                 }
                 pressedKey = null
+                longPressTriggered = false
                 if (backspaceRepeating) {
                     handler.removeCallbacks(backspaceRepeatRunnable)
                     backspaceRepeating = false
@@ -468,11 +536,72 @@ class KytKeyboardView @JvmOverloads constructor(
         invalidate()
     }
 
-    // Also handle SYMBOL_2 key code in handleKeyAction for =\< button
-    // It's already handled via SYMBOL type but let's add explicit layer switch
-    // for the =\< key in SYMBOLS layer
-    init {
-        // Override handleKeyAction for SYMBOL_2 via the listener pattern
+    // ── Accent popup ─────────────────────────────────────────
+
+    private fun showAccentPopup() {
+        val key = pressedKey ?: return
+        if (key.def.type != KeyType.LETTER) return
+        val accents = ACCENT_MAP[key.def.label.uppercase()] ?: return
+
+        longPressTriggered = true
+        accentPopupChars = accents
+        accentPopupKeyRect = key
+        accentPopupSelected = -1
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        invalidate()
+    }
+
+    private fun drawAccentPopup(canvas: Canvas, density: Float) {
+        val key = accentPopupKeyRect ?: return
+        val cellWidth = 36f * density
+        val cellHeight = 44f * density
+        val radius = KeyboardTheme.KEY_RADIUS_DP * density
+        val totalWidth = cellWidth * accentPopupChars.size
+        val popupLeft = ((key.left + key.right) / 2f - totalWidth / 2f).coerceIn(0f, width - totalWidth)
+        val popupTop = key.top - cellHeight - 4f * density
+
+        // Background
+        val bgRect = RectF(popupLeft, popupTop, popupLeft + totalWidth, popupTop + cellHeight)
+        canvas.drawRoundRect(bgRect, radius, radius, popupBgPaint)
+        canvas.drawRoundRect(bgRect, radius, radius, borderPaint)
+
+        // Individual cells
+        textPaint.textSize = KeyboardTheme.TEXT_SIZE_SP * resources.displayMetrics.scaledDensity
+        for ((i, char) in accentPopupChars.withIndex()) {
+            val cellLeft = popupLeft + i * cellWidth
+            if (i == accentPopupSelected) {
+                val selRect = RectF(cellLeft, popupTop, cellLeft + cellWidth, popupTop + cellHeight)
+                canvas.drawRoundRect(selRect, radius, radius, popupSelectedPaint)
+            }
+            val cx = cellLeft + cellWidth / 2f
+            val cy = popupTop + cellHeight / 2f
+            canvas.drawText(char, cx, cy - (textPaint.descent() + textPaint.ascent()) / 2f, textPaint)
+        }
+    }
+
+    private fun dismissAccentPopup(): String? {
+        val selected = if (accentPopupSelected in accentPopupChars.indices) {
+            accentPopupChars[accentPopupSelected]
+        } else null
+        accentPopupChars = emptyList()
+        accentPopupKeyRect = null
+        accentPopupSelected = -1
+        longPressTriggered = false
+        return selected
+    }
+
+    private fun updateAccentPopupSelection(x: Float) {
+        val key = accentPopupKeyRect ?: return
+        val density = resources.displayMetrics.density
+        val cellWidth = 36f * density
+        val totalWidth = cellWidth * accentPopupChars.size
+        val popupLeft = ((key.left + key.right) / 2f - totalWidth / 2f).coerceIn(0f, width - totalWidth)
+        val index = ((x - popupLeft) / cellWidth).toInt()
+        val newSelected = if (index in accentPopupChars.indices) index else -1
+        if (newSelected != accentPopupSelected) {
+            accentPopupSelected = newSelected
+            invalidate()
+        }
     }
 
     // ── Public API ───────────────────────────────────────────

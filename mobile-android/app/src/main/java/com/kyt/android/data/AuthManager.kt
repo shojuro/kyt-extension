@@ -50,11 +50,29 @@ object AuthManager {
         )
 
     /**
+     * Check if Supabase config is set. Returns error message or null if OK.
+     */
+    fun validateConfig(): String? {
+        if (BuildConfig.SUPABASE_URL.isBlank()) {
+            return "SUPABASE_URL not configured. Set KYT_SUPABASE_URL in local.properties"
+        }
+        if (!BuildConfig.SUPABASE_URL.startsWith("https://")) {
+            return "SUPABASE_URL must start with https://"
+        }
+        if (BuildConfig.SUPABASE_ANON_KEY.isBlank()) {
+            return "SUPABASE_ANON_KEY not configured. Set KYT_SUPABASE_ANON_KEY in local.properties"
+        }
+        return null
+    }
+
+    /**
      * Send magic link to email via Supabase GoTrue.
      */
     suspend fun signInWithMagicLink(context: Context, email: String): Result<Unit> =
         withContext(Dispatchers.IO) {
             try {
+                validateConfig()?.let { return@withContext Result.failure(Exception(it)) }
+
                 val body = JSONObject().apply {
                     put("email", email)
                 }

@@ -48,6 +48,10 @@ object SupabaseClient {
         body: JSONObject
     ): Result<JSONObject> = withContext(Dispatchers.IO) {
         try {
+            AuthManager.validateConfig()?.let {
+                return@withContext Result.failure(IOException(it))
+            }
+
             val token = AuthManager.getAccessToken(appContext) ?: supabaseAnonKey
 
             val request = Request.Builder()
