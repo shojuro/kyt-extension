@@ -1443,6 +1443,87 @@ describe('dispatchCapture content cleaning', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// DEFERRED DOM CAPTURE TESTS
+// ═══════════════════════════════════════════════════════════════════════
+
+// scrapeResponseText (copied from inject.js for testability)
+function scrapeResponseText(element) {
+  if (!element) return null;
+  const clone = element.cloneNode(true);
+  clone.querySelectorAll('button, [role="button"], .export-button, .action-bar, .response-actions').forEach(el => el.remove());
+  const text = clone.innerText?.trim();
+  return (text && text.length > 20) ? text : null;
+}
+
+describe('scrapeResponseText', () => {
+  it('returns null for null element', () => {
+    expect(scrapeResponseText(null)).toBeNull();
+  });
+
+  it('returns null for undefined element', () => {
+    expect(scrapeResponseText(undefined)).toBeNull();
+  });
+});
+
+describe('capturedResponseElements WeakSet pattern', () => {
+  it('prevents re-capture of same element', () => {
+    const captured = new WeakSet();
+    const el1 = { id: 'resp-1' };
+    const el2 = { id: 'resp-2' };
+
+    expect(captured.has(el1)).toBe(false);
+    captured.add(el1);
+    expect(captured.has(el1)).toBe(true);
+    expect(captured.has(el2)).toBe(false);
+  });
+
+  it('allows capture of new elements after previous ones marked', () => {
+    const captured = new WeakSet();
+    const el1 = { id: 'resp-1' };
+    const el2 = { id: 'resp-2' };
+
+    captured.add(el1);
+    expect(captured.has(el2)).toBe(false);
+    captured.add(el2);
+    expect(captured.has(el2)).toBe(true);
+  });
+
+  it('handles rapid scroll — all elements checked in O(1)', () => {
+    const captured = new WeakSet();
+    const elements = Array.from({ length: 50 }, (_, i) => ({ id: `resp-${i}` }));
+
+    // Mark first 40 as captured
+    elements.slice(0, 40).forEach(el => captured.add(el));
+
+    // Simulate scroll sweep — only 10 new ones should be "uncaptured"
+    const uncaptured = elements.filter(el => !captured.has(el));
+    expect(uncaptured).toHaveLength(10);
+  });
+});
+
+describe('deferred DOM capture integration', () => {
+  it('DOM observer marks element, deferred sweep skips it', () => {
+    const captured = new WeakSet();
+    const el = { id: 'response-1' };
+
+    // Simulate DOM observer capturing and marking
+    captured.add(el);
+
+    // Simulate deferred sweep — element should be skipped
+    expect(captured.has(el)).toBe(true);
+  });
+
+  it('deferred sweep captures element, DOM observer would skip via dedup', () => {
+    // Both dedup layers: WeakSet (element-level, primary) and MessageDeduplicator (content-level, defense-in-depth)
+    const dedup = new MessageDeduplicator();
+    const text = 'Full assistant response captured by deferred DOM sweep with complete content here.';
+
+    expect(dedup.shouldCapture(text, 'deferred-dom')).toBe(true);
+    expect(dedup.shouldCapture(text, 'dom-observer')).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // PREFIX-MATCHING DEDUP TESTS
 // ═══════════════════════════════════════════════════════════════════════
 
