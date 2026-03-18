@@ -222,6 +222,10 @@
       const text = this._getLastResponseText();
       if (!text || text.length < 20) { this.stop(); return; }
 
+      // Mark the element as captured so deferred sweep skips it
+      const el = this._findLastResponseElement();
+      if (el && el !== this._baselineElement) capturedResponseElements.add(el);
+
       _kytDebug() && console.log('📥 KYT Gemini: DOM response captured (' + text.length + ' chars, conv=' + (this.pendingConvId || 'unknown') + ')');
       dispatchCapture(text, 'assistant', 'dom-observer', this.pendingConvId);
       this.stop();
@@ -231,6 +235,10 @@
       if (!this.pendingConvId || this.lastTextLength === 0) return;
       const text = this._getLastResponseText();
       if (!text || text.length < 20) return;
+
+      // Mark the element as captured so deferred sweep skips it
+      const el = this._findLastResponseElement();
+      if (el && el !== this._baselineElement) capturedResponseElements.add(el);
 
       _kytDebug() && console.log('📥 KYT Gemini: DOM response flushed (' + text.length + ' chars)');
       dispatchCapture(text, 'assistant', 'dom-observer', this.pendingConvId);
