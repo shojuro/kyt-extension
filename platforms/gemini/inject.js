@@ -117,6 +117,15 @@
 
   const deduplicator = new MessageDeduplicator();
 
+  // Tracks response containers already captured — prevents re-capture on scroll/re-trigger.
+  // WeakSet: O(1) lookup, auto-GC when elements leave DOM, no doubling.
+  const capturedResponseElements = new WeakSet();
+
+  // Response container selectors — shared between DOM observer and deferred capture.
+  const RESPONSE_SELECTORS = [
+    'div[id^="model-response-message-content"]',
+  ];
+
   // Debug gate — MAIN world can't access chrome.storage, so use localStorage.
   // Enable via devtools: localStorage.setItem('KYT_GEMINI_DEBUG', '1')
   const _kytDebug = () => {
@@ -137,9 +146,7 @@
     startTimeoutId: null,
     _baselineElement: null,
 
-    RESPONSE_SELECTORS: [
-      'div[id^="model-response-message-content"]', // Primary: Angular ID prefix (model-response only, confirmed 2026-03)
-    ],
+    RESPONSE_SELECTORS: RESPONSE_SELECTORS,
 
     _findLastResponseElement() {
       for (const selector of this.RESPONSE_SELECTORS) {
@@ -827,6 +834,44 @@
       messages.push({ content: t, role: i % 2 === 0 ? 'user' : 'assistant' });
     }
     return messages;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DEFERRED DOM CAPTURE — Scrapes fully-rendered responses
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Extract clean text from a Gemini response container element.
+   * Clones the element, strips UI buttons/artifacts, returns innerText.
+   */
+  function scrapeResponseText(element) {
+    if (!element) return null;
+    const clone = element.cloneNode(true);
+    clone.querySelectorAll('button, [role="button"], .export-button, .action-bar, .response-actions').forEach(el => el.remove());
+    const text = clone.innerText?.trim();
+    return (text && text.length > 20) ? text : null;
+  }
+
+  /**
+   * Scrape all uncaptured assistant response containers from the DOM.
+   * Called on: next user message, periodic timer, visibilitychange, beforeunload.
+   * Each element is captured at most once (tracked by capturedResponseElements WeakSet).
+   */
+  function scrapeAllUncaptured(conversationId) {
+    for (const selector of RESPONSE_SELECTORS) {
+      const elements = document.querySelectorAll(selector);
+      for (const el of elements) {
+        if (capturedResponseElements.has(el)) continue; // already captured — skip
+
+        const text = scrapeResponseText(el);
+        if (!text) continue;
+
+        capturedResponseElements.add(el);
+        dispatchCapture(text, 'assistant', 'deferred-dom', conversationId);
+
+        _kytDebug() && console.log('📸 KYT Gemini: Deferred DOM capture (' + text.length + ' chars)');
+      }
+    }
   }
 
   /**
