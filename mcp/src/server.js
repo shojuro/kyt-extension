@@ -23,6 +23,10 @@ import { setActiveProject } from './tools/set-active-project.js';
 import { assignToProject } from './tools/assign-to-project.js';
 import { projectDebrief } from './tools/project-debrief.js';
 import { setVaultPin } from './tools/set-vault-pin.js';
+import { listNotebooksHandler } from './tools/list-notebooks.js';
+import { createNotebookHandler } from './tools/create-notebook.js';
+import { pushProjectToNotebookHandler } from './tools/push-project-to-notebook.js';
+import { askNotebookHandler } from './tools/ask-notebook.js';
 
 const server = new McpServer({
   name: 'kyt-memory',
@@ -37,7 +41,7 @@ server.tool(
     query: z.string().describe('Search query for cross-platform memory'),
     topK: z.number().optional().default(5).describe('Number of results (default: 5)'),
     useHyde: z.boolean().optional().default(true).describe('Enable HyDE augmented search'),
-    platform: z.enum(['all', 'chatgpt', 'claude', 'claude-code', 'cli', 'gemini']).optional().default('all')
+    platform: z.enum(['all', 'chatgpt', 'claude', 'claude-code', 'cli', 'gemini', 'notebooklm']).optional().default('all')
       .describe('Filter by platform'),
     fast: z.boolean().optional().default(false).describe('Fast search (no HyDE/reranking, <1s)'),
     project: z.string().optional().describe('Project UUID to scope search to (default: active project or all)'),
@@ -191,6 +195,57 @@ server.tool(
     oldPin: z.string().optional().describe('Current PIN (required when changing an existing PIN)'),
   },
   async (args) => setVaultPin(args),
+);
+
+// --- Tool: list_notebooks ---
+server.tool(
+  'list_notebooks',
+  'List NotebookLM notebooks with source counts and K.Y.T. project links.',
+  {
+    showMappings: z.boolean().optional().default(true).describe('Show K.Y.T. project mappings (default: true)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials (cached in memory after first use)'),
+  },
+  async (args) => listNotebooksHandler(args),
+);
+
+// --- Tool: create_notebook ---
+server.tool(
+  'create_notebook',
+  'Create a new NotebookLM notebook and link it to the active K.Y.T. project.',
+  {
+    title: z.string().describe('Notebook title'),
+    projectId: z.string().optional().describe('K.Y.T. project UUID to link (default: active project)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials (cached in memory after first use)'),
+  },
+  async (args) => createNotebookHandler(args),
+);
+
+// --- Tool: push_project_to_notebook ---
+server.tool(
+  'push_project_to_notebook',
+  'Export K.Y.T. project conversations as NotebookLM sources. Groups by conversation, chunks at 50K chars, tracks for incremental push.',
+  {
+    projectId: z.string().optional().describe('K.Y.T. project UUID (default: active project)'),
+    notebookId: z.string().optional().describe('NotebookLM notebook ID (default: from project mapping)'),
+    maxSources: z.number().optional().default(50).describe('Max sources to upload in one run (default: 50)'),
+    incremental: z.boolean().optional().default(true).describe('Skip already-pushed conversations (default: true)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials (cached in memory after first use)'),
+  },
+  async (args) => pushProjectToNotebookHandler(args),
+);
+
+// --- Tool: ask_notebook ---
+server.tool(
+  'ask_notebook',
+  'Ask a question to a NotebookLM notebook. Returns a cited answer and optionally saves it to K.Y.T. as a research note.',
+  {
+    question: z.string().describe('Question to ask the notebook'),
+    notebookId: z.string().optional().describe('NotebookLM notebook ID (default: from active project mapping)'),
+    saveToKyt: z.boolean().optional().default(true).describe('Save answer to K.Y.T. as research note (default: true)'),
+    projectId: z.string().optional().describe('K.Y.T. project UUID (default: active project)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials (cached in memory after first use)'),
+  },
+  async (args) => askNotebookHandler(args),
 );
 
 // Start the server

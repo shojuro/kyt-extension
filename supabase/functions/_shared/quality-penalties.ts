@@ -604,6 +604,24 @@ function applySubstancePenalty(items: ScoredCandidate[], requestId?: string): Sc
 }
 
 // ============================================================================
+// Research Content Penalty
+// ============================================================================
+
+/**
+ * Apply 0.7x penalty to research content (content_type: 'research').
+ * Direct conversation memory should outrank imported research findings.
+ */
+function applyResearchPenalty(items: ScoredCandidate[], requestId?: string): void {
+    for (const item of items) {
+        if (item.content_type === 'research') {
+            const before = item.rerank_score;
+            item.rerank_score *= 0.7;
+            Logger.info(`Research penalty: score ${before.toFixed(3)} → ${item.rerank_score.toFixed(3)}`, { requestId });
+        }
+    }
+}
+
+// ============================================================================
 // Main Entry Point
 // ============================================================================
 
@@ -621,7 +639,8 @@ function applySubstancePenalty(items: ScoredCandidate[], requestId?: string): Sc
  * 8. Diagnostic penalty (0.5x)
  * 9. Echo penalty (0.5x–0.9x)
  * 10. Bare question filter (hard drop)
- * 11. Recency multiplier (mild time boost)
+ * 11. Research content penalty (0.7x)
+ * 12. Recency multiplier (mild time boost)
  *
  * @returns Filtered items with adjusted rerank_scores
  */
@@ -650,6 +669,9 @@ export function applyQualityPenalties(
     // More hard drops
     result = filterBareQuestions(result, requestId);
 
+    // Research content penalty (0.7x — direct conversation memory outranks research findings)
+    applyResearchPenalty(result, requestId);
+
     // Recency boost (mutate in place)
     applyRecencyMultiplier(result, requestId);
 
@@ -677,6 +699,7 @@ export const __testing__ = {
     filterBareQuestions,
     applyRecursionGuard,
     applyRecencyMultiplier,
+    applyResearchPenalty,
     filterMetaFlagged,
     filterClaudeCodeArtifacts,
     filterRawJsonMetadata,

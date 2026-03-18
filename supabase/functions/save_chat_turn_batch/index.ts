@@ -12,8 +12,8 @@ import { getUserTier, getTierLimits, RESURFACE_LIMITS } from '../_shared/tier-ch
 const MAX_BATCH_SIZE = 50;
 
 // Platform normalization (inline — Deno edge functions can't import from client src/)
-const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code', 'gemini']);
-type Platform = 'chatgpt' | 'claude' | 'cli' | 'claude-code' | 'gemini';
+const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code', 'gemini', 'notebooklm']);
+type Platform = 'chatgpt' | 'claude' | 'cli' | 'claude-code' | 'gemini' | 'notebooklm';
 function normalizePlatform(p: string | undefined): Platform {
   if (p && VALID_PLATFORMS.has(p)) return p as Platform;
   return 'chatgpt';

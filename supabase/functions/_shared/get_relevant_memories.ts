@@ -152,7 +152,7 @@ async function decomposeQuery(
  * Ported from src/context-retrieval.js — keep in sync.
  */
 function extractPlatformMention(message: string): string | null {
-    const m = message.match(/\b(gemini|chatgpt|claude[- ]code|claude)\b/i);
+    const m = message.match(/\b(notebooklm|notebook\s*lm|gemini|chatgpt|claude[- ]code|claude)\b/i);
     if (!m) return null;
     return m[1].toLowerCase().replace(/\s+/g, '-');
 }

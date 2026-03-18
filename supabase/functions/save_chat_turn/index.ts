@@ -29,8 +29,8 @@ import { securityHeaders } from '../_shared/headers.ts';
 import { getUserTier, getTierLimits } from '../_shared/tier-check.ts';
 
 // Platform normalization (inline — Deno edge functions can't import from client src/)
-const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code', 'gemini']);
-type Platform = 'chatgpt' | 'claude' | 'cli' | 'claude-code' | 'gemini';
+const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code', 'gemini', 'notebooklm']);
+type Platform = 'chatgpt' | 'claude' | 'cli' | 'claude-code' | 'gemini' | 'notebooklm';
 function normalizePlatform(p: string | undefined): Platform {
   if (p && VALID_PLATFORMS.has(p)) return p as Platform;
   return 'chatgpt';

@@ -8,7 +8,7 @@
  * This module provides a single normalization function shared by all insertion points.
  */
 
-const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code', 'gemini']);
+const VALID_PLATFORMS = new Set(['chatgpt', 'claude', 'cli', 'claude-code', 'gemini', 'notebooklm']);
 
 const PLATFORM_ALIASES = {
   'gpt': 'chatgpt',
@@ -20,6 +20,9 @@ const PLATFORM_ALIASES = {
   'google': 'gemini',
   'bard': 'gemini',
   'google-gemini': 'gemini',
+  'notebook-lm': 'notebooklm',
+  'notebook_lm': 'notebooklm',
+  'nlm': 'notebooklm',
 };
 
 /**
