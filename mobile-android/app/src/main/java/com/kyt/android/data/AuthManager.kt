@@ -155,6 +155,24 @@ object AuthManager {
         getEncryptedPrefs(context).edit().clear().apply()
     }
 
+    /**
+     * Debug login — paste a JWT + refresh token directly.
+     * For sideload testing only. Skips magic link flow entirely.
+     */
+    fun debugLogin(context: Context, accessToken: String, refreshToken: String): Boolean {
+        val userId = decodeJwtSubject(accessToken) ?: return false
+
+        val prefs = getEncryptedPrefs(context)
+        prefs.edit()
+            .putString(KEY_ACCESS_TOKEN, accessToken)
+            .putString(KEY_REFRESH_TOKEN, refreshToken)
+            .putString(KEY_USER_ID, userId)
+            .putLong(KEY_EXPIRES_AT, System.currentTimeMillis() + (3600 * 1000))
+            .apply()
+
+        return true
+    }
+
     private suspend fun refreshAccessToken(
         context: Context,
         refreshToken: String
