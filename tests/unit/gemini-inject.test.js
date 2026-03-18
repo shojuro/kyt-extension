@@ -303,18 +303,30 @@ function extractAssistantFromStreamGenerate(responseText) {
   else if (text.startsWith(')]}\'')) text = text.slice(4);
   const frames = parseLengthPrefixedFrames(text);
   if (frames.length === 0) return null;
+  // Unwrap wrb.fr double-encoding
+  const unwrapped = [];
+  for (const frame of frames) {
+    if (Array.isArray(frame) && Array.isArray(frame[0])) {
+      for (const sub of frame) {
+        if (Array.isArray(sub) && sub[0] === 'wrb.fr' && typeof sub[2] === 'string') {
+          try { unwrapped.push(JSON.parse(sub[2])); } catch (_) {}
+        }
+      }
+    }
+    unwrapped.push(frame);
+  }
   let longest = null;
   let longestLen = 0;
-  for (const frame of frames) {
-    const strings = findAllStrings(frame, 10);
+  for (const obj of unwrapped) {
+    const strings = findAllStrings(obj, 15);
     for (const s of strings) {
       if (s.length < 20) continue;
       if (s.length <= longestLen) continue;
-      if (!isNaturalLanguage(s)) continue;
       if (/^(r_|rc_|c_|af\.)/.test(s)) continue;
       if (/^[0-9a-f]{16,}$/i.test(s)) continue;
       if (/^https?:\/\//.test(s)) continue;
       if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) continue;
+      if (!isNaturalLanguage(s)) continue;
       longest = s;
       longestLen = s.length;
     }
@@ -1532,6 +1544,16 @@ describe('extractAssistantFromStreamGenerate', () => {
     ]);
     const result = extractAssistantFromStreamGenerate(body);
     expect(result).toBe(text);
+  });
+
+  it('unwraps wrb.fr double-encoded payloads to find text', () => {
+    const assistantText = 'If you need twenty five thousand dollars as quickly as possible your best options depend on your credit score and financial situation.';
+    // Simulate wrb.fr frame: [["wrb.fr", null, "<stringified JSON with text>"]]
+    const innerPayload = JSON.stringify([null, [null, ['c_abc', 'r_def'], null, null, [['rc_ghi', [assistantText]]]]]);
+    const wrbFrame = [['wrb.fr', null, innerPayload, null, null, null, 'generic']];
+    const body = buildLengthPrefixedFrame(wrbFrame);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(assistantText);
   });
 
   it('picks longest when progressive frames have growing text', () => {
