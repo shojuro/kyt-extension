@@ -5,8 +5,6 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
-import android.widget.LinearLayout
-import android.widget.TextView
 import com.kyt.android.data.AuthManager
 import com.kyt.android.data.SupabaseClient
 import com.kyt.android.memory.MemoryModeManager
@@ -19,7 +17,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * K.Y.T. Keyboard IME — InputMethodService with context bar.
+ * K.Y.T. Keyboard IME — InputMethodService with physical keys.
  *
  * Target apps: com.openai.chatgpt, com.anthropic.claude,
  *              com.google.android.apps.bard, com.google.android.apps.gemini
@@ -36,7 +34,7 @@ import org.json.JSONObject
 class KytInputMethodService : InputMethodService() {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var contextBar: TextView? = null
+    private var keyboardView: KytKeyboardView? = null
     private var cachedInjection: String? = null
     private var prefetchJob: Job? = null
     private var lastInputTime = 0L
@@ -53,29 +51,26 @@ class KytInputMethodService : InputMethodService() {
         return packageName in TARGET_PACKAGES
     }
 
+    // ── Input View ───────────────────────────────────────────
+
     override fun onCreateInputView(): View {
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
-        // Context bar (shows K.Y.T. status)
-        contextBar = TextView(this).apply {
-            text = "K.Y.T."
-            setPadding(16, 8, 16, 8)
-            textSize = 12f
-        }
-        layout.addView(contextBar)
-
-        // TODO: Add actual keyboard keys (AOSP LatinIME fork or simple grid)
-        // For spike: just the context bar + system keyboard delegation
-
-        return layout
+        val view = KytKeyboardView(this)
+        view.keyActionListener = keyActionListener
+        keyboardView = view
+        return view
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
         cachedInjection = null
+        keyboardView?.updateEnterKey(attribute)
+        keyboardView?.setEnterGlow(false)
         updateContextBar()
+    }
+
+    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        keyboardView?.updateEnterKey(info)
     }
 
     override fun onFinishInput() {
@@ -84,10 +79,81 @@ class KytInputMethodService : InputMethodService() {
         cachedInjection = null
     }
 
-    /**
-     * Called when text selection changes — proxy for typing activity.
-     * Triggers pre-fetch on 2s pause.
-     */
+    // ── Key Action Listener ──────────────────────────────────
+
+    private val keyActionListener = object : KytKeyboardView.KeyActionListener {
+        override fun onKeyPress(keyDef: KeyDef) {
+            val ic = currentInputConnection ?: return
+
+            when (keyDef.type) {
+                KeyType.LETTER -> {
+                    val char = if (keyboardView?.shiftState != ShiftState.OFF) {
+                        keyDef.label.uppercase()
+                    } else {
+                        keyDef.label.lowercase()
+                    }
+                    ic.commitText(char, 1)
+                }
+
+                KeyType.SPACE -> ic.commitText(" ", 1)
+
+                KeyType.PERIOD -> ic.commitText(keyDef.label, 1)
+
+                KeyType.BACKSPACE -> ic.deleteSurroundingText(1, 0)
+
+                KeyType.ENTER -> handleSendAction(ic)
+
+                KeyType.GLOBE -> switchToNextInputMethod(false)
+
+                KeyType.SHIFT, KeyType.SYMBOL -> {
+                    // Handled internally by KytKeyboardView
+                }
+            }
+        }
+    }
+
+    // ── Send Action ──────────────────────────────────────────
+
+    private fun handleSendAction(ic: InputConnection) {
+        if (isTargetApp()) {
+            // If we have cached injection, prepend it
+            if (cachedInjection != null && MemoryModeManager.shouldInject(this)) {
+                val currentText = ic.getExtractedText(
+                    android.view.inputmethod.ExtractedTextRequest(), 0
+                )?.text?.toString() ?: ""
+
+                if (currentText.isNotBlank()) {
+                    val injectedText = "${cachedInjection}\n\n${currentText}"
+                    ic.deleteSurroundingText(currentText.length, 0)
+                    ic.commitText(injectedText, 1)
+                    cachedInjection = null
+                    keyboardView?.setEnterGlow(false)
+                }
+            }
+
+            // Save user message (fire-and-forget)
+            if (MemoryModeManager.shouldCapture(this)) {
+                val text = ic.getExtractedText(
+                    android.view.inputmethod.ExtractedTextRequest(), 0
+                )?.text?.toString() ?: ""
+
+                if (text.isNotBlank()) {
+                    scope.launch { saveUserMessage(text) }
+                }
+            }
+        }
+
+        // Send the enter key event to the app
+        val imeAction = currentInputEditorInfo?.imeOptions?.and(EditorInfo.IME_MASK_ACTION) ?: 0
+        if (imeAction != EditorInfo.IME_ACTION_UNSPECIFIED && imeAction != EditorInfo.IME_ACTION_NONE) {
+            ic.performEditorAction(imeAction)
+        } else {
+            sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
+        }
+    }
+
+    // ── Pre-fetch ────────────────────────────────────────────
+
     override fun onUpdateSelection(
         oldSelStart: Int, oldSelEnd: Int,
         newSelStart: Int, newSelEnd: Int,
@@ -100,7 +166,6 @@ class KytInputMethodService : InputMethodService() {
 
         lastInputTime = System.currentTimeMillis()
 
-        // Cancel previous pre-fetch, schedule new one after 2s pause
         prefetchJob?.cancel()
         prefetchJob = scope.launch {
             delay(2000)
@@ -108,9 +173,6 @@ class KytInputMethodService : InputMethodService() {
         }
     }
 
-    /**
-     * Pre-fetch memory context based on current input text.
-     */
     private suspend fun prefetchContext() {
         val ic = currentInputConnection ?: return
         val text = ic.getExtractedText(
@@ -155,48 +217,15 @@ class KytInputMethodService : InputMethodService() {
             }
             val injection = buildCompactInjection(items, text.take(200))
             cachedInjection = if (injection.itemCount > 0) injection.text else null
-            updateContextBar(if (cachedInjection != null) "Context ready (${injection.itemCount} items)" else null)
+            val statusMsg = if (cachedInjection != null) {
+                "Context ready (${injection.itemCount} items)"
+            } else null
+            updateContextBar(statusMsg)
+            keyboardView?.setEnterGlow(cachedInjection != null)
         }
     }
 
-    /**
-     * Handle send action — inject context and save message.
-     */
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_ENTER && isTargetApp()) {
-            val ic = currentInputConnection ?: return super.onKeyDown(keyCode, event)
-
-            // If we have cached injection, prepend it
-            if (cachedInjection != null && MemoryModeManager.shouldInject(this)) {
-                val currentText = ic.getExtractedText(
-                    android.view.inputmethod.ExtractedTextRequest(), 0
-                )?.text?.toString() ?: ""
-
-                if (currentText.isNotBlank()) {
-                    // Prepend context (compact mobile format)
-                    val injectedText = "${cachedInjection}\n\n${currentText}"
-                    ic.deleteSurroundingText(currentText.length, 0)
-                    ic.commitText(injectedText, 1)
-                    cachedInjection = null
-                }
-            }
-
-            // Save user message (fire-and-forget)
-            if (MemoryModeManager.shouldCapture(this)) {
-                val text = ic.getExtractedText(
-                    android.view.inputmethod.ExtractedTextRequest(), 0
-                )?.text?.toString() ?: ""
-
-                if (text.isNotBlank()) {
-                    scope.launch {
-                        saveUserMessage(text)
-                    }
-                }
-            }
-        }
-
-        return super.onKeyDown(keyCode, event)
-    }
+    // ── Save ─────────────────────────────────────────────────
 
     private suspend fun saveUserMessage(text: String) {
         val userId = AuthManager.getUserId(this) ?: return
@@ -218,8 +247,17 @@ class KytInputMethodService : InputMethodService() {
         SupabaseClient.callEdgeFunction("save_chat_turn_batch", body)
     }
 
+    // ── Context bar ──────────────────────────────────────────
+
     private fun updateContextBar(message: String? = null) {
-        contextBar?.text = message ?: if (isTargetApp()) "K.Y.T. Active" else "K.Y.T."
+        val text = message ?: if (isTargetApp()) "K.Y.T. Active" else "K.Y.T."
+        val mode = MemoryModeManager.getMode(this)
+        val dotColor = when (mode) {
+            MemoryModeManager.Mode.FULL -> KeyboardTheme.ACCENT
+            MemoryModeManager.Mode.CLEAN_ROOM -> 0xFFFFBF00.toInt()  // Amber
+            MemoryModeManager.Mode.INCOGNITO -> 0xFF808080.toInt()   // Gray
+        }
+        keyboardView?.updateContextBar(text, dotColor)
     }
 
     override fun onDestroy() {

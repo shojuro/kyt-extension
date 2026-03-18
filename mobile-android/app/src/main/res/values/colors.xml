@@ -1,4 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#1A1A2E</color>
+
+    <!-- K.Y.T. Keyboard brand palette -->
+    <color name="keyboard_bg">#0A0A0C</color>
+    <color name="keyboard_key_surface">#1A1A2E</color>
+    <color name="keyboard_key_pressed">#2D5016</color>
+    <color name="keyboard_text">#E8E8EC</color>
+    <color name="keyboard_accent">#39FF14</color>
+    <color name="keyboard_border">#2A2A3E</color>
+    <color name="keyboard_context_bg">#111114</color>
+    <color name="keyboard_func_text">#A0A0A8</color>
 </resources>
