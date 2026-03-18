@@ -214,7 +214,12 @@ object KeyboardLayout {
             for ((keyIndex, keyDef) in row.withIndex()) {
                 val keyWidth = unitWidth * keyDef.widthMultiplier
                 val left = x
-                val right = x + keyWidth
+                // Clamp last key's right edge to prevent float overflow
+                val right = if (keyIndex == row.size - 1) {
+                    widthPx.toFloat()
+                } else {
+                    x + keyWidth
+                }
                 val top = y
                 val bottom = y + keyHeight
 
