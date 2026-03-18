@@ -18,6 +18,7 @@ import { checkTurnLimit, incrementTurnCount, getTurnUsage } from './turn-limiter
 import { startPostCheckoutPoll } from './tier-sync.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { getActiveProject, setActiveProject, clearActiveProject } from './project-manager.js';
+import { getSyncStatus as getNLMSyncStatus, enableSync as enableNLMSync, disableSync as disableNLMSync, checkGoogleSignIn as checkNLMSignIn } from './notebooklm-sync.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
 import { withStorageMutex } from './utils/storage-mutex.js';
@@ -1219,6 +1220,44 @@ export function registerMessageHandler(deps) {
             sendResponse({ success: true, project });
           } catch (e) {
             sendResponse({ success: false, error: e.message });
+          }
+        })();
+        return true;
+
+      case 'NOTEBOOKLM_STATUS':
+        (async () => {
+          try {
+            const status = await getNLMSyncStatus();
+            sendResponse(status);
+          } catch (e) {
+            sendResponse({ enabled: false, error: e.message });
+          }
+        })();
+        return true;
+
+      case 'NOTEBOOKLM_ENABLE':
+        (async () => {
+          try {
+            const { signedIn } = await checkNLMSignIn();
+            if (!signedIn) {
+              sendResponse({ error: 'Sign into Google first' });
+              return;
+            }
+            await enableNLMSync();
+            sendResponse({ success: true });
+          } catch (e) {
+            sendResponse({ error: e.message });
+          }
+        })();
+        return true;
+
+      case 'NOTEBOOKLM_DISABLE':
+        (async () => {
+          try {
+            await disableNLMSync();
+            sendResponse({ success: true });
+          } catch (e) {
+            sendResponse({ error: e.message });
           }
         })();
         return true;

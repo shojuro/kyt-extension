@@ -28,6 +28,7 @@ import { callEdgeFunction } from './src/api-client.js';
 import { HistoryImporter } from './src/history-import/index.js';
 import { refreshSession, isAuthenticated, AUTH_SESSION_KEY, AUTH_EXPIRED_KEY } from './src/auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
+import { syncToNotebookLM, enableSync as enableNLMSync, disableSync as disableNLMSync, getSyncStatus as getNLMStatus, isSyncEnabled as isNLMEnabled } from './src/notebooklm-sync.js';
 import { detectDeflection } from './src/assistant-quality-detector.js';
 import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/embedding-circuit-breaker.js';
 import { updateRecentTopics } from './src/recent-topic-cache.js';
@@ -983,6 +984,13 @@ chrome.alarms.create('prewarmEmbedding', { delayInMinutes: 1, periodInMinutes: 3
 chrome.alarms.create('tokenRefresh', { periodInMinutes: 45 });
 chrome.alarms.create('syncTier', { delayInMinutes: 1, periodInMinutes: 5 });
 
+// NotebookLM sync alarm — only if enabled
+isNLMEnabled().then(enabled => {
+  if (enabled) {
+    chrome.alarms.create('syncNotebookLM', { delayInMinutes: 2, periodInMinutes: 30 });
+  }
+});
+
 // ===== SYNC-ON-PLATFORM-SWITCH =====
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   try {
@@ -1271,6 +1279,21 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       reInjectContentScripts().catch(err => {
         console.error('❌ Retry re-injection also failed:', err.message);
       });
+      break;
+
+    case 'syncNotebookLM':
+      try {
+        const nlmResult = await syncToNotebookLM();
+        if (nlmResult.error) {
+          console.warn('⚠️ NotebookLM sync error:', nlmResult.error);
+          // Back off on auth errors — don't retry for 60 min
+          if (nlmResult.error === 'AUTH_EXPIRED' || nlmResult.error === 'NO_GOOGLE_COOKIES') {
+            chrome.alarms.create('syncNotebookLM', { delayInMinutes: 60 });
+          }
+        }
+      } catch (error) {
+        console.error('❌ NotebookLM sync alarm error:', error.message);
+      }
       break;
 
     default:

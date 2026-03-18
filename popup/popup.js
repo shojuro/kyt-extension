@@ -16,6 +16,8 @@ const apiStatus = document.getElementById('apiStatus');
 const hfKeyStatus = document.getElementById('hfKeyStatus');
 const transformStatus = document.getElementById('transformStatus');
 const debugModeToggle = document.getElementById('debugModeToggle');
+const notebookLMToggle = document.getElementById('notebookLMToggle');
+const notebookLMStatus = document.getElementById('notebookLMStatus');
 const testCaptureBtn = document.getElementById('testCaptureBtn');
 const setupBtn = document.getElementById('setupBtn');
 const importBtn = document.getElementById('importBtn');
@@ -325,6 +327,59 @@ async function saveDebugMode() {
     console.log('K.Y.T. Debug Mode:', debugMode ? 'ENABLED' : 'DISABLED');
   } catch (error) {
     console.error('Error saving debug mode:', error);
+  }
+}
+
+/**
+ * Load NotebookLM sync status
+ */
+async function loadNotebookLMStatus() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'NOTEBOOKLM_STATUS' });
+    if (response) {
+      notebookLMToggle.checked = !!response.enabled;
+      if (!response.signedIn && response.enabled) {
+        notebookLMStatus.textContent = 'Not signed into Google';
+        notebookLMStatus.style.color = 'var(--amber)';
+      } else if (response.enabled && response.sourceCount > 0) {
+        notebookLMStatus.textContent = `${response.sourceCount} sources`;
+        notebookLMStatus.style.color = 'var(--scanner-green, #0f0)';
+      } else if (response.enabled) {
+        notebookLMStatus.textContent = 'Syncing...';
+        notebookLMStatus.style.color = 'var(--scanner-green, #0f0)';
+      } else {
+        notebookLMStatus.textContent = '';
+      }
+      if (response.lastError && response.enabled) {
+        notebookLMStatus.textContent = response.lastError.slice(0, 30);
+        notebookLMStatus.style.color = 'var(--scanner-red)';
+      }
+    }
+  } catch {
+    // Background not ready
+  }
+}
+
+/**
+ * Toggle NotebookLM sync on/off
+ */
+async function toggleNotebookLM() {
+  const enabled = notebookLMToggle.checked;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: enabled ? 'NOTEBOOKLM_ENABLE' : 'NOTEBOOKLM_DISABLE',
+    });
+    if (response?.error) {
+      notebookLMStatus.textContent = response.error.slice(0, 30);
+      notebookLMStatus.style.color = 'var(--scanner-red)';
+      notebookLMToggle.checked = false;
+    } else {
+      await loadNotebookLMStatus();
+    }
+  } catch (err) {
+    notebookLMStatus.textContent = 'Error';
+    notebookLMStatus.style.color = 'var(--scanner-red)';
+    notebookLMToggle.checked = false;
   }
 }
 
@@ -972,6 +1027,7 @@ forceSyncBtn.addEventListener('click', forceResync);
 upgradeBtn.addEventListener('click', handleUpgrade);
 manageBillingBtn.addEventListener('click', handleManageBilling);
 debugModeToggle.addEventListener('change', saveDebugMode);
+notebookLMToggle.addEventListener('change', toggleNotebookLM);
 testCaptureBtn.addEventListener('click', testCapture);
 rescanBtn.addEventListener('click', rescanMessages);
 setupBtn.addEventListener('click', openSetup);
@@ -1034,6 +1090,7 @@ checkFirstInstallRedirect().then(redirecting => {
     loadStats();
     loadConfig();
     loadDebugMode();
+    loadNotebookLMStatus();
     loadSubscription();
     loadTurnUsage();
     loadSyncStatus();

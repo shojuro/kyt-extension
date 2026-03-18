@@ -9,7 +9,8 @@
     "alarms",
     "scripting",
     "identity",
-    "tabs"
+    "tabs",
+    "cookies"
   ],
   "background": {
     "service_worker": "background.js",
@@ -39,7 +40,8 @@
     "https://svrcvfzlwhnixzuxaccf.supabase.co/*",
     "https://api.openai.com/*",
     "https://router.huggingface.co/*",
-    "https://api.jina.ai/*"
+    "https://api.jina.ai/*",
+    "https://notebooklm.google.com/*"
   ],
   "content_scripts": [
     {
@@ -89,7 +91,7 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https://*.supabase.co https://router.huggingface.co https://api.jina.ai"
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https://*.supabase.co https://router.huggingface.co https://api.jina.ai https://notebooklm.google.com"
   },
   "web_accessible_resources": [
     {
