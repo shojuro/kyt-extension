@@ -3,13 +3,6 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val localProps = java.util.Properties().apply {
-    val f = rootProject.file("local.properties")
-    if (f.exists()) f.inputStream().use { load(it) }
-}
-fun cfg(key: String): String = localProps.getProperty(key)
-    ?: project.findProperty(key) as? String ?: ""
-
 android {
     namespace = "com.kyt.android"
     compileSdk = 34
@@ -21,10 +14,10 @@ android {
         versionCode = 1
         versionName = "1.0.0"
 
-        // Supabase config: local.properties (gitignored) → gradle.properties fallback
-        buildConfigField("String", "SUPABASE_URL", "\"${cfg("KYT_SUPABASE_URL")}\"")
-        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${cfg("KYT_SUPABASE_ANON_KEY")}\"")
-        buildConfigField("String", "VOICE_PROXY_URL", "\"${cfg("KYT_VOICE_PROXY_URL")}\"")
+        // Supabase config from gradle.properties (never hardcoded)
+        buildConfigField("String", "SUPABASE_URL", "\"${project.findProperty("KYT_SUPABASE_URL") ?: ""}\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${project.findProperty("KYT_SUPABASE_ANON_KEY") ?: ""}\"")
+        buildConfigField("String", "VOICE_PROXY_URL", "\"${project.findProperty("KYT_VOICE_PROXY_URL") ?: ""}\"")
     }
 
     buildTypes {
