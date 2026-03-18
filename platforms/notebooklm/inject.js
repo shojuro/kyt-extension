@@ -1,36 +1,49 @@
 /**
  * KYT Memory Extension — NotebookLM Inject Script (MAIN World)
  *
- * Runs in page context to intercept XHR/fetch for:
- * 1. GenerateFreeFormStreamed — live Q&A (user asks, NotebookLM answers with citations)
- * 2. batchexecute — notebook operations (for context, not captured)
+ * Capture model: SCREEN IS SHORT-TERM MEMORY, K.Y.T. IS LONG-TERM MEMORY.
+ *
+ * The user reads the response on screen for 20-30 seconds before typing their
+ * next question. That's our capture window — not 200ms, not 3s. We don't race
+ * to parse streaming wire frames. We wait for the user to move on, then scrape
+ * what they were just looking at from the fully-rendered DOM.
+ *
+ * Primary capture path:
+ *   User sends NEXT question → scrapeAllUncaptured() → captures PREVIOUS response
+ *   The previous response has been on screen the whole time. It's complete.
+ *
+ * Secondary (DOM observer):
+ *   Catches the response mid-conversation for single-turn sessions where
+ *   there's no "next question" trigger. Not the primary path.
+ *
+ * Safety nets:
+ *   - visibilitychange (tab switch) → scrape uncaptured
+ *   - beforeunload (close/navigate) → scrape uncaptured
+ *   - 60s periodic sweep → catch anything missed
+ *
+ * User questions: parsed from XHR/fetch request body (always clean, it's OUR request).
+ * Assistant responses: scraped from rendered DOM (never parsed from streaming wire).
  *
  * Architecture:
  *   MAIN world (this file) → CustomEvent → ISOLATED world (content.js) → chrome.runtime → background.js
- *
- * Safety:
- *   - Minimal footprint: capture only, no UI, no DOM mutation
- *   - Only intercepts NotebookLM streaming endpoint
- *   - Page JS cannot access extension APIs through this script
  */
 
 (function () {
   'use strict';
 
-  // Injection guard
   if (window.__kytNotebookLMInjected) return;
   window.__kytNotebookLMInjected = true;
 
   // ═══════════════════════════════════════════════════════════════════════
-  // DEDUPLICATOR — Inlined (MAIN world can't use ES imports)
+  // DEDUPLICATOR
   // ═══════════════════════════════════════════════════════════════════════
 
   class MessageDeduplicator {
     constructor() {
       this.recentHashes = new Map();
-      this.dedupeWindow = 8000;
+      this.dedupeWindow = 10000;
       this.maxSize = 500;
-      this.cleanupInterval = setInterval(() => this._cleanup(), 5000);
+      this.cleanupInterval = setInterval(() => this._cleanup(), 10000);
     }
 
     shouldCapture(content) {
@@ -38,12 +51,10 @@
       const hash = this._hash(content.trim().replace(/\s+/g, ' ').toLowerCase());
       const now = Date.now();
       if (this.recentHashes.has(hash)) {
-        const last = this.recentHashes.get(hash);
-        if (now - last < this.dedupeWindow) return false;
+        if (now - this.recentHashes.get(hash) < this.dedupeWindow) return false;
       }
       if (this.recentHashes.size >= this.maxSize) {
-        const oldest = this.recentHashes.keys().next().value;
-        this.recentHashes.delete(oldest);
+        this.recentHashes.delete(this.recentHashes.keys().next().value);
       }
       this.recentHashes.set(hash, now);
       return true;
@@ -68,13 +79,12 @@
 
   const deduplicator = new MessageDeduplicator();
 
-  // Debug gate
   const _debug = () => {
     try { return localStorage.getItem('KYT_NLM_DEBUG') === '1'; } catch { return false; }
   };
 
   // ═══════════════════════════════════════════════════════════════════════
-  // URL HELPERS
+  // URL + BODY HELPERS
   // ═══════════════════════════════════════════════════════════════════════
 
   function resolveUrl(url) {
@@ -89,15 +99,10 @@
     return resolveUrl(url).includes('GenerateFreeFormStreamed');
   }
 
-  // Extract notebook ID from URL path: /notebook/{id}
   function getNotebookIdFromUrl() {
     const match = window.location.pathname.match(/\/notebook\/([^/]+)/);
     return match ? match[1] : null;
   }
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // BODY PARSING — Extract user question from streaming request
-  // ═══════════════════════════════════════════════════════════════════════
 
   function bodyToString(body) {
     if (typeof body === 'string') return body;
@@ -109,9 +114,8 @@
   }
 
   /**
-   * Extract the user's question from a streaming request body.
-   * Body format: f.req=[null, paramsJson]&at=...
-   * paramsJson[1] = question string
+   * Extract user question from streaming request body.
+   * f.req=[null, paramsJson] → paramsJson[1] = question
    */
   function extractQuestion(bodyStr) {
     if (!bodyStr) return null;
@@ -120,111 +124,24 @@
       const fReq = params.get('f.req');
       if (!fReq) return null;
       const outer = JSON.parse(fReq);
-      // outer = [null, paramsJson]
       if (!Array.isArray(outer) || !outer[1]) return null;
       const inner = JSON.parse(outer[1]);
-      // inner[1] = question string
       if (Array.isArray(inner) && typeof inner[1] === 'string' && inner[1].length > 0) {
         return inner[1];
       }
-    } catch { /* parse failure — not a streaming request */ }
+    } catch { /* not a streaming request */ }
     return null;
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // RESPONSE PARSING — Extract answer from streaming response
+  // DOM SCRAPING — The source of truth for response content
   // ═══════════════════════════════════════════════════════════════════════
 
-  /**
-   * Parse chunked streaming response.
-   * Format: )]}'\n followed by <byteCount>\n<JSON>\n pairs.
-   */
-  function parseStreamingResponse(responseText) {
-    let text = responseText;
-    if (text.startsWith(")]}'")) text = text.slice(text.indexOf('\n') + 1);
-
-    const chunks = [];
-    let pos = 0;
-
-    while (pos < text.length) {
-      while (pos < text.length && '\n\r '.includes(text[pos])) pos++;
-      if (pos >= text.length) break;
-
-      let numStr = '';
-      while (pos < text.length && text[pos] >= '0' && text[pos] <= '9') { numStr += text[pos]; pos++; }
-      if (!numStr) break;
-
-      const byteCount = parseInt(numStr, 10);
-      if (isNaN(byteCount) || byteCount <= 0) break;
-      if (text[pos] === '\n') pos++;
-
-      const remaining = text.slice(pos);
-      const encoded = new TextEncoder().encode(remaining);
-      const chunkBytes = encoded.slice(0, byteCount);
-      const chunkText = new TextDecoder().decode(chunkBytes).trim();
-      pos += new TextDecoder().decode(chunkBytes).length;
-
-      try { chunks.push(JSON.parse(chunkText)); } catch { /* skip */ }
-    }
-
-    return chunks;
-  }
-
-  /**
-   * Extract the answer text from parsed streaming chunks.
-   * Walks wrb.fr frames looking for the longest string > 20 chars.
-   */
-  function extractAnswer(chunks) {
-    let best = '';
-
-    for (const chunk of chunks) {
-      if (!Array.isArray(chunk)) continue;
-      for (const item of chunk) {
-        if (!Array.isArray(item) || item[0] !== 'wrb.fr') continue;
-        const data = item[2];
-        if (!data) continue;
-        let parsed = data;
-        if (typeof parsed === 'string') {
-          try { parsed = JSON.parse(parsed); } catch { continue; }
-        }
-        const found = findLongestString(parsed, 0);
-        if (found && found.length > best.length) best = found;
-      }
-    }
-
-    return best.trim();
-  }
-
-  function findLongestString(obj, depth) {
-    if (depth > 10) return '';
-    if (typeof obj === 'string' && obj.length > 20) return obj;
-    let best = '';
-    if (Array.isArray(obj)) {
-      for (const item of obj) {
-        const found = findLongestString(item, depth + 1);
-        if (found.length > best.length) best = found;
-      }
-    }
-    return best;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // DOM OBSERVER — Deferred capture for assistant responses
-  // ═══════════════════════════════════════════════════════════════════════
-  //
-  // Lesson from Gemini: streaming wire responses come in incremental frames
-  // that are unreliable to parse. The wire intercept tells us "a response is
-  // happening" — the DOM tells us what it actually says once rendering is done.
-  //
-  // Strategy: XHR captures user question (from request body — always clean).
-  // For assistant response, XHR triggers the DOM observer instead of parsing
-  // the wire. Observer watches the rendered answer, waits for it to stabilize
-  // (no new text for STABLE_DELAY_MS), then scrapes.
-
-  // WeakSet of already-captured response elements — prevents re-scrape
+  // WeakSet: each response element is captured at most once
   const capturedElements = new WeakSet();
 
-  // Selectors for NotebookLM's answer container (may change as Google updates UI)
+  // Selectors for NotebookLM response containers.
+  // Multiple selectors for resilience — Google may change the UI.
   const RESPONSE_SELECTORS = [
     '.response-container',
     '[data-response-id]',
@@ -233,30 +150,82 @@
     'message-content',
   ];
 
+  /**
+   * Extract clean text from a response element.
+   * Clones the node, strips UI chrome, returns innerText.
+   */
+  function scrapeResponseText(el) {
+    if (!el) return null;
+    try {
+      const clone = el.cloneNode(true);
+      // Strip buttons, toolbars, action bars — anything that isn't the answer text
+      clone.querySelectorAll(
+        'button, [role="button"], .action-bar, .toolbar, .response-actions, ' +
+        '.export-button, .copy-button, .share-button, .citation-tooltip'
+      ).forEach(e => e.remove());
+      const text = clone.innerText?.trim();
+      return (text && text.length > 20) ? text : null;
+    } catch { return null; }
+  }
+
+  /**
+   * PRIMARY CAPTURE: Scrape all uncaptured response elements from the DOM.
+   *
+   * Called when:
+   * 1. User sends their NEXT question (previous response has been on screen 20-30s)
+   * 2. User switches tabs (visibilitychange)
+   * 3. User leaves page (beforeunload)
+   * 4. Periodic sweep (every 60s)
+   *
+   * Each element is captured at most once (WeakSet tracking).
+   */
+  function scrapeAllUncaptured(conversationId) {
+    for (const selector of RESPONSE_SELECTORS) {
+      try {
+        const elements = document.querySelectorAll(selector);
+        for (const el of elements) {
+          if (capturedElements.has(el)) continue;
+
+          const text = scrapeResponseText(el);
+          if (!text) continue;
+
+          capturedElements.add(el);
+          dispatchCapture('Assistant: ' + text, 'assistant', 'deferred-dom', conversationId);
+
+          _debug() && console.log('📸 KYT NLM: Deferred capture (' + text.length + ' chars)');
+        }
+      } catch { /* selector may be invalid in future UI versions */ }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DOM OBSERVER — Secondary capture for mid-conversation
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  // Handles: single-turn sessions, last response before close, long pauses.
+  // NOT the primary capture path — scrapeAllUncaptured on next turn is.
+
   const responseDOMObserver = {
     observer: null,
     pendingConvId: null,
     lastTextLength: 0,
     stableTimeoutId: null,
-    STABLE_DELAY_MS: 3000,
+    STABLE_DELAY_MS: 8000, // 8 seconds — no rush, content is on screen
     MAX_WAIT_MS: 120000,
     maxWaitTimeoutId: null,
     _baselineElement: null,
 
     _findLastResponseElement() {
-      // Try specific selectors first
       for (const selector of RESPONSE_SELECTORS) {
         try {
           const elements = document.querySelectorAll(selector);
           if (elements.length > 0) return elements[elements.length - 1];
-        } catch { /* invalid selector */ }
+        } catch { /* skip */ }
       }
-      // Fallback: find the last element with substantial text near the chat area
       return null;
     },
 
     start(conversationId) {
-      this._flushPending();
       this.stop();
       this.pendingConvId = conversationId;
       this.lastTextLength = 0;
@@ -269,33 +238,32 @@
         attributes: true, attributeFilter: ['aria-busy'],
       });
 
-      // Safety: max wait to prevent leaking observers
       this.maxWaitTimeoutId = setTimeout(() => {
-        _debug() && console.log('⏰ KYT NLM: DOM observer max wait reached, flushing');
-        this._flushPending();
+        this._flush();
         this.stop();
       }, this.MAX_WAIT_MS);
 
-      _debug() && console.log('👁️ KYT NLM: DOM observer started for response capture');
+      _debug() && console.log('👁️ KYT NLM: DOM observer started (secondary, 8s stabilization)');
     },
 
     _onMutation(mutations) {
-      // Fast path: aria-busy="false" = Google says streaming done
+      // aria-busy="false" fast path
       if (mutations) {
         for (const m of mutations) {
-          if (m.type === 'attributes' && m.attributeName === 'aria-busy') {
-            if (m.target.getAttribute('aria-busy') === 'false' && m.target !== this._baselineElement) {
-              if (this.lastTextLength === 0) this.lastTextLength = 1;
-              if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
-              this.stableTimeoutId = setTimeout(() => this._onStable(), 500);
-              return;
-            }
+          if (m.type === 'attributes' && m.attributeName === 'aria-busy' &&
+              m.target.getAttribute('aria-busy') === 'false' && m.target !== this._baselineElement) {
+            if (this.lastTextLength === 0) this.lastTextLength = 1;
+            if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
+            this.stableTimeoutId = setTimeout(() => this._onStable(), 2000);
+            return;
           }
         }
       }
 
-      // Debounce path: text is growing, wait for it to stop
-      const text = this._getLatestResponseText();
+      // Text growth debounce
+      const el = this._findLastResponseElement();
+      if (!el || el === this._baselineElement || capturedElements.has(el)) return;
+      const text = scrapeResponseText(el);
       if (!text || text.length <= this.lastTextLength) return;
       this.lastTextLength = text.length;
 
@@ -303,48 +271,29 @@
       this.stableTimeoutId = setTimeout(() => this._onStable(), this.STABLE_DELAY_MS);
     },
 
-    _getLatestResponseText() {
-      for (const selector of RESPONSE_SELECTORS) {
-        try {
-          const elements = document.querySelectorAll(selector);
-          if (elements.length > 0) {
-            const last = elements[elements.length - 1];
-            if (last === this._baselineElement) continue;
-            if (capturedElements.has(last)) continue;
-            const clone = last.cloneNode(true);
-            clone.querySelectorAll('button, [role="button"], .action-bar, .toolbar').forEach(el => el.remove());
-            const text = clone.innerText?.trim();
-            if (text && text.length > 20) return text;
-          }
-        } catch { /* skip */ }
-      }
-      return null;
-    },
-
     _onStable() {
       if (this.lastTextLength === 0) return;
-      const text = this._getLatestResponseText();
-      if (!text || text.length < 20) { this.stop(); return; }
-
-      // Mark element as captured
       const el = this._findLastResponseElement();
-      if (el && el !== this._baselineElement) capturedElements.add(el);
+      if (!el || el === this._baselineElement || capturedElements.has(el)) { this.stop(); return; }
+      const text = scrapeResponseText(el);
+      if (!text) { this.stop(); return; }
 
-      _debug() && console.log('📥 KYT NLM: DOM response captured (' + text.length + ' chars)');
-      dispatchCapture('Assistant: ' + text, 'assistant', 'dom-observer');
+      capturedElements.add(el);
+      dispatchCapture('Assistant: ' + text, 'assistant', 'dom-observer', this.pendingConvId);
+      _debug() && console.log('📥 KYT NLM: DOM observer captured (' + text.length + ' chars)');
       this.stop();
     },
 
-    _flushPending() {
+    _flush() {
       if (!this.pendingConvId || this.lastTextLength === 0) return;
-      const text = this._getLatestResponseText();
-      if (!text || text.length < 20) return;
-
       const el = this._findLastResponseElement();
-      if (el && el !== this._baselineElement) capturedElements.add(el);
+      if (!el || el === this._baselineElement || capturedElements.has(el)) return;
+      const text = scrapeResponseText(el);
+      if (!text) return;
 
-      _debug() && console.log('📥 KYT NLM: DOM response flushed (' + text.length + ' chars)');
-      dispatchCapture('Assistant: ' + text, 'assistant', 'dom-observer');
+      capturedElements.add(el);
+      dispatchCapture('Assistant: ' + text, 'assistant', 'dom-observer', this.pendingConvId);
+      _debug() && console.log('📥 KYT NLM: DOM observer flushed (' + text.length + ' chars)');
     },
 
     stop() {
@@ -357,17 +306,31 @@
     },
   };
 
-  // Safety nets: flush on leave
-  window.addEventListener('beforeunload', () => responseDOMObserver._flushPending());
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') responseDOMObserver._flushPending();
+  // ═══════════════════════════════════════════════════════════════════════
+  // SAFETY NETS — Capture on leave/hide/periodic
+  // ═══════════════════════════════════════════════════════════════════════
+
+  window.addEventListener('beforeunload', () => {
+    responseDOMObserver._flush();
+    scrapeAllUncaptured(null);
   });
 
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      scrapeAllUncaptured(null);
+    }
+  });
+
+  // Periodic sweep: catches responses the user read but never followed up on
+  setInterval(() => {
+    scrapeAllUncaptured(null);
+  }, 60000);
+
   // ═══════════════════════════════════════════════════════════════════════
-  // DISPATCH — Send captured message to ISOLATED world via CustomEvent
+  // DISPATCH — Send captured message to ISOLATED world
   // ═══════════════════════════════════════════════════════════════════════
 
-  function dispatchCapture(content, role, captureMethod) {
+  function dispatchCapture(content, role, captureMethod, conversationId) {
     if (!content || typeof content !== 'string' || content.trim().length < 5) return;
 
     const cleaned = content.trim()
@@ -376,14 +339,14 @@
 
     if (!deduplicator.shouldCapture(cleaned)) return;
 
-    const notebookId = getNotebookIdFromUrl();
+    const notebookId = conversationId || (getNotebookIdFromUrl() ? 'nlm-' + getNotebookIdFromUrl() : null);
 
     window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
       detail: {
         content: cleaned,
         role: role,
         platform: 'notebooklm',
-        conversationId: notebookId ? 'nlm-' + notebookId : null,
+        conversationId: notebookId,
         timestamp: Date.now(),
         messageId: 'nlm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9),
         captureMethod: captureMethod,
@@ -391,11 +354,11 @@
       }
     }));
 
-    _debug() && console.log('📥 KYT NLM: Captured ' + role + ' (' + cleaned.length + ' chars, ' + captureMethod + ')');
+    _debug() && console.log('📥 KYT NLM: Dispatched ' + role + ' (' + cleaned.length + ' chars, ' + captureMethod + ')');
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // XHR INTERCEPTION — NotebookLM uses XHR for streaming Q&A
+  // XHR INTERCEPTION
   // ═══════════════════════════════════════════════════════════════════════
 
   const originalXHROpen = XMLHttpRequest.prototype.open;
@@ -408,58 +371,39 @@
   };
 
   XMLHttpRequest.prototype.send = function (body) {
-    if (this.__kytMethod !== 'POST' || !isNLMDomain(this.__kytUrl)) {
+    if (this.__kytMethod !== 'POST' || !isNLMDomain(this.__kytUrl) || !isStreamingEndpoint(this.__kytUrl)) {
       return originalXHRSend.apply(this, arguments);
     }
 
-    // Only intercept streaming Q&A endpoint
-    if (!isStreamingEndpoint(this.__kytUrl)) {
-      return originalXHRSend.apply(this, arguments);
-    }
-
-    // Capture user question from request body (always clean — it's our own request)
     const bodyStr = bodyToString(body);
     const question = extractQuestion(bodyStr);
     const notebookId = getNotebookIdFromUrl();
     const convId = notebookId ? 'nlm-' + notebookId : null;
 
     if (question) {
-      dispatchCapture('User: ' + question, 'user', 'xhr');
-      // Start DOM observer for the response — deferred capture is the primary path
+      // === PRIMARY CAPTURE PATH ===
+      // User is sending a new question. The previous response has been on screen
+      // the entire time they were reading it and composing this question.
+      // Scrape it now — it's fully rendered and complete.
+      scrapeAllUncaptured(convId);
+
+      // Capture the user's question from the request body (always clean)
+      dispatchCapture('User: ' + question, 'user', 'xhr', convId);
+
+      // Start DOM observer for the NEW response (secondary path)
       responseDOMObserver.start(convId);
     }
 
-    // Wire fallback: if DOM observer doesn't fire (selectors miss), try parsing the response
+    // When streaming completes, nudge the observer
     this.addEventListener('load', function () {
-      // Signal DOM observer that streaming is done — it will capture from DOM
       responseDOMObserver._onMutation && responseDOMObserver._onMutation(null);
-
-      // Only fall back to wire parsing if DOM observer hasn't captured yet
-      setTimeout(() => {
-        if (responseDOMObserver.lastTextLength > 0) return; // DOM observer got it
-
-        try {
-          const rt = this.responseText;
-          if (!rt || rt.length < 50) return;
-
-          const chunks = parseStreamingResponse(rt);
-          const answer = extractAnswer(chunks);
-          if (answer && answer.length > 20) {
-            _debug() && console.log('📥 KYT NLM: Wire fallback captured response (' + answer.length + ' chars)');
-            dispatchCapture('Assistant: ' + answer, 'assistant', 'xhr-response');
-            responseDOMObserver.stop(); // Don't double-capture
-          }
-        } catch (err) {
-          _debug() && console.error('❌ KYT NLM: Wire fallback error:', err.message);
-        }
-      }, 1500); // Give DOM observer 1.5s head start
-    });
+    }, { once: true });
 
     return originalXHRSend.apply(this, arguments);
   };
 
   // ═══════════════════════════════════════════════════════════════════════
-  // FETCH INTERCEPTION — Fallback (some requests may use fetch)
+  // FETCH INTERCEPTION — Same pattern
   // ═══════════════════════════════════════════════════════════════════════
 
   const originalFetch = window.fetch;
@@ -471,55 +415,39 @@
       return originalFetch.apply(this, arguments);
     }
 
-    // Capture question
     const bodyStr = bodyToString(init?.body);
     const question = extractQuestion(bodyStr);
-    const nbId = getNotebookIdFromUrl();
-    const fetchConvId = nbId ? 'nlm-' + nbId : null;
+    const notebookId = getNotebookIdFromUrl();
+    const convId = notebookId ? 'nlm-' + notebookId : null;
 
     if (question) {
-      dispatchCapture('User: ' + question, 'user', 'fetch');
-      responseDOMObserver.start(fetchConvId);
+      // Primary: scrape previous response, capture this question
+      scrapeAllUncaptured(convId);
+      dispatchCapture('User: ' + question, 'user', 'fetch', convId);
+      responseDOMObserver.start(convId);
     }
 
-    // Call original and wire fallback
     const response = await originalFetch.apply(this, arguments);
-    const cloned = response.clone();
 
-    cloned.text().then(text => {
-      // Signal DOM observer
+    // Nudge observer when streaming completes
+    response.clone().text().then(() => {
       responseDOMObserver._onMutation && responseDOMObserver._onMutation(null);
-
-      // Wire fallback after 1.5s if DOM observer didn't capture
-      setTimeout(() => {
-        if (responseDOMObserver.lastTextLength > 0) return;
-        if (!text || text.length < 50) return;
-        const chunks = parseStreamingResponse(text);
-        const answer = extractAnswer(chunks);
-        if (answer && answer.length > 20) {
-          _debug() && console.log('📥 KYT NLM: Fetch wire fallback (' + answer.length + ' chars)');
-          dispatchCapture('Assistant: ' + answer, 'assistant', 'fetch-response');
-          responseDOMObserver.stop();
-        }
-      }, 1500);
-    }).catch(() => { /* best-effort */ });
+    }).catch(() => {});
 
     return response;
   };
 
   // ═══════════════════════════════════════════════════════════════════════
-  // STATS EXPOSURE
+  // STATS
   // ═══════════════════════════════════════════════════════════════════════
 
   window.__kytNotebookLMStats = function () {
     return {
       injected: true,
       notebookId: getNotebookIdFromUrl(),
-      deduplicator: {
-        mapSize: deduplicator.recentHashes.size,
-      },
+      deduplicator: { mapSize: deduplicator.recentHashes.size },
     };
   };
 
-  console.log('✅ KYT NotebookLM: inject.js loaded — intercepting streaming Q&A');
+  console.log('✅ KYT NotebookLM: inject.js loaded — deferred DOM capture (screen = short-term memory)');
 })();
