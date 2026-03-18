@@ -830,10 +830,45 @@
   }
 
   /**
+   * Extract assistant response text from a wrb.fr inner payload at known positions.
+   * StreamGenerate wrb.fr payloads place assistant text at specific array indices.
+   * Returns the extracted string or null if no text found at known positions.
+   */
+  function extractTextFromWrbPayload(payload) {
+    if (!Array.isArray(payload)) return null;
+
+    // Known positions where assistant text lives in StreamGenerate wrb.fr payloads:
+    // Position 1: payload[4][0][1][0] — primary StreamGenerate response position
+    try {
+      const t = payload[4] && payload[4][0] && payload[4][0][1] && payload[4][0][1][0];
+      if (typeof t === 'string' && t.trim().length > 0) return t.trim();
+    } catch (_) {}
+
+    // Position 2: payload[3][0][0][1][0] — history-load turn structure (fallback)
+    try {
+      const t = payload[3] && payload[3][0] && payload[3][0][0] && payload[3][0][0][1] && payload[3][0][0][1][0];
+      if (typeof t === 'string' && t.trim().length > 0) return t.trim();
+    } catch (_) {}
+
+    // Position 3: payload[0][0] — sometimes seen in simple responses
+    try {
+      const t = payload[0] && payload[0][0];
+      if (typeof t === 'string' && t.trim().length > 10 && isNaturalLanguage(t.trim())) return t.trim();
+    } catch (_) {}
+
+    return null;
+  }
+
+  /**
    * Extract assistant text from a StreamGenerate XHR/fetch response.
-   * StreamGenerate sends progressive frames where each contains full text so far —
-   * the longest natural-language string across all frames is the complete response.
-   * Returns the extracted text or null if nothing usable found.
+   *
+   * Strategy: Structural extraction first — try known JSON positions in wrb.fr
+   * payloads where Gemini places response text. Progressive frames are cumulative
+   * (each contains the full text so far), so the LONGEST structural text across
+   * all frames is the complete response.
+   *
+   * Falls back to heuristic findAllStrings() + isNaturalLanguage() if structural
+   * extraction fails on all frames.
    */
   function extractAssistantFromStreamGenerate(responseText) {
     if (!responseText || responseText.length < 50) return null;
@@ -846,47 +881,67 @@
     const frames = parseLengthPrefixedFrames(text);
     if (frames.length === 0) return null;
 
-    // Unwrap wrb.fr double-encoding: frames are ["wrb.fr", null, "<stringified JSON>", ...]
-    // The actual text lives inside the stringified JSON payload at index [2].
+    // Phase 1: Structural extraction from wrb.fr payloads
+    let structuralText = null;
+    let structuralLen = 0;
+    let wrbCount = 0;
+
+    // Also collect unwrapped payloads for heuristic fallback
     const unwrapped = [];
+
     for (const frame of frames) {
       if (Array.isArray(frame) && Array.isArray(frame[0])) {
         for (const sub of frame) {
           if (Array.isArray(sub) && sub[0] === 'wrb.fr' && typeof sub[2] === 'string') {
+            wrbCount++;
             try {
               const inner = JSON.parse(sub[2]);
               unwrapped.push(inner);
+
+              // Try structural extraction at known positions
+              const extracted = extractTextFromWrbPayload(inner);
+              if (extracted && extracted.length > structuralLen) {
+                structuralText = extracted;
+                structuralLen = extracted.length;
+              }
             } catch (_) {}
           }
         }
       }
-      // Also keep the raw frame for non-wrb.fr responses
+      // Also keep raw frame for non-wrb.fr fallback
       unwrapped.push(frame);
     }
 
-    let longest = null;
-    let longestLen = 0;
+    // Phase 2: Heuristic fallback — findAllStrings + isNaturalLanguage
+    let heuristicText = null;
+    let heuristicLen = 0;
 
-    for (const obj of unwrapped) {
-      const strings = findAllStrings(obj, 15);
-      for (const s of strings) {
-        if (s.length < 20) continue;
-        if (s.length <= longestLen) continue;
-        if (/^(r_|rc_|c_|af\.)/.test(s)) continue;
-        if (/^[0-9a-f]{16,}$/i.test(s)) continue;
-        if (/^https?:\/\//.test(s)) continue;
-        if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) continue;
-        if (!isNaturalLanguage(s)) continue;
-        longest = s;
-        longestLen = s.length;
+    // Only run heuristic if structural extraction failed or for comparison in debug mode
+    if (!structuralText || _kytDebug()) {
+      for (const obj of unwrapped) {
+        const strings = findAllStrings(obj, 15);
+        for (const s of strings) {
+          if (s.length < 20) continue;
+          if (s.length <= heuristicLen) continue;
+          if (/^(r_|rc_|c_|af\.)/.test(s)) continue;
+          if (/^[0-9a-f]{16,}$/i.test(s)) continue;
+          if (/^https?:\/\//.test(s)) continue;
+          if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) continue;
+          if (!isNaturalLanguage(s)) continue;
+          heuristicText = s;
+          heuristicLen = s.length;
+        }
       }
     }
 
     if (_kytDebug()) {
-      console.log('🔍 KYT Wire: frames=' + frames.length + ', unwrapped=' + unwrapped.length + ', longest=' + longestLen + ' chars');
+      console.log('🔍 KYT Wire: frames=' + frames.length + ', wrb.fr=' + wrbCount +
+        ', structural=' + structuralLen + ', heuristic=' + heuristicLen + ' chars');
     }
 
-    return longest && longestLen >= 20 ? longest : null;
+    // Prefer structural extraction; fall back to heuristic
+    if (structuralText && structuralLen >= 20) return structuralText;
+    return heuristicText && heuristicLen >= 20 ? heuristicText : null;
   }
 
   /**
@@ -1200,7 +1255,8 @@
           if (wireText && wireText.length >= 20) {
             _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction success (' + wireText.length + ' chars)');
             dispatchCapture(wireText, 'assistant', 'xhr-response', parseResult.conversationId);
-            responseDOMObserver.stop();
+            // Don't stop DOM observer — let both capture, prefix dedup picks the longer one
+            responseDOMObserver.notifyResponseComplete();
           } else {
             _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction failed, falling back to DOM observer');
             responseDOMObserver.notifyResponseComplete();
@@ -1319,7 +1375,8 @@
       if (wireText && wireText.length >= 20) {
         _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction success via fetch (' + wireText.length + ' chars)');
         dispatchCapture(wireText, 'assistant', 'fetch-response', parseResult.conversationId);
-        responseDOMObserver.stop();
+        // Don't stop DOM observer — let both capture, prefix dedup picks the longer one
+        responseDOMObserver.notifyResponseComplete();
       } else {
         _kytDebug() && console.log('🔌 KYT Gemini: Wire extraction failed via fetch, falling back to DOM observer');
         responseDOMObserver.notifyResponseComplete();

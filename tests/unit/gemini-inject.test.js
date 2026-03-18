@@ -295,6 +295,24 @@ class MessageDeduplicator {
   }
 }
 
+// extractTextFromWrbPayload (copied from inject.js for testability)
+function extractTextFromWrbPayload(payload) {
+  if (!Array.isArray(payload)) return null;
+  try {
+    const t = payload[4] && payload[4][0] && payload[4][0][1] && payload[4][0][1][0];
+    if (typeof t === 'string' && t.trim().length > 0) return t.trim();
+  } catch (_) {}
+  try {
+    const t = payload[3] && payload[3][0] && payload[3][0][0] && payload[3][0][0][1] && payload[3][0][0][1][0];
+    if (typeof t === 'string' && t.trim().length > 0) return t.trim();
+  } catch (_) {}
+  try {
+    const t = payload[0] && payload[0][0];
+    if (typeof t === 'string' && t.trim().length > 10 && isNaturalLanguage(t.trim())) return t.trim();
+  } catch (_) {}
+  return null;
+}
+
 // extractAssistantFromStreamGenerate (copied from inject.js for testability)
 function extractAssistantFromStreamGenerate(responseText) {
   if (!responseText || responseText.length < 50) return null;
@@ -303,35 +321,53 @@ function extractAssistantFromStreamGenerate(responseText) {
   else if (text.startsWith(')]}\'')) text = text.slice(4);
   const frames = parseLengthPrefixedFrames(text);
   if (frames.length === 0) return null;
-  // Unwrap wrb.fr double-encoding
+
+  // Phase 1: Structural extraction from wrb.fr payloads
+  let structuralText = null;
+  let structuralLen = 0;
   const unwrapped = [];
+
   for (const frame of frames) {
     if (Array.isArray(frame) && Array.isArray(frame[0])) {
       for (const sub of frame) {
         if (Array.isArray(sub) && sub[0] === 'wrb.fr' && typeof sub[2] === 'string') {
-          try { unwrapped.push(JSON.parse(sub[2])); } catch (_) {}
+          try {
+            const inner = JSON.parse(sub[2]);
+            unwrapped.push(inner);
+            const extracted = extractTextFromWrbPayload(inner);
+            if (extracted && extracted.length > structuralLen) {
+              structuralText = extracted;
+              structuralLen = extracted.length;
+            }
+          } catch (_) {}
         }
       }
     }
     unwrapped.push(frame);
   }
-  let longest = null;
-  let longestLen = 0;
-  for (const obj of unwrapped) {
-    const strings = findAllStrings(obj, 15);
-    for (const s of strings) {
-      if (s.length < 20) continue;
-      if (s.length <= longestLen) continue;
-      if (/^(r_|rc_|c_|af\.)/.test(s)) continue;
-      if (/^[0-9a-f]{16,}$/i.test(s)) continue;
-      if (/^https?:\/\//.test(s)) continue;
-      if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) continue;
-      if (!isNaturalLanguage(s)) continue;
-      longest = s;
-      longestLen = s.length;
+
+  // Phase 2: Heuristic fallback
+  let heuristicText = null;
+  let heuristicLen = 0;
+  if (!structuralText) {
+    for (const obj of unwrapped) {
+      const strings = findAllStrings(obj, 15);
+      for (const s of strings) {
+        if (s.length < 20) continue;
+        if (s.length <= heuristicLen) continue;
+        if (/^(r_|rc_|c_|af\.)/.test(s)) continue;
+        if (/^[0-9a-f]{16,}$/i.test(s)) continue;
+        if (/^https?:\/\//.test(s)) continue;
+        if (/^[A-Za-z0-9+/=]{40,}$/.test(s)) continue;
+        if (!isNaturalLanguage(s)) continue;
+        heuristicText = s;
+        heuristicLen = s.length;
+      }
     }
   }
-  return longest && longestLen >= 20 ? longest : null;
+
+  if (structuralText && structuralLen >= 20) return structuralText;
+  return heuristicText && heuristicLen >= 20 ? heuristicText : null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1563,6 +1599,114 @@ describe('extractAssistantFromStreamGenerate', () => {
     const body = buildLengthPrefixedFrame([frame1Text]) + buildLengthPrefixedFrame([frame2Text]) + buildLengthPrefixedFrame([frame3Text]);
     const result = extractAssistantFromStreamGenerate(body);
     expect(result).toBe(frame3Text);
+  });
+
+  it('uses structural extraction at payload[4][0][1][0] for wrb.fr frames', () => {
+    const fullResponse = 'Walter Payton was one of the greatest running backs in NFL history. He played for the Chicago Bears from 1975 to 1987 and earned the nickname Sweetness for his graceful running style.';
+    // Build wrb.fr payload with text at position [4][0][1][0]
+    const innerPayload = JSON.stringify([
+      null, null, null, null,
+      [[null, [fullResponse]]]
+    ]);
+    const wrbFrame = [['wrb.fr', null, innerPayload, null, null, null, 'generic']];
+    const body = buildLengthPrefixedFrame(wrbFrame);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(fullResponse);
+  });
+
+  it('structural extraction gets more text than heuristic from wrb.fr', () => {
+    // Simulate a real scenario: wrb.fr payload with full text at [4][0][1][0]
+    // but findAllStrings would also find shorter metadata strings
+    const fullResponse = 'The history of computing began with Charles Babbage who designed the Analytical Engine in the 1830s. Ada Lovelace wrote what is considered the first computer program for this machine.';
+    const shortMeta = 'Personalization in progress for this response';
+    const innerPayload = JSON.stringify([
+      null, [shortMeta], null, null,
+      [[null, [fullResponse]]]
+    ]);
+    const wrbFrame = [['wrb.fr', null, innerPayload, null, null, null, 'generic']];
+    const body = buildLengthPrefixedFrame(wrbFrame);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(fullResponse);
+  });
+
+  it('progressive wrb.fr frames: last frame has longest structural text', () => {
+    const chunk1 = 'Walter Payton was a football player.';
+    const chunk2 = 'Walter Payton was a football player. He played for the Chicago Bears and was nicknamed Sweetness. He holds many records.';
+    const chunk3 = 'Walter Payton was a football player. He played for the Chicago Bears and was nicknamed Sweetness. He holds many records. He rushed for over sixteen thousand yards in his career and was inducted into the Hall of Fame.';
+
+    function buildWrbFrame(text) {
+      const inner = JSON.stringify([null, null, null, null, [[null, [text]]]]);
+      return [['wrb.fr', null, inner, null, null, null, 'generic']];
+    }
+    const body = buildLengthPrefixedFrame(buildWrbFrame(chunk1)) +
+                 buildLengthPrefixedFrame(buildWrbFrame(chunk2)) +
+                 buildLengthPrefixedFrame(buildWrbFrame(chunk3));
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(chunk3);
+  });
+
+  it('falls back to heuristic when structural positions are empty', () => {
+    // wrb.fr payload where text is NOT at any known structural position
+    const assistantText = 'This response lives at an unexpected position in the payload array so structural extraction cannot find it.';
+    const innerPayload = JSON.stringify([null, null, [assistantText], null, null]);
+    const wrbFrame = [['wrb.fr', null, innerPayload, null, null, null, 'generic']];
+    const body = buildLengthPrefixedFrame(wrbFrame);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(assistantText);
+  });
+
+  it('uses payload[3][0][0][1][0] fallback for history-load style wrb.fr', () => {
+    const text = 'Abraham Lincoln was the sixteenth president of the United States and led the country through the Civil War.';
+    const innerPayload = JSON.stringify([
+      null, null, null,
+      [[[null, [text]]]],
+      null
+    ]);
+    const wrbFrame = [['wrb.fr', null, innerPayload, null, null, null, 'generic']];
+    const body = buildLengthPrefixedFrame(wrbFrame);
+    const result = extractAssistantFromStreamGenerate(body);
+    expect(result).toBe(text);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// extractTextFromWrbPayload UNIT TESTS
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('extractTextFromWrbPayload', () => {
+  it('extracts text from position [4][0][1][0]', () => {
+    const text = 'This is the primary response text from Gemini at the expected position.';
+    const payload = [null, null, null, null, [[null, [text]]]];
+    expect(extractTextFromWrbPayload(payload)).toBe(text);
+  });
+
+  it('extracts text from position [3][0][0][1][0] when [4] is empty', () => {
+    const text = 'This is the fallback position text used in history load format responses.';
+    const payload = [null, null, null, [[[null, [text]]]], null];
+    expect(extractTextFromWrbPayload(payload)).toBe(text);
+  });
+
+  it('returns null for non-array input', () => {
+    expect(extractTextFromWrbPayload(null)).toBeNull();
+    expect(extractTextFromWrbPayload('string')).toBeNull();
+    expect(extractTextFromWrbPayload(42)).toBeNull();
+  });
+
+  it('returns null when no text at known positions', () => {
+    const payload = [null, null, null, null, null];
+    expect(extractTextFromWrbPayload(payload)).toBeNull();
+  });
+
+  it('trims whitespace from extracted text', () => {
+    const payload = [null, null, null, null, [[null, ['  padded text with spaces  ']]]];
+    expect(extractTextFromWrbPayload(payload)).toBe('padded text with spaces');
+  });
+
+  it('prefers [4][0][1][0] over [3][0][0][1][0] when both exist', () => {
+    const primary = 'This is the primary position text that should be preferred by the extractor.';
+    const fallback = 'This is the fallback text that should not be returned when primary exists.';
+    const payload = [null, null, null, [[[null, [fallback]]]], [[null, [primary]]]];
+    expect(extractTextFromWrbPayload(payload)).toBe(primary);
   });
 });
 
