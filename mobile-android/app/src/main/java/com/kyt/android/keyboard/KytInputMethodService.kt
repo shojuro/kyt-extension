@@ -44,6 +44,9 @@ class KytInputMethodService : InputMethodService() {
     private var prefetchJob: Job? = null
     private var lastInputTime = 0L
 
+    // Track committed text ourselves — getExtractedText() fails on ChatGPT/Claude
+    private val textBuffer = StringBuilder()
+
     private val TARGET_PACKAGES = setOf(
         "com.openai.chatgpt",
         "com.anthropic.claude",
@@ -68,6 +71,7 @@ class KytInputMethodService : InputMethodService() {
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
         cachedInjection = null
+        textBuffer.clear()
         keyboardView?.updateEnterKey(attribute)
         keyboardView?.setEnterGlow(false)
         updateContextBar()
@@ -82,6 +86,7 @@ class KytInputMethodService : InputMethodService() {
         super.onFinishInput()
         prefetchJob?.cancel()
         cachedInjection = null
+        textBuffer.clear()
     }
 
     // ── Key Action Listener ──────────────────────────────────
@@ -98,13 +103,23 @@ class KytInputMethodService : InputMethodService() {
                         keyDef.label.lowercase()
                     }
                     ic.commitText(char, 1)
+                    textBuffer.append(char)
                 }
 
-                KeyType.SPACE -> ic.commitText(" ", 1)
+                KeyType.SPACE -> {
+                    ic.commitText(" ", 1)
+                    textBuffer.append(" ")
+                }
 
-                KeyType.PERIOD -> ic.commitText(keyDef.label, 1)
+                KeyType.PERIOD -> {
+                    ic.commitText(keyDef.label, 1)
+                    textBuffer.append(keyDef.label)
+                }
 
-                KeyType.BACKSPACE -> ic.deleteSurroundingText(1, 0)
+                KeyType.BACKSPACE -> {
+                    ic.deleteSurroundingText(1, 0)
+                    if (textBuffer.isNotEmpty()) textBuffer.deleteCharAt(textBuffer.length - 1)
+                }
 
                 KeyType.ENTER -> handleSendAction(ic)
 
@@ -121,32 +136,28 @@ class KytInputMethodService : InputMethodService() {
 
     private fun handleSendAction(ic: InputConnection) {
         if (isTargetApp()) {
-            // If we have cached injection, prepend it
-            if (cachedInjection != null && MemoryModeManager.shouldInject(this)) {
-                val currentText = ic.getExtractedText(
-                    android.view.inputmethod.ExtractedTextRequest(), 0
-                )?.text?.toString() ?: ""
+            val currentText = getCurrentText()
+            Log.d(TAG, "handleSendAction: text='${currentText.take(50)}' (${currentText.length} chars)")
 
-                if (currentText.isNotBlank()) {
-                    val injectedText = "${cachedInjection}\n\n${currentText}"
-                    ic.deleteSurroundingText(currentText.length, 0)
-                    ic.commitText(injectedText, 1)
-                    cachedInjection = null
-                    keyboardView?.setEnterGlow(false)
-                }
+            // If we have cached injection, prepend it
+            if (cachedInjection != null && MemoryModeManager.shouldInject(this) && currentText.isNotBlank()) {
+                val injectedText = "${cachedInjection}\n\n${currentText}"
+                // Clear field and rewrite with injection prepended
+                ic.deleteSurroundingText(currentText.length, 0)
+                ic.commitText(injectedText, 1)
+                Log.d(TAG, "handleSendAction: injected context")
+                cachedInjection = null
+                keyboardView?.setEnterGlow(false)
             }
 
             // Save user message (fire-and-forget)
-            if (MemoryModeManager.shouldCapture(this)) {
-                val text = ic.getExtractedText(
-                    android.view.inputmethod.ExtractedTextRequest(), 0
-                )?.text?.toString() ?: ""
-
-                if (text.isNotBlank()) {
-                    scope.launch { saveUserMessage(text) }
-                }
+            if (MemoryModeManager.shouldCapture(this) && currentText.isNotBlank()) {
+                scope.launch { saveUserMessage(currentText) }
             }
         }
+
+        // Clear buffer after send
+        textBuffer.clear()
 
         // Send the enter key event to the app
         val imeAction = currentInputEditorInfo?.imeOptions?.and(EditorInfo.IME_MASK_ACTION) ?: 0
@@ -182,15 +193,25 @@ class KytInputMethodService : InputMethodService() {
         }
     }
 
+    /**
+     * Get current text from input field. Tries getExtractedText() first,
+     * falls back to our tracked textBuffer (needed for ChatGPT/Claude
+     * which don't support the ExtractedText protocol).
+     */
+    private fun getCurrentText(): String {
+        val extracted = currentInputConnection?.getExtractedText(
+            android.view.inputmethod.ExtractedTextRequest(), 0
+        )?.text?.toString()
+        return if (!extracted.isNullOrBlank()) extracted else textBuffer.toString()
+    }
+
     private suspend fun prefetchContext() {
         Log.d(TAG, "prefetchContext: start")
         val ic = currentInputConnection
         if (ic == null) { Log.d(TAG, "prefetchContext: no InputConnection"); return }
 
-        val text = ic.getExtractedText(
-            android.view.inputmethod.ExtractedTextRequest(), 0
-        )?.text?.toString()
-        if (text.isNullOrBlank()) { Log.d(TAG, "prefetchContext: empty text"); return }
+        val text = getCurrentText()
+        if (text.isBlank()) { Log.d(TAG, "prefetchContext: empty text (buffer=${textBuffer.length})"); return }
 
         Log.d(TAG, "prefetchContext: text='${text.take(50)}' (${text.length} chars)")
 
