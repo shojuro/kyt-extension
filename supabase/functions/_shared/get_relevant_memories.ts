@@ -227,6 +227,11 @@ function filterQueryEchoes(query: string, candidates: Candidate[]): Candidate[] 
     });
 }
 
+/** Escape regex special characters in a string */
+function escapeRegex(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** Simple BM25-style keyword boost (max 30% of score) */
 function applyBm25Boost(query: string, items: CandidateWithScore[]): CandidateWithScore[] {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -237,7 +242,8 @@ function applyBm25Boost(query: string, items: CandidateWithScore[]): CandidateWi
         const txt = ((item as any).contextual_content || item.content).toLowerCase();
         let score = 0;
         for (const term of terms) {
-            const matches = txt.match(new RegExp(`\\b${term}\\b`, "g")) ?? [];
+            const escaped = escapeRegex(term);
+            const matches = txt.match(new RegExp(`\\b${escaped}\\b`, "g")) ?? [];
             score += matches.length;
         }
         return score;
