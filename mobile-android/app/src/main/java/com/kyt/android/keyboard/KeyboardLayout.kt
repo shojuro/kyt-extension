@@ -92,16 +92,16 @@ object KeyboardLayout {
             KeyDef("#", '#'.code),
             KeyDef("$", '$'.code),
             KeyDef("%", '%'.code),
-            KeyDef("&", '&'.code),
+            KeyDef("<", '<'.code),
             KeyDef("-", '-'.code),
-            KeyDef("+", '+'.code),
+            KeyDef(">", '>'.code),
             KeyDef("(", '('.code),
             KeyDef(")", ')'.code)
         ),
 
         // Row 2: [=\\<] ! " ' : ; / ? [Backspace]
         listOf(
-            KeyDef("=\\<", KeyCodes.SYMBOL_2, 1.44f, KeyType.SYMBOL),
+            KeyDef("#+=", KeyCodes.SYMBOL_2, 1.44f, KeyType.SYMBOL),
             KeyDef("!", '!'.code),
             KeyDef("\"", '"'.code),
             KeyDef("'", '\''.code),
@@ -157,8 +157,8 @@ object KeyboardLayout {
             KeyDef("?123", KeyCodes.SYMBOL, 1.44f, KeyType.SYMBOL),
             KeyDef("_", '_'.code),
             KeyDef("\\", '\\'.code),
-            KeyDef("<", '<'.code),
-            KeyDef(">", '>'.code),
+            KeyDef("&", '&'.code),
+            KeyDef("+", '+'.code),
             KeyDef("[", '['.code),
             KeyDef("]", ']'.code),
             KeyDef("*", '*'.code),
