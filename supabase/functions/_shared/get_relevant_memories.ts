@@ -42,6 +42,7 @@ export interface SearchOptions {
     recentTopics?: string[];  // Recent topic words for implicit query enrichment
     conversationWindow?: Array<{ role: string; content: string }>;  // Recent messages for coreference resolution
     edgeFunction?: string;  // Source edge function for cost attribution
+    excludePlatforms?: string[];  // Platforms to exclude from results (e.g. ["claude-code"])
 }
 
 // ========================================================================
@@ -628,6 +629,7 @@ export async function getRelevantMemories(
         recentTopics,
         conversationWindow,
         edgeFunction,
+        excludePlatforms,
     } = options;
 
     // Build cost attribution context once, pass to all clients
@@ -763,11 +765,21 @@ export async function getRelevantMemories(
     if (fast) {
         Logger.info("Fast path activated", { requestId });
 
-        const fastCandidates = await vectorSearch(
+        let fastCandidates = await vectorSearch(
             supabase, rawEmbedding, userId, [],
             Math.max(topK, 10),
             requestId, resolvedProfileId, projectId
         );
+
+        // Exclude platforms (e.g. claude-code dev noise from keyboard results)
+        if (excludePlatforms?.length) {
+            const excluded = new Set(excludePlatforms);
+            const before = fastCandidates.length;
+            fastCandidates = fastCandidates.filter(c => !excluded.has(c.platform || ''));
+            if (fastCandidates.length < before) {
+                Logger.info(`excludePlatforms filter: ${before} → ${fastCandidates.length}`, { requestId });
+            }
+        }
 
         const echoFiltered = filterQueryEchoes(query, fastCandidates);
 
@@ -1127,7 +1139,19 @@ export async function getRelevantMemories(
     }
 
     // ========================================================================
-    // STEP 5c: Filter self-referential query echoes
+    // STEP 5c: Exclude platforms (e.g. claude-code dev noise from keyboard)
+    // ========================================================================
+    if (excludePlatforms?.length) {
+        const excluded = new Set(excludePlatforms);
+        const before = candidates.length;
+        candidates = candidates.filter(c => !excluded.has(c.platform || ''));
+        if (candidates.length < before) {
+            Logger.info(`excludePlatforms filter: ${before} → ${candidates.length}`, { requestId });
+        }
+    }
+
+    // ========================================================================
+    // STEP 5d: Filter self-referential query echoes
     // Short content that just repeats the search query provides no new info
     // ========================================================================
     const echoFiltered = filterQueryEchoes(query, candidates);

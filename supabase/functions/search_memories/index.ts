@@ -47,6 +47,7 @@ serve(async (req) => {
             recentTopics,         // Recent topic words for implicit query enrichment
             conversationWindow,   // Recent messages from current conversation for coreference resolution
             projectId,            // Project scoping for K.Y.T. Vault
+            excludePlatforms,     // Platforms to exclude from results (e.g. ["claude-code"])
         } = body;
 
         // Extract user from JWT if present (authenticated mode)
@@ -123,6 +124,7 @@ serve(async (req) => {
             recentTopics: recentTopics || undefined,
             conversationWindow: conversationWindow || undefined,
             edgeFunction: 'search_memories',
+            excludePlatforms: excludePlatforms || undefined,
         };
 
         // Get relevant memories using the full Hybrid HyDE pipeline:
