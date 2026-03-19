@@ -43,7 +43,6 @@ class KytKeyboardView @JvmOverloads constructor(
     private var contextBarText: String = "K.Y.T."
     private var memoryModeDotColor: Int = KeyboardTheme.ACCENT
     private var enterLabel: String = "↵"
-    private var enterGlow: Boolean = false
 
     // Backspace repeat
     private val handler = Handler(Looper.getMainLooper())
@@ -329,21 +328,11 @@ class KytKeyboardView @JvmOverloads constructor(
         canvas: Canvas, keyRect: KeyRect,
         cx: Float, cy: Float, density: Float, radius: Float
     ) {
-        if (enterGlow) {
-            val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = KeyboardTheme.ACCENT
-                alpha = 40
-            }
-            val rect = RectF(keyRect.left, keyRect.top, keyRect.right, keyRect.bottom)
-            canvas.drawRoundRect(rect, radius, radius, glowPaint)
-        }
-
-        val paint = if (enterGlow) accentPaint else funcTextPaint
-        paint.textSize = KeyboardTheme.FUNC_TEXT_SP * resources.displayMetrics.scaledDensity
+        funcTextPaint.textSize = KeyboardTheme.FUNC_TEXT_SP * resources.displayMetrics.scaledDensity
         canvas.drawText(
             enterLabel, cx,
-            cy - (paint.descent() + paint.ascent()) / 2f,
-            paint
+            cy - (funcTextPaint.descent() + funcTextPaint.ascent()) / 2f,
+            funcTextPaint
         )
     }
 
@@ -626,13 +615,6 @@ class KytKeyboardView @JvmOverloads constructor(
             else -> "↵"
         }
         invalidate()
-    }
-
-    fun setEnterGlow(glow: Boolean) {
-        if (enterGlow != glow) {
-            enterGlow = glow
-            invalidate()
-        }
     }
 
     /**
