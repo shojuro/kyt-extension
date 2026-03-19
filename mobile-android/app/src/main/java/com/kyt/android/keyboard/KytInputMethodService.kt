@@ -1,6 +1,7 @@
 package com.kyt.android.keyboard
 
 import android.inputmethodservice.InputMethodService
+import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -32,6 +33,10 @@ import org.json.JSONObject
  * 5. After send: save user message to save_chat_turn_batch
  */
 class KytInputMethodService : InputMethodService() {
+
+    companion object {
+        private const val TAG = "KYT"
+    }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var keyboardView: KytKeyboardView? = null
@@ -162,9 +167,13 @@ class KytInputMethodService : InputMethodService() {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
 
         if (!isTargetApp()) return
-        if (!MemoryModeManager.shouldInject(this)) return
+        if (!MemoryModeManager.shouldInject(this)) {
+            Log.d(TAG, "onUpdateSelection: inject disabled (mode=${MemoryModeManager.getMode(this)})")
+            return
+        }
 
         lastInputTime = System.currentTimeMillis()
+        Log.d(TAG, "onUpdateSelection: scheduling prefetch in 2s")
 
         prefetchJob?.cancel()
         prefetchJob = scope.launch {
@@ -174,20 +183,27 @@ class KytInputMethodService : InputMethodService() {
     }
 
     private suspend fun prefetchContext() {
-        val ic = currentInputConnection ?: return
+        Log.d(TAG, "prefetchContext: start")
+        val ic = currentInputConnection
+        if (ic == null) { Log.d(TAG, "prefetchContext: no InputConnection"); return }
+
         val text = ic.getExtractedText(
             android.view.inputmethod.ExtractedTextRequest(), 0
-        )?.text?.toString() ?: return
+        )?.text?.toString()
+        if (text.isNullOrBlank()) { Log.d(TAG, "prefetchContext: empty text"); return }
 
-        if (text.isBlank()) return
+        Log.d(TAG, "prefetchContext: text='${text.take(50)}' (${text.length} chars)")
 
         val classification = classifyIntent(text)
+        Log.d(TAG, "prefetchContext: intent=${classification.intent}")
         if (classification.intent == KytIntent.SKIP) {
             cachedInjection = null
             return
         }
 
-        val userId = AuthManager.getUserId(this) ?: return
+        val userId = AuthManager.getUserId(this)
+        if (userId == null) { Log.d(TAG, "prefetchContext: no userId (not authenticated)"); return }
+        Log.d(TAG, "prefetchContext: userId=$userId")
 
         val body = JSONObject().apply {
             put("query", text.take(200))
@@ -197,32 +213,41 @@ class KytInputMethodService : InputMethodService() {
             put("platform", "all")
         }
 
+        Log.d(TAG, "prefetchContext: calling search_memories...")
         val result = withTimeoutOrNull(3000) {
             SupabaseClient.callEdgeFunction("search_memories", body)
-        } ?: return
-
-        if (result.isSuccess) {
-            val json = result.getOrThrow()
-            val results = json.optJSONArray("results") ?: JSONArray()
-            val items = (0 until results.length()).map { i ->
-                val r = results.getJSONObject(i)
-                MemoryItem(
-                    id = r.optString("id"),
-                    content = r.optString("content"),
-                    platform = r.optString("platform", "unknown"),
-                    timestamp = r.optString("created_at", ""),
-                    similarity = r.optDouble("similarity", 0.0),
-                    role = r.optString("role", null)
-                )
-            }
-            val injection = buildCompactInjection(items, text.take(200))
-            cachedInjection = if (injection.itemCount > 0) injection.text else null
-            val statusMsg = if (cachedInjection != null) {
-                "Context ready (${injection.itemCount} items)"
-            } else null
-            updateContextBar(statusMsg)
-            keyboardView?.setEnterGlow(cachedInjection != null)
         }
+
+        if (result == null) { Log.d(TAG, "prefetchContext: timeout (3s)"); return }
+
+        if (result.isFailure) {
+            Log.e(TAG, "prefetchContext: edge function failed", result.exceptionOrNull())
+            return
+        }
+
+        val json = result.getOrThrow()
+        val results = json.optJSONArray("results") ?: JSONArray()
+        Log.d(TAG, "prefetchContext: got ${results.length()} results")
+
+        val items = (0 until results.length()).map { i ->
+            val r = results.getJSONObject(i)
+            MemoryItem(
+                id = r.optString("id"),
+                content = r.optString("content"),
+                platform = r.optString("platform", "unknown"),
+                timestamp = r.optString("created_at", ""),
+                similarity = r.optDouble("similarity", 0.0),
+                role = r.optString("role", null)
+            )
+        }
+        val injection = buildCompactInjection(items, text.take(200))
+        cachedInjection = if (injection.itemCount > 0) injection.text else null
+        Log.d(TAG, "prefetchContext: injection=${if (cachedInjection != null) "${injection.itemCount} items" else "none"}")
+        val statusMsg = if (cachedInjection != null) {
+            "Context ready (${injection.itemCount} items)"
+        } else null
+        updateContextBar(statusMsg)
+        keyboardView?.setEnterGlow(cachedInjection != null)
     }
 
     // ── Save ─────────────────────────────────────────────────
