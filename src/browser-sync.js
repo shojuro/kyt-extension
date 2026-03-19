@@ -359,11 +359,33 @@ async function getMessagesToSync() {
   );
 
   // Pre-filter by timestamp + validate messageId (INSIDE callback for correct scoping)
+  // Use >= (not >) to avoid skipping messages saved in the same millisecond as the cursor.
+  // Dedup: exclude IDs from the last sync batch to prevent re-syncing the boundary messages.
+  const lastSyncedIds = new Set(result.last_sync_status?.lastSyncedMessageIds || []);
   const candidateMessages = allMessages.filter(msg => {
     if (!msg.messageId) return false;
+    if (lastSyncedIds.has(msg.messageId)) return false; // already synced in last batch
     const messageTime = msg.capturedAt ?? msg.timestamp ?? 0;
-    return messageTime > lastSyncTime;
+    return messageTime >= lastSyncTime; // >= not > — prevents timestamp-gap drops
   });
+
+  // Diagnostic: log assistant messages filtered out by timestamp (potential sync gap victims)
+  const skippedByTimestamp = allMessages.filter(msg => {
+    if (!msg.messageId) return false;
+    if (lastSyncedIds.has(msg.messageId)) return false;
+    const messageTime = msg.capturedAt ?? msg.timestamp ?? 0;
+    return messageTime < lastSyncTime && msg.role === 'assistant';
+  });
+  if (skippedByTimestamp.length > 0) {
+    console.warn(`⚠️ ${skippedByTimestamp.length} assistant message(s) behind sync cursor:`,
+      skippedByTimestamp.map(m => ({
+        id: m.messageId?.substring(0, 20),
+        capturedAt: m.capturedAt,
+        lastSyncTime,
+        gap: lastSyncTime - (m.capturedAt ?? 0) + 'ms'
+      }))
+    );
+  }
 
   if (candidateMessages.length === 0) {
     console.log(`✅ No new messages since last sync (${new Date(lastSyncTime).toISOString()})`);
@@ -455,13 +477,16 @@ export async function syncMessages(messagesToSync) {
     }, {});
     console.log(`📊 KYT Sync: Role distribution -`, roleCounts);
 
-    // Log each message's role for verification
+    // Log each message's role for verification — flag deferred DOM captures
     messagesToSync.forEach((msg, idx) => {
+      const isDeferred = msg.source === 'deferred-dom' || msg.captureMethod === 'deferred-dom';
       console.log(`📊 SYNC DEBUG [${idx}]:`, {
-        messageId: msg.messageId?.substring(0, 20) || 'no-id',
+        messageId: msg.messageId?.substring(0, 25) || 'no-id',
         role: msg.role || 'MISSING',
         platform: normalizePlatform(msg.platform),
-        content_preview: msg.content?.substring(0, 30) + '...'
+        captureMethod: msg.captureMethod || msg.source || 'unknown',
+        content_preview: msg.content?.substring(0, 40) + '...',
+        ...(isDeferred ? { FLAG: '🔍 DEFERRED DOM CAPTURE' } : {})
       });
     });
 
@@ -700,16 +725,25 @@ export async function syncMessages(messagesToSync) {
       console.log('📊 No conversation turns created (insufficient messages for chunking)');
     }
 
-    // Update sync status - use timestamp-based tracking (no more accumulating syncedMessageIds)
-    // The database is now the source of truth for which messages exist
-    const syncTimestamp = Date.now();
+    // Update sync status - advance cursor to MAX capturedAt of synced batch (not Date.now()).
+    // This prevents messages saved to chrome.storage DURING the sync from falling behind the cursor.
+    // Cap to Date.now() to prevent future-timestamp DoS from buggy content scripts.
+    const result_sync = await chrome.storage.local.get(['last_successful_sync_time']);
+    const previousCursor = result_sync.last_successful_sync_time || 0;
+    const maxBatchTimestamp = deflectionFiltered.length > 0
+      ? Math.max(...deflectionFiltered.map(m => m.capturedAt ?? m.timestamp ?? 0))
+      : previousCursor;
+    const syncTimestamp = Math.min(
+      Date.now(),                        // SEC: never advance past current time
+      Math.max(maxBatchTimestamp, previousCursor)  // never go backward
+    );
     await chrome.storage.local.set({
       last_successful_sync_time: syncTimestamp,
       last_sync_status: {
         lastSyncTime: syncTimestamp,
         syncedCount: deflectionFiltered.length,
-        // Keep minimal status for UI/debugging, but NOT used for sync decisions
-        lastSyncedMessageIds: deflectionFiltered.slice(-10).map(m => m.messageId) // Only last 10 for debugging
+        // Used by getMessagesToSync to exclude boundary messages (>= filter + ID exclusion)
+        lastSyncedMessageIds: deflectionFiltered.slice(-10).map(m => m.messageId)
       }
     });
 

@@ -614,9 +614,12 @@ export class MessageQueueManager {
                 data: message
             });
 
-            if (response && response.success) {
+            if (response && response.success && response.queued !== false) {
                 console.log(`✅ [KYT Queue] Synced message ${message.id}`);
                 return true;
+            } else if (response && response.success && response.queued === false) {
+                console.log(`⏭️ [KYT Queue] Message ${message.id} not queued: ${response.reason || 'rejected'}`);
+                return true; // Not an error — background intentionally rejected it (duplicate/deflection/incognito)
             } else {
                 console.warn(`⚠️ [KYT Queue] Sync failed for ${message.id}:`, response?.error);
                 return false;

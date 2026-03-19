@@ -121,7 +121,7 @@
   // WeakSet: O(1) lookup, auto-GC when elements leave DOM, no doubling.
   const capturedResponseElements = new WeakSet();
 
-  // Response container selectors — shared between DOM observer and deferred capture.
+  // Response container selectors — used by deferred DOM capture.
   const RESPONSE_SELECTORS = [
     'div[id^="model-response-message-content"]',
   ];
@@ -132,147 +132,19 @@
     try { return localStorage.getItem('KYT_GEMINI_DEBUG') === '1'; } catch { return false; }
   };
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // DOM OBSERVER — Captures assistant responses via MutationObserver
-  // ═══════════════════════════════════════════════════════════════════════
-
-  const responseDOMObserver = {
-    observer: null,
-    pendingConvId: null,
-    lastTextLength: 0,
-    stableTimeoutId: null,
-    STABLE_DELAY_MS: 4000,
-    MAX_WAIT_MS: 120000,
-    startTimeoutId: null,
-    _baselineElement: null,
-
-    RESPONSE_SELECTORS: RESPONSE_SELECTORS,
-
-    _findLastResponseElement() {
-      for (const selector of this.RESPONSE_SELECTORS) {
-        const elements = document.querySelectorAll(selector);
-        if (elements.length > 0) return elements[elements.length - 1];
-      }
-      return null;
-    },
-
-    start(conversationId) {
-      this._flushPending(); // flush previous response before resetting
-      this.stop();
-      this.pendingConvId = conversationId;
-      this.lastTextLength = 0;
-      this._baselineElement = this._findLastResponseElement();
-
-      const target = document.querySelector('main') || document.body;
-
-      this.observer = new MutationObserver((mutations) => this._onMutation(mutations));
-      this.observer.observe(target, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-busy'] });
-
-      this.startTimeoutId = setTimeout(() => this.stop(), this.MAX_WAIT_MS);
-
-      _kytDebug() && console.log('👁️ KYT Gemini: DOM observer started for response capture');
-    },
-
-    _onMutation(mutations) {
-      // Fast path: aria-busy="false" means Google says streaming is complete
-      // Use 300ms confirmation delay (not instant) — DOM may still be rendering
-      if (mutations) {
-        for (const m of mutations) {
-          if (m.type === 'attributes' && m.attributeName === 'aria-busy') {
-            if (m.target.getAttribute('aria-busy') === 'false' && m.target !== this._baselineElement) {
-              _kytDebug() && console.log('👁️ KYT Gemini: aria-busy=false detected, confirming in 300ms');
-              // Mark as having content so _onStable won't bail on the dedup guard
-              if (this.lastTextLength === 0) this.lastTextLength = 1;
-              if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
-              this.stableTimeoutId = setTimeout(() => this._onStable(), 300);
-              return;
-            }
-          }
-        }
-      }
-
-      // Debounce path (fallback when aria-busy not available)
-      const text = this._getLastResponseText();
-      if (!text || text.length <= this.lastTextLength) return;
-
-      this.lastTextLength = text.length;
-
-      if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
-      this.stableTimeoutId = setTimeout(() => this._onStable(), this.STABLE_DELAY_MS);
-    },
-
-    _getLastResponseText() {
-      for (const selector of this.RESPONSE_SELECTORS) {
-        const elements = document.querySelectorAll(selector);
-        if (elements.length > 0) {
-          const last = elements[elements.length - 1];
-          if (last === this._baselineElement) return null; // still the old element
-          // Clone and strip UI artifacts before extracting text
-          const clone = last.cloneNode(true);
-          clone.querySelectorAll('button, [role="button"], .export-button, .action-bar, .response-actions').forEach(el => el.remove());
-          const text = clone.innerText?.trim();
-          if (text && text.length > 20) return text;
-        }
-      }
-      return null;
-    },
-
-    _onStable() {
-      if (this.lastTextLength === 0) return; // already flushed
-      const text = this._getLastResponseText();
-      if (!text || text.length < 20) { this.stop(); return; }
-
-      // Mark the element as captured so deferred sweep skips it
-      const el = this._findLastResponseElement();
-      if (el && el !== this._baselineElement) capturedResponseElements.add(el);
-
-      _kytDebug() && console.log('📥 KYT Gemini: DOM response captured (' + text.length + ' chars, conv=' + (this.pendingConvId || 'unknown') + ')');
-      dispatchCapture(text, 'assistant', 'dom-observer', this.pendingConvId);
-      this.stop();
-    },
-
-    _flushPending() {
-      if (!this.pendingConvId || this.lastTextLength === 0) return;
-      const text = this._getLastResponseText();
-      if (!text || text.length < 20) return;
-
-      // Mark the element as captured so deferred sweep skips it
-      const el = this._findLastResponseElement();
-      if (el && el !== this._baselineElement) capturedResponseElements.add(el);
-
-      _kytDebug() && console.log('📥 KYT Gemini: DOM response flushed (' + text.length + ' chars)');
-      dispatchCapture(text, 'assistant', 'dom-observer', this.pendingConvId);
-    },
-
-    /**
-     * Signal that response streaming is complete (called from XHR load / fetch).
-     * Forces a mutation check so the stabilization timer starts from the final state,
-     * even if MutationObserver missed the last DOM update.
-     */
-    notifyResponseComplete() {
-      if (!this.observer) return;
-      this._onMutation();
-    },
-
-    stop() {
-      if (this.observer) { this.observer.disconnect(); this.observer = null; }
-      if (this.stableTimeoutId) { clearTimeout(this.stableTimeoutId); this.stableTimeoutId = null; }
-      if (this.startTimeoutId) { clearTimeout(this.startTimeoutId); this.startTimeoutId = null; }
-      this.pendingConvId = null;
-      this.lastTextLength = 0;
-      this._baselineElement = null;
-    }
-  };
+  // Track last conversation ID from XHR parsing — used by safety-net triggers
+  // (beforeunload, visibilitychange, periodic timer) that can't parse the request body.
+  let lastSeenConversationId = null;
+  let lastSeenUrl = window.location.href;
 
   window.addEventListener('beforeunload', function () {
-    responseDOMObserver._flushPending();
-    scrapeAllUncaptured(null);
+    scrapeAllUncaptured(lastSeenConversationId);
   });
 
   // Capture uncaptured responses when user switches tabs (most common "leaving" signal)
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden') {
-      scrapeAllUncaptured(null);
+      scrapeAllUncaptured(lastSeenConversationId);
     }
   });
 
@@ -892,10 +764,14 @@
 
   // Periodic sweep: captures any responses that weren't caught by next-turn trigger.
   // Handles: last response before tab close, long reading pauses, single-turn conversations.
-  // Note: conversationId is null — Gemini URLs don't expose it in a parseable format.
-  // The next-turn trigger (which has the ID from parseFReq) is the primary capture path.
+  // Resets lastSeenConversationId on SPA navigation to prevent cross-conversation contamination.
   setInterval(function () {
-    scrapeAllUncaptured(null);
+    const currentUrl = window.location.href;
+    if (currentUrl !== lastSeenUrl) {
+      lastSeenUrl = currentUrl;
+      lastSeenConversationId = null; // SEC: prevent cross-conversation contamination
+    }
+    scrapeAllUncaptured(lastSeenConversationId);
   }, 60000);
 
   /**
@@ -1015,7 +891,43 @@
   const CONTEXT_TIMEOUT_MS = 28000;
   let activeContextRequestId = null;
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // BRIDGE STATE — Tracks whether content.js bridge is alive
+  // ═══════════════════════════════════════════════════════════════════════
+
+  let contextBridgeAlive = true;
+  const missedCaptures = []; // Buffer messages during bridge-dead window
+  const MAX_MISSED_BUFFER = 50;
+
+  window.addEventListener('KYT_BRIDGE_DISCONNECTED', function () {
+    contextBridgeAlive = false;
+    // Resolve any pending context requests immediately
+    for (const [id, pending] of pendingContextRequests) {
+      clearTimeout(pending.timeoutId);
+      pending.resolve(null);
+    }
+    pendingContextRequests.clear();
+    activeContextRequestId = null;
+  });
+
+  window.addEventListener('KYT_BRIDGE_CONNECTED', function () {
+    contextBridgeAlive = true;
+    // Replay any messages captured while bridge was dead
+    if (missedCaptures.length > 0) {
+      console.log('🔄 KYT Gemini: Replaying ' + missedCaptures.length + ' missed captures');
+      const toReplay = missedCaptures.splice(0); // drain array
+      for (const msg of toReplay) {
+        window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', { detail: msg }));
+      }
+    }
+  });
+
   function requestContext(userMessage) {
+    // Skip if bridge is dead — fail-open: send without context
+    if (!contextBridgeAlive) {
+      return Promise.resolve(null);
+    }
+
     // Safety valve: reject if too many pending (bridge is broken or overloaded)
     if (pendingContextRequests.size >= 10) {
       return Promise.resolve(null); // fail-open: send without context
@@ -1112,6 +1024,11 @@
     window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
       detail: messageData
     }));
+
+    // Buffer messages when bridge is dead — replayed on reconnect
+    if (!contextBridgeAlive && missedCaptures.length < MAX_MISSED_BUFFER) {
+      missedCaptures.push(messageData);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1197,19 +1114,11 @@
     // === DEFERRED CAPTURE: User is sending a new message.
     // The previous assistant response has been on screen long enough to be fully rendered.
     // Scrape any uncaptured response containers now.
-    scrapeAllUncaptured(parseResult.conversationId);
+    lastSeenConversationId = parseResult.conversationId || lastSeenConversationId;
+    scrapeAllUncaptured(lastSeenConversationId);
 
     _kytDebug() && console.log('📤 KYT Gemini: User message captured via XHR (' + parseResult.userMessage.length + ' chars)');
     dispatchCapture(parseResult.userMessage, 'user', 'xhr', parseResult.conversationId);
-
-    // Start DOM observer to capture assistant response when it stabilizes
-    responseDOMObserver.start(parseResult.conversationId);
-
-    // When streaming completes, notify DOM observer so it can finalize
-    this.addEventListener('load', function () {
-      _kytDebug() && console.log('📡 KYT Gemini: XHR StreamGenerate complete (' + (this.responseText?.length || 0) + ' bytes)');
-      responseDOMObserver.notifyResponseComplete();
-    }, { once: true });
 
     // Context injection: defer send until context resolves
     const xhr = this;
@@ -1294,13 +1203,11 @@
     }
 
     // === DEFERRED CAPTURE: scrape previous response before processing new turn
-    scrapeAllUncaptured(parseResult.conversationId);
+    lastSeenConversationId = parseResult.conversationId || lastSeenConversationId;
+    scrapeAllUncaptured(lastSeenConversationId);
 
     _kytDebug() && console.log('📤 KYT Gemini: User message captured via fetch (' + parseResult.userMessage.length + ' chars)');
     dispatchCapture(parseResult.userMessage, 'user', 'fetch', parseResult.conversationId);
-
-    // Start DOM observer to capture assistant response
-    responseDOMObserver.start(parseResult.conversationId);
 
     // Context injection
     const formattedContext = await requestContext(parseResult.userMessage);
@@ -1313,9 +1220,7 @@
       }
     }
 
-    const fetchResponse = await originalFetch.call(this, input, finalInit);
-    responseDOMObserver.notifyResponseComplete();
-    return fetchResponse;
+    return originalFetch.call(this, input, finalInit);
   };
 
   // ═══════════════════════════════════════════════════════════════════════
