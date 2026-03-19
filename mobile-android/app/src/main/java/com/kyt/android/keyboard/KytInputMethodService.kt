@@ -235,11 +235,12 @@ class KytInputMethodService : InputMethodService() {
         }
 
         Log.d(TAG, "prefetchContext: calling search_memories...")
-        val result = withTimeoutOrNull(3000) {
+        updateContextBar("Searching...")
+        val result = withTimeoutOrNull(18_000) {
             SupabaseClient.callEdgeFunction("search_memories", body)
         }
 
-        if (result == null) { Log.d(TAG, "prefetchContext: timeout (3s)"); return }
+        if (result == null) { Log.d(TAG, "prefetchContext: timeout (18s)"); updateContextBar(); return }
 
         if (result.isFailure) {
             Log.e(TAG, "prefetchContext: edge function failed", result.exceptionOrNull())
