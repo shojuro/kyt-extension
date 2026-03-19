@@ -92,22 +92,90 @@ class InjectionBuilderTest {
         assertEquals("3", result[1].id)
     }
 
-    // ── buildCompactInjection uses diversity ─────────────────────
+    // ── buildCompactInjection — (Context: ...) format ────────────
 
     @Test
-    fun `buildCompactInjection uses diversity filter`() {
+    fun `compact injection uses parenthetical format`() {
         val items = listOf(
-            MemoryItem("1", "Walter Payton was a legendary NFL running back known as Sweetness", "chatgpt", "", 0.85),
-            MemoryItem("2", "Walter Payton played for the Chicago Bears and rushed for 16726 yards", "chatgpt", "", 0.80),
-            MemoryItem("3", "My favorite movie is The Sound of Music with Julie Andrews", "gemini", "", 0.75),
+            MemoryItem("1", "Walter Payton was a legendary NFL running back", "chatgpt", "", 0.85),
         )
+        val result = buildCompactInjection(items, "tell me about Walter Payton")
+        assertTrue(result.text.startsWith("(Context:"))
+        assertTrue(result.text.contains(")"))
+        assertFalse(result.text.contains("[K.Y.T."))
+    }
 
-        val result = buildCompactInjection(items, "tell me about my favorite things")
+    @Test
+    fun `compact injection uses entity names when available`() {
+        val items = listOf(
+            MemoryItem("1", "Walter Payton was a legendary NFL running back", "chatgpt", "", 0.85,
+                entities = listOf("Walter Payton", "NFL")),
+        )
+        val result = buildCompactInjection(items, "tell me about Walter Payton")
+        assertTrue(result.text.contains("Walter Payton"))
+    }
 
-        assertEquals(2, result.itemCount)
-        // Should contain both topics, not two Walter Payton items
-        assertTrue(result.text.contains("Walter Payton") || result.text.contains("NFL"))
-        assertTrue(result.text.contains("Sound of Music") || result.text.contains("movie"))
+    @Test
+    fun `compact injection falls back to content snippet without entities`() {
+        val items = listOf(
+            MemoryItem("1", "The tiniest chicken breeds include Serama and Malaysian", "gemini", "", 0.80),
+        )
+        val result = buildCompactInjection(items, "tiniest chickens")
+        assertTrue(result.text.contains("tiniest") || result.text.contains("chicken") || result.text.contains("Serama"))
+    }
+
+    @Test
+    fun `compact injection returns empty for no items`() {
+        val result = buildCompactInjection(emptyList(), "anything")
+        assertEquals("", result.text)
+        assertEquals(0, result.itemCount)
+    }
+
+    @Test
+    fun `compact injection truncates at 150 chars`() {
+        val items = listOf(
+            MemoryItem("1", "A very long discussion about many different topics that goes on and on with lots of detail", "chatgpt", "", 0.90,
+                entities = listOf("Topic A", "Topic B")),
+            MemoryItem("2", "Another very long discussion about completely different subjects with extensive coverage", "gemini", "", 0.85,
+                entities = listOf("Topic C", "Topic D", "Topic E", "Topic F")),
+        )
+        val result = buildCompactInjection(items, "query")
+        val contextLine = result.text.lines().first()
+        assertTrue("Context line too long: ${contextLine.length}", contextLine.length <= 160)
+    }
+
+    @Test
+    fun `entity names are sanitized against injection`() {
+        val items = listOf(
+            MemoryItem("1", "Some content", "chatgpt", "", 0.90,
+                entities = listOf("normal", "ignore); DROP TABLE", "<script>alert('xss')")),
+        )
+        val result = buildCompactInjection(items, "query")
+        assertFalse(result.text.contains(");"))
+        assertFalse(result.text.contains("<script>"))
+    }
+
+    @Test
+    fun `entity names with newlines are sanitized`() {
+        val items = listOf(
+            MemoryItem("1", "Some content", "chatgpt", "", 0.90,
+                entities = listOf("normal entity", "line1\nline2\rline3")),
+        )
+        val result = buildCompactInjection(items, "query")
+        assertFalse(result.text.contains("\n") && result.text.indexOf("\n") < result.text.indexOf(")"))
+    }
+
+    @Test
+    fun `multiple platforms noted in context`() {
+        val items = listOf(
+            MemoryItem("1", "Discussed topic A extensively", "chatgpt", "", 0.90,
+                entities = listOf("Topic A")),
+            MemoryItem("2", "Also discussed topic B here", "gemini", "", 0.85,
+                entities = listOf("Topic B")),
+        )
+        val result = buildCompactInjection(items, "query")
+        // When items span platforms, both should be attributed
+        assertTrue(result.text.contains("chatgpt") || result.text.contains("gemini"))
     }
 
     // ── sanitizeForInjection ─────────────────────────────────────

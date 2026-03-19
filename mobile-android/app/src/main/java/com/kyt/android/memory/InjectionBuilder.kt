@@ -13,7 +13,8 @@ data class MemoryItem(
     val platform: String,
     val timestamp: String,
     val similarity: Double,
-    val role: String? = null
+    val role: String? = null,
+    val entities: List<String>? = null  // canonical names from server enrichment
 )
 
 data class InjectionResult(
@@ -147,10 +148,42 @@ private fun calculateConfidence(items: List<MemoryItem>): Double {
     return (maxSim * 0.7) + (avgSim * 0.3)
 }
 
+// ── Entity Name Sanitization ─────────────────────────────────
+// Security: entity canonical_names come from user content via entity extractor.
+// Strip characters that could be used for prompt injection in the (Context: ...) line.
+private val ENTITY_UNSAFE_CHARS = Regex("[()\\[\\]<>{}|;\"'`\\\\\\n\\r]")
+
+private fun sanitizeEntityName(name: String): String {
+    return ENTITY_UNSAFE_CHARS.replace(name, "").trim().take(50)
+}
+
+// ── Stop words for content snippet extraction ────────────────
+private val SNIPPET_STOP_WORDS = setOf(
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "to", "of", "in", "for",
+    "on", "with", "at", "by", "from", "as", "into", "about", "like",
+    "through", "after", "over", "between", "out", "up", "down", "and",
+    "but", "or", "not", "no", "so", "if", "that", "this", "it", "its",
+    "i", "my", "me", "we", "our", "you", "your", "he", "she", "they",
+    "them", "his", "her", "their", "just", "also", "very", "really",
+    "some", "any", "all", "each", "every", "user", "assistant"
+)
+
+private fun extractSnippet(content: String, maxWords: Int = 8): String {
+    return content
+        .replace(Regex("[\"'\\n\\r]+"), " ")
+        .split(Regex("\\s+"))
+        .filter { it.length > 2 && it.lowercase() !in SNIPPET_STOP_WORDS }
+        .take(maxWords)
+        .joinToString(" ")
+}
+
 // ── Compact Mobile Format ────────────────────────────────────
 
 /**
- * Build a compact injection block for keyboard/share sheet use.
+ * Build a compact single-line (Context: ...) injection for keyboard use.
+ * Uses entity names when available, falls back to content snippet extraction.
  * Limited to top [maxItems] to fit in input fields.
  */
 fun buildCompactInjection(
@@ -165,21 +198,36 @@ fun buildCompactInjection(
     val sorted = selectDiverseItems(items.sortedByDescending { it.similarity }, maxItems)
     val confidence = calculateConfidence(sorted)
 
-    val sb = StringBuilder()
-    sb.appendLine("[K.Y.T. Context — from your stored conversations]")
+    val platforms = sorted.map { it.platform }.distinct()
+    val showPlatform = platforms.size > 1
 
-    for ((i, item) in sorted.withIndex()) {
-        val (type, subtype, _) = classifyContent(item.content)
-        val speaker = if (item.role == "user") "You said" else "AI said"
-        val platform = item.platform
-        val content = sanitizeForInjection(item.content.take(200))
+    val summaries = sorted.map { item ->
+        val entityNames = item.entities
+            ?.map { sanitizeEntityName(it) }
+            ?.filter { it.isNotBlank() }
 
-        sb.appendLine("${i + 1}. [$platform] $speaker: \"$content\"")
+        val core = if (!entityNames.isNullOrEmpty()) {
+            entityNames.take(3).joinToString(", ")
+        } else {
+            extractSnippet(item.content)
+        }
+
+        if (showPlatform) "$core (${item.platform})" else core
     }
 
-    sb.appendLine("[End K.Y.T. Context]")
+    var summary = summaries.joinToString("; ")
+    if (summary.length > 150) {
+        val truncIdx = summary.lastIndexOf(';', 147)
+        summary = if (truncIdx > 0) {
+            summary.substring(0, truncIdx) + "..."
+        } else {
+            summary.take(147) + "..."
+        }
+    }
 
-    return InjectionResult(sb.toString(), sorted.size, confidence)
+    val contextLine = "(Context: $summary)"
+
+    return InjectionResult(contextLine, sorted.size, confidence)
 }
 
 /**
