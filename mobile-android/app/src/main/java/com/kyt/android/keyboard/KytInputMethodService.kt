@@ -221,6 +221,12 @@ class KytInputMethodService : InputMethodService() {
         val text = getCurrentText()
         if (text.isBlank()) { Log.d(TAG, "prefetchContext: empty text (buffer=${textBuffer.length})"); return }
 
+        // Guard: don't re-search our own injection output
+        if (text.startsWith("[K.Y.T.")) {
+            Log.d(TAG, "prefetchContext: skipping — text is our own injection")
+            return
+        }
+
         Log.d(TAG, "prefetchContext: text='${text.take(50)}' (${text.length} chars)")
 
         val classification = classifyIntent(text)
