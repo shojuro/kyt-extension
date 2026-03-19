@@ -350,12 +350,17 @@ export async function askQuestion(notebookId, question) {
   const res = await fetch(`${STREAMING_URL}?${qs}`, {
     method: 'POST',
     headers: streamHeaders,
+    body,
   });
 
-  if ((res.status === 401 || res.status === 403)) {
+  if ((res.status === 401 || res.status === 403) && !askQuestion._retried) {
+    askQuestion._retried = true;
     clearAuthCache();
-    return askQuestion(notebookId, question);
+    const result = await askQuestion(notebookId, question);
+    askQuestion._retried = false;
+    return result;
   }
+  askQuestion._retried = false;
 
   if (!res.ok) {
     throw new Error(`NotebookLM query returned ${res.status}`);
