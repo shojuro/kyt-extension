@@ -71,7 +71,13 @@ class KytInputMethodService : InputMethodService() {
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
         cachedInjection = null
-        textBuffer.clear()
+        // Only clear buffer for a genuinely new input field, not keyboard hide/show
+        if (!restarting) {
+            textBuffer.clear()
+            Log.d(TAG, "onStartInput: new field, buffer cleared")
+        } else {
+            Log.d(TAG, "onStartInput: restarting, buffer kept (${textBuffer.length} chars)")
+        }
         keyboardView?.updateEnterKey(attribute)
         keyboardView?.setEnterGlow(false)
         updateContextBar()
@@ -86,7 +92,9 @@ class KytInputMethodService : InputMethodService() {
         super.onFinishInput()
         prefetchJob?.cancel()
         cachedInjection = null
-        textBuffer.clear()
+        // Do NOT clear textBuffer here — ChatGPT hides/shows keyboard
+        // frequently for the same text field. Buffer cleared on send
+        // or when a genuinely new field starts (restarting=false).
     }
 
     // ── Key Action Listener ──────────────────────────────────
