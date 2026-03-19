@@ -236,10 +236,11 @@ class KytInputMethodService : InputMethodService() {
 
         val body = JSONObject().apply {
             put("query", text.take(200))
-            put("user_id", userId)
-            put("top_k", 3)
-            put("use_hyde", false)
-            put("platform", "all")
+            put("userId", userId)  // camelCase — search_memories destructures { userId }
+            put("top_k", 8)
+            put("fast", true)
+            put("confidenceThreshold", classification.confidenceThreshold ?: 0.40)
+            put("excludePlatforms", JSONArray().apply { put("claude-code") })
         }
 
         Log.d(TAG, "prefetchContext: calling search_memories...")
@@ -266,7 +267,7 @@ class KytInputMethodService : InputMethodService() {
                 content = r.optString("content"),
                 platform = r.optString("platform", "unknown"),
                 timestamp = r.optString("created_at", ""),
-                similarity = r.optDouble("similarity", 0.0),
+                similarity = r.optDouble("rerank_score", r.optDouble("similarity", r.optDouble("gravity_score", 0.0))),
                 role = r.optString("role", null)
             )
         }

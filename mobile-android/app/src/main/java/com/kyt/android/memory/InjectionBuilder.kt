@@ -53,6 +53,73 @@ fun sanitizeForInjection(text: String): String {
     return sanitized
 }
 
+// ── Mini-MMR Diversity Filter ────────────────────────────────
+
+/**
+ * Jaccard word similarity between two strings.
+ * Returns 0.0 (no overlap) to 1.0 (identical word sets).
+ */
+private fun jaccardSimilarity(a: String, b: String): Double {
+    val wordsA = a.lowercase().split(Regex("\\s+")).filter { it.length > 2 }.toSet()
+    val wordsB = b.lowercase().split(Regex("\\s+")).filter { it.length > 2 }.toSet()
+    if (wordsA.isEmpty() || wordsB.isEmpty()) return 0.0
+    val intersection = wordsA.intersect(wordsB).size
+    val union = wordsA.union(wordsB).size
+    return if (union == 0) 0.0 else intersection.toDouble() / union.toDouble()
+}
+
+/**
+ * Select diverse items using mini-MMR (Maximal Marginal Relevance).
+ *
+ * From a pool of candidates sorted by relevance, greedily picks items that
+ * balance relevance score with diversity (low Jaccard similarity to already
+ * selected items).
+ *
+ * @param items Candidate items sorted by relevance (highest first)
+ * @param maxItems Maximum number of items to return
+ * @param lambda Trade-off: 1.0 = pure relevance, 0.0 = pure diversity. Default 0.5.
+ */
+fun selectDiverseItems(
+    items: List<MemoryItem>,
+    maxItems: Int = 2,
+    lambda: Double = 0.5
+): List<MemoryItem> {
+    if (items.size <= maxItems) return items
+    if (items.isEmpty()) return emptyList()
+
+    val selected = mutableListOf<MemoryItem>()
+    val remaining = items.toMutableList()
+
+    // Always pick the highest-scored item first
+    selected.add(remaining.removeAt(0))
+
+    while (selected.size < maxItems && remaining.isNotEmpty()) {
+        var bestIdx = 0
+        var bestScore = Double.NEGATIVE_INFINITY
+
+        for (i in remaining.indices) {
+            val candidate = remaining[i]
+            // Relevance component: normalized similarity score
+            val relevance = candidate.similarity
+
+            // Diversity component: max Jaccard similarity to any already-selected item
+            val maxSim = selected.maxOf { jaccardSimilarity(candidate.content, it.content) }
+
+            // MMR score: balance relevance and diversity
+            val mmrScore = lambda * relevance - (1.0 - lambda) * maxSim
+
+            if (mmrScore > bestScore) {
+                bestScore = mmrScore
+                bestIdx = i
+            }
+        }
+
+        selected.add(remaining.removeAt(bestIdx))
+    }
+
+    return selected
+}
+
 // ── Content Classification ───────────────────────────────────
 
 private fun classifyContent(content: String): Triple<String, String, String> {
@@ -95,7 +162,7 @@ fun buildCompactInjection(
         return InjectionResult("", 0, 0.0)
     }
 
-    val sorted = items.sortedByDescending { it.similarity }.take(maxItems)
+    val sorted = selectDiverseItems(items.sortedByDescending { it.similarity }, maxItems)
     val confidence = calculateConfidence(sorted)
 
     val sb = StringBuilder()

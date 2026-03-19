@@ -23,7 +23,7 @@ object SupabaseClient {
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS) // search_memories pipeline takes 12-18s
+        .readTimeout(15, TimeUnit.SECONDS) // fast path ~3-10s; 15s gives headroom
         .writeTimeout(10, TimeUnit.SECONDS)
         .build()
 
