@@ -138,13 +138,13 @@
   let lastSeenUrl = window.location.href;
 
   window.addEventListener('beforeunload', function () {
-    scrapeAllUncaptured(lastSeenConversationId);
+    scrapeAllUncaptured(lastSeenConversationId, false); // safety net — don't commit to WeakSet
   });
 
   // Capture uncaptured responses when user switches tabs (most common "leaving" signal)
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden') {
-      scrapeAllUncaptured(lastSeenConversationId);
+      scrapeAllUncaptured(lastSeenConversationId, false); // safety net — don't commit
     }
   });
 
@@ -742,10 +742,18 @@
 
   /**
    * Scrape all uncaptured assistant response containers from the DOM.
-   * Called on: next user message, periodic timer, visibilitychange, beforeunload.
-   * Each element is captured at most once (tracked by capturedResponseElements WeakSet).
+   *
+   * @param {string|null} conversationId - Conversation ID for the captured messages
+   * @param {boolean} commit - If true, mark elements as captured in WeakSet (prevents re-capture).
+   *   Only the next-turn trigger should commit — the response has been on screen for 6+ seconds
+   *   (user's reading time) and is guaranteed fully rendered.
+   *   Safety-net triggers (visibilitychange, beforeunload, periodic timer) pass false — they
+   *   dispatch what's available (partial is better than lost) but DON'T poison the WeakSet,
+   *   so the next-turn trigger can still re-capture the complete version.
+   *   The deduplicator's prefix-upgrade logic handles the overlap: if a safety net dispatched
+   *   380 chars and the next-turn trigger later dispatches 2600 chars, the longer version wins.
    */
-  function scrapeAllUncaptured(conversationId) {
+  function scrapeAllUncaptured(conversationId, commit) {
     for (const selector of RESPONSE_SELECTORS) {
       const elements = document.querySelectorAll(selector);
       for (const el of elements) {
@@ -754,10 +762,12 @@
         const text = scrapeResponseText(el);
         if (!text) continue;
 
-        capturedResponseElements.add(el);
+        if (commit) {
+          capturedResponseElements.add(el); // mark done — only next-turn trigger does this
+        }
         dispatchCapture(text, 'assistant', 'deferred-dom', conversationId);
 
-        _kytDebug() && console.log('📸 KYT Gemini: Deferred DOM capture (' + text.length + ' chars)');
+        _kytDebug() && console.log('📸 KYT Gemini: Deferred DOM capture (' + text.length + ' chars, commit=' + !!commit + ')');
       }
     }
   }
@@ -771,7 +781,7 @@
       lastSeenUrl = currentUrl;
       lastSeenConversationId = null; // SEC: prevent cross-conversation contamination
     }
-    scrapeAllUncaptured(lastSeenConversationId);
+    scrapeAllUncaptured(lastSeenConversationId, false); // safety net — don't commit
   }, 60000);
 
   /**
@@ -1112,10 +1122,10 @@
     }
 
     // === DEFERRED CAPTURE: User is sending a new message.
-    // The previous assistant response has been on screen long enough to be fully rendered.
-    // Scrape any uncaptured response containers now.
+    // The previous assistant response has been on screen for 6+ seconds (user read it and typed a reply).
+    // Guaranteed fully rendered. Commit to WeakSet — this is the authoritative capture.
     lastSeenConversationId = parseResult.conversationId || lastSeenConversationId;
-    scrapeAllUncaptured(lastSeenConversationId);
+    scrapeAllUncaptured(lastSeenConversationId, true);
 
     _kytDebug() && console.log('📤 KYT Gemini: User message captured via XHR (' + parseResult.userMessage.length + ' chars)');
     dispatchCapture(parseResult.userMessage, 'user', 'xhr', parseResult.conversationId);
@@ -1203,8 +1213,9 @@
     }
 
     // === DEFERRED CAPTURE: scrape previous response before processing new turn
+    // Guaranteed fully rendered — user read it and typed a reply. Commit to WeakSet.
     lastSeenConversationId = parseResult.conversationId || lastSeenConversationId;
-    scrapeAllUncaptured(lastSeenConversationId);
+    scrapeAllUncaptured(lastSeenConversationId, true);
 
     _kytDebug() && console.log('📤 KYT Gemini: User message captured via fetch (' + parseResult.userMessage.length + ' chars)');
     dispatchCapture(parseResult.userMessage, 'user', 'fetch', parseResult.conversationId);
