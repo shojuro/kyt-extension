@@ -152,12 +152,11 @@ class KytInputMethodService : InputMethodService() {
             return
         }
 
-        if (BuildConfig.DEBUG) {
-            Log.d(TAG, "handleSendAction: text (${capturedText.length} chars), pkg=$capturedPackage")
-        }
+        Log.d(TAG, "handleSendAction: text (${capturedText.length} chars), pkg=$capturedPackage")
 
         // Recursion guard
         if (capturedText.startsWith("(Context:")) {
+            Log.d(TAG, "handleSendAction: recursion guard, sending as-is")
             textBuffer.clear()
             fireEnterAction(ic, capturedImeAction)
             return
@@ -174,29 +173,31 @@ class KytInputMethodService : InputMethodService() {
 
         // Gate: skip search for non-injection modes
         if (!MemoryModeManager.shouldInject(this)) {
+            Log.d(TAG, "handleSendAction: inject disabled, sending without context")
             commitTextAndSend(ic, capturedText, capturedImeAction)
             return
         }
 
         // Intent classification (~0.06ms)
         val classification = classifyIntent(capturedText)
-        if (BuildConfig.DEBUG) {
-            Log.d(TAG, "handleSendAction: intent=${classification.intent}")
-        }
+        Log.d(TAG, "handleSendAction: intent=${classification.intent}")
 
         if (classification.intent == KytIntent.SKIP) {
+            Log.d(TAG, "handleSendAction: SKIP intent, sending without context")
             commitTextAndSend(ic, capturedText, capturedImeAction)
             return
         }
 
         val userId = AuthManager.getUserId(this)
         if (userId == null) {
+            Log.d(TAG, "handleSendAction: no userId, sending without context")
             commitTextAndSend(ic, capturedText, capturedImeAction)
             return
         }
 
         // Persist for crash recovery
         savePendingSend(capturedText, capturedPackage)
+        Log.d(TAG, "handleSendAction: searching memories...")
 
         // Launch async search-then-inject
         scope.launch {
@@ -205,7 +206,7 @@ class KytInputMethodService : InputMethodService() {
             // Get fresh InputConnection
             val freshIc = currentInputConnection
             if (freshIc == null) {
-                if (BuildConfig.DEBUG) Log.w(TAG, "handleSendAction: InputConnection gone after search")
+                Log.w(TAG, "handleSendAction: InputConnection gone after search")
                 clearPendingSend()
                 return@launch
             }
@@ -213,9 +214,7 @@ class KytInputMethodService : InputMethodService() {
             // Verify same app
             val currentPkg = currentInputEditorInfo?.packageName ?: ""
             if (currentPkg != capturedPackage) {
-                if (BuildConfig.DEBUG) {
-                    Log.w(TAG, "handleSendAction: app changed ($capturedPackage → $currentPkg), sending without context")
-                }
+                Log.w(TAG, "handleSendAction: app changed, sending without context")
                 commitTextAndSend(freshIc, capturedText, capturedImeAction)
                 clearPendingSend()
                 return@launch
@@ -224,9 +223,7 @@ class KytInputMethodService : InputMethodService() {
             // Guard: user typed during search
             val currentFieldText = getCurrentText()
             if (currentFieldText.isNotBlank()) {
-                if (BuildConfig.DEBUG) {
-                    Log.d(TAG, "handleSendAction: user typed during search, sending original")
-                }
+                Log.d(TAG, "handleSendAction: user typed during search, sending original")
                 commitTextAndSend(freshIc, capturedText, capturedImeAction)
                 clearPendingSend()
                 return@launch
@@ -240,10 +237,7 @@ class KytInputMethodService : InputMethodService() {
 
             commitTextAndSend(freshIc, finalText, capturedImeAction)
             clearPendingSend()
-
-            if (BuildConfig.DEBUG) {
-                Log.d(TAG, "handleSendAction: sent ${if (injection != null) "with context" else "without context"}")
-            }
+            Log.d(TAG, "handleSendAction: sent ${if (injection != null) "with context" else "without context"}")
         }
     }
 
@@ -281,10 +275,8 @@ class KytInputMethodService : InputMethodService() {
         }
 
         if (result == null || result.isFailure) {
-            if (BuildConfig.DEBUG) {
-                val reason = if (result == null) "timeout" else result.exceptionOrNull()?.message
-                Log.w(TAG, "searchAndBuildInjection: failed ($reason)")
-            }
+            val reason = if (result == null) "timeout" else result.exceptionOrNull()?.message
+            Log.w(TAG, "searchAndBuildInjection: failed ($reason)")
             return null
         }
 
