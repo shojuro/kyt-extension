@@ -125,45 +125,46 @@ export function decodeResponse(responseText, methodId) {
  */
 function parseChunkedResponse(text) {
   const chunks = [];
-  let pos = 0;
 
-  while (pos < text.length) {
-    // Skip whitespace/newlines
-    while (pos < text.length && (text[pos] === '\n' || text[pos] === '\r' || text[pos] === ' ')) {
-      pos++;
-    }
-    if (pos >= text.length) break;
+  // Simple line-based approach: split on \n, find numeric lines (byte counts),
+  // then collect the JSON between them. Works because Google's format is:
+  //   )]}'          <- anti-XSSI (already stripped)
+  //   \n
+  //   19213\n       <- byte count
+  //   [[...JSON...] <- content
+  //   \n
+  //   25\n          <- next chunk byte count
+  //   [[...]]       <- next chunk
+  //
+  // Instead of byte-counting (which is error-prone with UTF-8), we find
+  // balanced JSON by locating array starts/ends after each byte-count line.
 
-    // Read byte count (decimal number)
-    let numStr = '';
-    while (pos < text.length && text[pos] >= '0' && text[pos] <= '9') {
-      numStr += text[pos];
-      pos++;
-    }
-    if (!numStr) break;
-
-    const byteCount = parseInt(numStr, 10);
-    if (isNaN(byteCount) || byteCount <= 0) break;
-
-    // Skip the \n after byte count
-    if (pos < text.length && text[pos] === '\n') pos++;
-
-    // Use TextEncoder/TextDecoder for byte-accurate extraction
-    const remaining = text.slice(pos);
-    const encoder = new TextEncoder();
-    const encoded = encoder.encode(remaining);
-    const chunkBytes = encoded.slice(0, byteCount);
-    const decoder = new TextDecoder();
-    const chunkText = decoder.decode(chunkBytes).trim();
-
-    // Advance pos by character count of decoded chunk
-    const charsConsumed = decoder.decode(chunkBytes).length;
-    pos += charsConsumed;
-
-    try {
-      chunks.push(JSON.parse(chunkText));
-    } catch {
-      // Skip unparseable chunks
+  const lines = text.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    // Is this a byte-count line? (pure digits)
+    if (/^\d+$/.test(line)) {
+      // Collect subsequent non-empty, non-digit lines as the JSON chunk
+      i++;
+      let jsonLines = [];
+      while (i < lines.length) {
+        const next = lines[i].trim();
+        // Stop at the next byte-count line or empty line followed by digits
+        if (/^\d+$/.test(next) && jsonLines.length > 0) break;
+        if (next) jsonLines.push(lines[i]); // preserve original whitespace
+        i++;
+      }
+      if (jsonLines.length > 0) {
+        const jsonText = jsonLines.join('\n').trim();
+        try {
+          chunks.push(JSON.parse(jsonText));
+        } catch {
+          // Skip unparseable chunks
+        }
+      }
+    } else {
+      i++;
     }
   }
 

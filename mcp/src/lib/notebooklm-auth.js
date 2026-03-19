@@ -22,14 +22,18 @@ const NOTEBOOKLM_HOME = 'https://notebooklm.google.com';
 const TOKEN_RE = /"SNlM0e"\s*:\s*"([^"]+)"/;
 const SESSION_RE = /"FdrFJe"\s*:\s*"([^"]+)"/;
 
-// Only extract cookies we actually need for NotebookLM API calls.
-// These are the minimum set required — NOT full Google session cookies.
+// Extract all Google auth cookies needed for NotebookLM API calls.
+// SIDCC and __Secure-*PSIDCC are critical — without them, batchexecute returns 401.
 const REQUIRED_COOKIE_NAMES = new Set([
   'SID', 'HSID', 'SSID', 'APISID', 'SAPISID',
+  'SIDCC', 'OSID',
   '__Secure-1PSID', '__Secure-3PSID',
   '__Secure-1PAPISID', '__Secure-3PAPISID',
   '__Secure-1PSIDTS', '__Secure-3PSIDTS',
-  'NID',
+  '__Secure-1PSIDRTS', '__Secure-3PSIDRTS',
+  '__Secure-1PSIDCC', '__Secure-3PSIDCC',
+  '__Secure-OSID', '__Secure-BUCKET',
+  'NID', 'AEC', 'SEARCH_SAMESITE',
 ]);
 
 // --- Encryption (AES-256-GCM + scrypt) ---

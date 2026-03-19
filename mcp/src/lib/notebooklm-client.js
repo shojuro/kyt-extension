@@ -10,6 +10,7 @@
  * process. It is never persisted to disk.
  */
 
+import { createHash } from 'node:crypto';
 import { getAuth, clearAuthCache } from './notebooklm-auth.js';
 import {
   RPC,
@@ -22,6 +23,26 @@ import {
   decodeStreamingResponse,
 } from './notebooklm-rpc.js';
 
+const ORIGIN = 'https://notebooklm.google.com';
+
+/**
+ * Generate Google SAPISIDHASH authorization header.
+ * Required for batchexecute API calls.
+ * Formula: SAPISIDHASH timestamp_SHA1(timestamp + " " + SAPISID + " " + origin)
+ *
+ * @param {string} cookieHeader - Full cookie header string
+ * @returns {string|null} Authorization header value, or null if SAPISID not found
+ */
+function generateSapisidHash(cookieHeader) {
+  const match = cookieHeader.match(/(?:^|;\s*)SAPISID=([^;]+)/);
+  if (!match) return null;
+  const sapisid = match[1];
+  const timestamp = Math.floor(Date.now() / 1000);
+  const input = `${timestamp} ${sapisid} ${ORIGIN}`;
+  const hash = createHash('sha1').update(input).digest('hex');
+  return `SAPISIDHASH ${timestamp}_${hash}`;
+}
+
 const SOURCE_UPLOAD_DELAY_MS = 2000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 1000;
@@ -33,11 +54,17 @@ let _passphrase = null;
 /**
  * Set the passphrase for decrypting stored cookies.
  * Held in memory only — never persisted.
+ * Falls back to NOTEBOOKLM_PASSPHRASE env var if not explicitly set.
  *
  * @param {string} passphrase
  */
 export function setPassphrase(passphrase) {
   _passphrase = passphrase;
+}
+
+// Auto-load from env on startup (so .env works without explicit passphrase param)
+if (!_passphrase && process.env.NOTEBOOKLM_PASSPHRASE) {
+  _passphrase = process.env.NOTEBOOKLM_PASSPHRASE;
 }
 
 /**
@@ -81,19 +108,23 @@ async function rpcCall(methodId, params, opts = {}) {
   const body = buildRequestBody(encoded, auth.csrfToken);
   const qs = buildQueryString(methodId, auth.sessionId, opts.sourcePath);
 
+  const headers = {
+    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+    'Cookie': auth.cookieHeader,
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Origin': ORIGIN,
+    'Referer': `${ORIGIN}/`,
+  };
+  const sapisidHash = generateSapisidHash(auth.cookieHeader);
+  if (sapisidHash) headers['Authorization'] = sapisidHash;
+
   const res = await fetch(`${BATCHEXECUTE_URL}?${qs}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-      'Cookie': auth.cookieHeader,
-      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Origin': 'https://notebooklm.google.com',
-      'Referer': 'https://notebooklm.google.com/',
-    },
-    redirect: 'follow',
+    headers,
+    body,
   });
 
-  // Handle auth expiry
+  // Handle auth expiry — retry once with fresh cookies/tokens
   if ((res.status === 401 || res.status === 403) && !opts._isRetry) {
     clearAuthCache();
     return rpcCall(methodId, params, { ...opts, _isRetry: true });
@@ -106,11 +137,16 @@ async function rpcCall(methodId, params, opts = {}) {
   }
 
   if (!res.ok) {
-    throw new Error(`NotebookLM RPC ${methodId} returned ${res.status}`);
+    const errBody = await res.text().catch(() => '');
+    throw new Error(`NotebookLM RPC ${methodId} returned ${res.status}: ${errBody.substring(0, 200)}`);
   }
 
   const text = await res.text();
-  return decodeResponse(text, methodId);
+  try {
+    return decodeResponse(text, methodId);
+  } catch (decodeErr) {
+    throw new Error(`NotebookLM RPC ${methodId} decode failed: ${decodeErr.message}. Response length: ${text.length}, starts: ${text.substring(0, 100)}`);
+  }
 }
 
 /**
@@ -130,26 +166,26 @@ function sleep(ms) {
  * @returns {Promise<{ id: string, title: string, sourceCount: number }[]>}
  */
 export async function listNotebooks() {
-  const result = await rpcCall(RPC.LIST_NOTEBOOKS, [null, 1, null, [2]]);
+  const result = await rpcCall(RPC.LIST_NOTEBOOKS, []);
 
   if (!result || !Array.isArray(result)) return [];
 
-  // Result structure: array of notebook entries
-  const notebooks = [];
-  const entries = Array.isArray(result[0]) ? result[0] : result;
+  // Result structure: result = [ [ notebook1, notebook2, ... ] ]
+  // Unwrap: notebooks are at result[0] when single-wrapped
+  // Each notebook: [title, sources[], id, emoji, null, metadata, ...]
+  let entries = result;
+  if (entries.length === 1 && Array.isArray(entries[0]) && Array.isArray(entries[0][0])) {
+    entries = entries[0]; // unwrap [[nb1, nb2, ...]] → [nb1, nb2, ...]
+  }
 
+  const notebooks = [];
   for (const entry of entries) {
     if (!Array.isArray(entry)) continue;
-    const id = entry[0];
-    const title = entry[1] || entry[2] || 'Untitled';
-    let sourceCount = 0;
-    if (Array.isArray(entry[3])) {
-      sourceCount = entry[3].length;
-    } else if (Array.isArray(entry[4])) {
-      sourceCount = entry[4].length;
-    }
-    if (id && typeof id === 'string') {
-      notebooks.push({ id, title, sourceCount });
+    const title = typeof entry[0] === 'string' ? entry[0] : 'Untitled';
+    const sources = Array.isArray(entry[1]) ? entry[1] : [];
+    const id = typeof entry[2] === 'string' ? entry[2] : null;
+    if (id) {
+      notebooks.push({ id, title, sourceCount: sources.length });
     }
   }
 
@@ -300,15 +336,19 @@ export async function askQuestion(notebookId, question) {
     'rt': 'c',
   }).toString();
 
+  const streamHeaders = {
+    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+    'Cookie': auth.cookieHeader,
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Origin': ORIGIN,
+    'Referer': `${ORIGIN}/notebook/${notebookId}`,
+  };
+  const streamSapisid = generateSapisidHash(auth.cookieHeader);
+  if (streamSapisid) streamHeaders['Authorization'] = streamSapisid;
+
   const res = await fetch(`${STREAMING_URL}?${qs}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-      'Cookie': auth.cookieHeader,
-      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Origin': 'https://notebooklm.google.com',
-      'Referer': `https://notebooklm.google.com/notebook/${notebookId}`,
-    },
+    headers: streamHeaders,
   });
 
   if ((res.status === 401 || res.status === 403)) {
