@@ -199,21 +199,22 @@ export async function listNotebooks() {
  * @returns {Promise<{ id: string, title: string }>}
  */
 export async function createNotebook(title) {
-  const result = await rpcCall(RPC.CREATE_NOTEBOOK, [title, null, null, [2], [1]]);
+  const result = await rpcCall(RPC.CREATE_NOTEBOOK, [title]);
 
   if (!result) {
     throw new Error('createNotebook returned null — may be rate limited');
   }
 
+  // Result structure: [title, null, notebookId, ...]
   let id;
-  if (Array.isArray(result)) {
-    id = result[0];
+  if (Array.isArray(result) && typeof result[2] === 'string') {
+    id = result[2]; // UUID at position 2
   } else if (typeof result === 'string') {
     id = result;
   }
 
   if (!id) {
-    throw new Error('Could not extract notebook ID from createNotebook response');
+    throw new Error(`Could not extract notebook ID from createNotebook response: ${JSON.stringify(result).substring(0, 200)}`);
   }
 
   return { id, title };
