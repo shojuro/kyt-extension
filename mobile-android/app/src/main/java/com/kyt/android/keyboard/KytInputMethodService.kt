@@ -6,10 +6,8 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
-import com.kyt.android.BuildConfig
 import com.kyt.android.data.AuthManager
 import com.kyt.android.data.SupabaseClient
-import com.kyt.android.memory.ClassificationResult
 import com.kyt.android.memory.MemoryModeManager
 import com.kyt.android.memory.classifyIntent
 import com.kyt.android.memory.Intent as KytIntent
@@ -29,22 +27,22 @@ import org.json.JSONObject
  *
  * Injection flow:
  * 1. User types in target app
- * 2. On send: capture text → IntentClassifier → clear field → search in background
- * 3. When search returns: inject (Context: ...) + original text → fire send
- * 4. If search fails/times out: send original text without context
- * 5. After send: save user message to save_chat_turn_batch (fire-and-forget)
+ * 2. On 2s typing pause: pre-fetch search_memories (cached injection ready)
+ * 3. On send: read text → IntentClassifier → prepend injection → send
+ * 4. 18s timeout: send without injection if search exceeds budget
+ * 5. After send: save user message to save_chat_turn_batch
  */
 class KytInputMethodService : InputMethodService() {
 
     companion object {
         private const val TAG = "KYT"
-        private const val PREFS_PENDING = "kyt_pending_send"
-        private const val KEY_PENDING_TEXT = "pending_text"
-        private const val KEY_PENDING_PACKAGE = "pending_package"
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var keyboardView: KytKeyboardView? = null
+    private var cachedInjection: String? = null
+    private var prefetchJob: Job? = null
+    private var lastInputTime = 0L
 
     // Track committed text ourselves — getExtractedText() fails on ChatGPT/Claude
     private val textBuffer = StringBuilder()
@@ -72,12 +70,16 @@ class KytInputMethodService : InputMethodService() {
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        cachedInjection = null
+        // Only clear buffer for a genuinely new input field, not keyboard hide/show
         if (!restarting) {
             textBuffer.clear()
-            if (BuildConfig.DEBUG) Log.d(TAG, "onStartInput: new field, buffer cleared")
-            recoverPendingSend()
+            Log.d(TAG, "onStartInput: new field, buffer cleared")
+        } else {
+            Log.d(TAG, "onStartInput: restarting, buffer kept (${textBuffer.length} chars)")
         }
         keyboardView?.updateEnterKey(attribute)
+        keyboardView?.setEnterGlow(false)
         updateContextBar()
     }
 
@@ -88,6 +90,11 @@ class KytInputMethodService : InputMethodService() {
 
     override fun onFinishInput() {
         super.onFinishInput()
+        prefetchJob?.cancel()
+        cachedInjection = null
+        // Do NOT clear textBuffer here — ChatGPT hides/shows keyboard
+        // frequently for the same text field. Buffer cleared on send
+        // or when a genuinely new field starts (restarting=false).
     }
 
     // ── Key Action Listener ──────────────────────────────────
@@ -136,117 +143,32 @@ class KytInputMethodService : InputMethodService() {
     // ── Send Action ──────────────────────────────────────────
 
     private fun handleSendAction(ic: InputConnection) {
-        val capturedText = getCurrentText()
-        val capturedPackage = currentInputEditorInfo?.packageName ?: ""
-        val capturedImeAction = currentInputEditorInfo?.imeOptions
-            ?.and(EditorInfo.IME_MASK_ACTION) ?: 0
+        if (isTargetApp()) {
+            val currentText = getCurrentText()
+            Log.d(TAG, "handleSendAction: text='${currentText.take(50)}' (${currentText.length} chars)")
 
-        if (capturedText.isBlank()) {
-            fireEnterAction(ic, capturedImeAction)
-            return
+            // If we have cached injection, prepend it
+            if (cachedInjection != null && MemoryModeManager.shouldInject(this) && currentText.isNotBlank()) {
+                val injectedText = "${cachedInjection}\n\n${currentText}"
+                // Clear field and rewrite with injection prepended
+                ic.deleteSurroundingText(currentText.length, 0)
+                ic.commitText(injectedText, 1)
+                Log.d(TAG, "handleSendAction: injected context")
+                cachedInjection = null
+                keyboardView?.setEnterGlow(false)
+            }
+
+            // Save user message (fire-and-forget)
+            if (MemoryModeManager.shouldCapture(this) && currentText.isNotBlank()) {
+                scope.launch { saveUserMessage(currentText) }
+            }
         }
 
-        if (!isTargetApp()) {
-            textBuffer.clear()
-            fireEnterAction(ic, capturedImeAction)
-            return
-        }
-
-        Log.d(TAG, "handleSendAction: text (${capturedText.length} chars), pkg=$capturedPackage")
-
-        // Recursion guard
-        if (capturedText.startsWith("(Context:")) {
-            Log.d(TAG, "handleSendAction: recursion guard, sending as-is")
-            textBuffer.clear()
-            fireEnterAction(ic, capturedImeAction)
-            return
-        }
-
-        // Save user message (fire-and-forget, original text before injection)
-        if (MemoryModeManager.shouldCapture(this)) {
-            scope.launch { saveUserMessage(capturedText) }
-        }
-
-        // Clear input field immediately — looks "sent" to user
-        ic.deleteSurroundingText(capturedText.length, 0)
+        // Clear buffer after send
         textBuffer.clear()
 
-        // Gate: skip search for non-injection modes
-        if (!MemoryModeManager.shouldInject(this)) {
-            Log.d(TAG, "handleSendAction: inject disabled, sending without context")
-            commitTextAndSend(ic, capturedText, capturedImeAction)
-            return
-        }
-
-        // Intent classification (~0.06ms)
-        val classification = classifyIntent(capturedText)
-        Log.d(TAG, "handleSendAction: intent=${classification.intent}")
-
-        if (classification.intent == KytIntent.SKIP) {
-            Log.d(TAG, "handleSendAction: SKIP intent, sending without context")
-            commitTextAndSend(ic, capturedText, capturedImeAction)
-            return
-        }
-
-        val userId = AuthManager.getUserId(this)
-        if (userId == null) {
-            Log.d(TAG, "handleSendAction: no userId, sending without context")
-            commitTextAndSend(ic, capturedText, capturedImeAction)
-            return
-        }
-
-        // Persist for crash recovery
-        savePendingSend(capturedText, capturedPackage)
-        Log.d(TAG, "handleSendAction: searching memories...")
-
-        // Launch async search-then-inject
-        scope.launch {
-            val injection = searchAndBuildInjection(capturedText, userId, classification)
-
-            // Get fresh InputConnection
-            val freshIc = currentInputConnection
-            if (freshIc == null) {
-                Log.w(TAG, "handleSendAction: InputConnection gone after search")
-                clearPendingSend()
-                return@launch
-            }
-
-            // Verify same app
-            val currentPkg = currentInputEditorInfo?.packageName ?: ""
-            if (currentPkg != capturedPackage) {
-                Log.w(TAG, "handleSendAction: app changed, sending without context")
-                commitTextAndSend(freshIc, capturedText, capturedImeAction)
-                clearPendingSend()
-                return@launch
-            }
-
-            // Guard: user typed during search
-            val currentFieldText = getCurrentText()
-            if (currentFieldText.isNotBlank()) {
-                Log.d(TAG, "handleSendAction: user typed during search, sending original")
-                commitTextAndSend(freshIc, capturedText, capturedImeAction)
-                clearPendingSend()
-                return@launch
-            }
-
-            val finalText = if (injection != null) {
-                "$injection\n\n$capturedText"
-            } else {
-                capturedText
-            }
-
-            commitTextAndSend(freshIc, finalText, capturedImeAction)
-            clearPendingSend()
-            Log.d(TAG, "handleSendAction: sent ${if (injection != null) "with context" else "without context"}")
-        }
-    }
-
-    private fun commitTextAndSend(ic: InputConnection, text: String, imeAction: Int) {
-        ic.commitText(text, 1)
-        fireEnterAction(ic, imeAction)
-    }
-
-    private fun fireEnterAction(ic: InputConnection, imeAction: Int) {
+        // Send the enter key event to the app
+        val imeAction = currentInputEditorInfo?.imeOptions?.and(EditorInfo.IME_MASK_ACTION) ?: 0
         if (imeAction != EditorInfo.IME_ACTION_UNSPECIFIED && imeAction != EditorInfo.IME_ACTION_NONE) {
             ic.performEditorAction(imeAction)
         } else {
@@ -254,39 +176,100 @@ class KytInputMethodService : InputMethodService() {
         }
     }
 
-    // ── Search & Injection ────────────────────────────────────
+    // ── Pre-fetch ────────────────────────────────────────────
 
-    private suspend fun searchAndBuildInjection(
-        text: String,
-        userId: String,
-        classification: ClassificationResult
-    ): String? {
+    override fun onUpdateSelection(
+        oldSelStart: Int, oldSelEnd: Int,
+        newSelStart: Int, newSelEnd: Int,
+        candidatesStart: Int, candidatesEnd: Int
+    ) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+
+        if (!isTargetApp()) return
+        if (!MemoryModeManager.shouldInject(this)) {
+            Log.d(TAG, "onUpdateSelection: inject disabled (mode=${MemoryModeManager.getMode(this)})")
+            return
+        }
+
+        lastInputTime = System.currentTimeMillis()
+        Log.d(TAG, "onUpdateSelection: scheduling prefetch in 2s")
+
+        prefetchJob?.cancel()
+        prefetchJob = scope.launch {
+            delay(2000)
+            prefetchContext()
+        }
+    }
+
+    /**
+     * Get current text from input field. Tries getExtractedText() first,
+     * falls back to our tracked textBuffer (needed for ChatGPT/Claude
+     * which don't support the ExtractedText protocol).
+     */
+    private fun getCurrentText(): String {
+        val extracted = currentInputConnection?.getExtractedText(
+            android.view.inputmethod.ExtractedTextRequest(), 0
+        )?.text?.toString()
+        return if (!extracted.isNullOrBlank()) extracted else textBuffer.toString()
+    }
+
+    private suspend fun prefetchContext() {
+        Log.d(TAG, "prefetchContext: start")
+        val ic = currentInputConnection
+        if (ic == null) { Log.d(TAG, "prefetchContext: no InputConnection"); return }
+
+        val text = getCurrentText()
+        if (text.isBlank()) { Log.d(TAG, "prefetchContext: empty text (buffer=${textBuffer.length})"); return }
+
+        // Guard: don't re-search our own injection output
+        if (text.startsWith("(Context:") || text.startsWith("[K.Y.T.")) {
+            Log.d(TAG, "prefetchContext: skipping — text is our own injection")
+            return
+        }
+
+        Log.d(TAG, "prefetchContext: text='${text.take(50)}' (${text.length} chars)")
+
+        val classification = classifyIntent(text)
+        Log.d(TAG, "prefetchContext: intent=${classification.intent}")
+        if (classification.intent == KytIntent.SKIP) {
+            cachedInjection = null
+            return
+        }
+
+        val userId = AuthManager.getUserId(this)
+        if (userId == null) { Log.d(TAG, "prefetchContext: no userId (not authenticated)"); return }
+        Log.d(TAG, "prefetchContext: userId=$userId")
+
         val body = JSONObject().apply {
             put("query", text.take(200))
-            put("userId", userId)
+            put("userId", userId)  // camelCase — search_memories destructures { userId }
             put("top_k", 8)
             put("fast", true)
             put("confidenceThreshold", classification.confidenceThreshold ?: 0.40)
             put("excludePlatforms", JSONArray().apply { put("claude-code") })
         }
 
+        Log.d(TAG, "prefetchContext: calling search_memories...")
+        updateContextBar("Searching...")
         val result = withTimeoutOrNull(18_000) {
             SupabaseClient.callEdgeFunction("search_memories", body)
         }
 
-        if (result == null || result.isFailure) {
-            val reason = if (result == null) "timeout" else result.exceptionOrNull()?.message
-            Log.w(TAG, "searchAndBuildInjection: failed ($reason)")
-            return null
+        if (result == null) { Log.d(TAG, "prefetchContext: timeout (18s)"); updateContextBar(); return }
+
+        if (result.isFailure) {
+            Log.e(TAG, "prefetchContext: edge function failed", result.exceptionOrNull())
+            updateContextBar()
+            return
         }
 
         val json = result.getOrThrow()
         val results = json.optJSONArray("results") ?: JSONArray()
-
-        if (results.length() == 0) return null
+        Log.d(TAG, "prefetchContext: got ${results.length()} results")
 
         val items = (0 until results.length()).map { i ->
             val r = results.getJSONObject(i)
+            // Parse entities array if present (server enrichment)
             val entitiesArr = r.optJSONArray("entities")
             val entityNames = if (entitiesArr != null) {
                 (0 until entitiesArr.length()).mapNotNull { j ->
@@ -300,61 +283,19 @@ class KytInputMethodService : InputMethodService() {
                 content = r.optString("content"),
                 platform = r.optString("platform", "unknown"),
                 timestamp = r.optString("created_at", ""),
-                similarity = r.optDouble("rerank_score",
-                    r.optDouble("similarity",
-                        r.optDouble("gravity_score", 0.0))),
+                similarity = r.optDouble("rerank_score", r.optDouble("similarity", r.optDouble("gravity_score", 0.0))),
                 role = r.optString("role", null),
                 entities = entityNames
             )
         }
-
         val injection = buildCompactInjection(items, text.take(200))
-        return if (injection.itemCount > 0) injection.text else null
-    }
-
-    // ── Pending Send (crash recovery) ─────────────────────────
-
-    private fun savePendingSend(text: String, packageName: String) {
-        getSharedPreferences(PREFS_PENDING, MODE_PRIVATE).edit()
-            .putString(KEY_PENDING_TEXT, text)
-            .putString(KEY_PENDING_PACKAGE, packageName)
-            .apply()
-    }
-
-    private fun clearPendingSend() {
-        getSharedPreferences(PREFS_PENDING, MODE_PRIVATE).edit().clear().apply()
-    }
-
-    private fun recoverPendingSend() {
-        val prefs = getSharedPreferences(PREFS_PENDING, MODE_PRIVATE)
-        val pendingText = prefs.getString(KEY_PENDING_TEXT, null) ?: return
-        val pendingPackage = prefs.getString(KEY_PENDING_PACKAGE, null) ?: ""
-        val currentPkg = currentInputEditorInfo?.packageName ?: ""
-        if (currentPkg == pendingPackage && pendingText.isNotBlank()) {
-            val ic = currentInputConnection
-            if (ic != null) {
-                if (BuildConfig.DEBUG) Log.d(TAG, "recoverPendingSend: delivering orphaned message")
-                ic.commitText(pendingText, 1)
-                val imeAction = currentInputEditorInfo?.imeOptions
-                    ?.and(EditorInfo.IME_MASK_ACTION) ?: 0
-                fireEnterAction(ic, imeAction)
-            }
-        }
-        clearPendingSend()
-    }
-
-    // ── Text Extraction ───────────────────────────────────────
-
-    /**
-     * Get current text from input field. Tries getExtractedText() first,
-     * falls back to our tracked textBuffer (needed for ChatGPT/Claude
-     * which don't support the ExtractedText protocol).
-     */
-    private fun getCurrentText(): String {
-        val extracted = currentInputConnection?.getExtractedText(
-            android.view.inputmethod.ExtractedTextRequest(), 0
-        )?.text?.toString()
-        return if (!extracted.isNullOrBlank()) extracted else textBuffer.toString()
+        cachedInjection = if (injection.itemCount > 0) injection.text else null
+        Log.d(TAG, "prefetchContext: injection=${if (cachedInjection != null) "${injection.itemCount} items" else "none"}")
+        val statusMsg = if (cachedInjection != null) {
+            "Context ready (${injection.itemCount} items)"
+        } else null
+        updateContextBar(statusMsg)
+        keyboardView?.setEnterGlow(cachedInjection != null)
     }
 
     // ── Save ─────────────────────────────────────────────────
