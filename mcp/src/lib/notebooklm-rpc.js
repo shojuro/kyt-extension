@@ -8,14 +8,53 @@
 
 // --- RPC Method IDs ---
 export const RPC = {
+  // Notebook management
   LIST_NOTEBOOKS: 'wXbhsf',
   CREATE_NOTEBOOK: 'CCqFvf',
   GET_NOTEBOOK: 'rLM1Ne',
+  RENAME_NOTEBOOK: 's0tc2d',
   DELETE_NOTEBOOK: 'WWINqb',
+  REMOVE_RECENTLY_VIEWED: 'fejl7e',
+  // Sources
   ADD_SOURCE: 'izAoDd',
   DELETE_SOURCE: 'tGMBJ',
+  GET_SOURCE: 'hizoJc',
+  REFRESH_SOURCE: 'FLmJqe',
+  CHECK_SOURCE_FRESHNESS: 'yR9Yof',
+  UPDATE_SOURCE: 'b7Wfje',
+  DISCOVER_SOURCES: 'qXyaNe',
+  // Artifacts
+  CREATE_ARTIFACT: 'R7cb6c',
+  LIST_ARTIFACTS: 'gArtLc',
+  DELETE_ARTIFACT: 'V5N4be',
+  RENAME_ARTIFACT: 'rc3d8d',
+  EXPORT_ARTIFACT: 'Krh3pd',
+  SHARE_ARTIFACT: 'RGP97b',
+  GET_INTERACTIVE_HTML: 'v9rmvd',
+  REVISE_SLIDE: 'KmcKPe',
+  // AI features
+  SUMMARIZE: 'VfAZjd',
+  GET_SOURCE_GUIDE: 'tr032e',
+  GET_SUGGESTED_REPORTS: 'ciyUvf',
+  // Research
+  START_FAST_RESEARCH: 'Ljjv0c',
+  START_DEEP_RESEARCH: 'QA9ei',
+  POLL_RESEARCH: 'e3bVqc',
+  IMPORT_RESEARCH: 'LBwxtb',
+  // Notes & mind maps
+  GENERATE_MIND_MAP: 'yyryJe',
+  CREATE_NOTE: 'CYK0Xb',
+  GET_NOTES_AND_MIND_MAPS: 'cFji9',
+  UPDATE_NOTE: 'cYAfTb',
+  DELETE_NOTE: 'AH0mwd',
+  // Chat
   GET_CONVERSATION_ID: 'hPTbtc',
   GET_CONVERSATION_TURNS: 'khqZz',
+  // Sharing & settings
+  SHARE_NOTEBOOK: 'QDyure',
+  GET_SHARE_STATUS: 'JFMDGd',
+  GET_USER_SETTINGS: 'ZwVcOc',
+  SET_USER_SETTINGS: 'hT54vc',
 };
 
 // --- Endpoints ---
@@ -283,7 +322,7 @@ function extractCitations(parsed) {
 /**
  * Extract conversation ID from a parsed frame (UUID format).
  */
-function extractConversationId(parsed) {
+export function extractConversationId(parsed) {
   const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   function walk(obj, depth) {
     if (depth > 8) return null;

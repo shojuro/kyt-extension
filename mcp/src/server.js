@@ -27,6 +27,30 @@ import { listNotebooksHandler } from './tools/list-notebooks.js';
 import { createNotebookHandler } from './tools/create-notebook.js';
 import { pushProjectToNotebookHandler } from './tools/push-project-to-notebook.js';
 import { askNotebookHandler } from './tools/ask-notebook.js';
+// Sources
+import { addSourceHandler } from './tools/add-source.js';
+import { listSourcesHandler } from './tools/list-sources.js';
+import { deleteSourceHandler } from './tools/delete-source.js';
+import { getSourceHandler } from './tools/get-source.js';
+// Notebook management
+import { renameNotebookHandler } from './tools/rename-notebook.js';
+import { deleteNotebookHandler } from './tools/delete-notebook.js';
+import { getConversationHistoryHandler } from './tools/get-conversation-history.js';
+import { getNotebookSummaryHandler } from './tools/get-notebook-summary.js';
+// Artifacts
+import { generateArtifactHandler } from './tools/generate-artifact.js';
+import { listArtifactsHandler } from './tools/list-artifacts.js';
+import { deleteArtifactHandler } from './tools/delete-artifact.js';
+import { getArtifactContentHandler } from './tools/get-artifact-content.js';
+// Research + Notes + Mind Maps
+import { startResearchHandler } from './tools/start-research.js';
+import { pollResearchHandler } from './tools/poll-research.js';
+import { importResearchHandler } from './tools/import-research.js';
+import { createNotebookNoteHandler } from './tools/create-notebook-note.js';
+import { listNotebookNotesHandler } from './tools/list-notebook-notes.js';
+import { updateNotebookNoteHandler } from './tools/update-notebook-note.js';
+import { deleteNotebookNoteHandler } from './tools/delete-notebook-note.js';
+import { generateMindMapHandler } from './tools/generate-mind-map.js';
 
 const server = new McpServer({
   name: 'kyt-memory',
@@ -246,6 +270,274 @@ server.tool(
     passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials (cached in memory after first use)'),
   },
   async (args) => askNotebookHandler(args),
+);
+
+// --- Tool: add_source ---
+server.tool(
+  'add_source',
+  'Add a source to a NotebookLM notebook. Supports text, URL, YouTube, and Google Drive sources.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    sourceType: z.enum(['text', 'url', 'youtube', 'gdrive']).describe('Source type'),
+    title: z.string().optional().describe('Source title (used for text and gdrive)'),
+    content: z.string().optional().describe('Text content (required for text sources)'),
+    url: z.string().optional().describe('URL (required for url and youtube sources)'),
+    fileId: z.string().optional().describe('Google Drive file ID (required for gdrive sources)'),
+    mimeType: z.string().optional().describe('MIME type for gdrive sources (default: application/pdf)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => addSourceHandler(args),
+);
+
+// --- Tool: list_sources ---
+server.tool(
+  'list_sources',
+  'List sources in a NotebookLM notebook with type, title, and URL.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => listSourcesHandler(args),
+);
+
+// --- Tool: delete_source ---
+server.tool(
+  'delete_source',
+  'Delete a source from a NotebookLM notebook.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    sourceId: z.string().describe('Source ID to delete'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => deleteSourceHandler(args),
+);
+
+// --- Tool: get_source ---
+server.tool(
+  'get_source',
+  'Get the full text content of a NotebookLM source.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    sourceId: z.string().describe('Source ID to read'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => getSourceHandler(args),
+);
+
+// --- Tool: rename_notebook ---
+server.tool(
+  'rename_notebook',
+  'Rename a NotebookLM notebook.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    newTitle: z.string().describe('New notebook title'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => renameNotebookHandler(args),
+);
+
+// --- Tool: delete_notebook ---
+server.tool(
+  'delete_notebook',
+  'Delete a NotebookLM notebook and remove its K.Y.T. mapping.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID to delete'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => deleteNotebookHandler(args),
+);
+
+// --- Tool: get_conversation_history ---
+server.tool(
+  'get_conversation_history',
+  'Get the conversation history (Q&A turns) from a NotebookLM notebook.',
+  {
+    notebookId: z.string().optional().describe('NotebookLM notebook ID (default: from active project mapping)'),
+    limit: z.number().optional().default(20).describe('Max turns to return (default: 20)'),
+    saveToKyt: z.boolean().optional().default(false).describe('Save conversation to K.Y.T. as research (default: false)'),
+    projectId: z.string().optional().describe('K.Y.T. project UUID (default: active project)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => getConversationHistoryHandler(args),
+);
+
+// --- Tool: get_notebook_summary ---
+server.tool(
+  'get_notebook_summary',
+  'Get an AI-generated summary and topics from a NotebookLM notebook.',
+  {
+    notebookId: z.string().optional().describe('NotebookLM notebook ID (default: from active project mapping)'),
+    saveToKyt: z.boolean().optional().default(false).describe('Save summary to K.Y.T. as research (default: false)'),
+    projectId: z.string().optional().describe('K.Y.T. project UUID (default: active project)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => getNotebookSummaryHandler(args),
+);
+
+// --- Tool: generate_artifact ---
+server.tool(
+  'generate_artifact',
+  'Generate an artifact in a NotebookLM notebook: audio, report, video, quiz, infographic, slide_deck, or data_table.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    type: z.enum(['audio', 'report', 'video', 'quiz', 'infographic', 'slide_deck', 'data_table'])
+      .describe('Artifact type to generate'),
+    sourceIds: z.array(z.string()).optional().describe('Source IDs to use (default: all sources)'),
+    instructions: z.string().optional().describe('Custom instructions for generation'),
+    format: z.string().optional().describe('Format option (audio: deep_dive/brief/critique/debate; video: lecture/documentary/explainer; slide_deck: presentation/summary)'),
+    style: z.string().optional().describe('Style option (video: realistic/animated/whiteboard; infographic: modern/classic/minimal)'),
+    length: z.string().optional().describe('Length option (audio: short/default/long; slide_deck: short/medium/long)'),
+    variant: z.string().optional().describe('Quiz variant: quiz or flashcards'),
+    quantity: z.string().optional().describe('Quiz quantity: few/standard/many'),
+    difficulty: z.string().optional().describe('Quiz difficulty: easy/medium/hard'),
+    orientation: z.string().optional().describe('Infographic orientation: portrait/landscape'),
+    detail: z.string().optional().describe('Infographic detail level: simple/detailed'),
+    language: z.string().optional().describe('Language code (default: en)'),
+    waitForCompletion: z.boolean().optional().default(false).describe('Poll until artifact is ready (up to 120s)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => generateArtifactHandler(args),
+);
+
+// --- Tool: list_artifacts ---
+server.tool(
+  'list_artifacts',
+  'List artifacts in a NotebookLM notebook with type, status, and title.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => listArtifactsHandler(args),
+);
+
+// --- Tool: delete_artifact ---
+server.tool(
+  'delete_artifact',
+  'Delete an artifact from a NotebookLM notebook.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    artifactId: z.string().describe('Artifact ID to delete'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => deleteArtifactHandler(args),
+);
+
+// --- Tool: get_artifact_content ---
+server.tool(
+  'get_artifact_content',
+  'Get the content of a NotebookLM artifact (structured quiz data, interactive HTML, etc.).',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    artifactId: z.string().describe('Artifact ID to read'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => getArtifactContentHandler(args),
+);
+
+// --- Tool: start_research ---
+server.tool(
+  'start_research',
+  'Start a research task in a NotebookLM notebook. Fast research uses web search; deep research does comprehensive analysis.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    query: z.string().describe('Research query'),
+    sourceType: z.enum(['web', 'drive']).optional().default('web').describe('Source type for research (default: web)'),
+    deep: z.boolean().optional().default(false).describe('Use deep research mode (slower, more thorough)'),
+    waitForCompletion: z.boolean().optional().default(false).describe('Poll until research completes'),
+    saveToKyt: z.boolean().optional().default(true).describe('Save research results to K.Y.T.'),
+    projectId: z.string().optional().describe('K.Y.T. project UUID (default: active project)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => startResearchHandler(args),
+);
+
+// --- Tool: poll_research ---
+server.tool(
+  'poll_research',
+  'Poll the status of a research task in a NotebookLM notebook.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => pollResearchHandler(args),
+);
+
+// --- Tool: import_research ---
+server.tool(
+  'import_research',
+  'Import research results as sources into a NotebookLM notebook.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    taskId: z.string().describe('Research task ID from start_research'),
+    sources: z.array(z.object({
+      url: z.string().describe('Source URL'),
+      title: z.string().describe('Source title'),
+    })).describe('Array of sources to import'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => importResearchHandler(args),
+);
+
+// --- Tool: create_notebook_note ---
+server.tool(
+  'create_notebook_note',
+  'Create a note in a NotebookLM notebook. Different from save_note (which saves to K.Y.T. memory).',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    title: z.string().describe('Note title'),
+    content: z.string().describe('Note content'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => createNotebookNoteHandler(args),
+);
+
+// --- Tool: list_notebook_notes ---
+server.tool(
+  'list_notebook_notes',
+  'List notes and mind maps in a NotebookLM notebook.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => listNotebookNotesHandler(args),
+);
+
+// --- Tool: update_notebook_note ---
+server.tool(
+  'update_notebook_note',
+  'Update a note in a NotebookLM notebook (title and/or content).',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    noteId: z.string().describe('Note ID to update'),
+    title: z.string().optional().describe('New title'),
+    content: z.string().optional().describe('New content'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => updateNotebookNoteHandler(args),
+);
+
+// --- Tool: delete_notebook_note ---
+server.tool(
+  'delete_notebook_note',
+  'Delete a note from a NotebookLM notebook.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    noteId: z.string().describe('Note ID to delete'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => deleteNotebookNoteHandler(args),
+);
+
+// --- Tool: generate_mind_map ---
+server.tool(
+  'generate_mind_map',
+  'Generate a mind map from sources in a NotebookLM notebook.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    sourceIds: z.array(z.string()).optional().describe('Source IDs to include (default: all sources)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => generateMindMapHandler(args),
 );
 
 // Start the server
