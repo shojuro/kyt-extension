@@ -51,6 +51,7 @@ import { listNotebookNotesHandler } from './tools/list-notebook-notes.js';
 import { updateNotebookNoteHandler } from './tools/update-notebook-note.js';
 import { deleteNotebookNoteHandler } from './tools/delete-notebook-note.js';
 import { generateMindMapHandler } from './tools/generate-mind-map.js';
+import { saveLessonHandler } from './tools/save-lesson.js';
 
 const server = new McpServer({
   name: 'kyt-memory',
@@ -538,6 +539,26 @@ server.tool(
     passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
   },
   async (args) => generateMindMapHandler(args),
+);
+
+// --- Tool: save_lesson ---
+server.tool(
+  'save_lesson',
+  'Save a debugging lesson or non-obvious discovery to the Lessons Learned notebook. Call this when you discover something that took effort to figure out — future sessions will query these lessons before debugging. Dual-writes to NotebookLM (structured, queryable) and K.Y.T. memory (semantic search).',
+  {
+    category: z.enum([
+      'api', 'parsing', 'auth', 'config', 'chrome_extension',
+      'notebooklm', 'supabase', 'testing', 'performance', 'css',
+      'javascript', 'node', 'database', 'networking', 'security', 'other',
+    ]).describe('Lesson category'),
+    error: z.string().describe('What went wrong — the symptom or unexpected behavior'),
+    rootCause: z.string().optional().describe('Why it went wrong — the underlying cause'),
+    solution: z.string().describe('What fixed it — the specific change or approach'),
+    context: z.string().optional().describe('Files involved, project context, environment details'),
+    tags: z.array(z.string()).optional().default([]).describe('Searchable tags'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => saveLessonHandler(args),
 );
 
 // Start the server

@@ -101,6 +101,65 @@ function computeSimilarity(a, b) {
   return intersection / Math.max(wordsA.size, wordsB.size);
 }
 
+// ── Debugging intent detection ───────────────────────────────
+
+const DEBUG_KEYWORDS = /\b(error|bug|fix|debug|broken|failed|not working|wrong|issue|crash|exception|undefined|null|NaN|unexpected|missing|empty|stuck|infinite|timeout|rejected|refused|denied|parse|decode)\b/i;
+const DEBUG_PATTERNS = /\b(why is .+ returning|doesn't work|getting error|returns empty|returns null|not showing|can't find|not found|keeps failing)\b/i;
+
+function scoreDebuggingIntent(text) {
+  let score = 0;
+  if (DEBUG_KEYWORDS.test(text)) score = Math.max(score, 0.5);
+  if (DEBUG_PATTERNS.test(text)) score = Math.max(score, 0.7);
+  // "have I seen this before" / "lesson" / "learned" → strong signal
+  if (/\b(seen this before|lesson|learned|same issue|same error|same problem)\b/i.test(text)) score = Math.max(score, 0.8);
+  return score;
+}
+
+// ── Lessons notebook query ──────────────────────────────────
+
+async function queryLessonsNotebook(prompt, classification) {
+  // Only query if debugging intent is detected
+  const debugScore = scoreDebuggingIntent(prompt);
+  if (debugScore < 0.5) return null;
+
+  // Read lessons notebook ID from config
+  let lessonsNotebookId;
+  try {
+    const nlmConfig = JSON.parse(readFileSync(join(homedir(), '.kyt', 'notebooklm.json'), 'utf-8'));
+    lessonsNotebookId = nlmConfig.lessonsNotebookId;
+  } catch { return null; }
+  if (!lessonsNotebookId) return null;
+
+  // Check if NotebookLM passphrase is available
+  const passphrase = process.env.NOTEBOOKLM_PASSPHRASE;
+  if (!passphrase) return null;
+
+  // Check if auth file exists
+  const authPath = join(homedir(), '.kyt', 'notebooklm-auth.enc');
+  if (!existsSync(authPath)) return null;
+
+  try {
+    // Dynamic import to avoid loading heavy NotebookLM client on every hook run
+    const { askQuestion, setPassphrase, hasPassphrase } = await import('../lib/notebooklm-client.js');
+    if (!hasPassphrase()) setPassphrase(passphrase);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000); // 8s max for lessons query
+
+    const { answer } = await askQuestion(lessonsNotebookId, prompt.substring(0, 300));
+    clearTimeout(timeout);
+
+    if (!answer || answer.length < 20) return null;
+
+    // Truncate to keep token cost low
+    const truncated = answer.length > 500 ? answer.substring(0, 500) + '...' : answer;
+    return `[K.Y.T. Lessons — past debugging insights (score: ${(debugScore * 100).toFixed(0)}%)]\n${truncated}`;
+  } catch (err) {
+    process.stderr.write(`KYT hook: lessons query failed: ${err.message}\n`);
+    return null;
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────
 
 async function main() {
@@ -258,7 +317,13 @@ async function main() {
       return `${i + 1}. ${plat} ${score}: ${snippet}`;
     }).join('\n');
 
-    const context = `[K.Y.T. Memory Context — ${results.length} relevant items from past conversations]\n${contextItems}`;
+    let context = `[K.Y.T. Memory Context — ${results.length} relevant items from past conversations]\n${contextItems}`;
+
+    // ── Lessons notebook query (on debugging intent) ────────
+    const lessonsContext = await queryLessonsNotebook(trimmed, classification);
+    if (lessonsContext) {
+      context = lessonsContext + '\n\n' + context;
+    }
 
     const output = JSON.stringify({
       hookSpecificOutput: {

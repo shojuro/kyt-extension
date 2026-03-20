@@ -99,3 +99,24 @@ export function removeNotebookMapping(notebookId) {
   delete config.notebooks[notebookId];
   writeConfig(config);
 }
+
+/**
+ * Get the lessons notebook ID (global, cross-project).
+ *
+ * @returns {string|null}
+ */
+export function getLessonsNotebookId() {
+  const config = readConfig();
+  return config.lessonsNotebookId || null;
+}
+
+/**
+ * Set the lessons notebook ID.
+ *
+ * @param {string} notebookId
+ */
+export function setLessonsNotebookId(notebookId) {
+  const config = readConfig();
+  config.lessonsNotebookId = notebookId;
+  writeConfig(config);
+}
