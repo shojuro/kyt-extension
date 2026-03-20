@@ -1069,9 +1069,20 @@ export async function listNotes(notebookId) {
     const id = typeof entry[0] === 'string' ? entry[0] : null;
     if (!id) continue;
 
-    // Detect mind maps by checking for JSON content with "children" or "nodes"
-    const contentStr = typeof entry[2] === 'string' ? entry[2] : '';
-    const title = typeof entry[1] === 'string' ? entry[1] : 'Untitled';
+    // Skip deleted notes (status 2 at entry[2] when entry is short [id, null, 2])
+    if (entry.length <= 3 && entry[2] === 2) continue;
+
+    // For active notes: [id, [title, content, ...], ...] or [id, title, content, ...]
+    // Detect structure — entry[1] can be an array (nested) or string (flat)
+    let title = 'Untitled';
+    let contentStr = '';
+    if (Array.isArray(entry[1])) {
+      title = typeof entry[1][0] === 'string' ? entry[1][0] : 'Untitled';
+      contentStr = typeof entry[1][1] === 'string' ? entry[1][1] : '';
+    } else {
+      title = typeof entry[1] === 'string' ? entry[1] : 'Untitled';
+      contentStr = typeof entry[2] === 'string' ? entry[2] : '';
+    }
 
     let isMindMap = false;
     if (contentStr) {
