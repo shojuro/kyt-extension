@@ -1128,25 +1128,56 @@ export async function deleteNote(notebookId, noteId) {
  */
 export async function generateMindMap(notebookId, sourceIds) {
   const tripleNested = sourceIds.map(id => [[id]]);
-  const result = await rpcCall(RPC.GENERATE_MIND_MAP, [notebookId, tripleNested], {
+
+  // GENERATE_MIND_MAP returns mind map JSON but does NOT persist it.
+  // We must create a note with the returned content to save it.
+  const params = [
+    tripleNested,
+    null,
+    null,
+    null,
+    null,
+    ['interactive_mindmap', [['[CONTEXT]', '']], ''],
+    null,
+    [2, null, [1]],
+  ];
+
+  const result = await rpcCall(RPC.GENERATE_MIND_MAP, params, {
     sourcePath: `/notebook/${notebookId}`,
   });
 
-  let taskId = null;
-  if (result) {
-    const walk = (obj, depth) => {
-      if (depth > 5) return null;
-      if (typeof obj === 'string' && obj.length > 5 && !obj.includes(' ')) return obj;
-      if (Array.isArray(obj)) {
-        for (const item of obj) {
-          const found = walk(item, depth + 1);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    taskId = walk(result, 0);
+  if (!result || !Array.isArray(result) || result.length === 0) {
+    return { mindMap: null, noteId: null };
   }
 
-  return { taskId };
+  // Extract mind map JSON from result[0][0]
+  const inner = result[0];
+  let mindMapJson = null;
+  let mindMapData = null;
+
+  if (Array.isArray(inner) && inner.length > 0) {
+    const raw = inner[0];
+    if (typeof raw === 'string') {
+      try { mindMapData = JSON.parse(raw); } catch { mindMapData = raw; }
+      mindMapJson = raw;
+    } else if (raw && typeof raw === 'object') {
+      mindMapData = raw;
+      mindMapJson = JSON.stringify(raw);
+    }
+  }
+
+  if (!mindMapJson) {
+    return { mindMap: null, noteId: null };
+  }
+
+  // Extract title from mind map data
+  let title = 'Mind Map';
+  if (mindMapData && typeof mindMapData === 'object' && mindMapData.name) {
+    title = mindMapData.name;
+  }
+
+  // Persist as a note (GENERATE_MIND_MAP only generates, doesn't save)
+  const { noteId } = await createNote(notebookId, title, mindMapJson);
+
+  return { mindMap: mindMapData, noteId };
 }

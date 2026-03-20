@@ -41,13 +41,43 @@ export async function generateMindMapHandler({ notebookId, sourceIds, passphrase
       }
     }
 
-    const { taskId } = await generateMindMap(notebookId, resolvedSourceIds);
+    const { mindMap, noteId } = await generateMindMap(notebookId, resolvedSourceIds);
+
+    if (!mindMap) {
+      return {
+        content: [{ type: 'text', text: 'Mind map generation returned no content. The notebook may need more sources.' }],
+      };
+    }
+
+    const lines = [
+      `Mind map generated and saved as note.`,
+      `Note ID: ${noteId || '(unknown)'}`,
+      `Sources: ${resolvedSourceIds.length}`,
+      '',
+    ];
+
+    // Show mind map structure
+    if (typeof mindMap === 'object' && mindMap.name) {
+      lines.push(`**${mindMap.name}**`);
+      if (Array.isArray(mindMap.children)) {
+        for (const child of mindMap.children) {
+          const name = typeof child === 'object' ? child.name || JSON.stringify(child).substring(0, 80) : String(child);
+          lines.push(`  - ${name}`);
+          if (child.children && Array.isArray(child.children)) {
+            for (const gc of child.children.slice(0, 3)) {
+              const gcName = typeof gc === 'object' ? gc.name || '...' : String(gc);
+              lines.push(`    - ${gcName}`);
+            }
+            if (child.children.length > 3) lines.push(`    - ... (${child.children.length - 3} more)`);
+          }
+        }
+      }
+    } else {
+      lines.push(JSON.stringify(mindMap).substring(0, 500));
+    }
 
     return {
-      content: [{
-        type: 'text',
-        text: `Mind map generation started.\nTask ID: ${taskId || '(unknown)'}\nSources: ${resolvedSourceIds.length}\n\nUse list_notebook_notes to see the result once it's ready.`,
-      }],
+      content: [{ type: 'text', text: lines.join('\n') }],
     };
   } catch (err) {
     return {
