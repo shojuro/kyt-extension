@@ -32,6 +32,7 @@ import { syncToNotebookLM, enableSync as enableNLMSync, disableSync as disableNL
 import { detectDeflection } from './src/assistant-quality-detector.js';
 import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/embedding-circuit-breaker.js';
 import { updateRecentTopics } from './src/recent-topic-cache.js';
+import { exportNotebookLMCookies, getCookieExportStatus, resetCookieExporter } from './src/cookie-exporter.js';
 
 // Extracted modules
 import { getApiConfig, clearConfigCache } from './src/auth-config.js';
@@ -819,13 +820,11 @@ async function reInjectContentScripts() {
 
     for (const tab of geminiTabs) {
       try {
-        // Reset injection guard so inject.js re-initializes
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: () => { window.__kytGeminiInjected = false; },
-          world: 'MAIN'
-        });
-        // content.js (ISOLATED) will re-inject inject.js (MAIN) via <script> tag
+        // Do NOT reset window.__kytGeminiInjected — old inject.js in MAIN world
+        // keeps its XHR wrappers + populated capturedResponseElements WeakSet.
+        // Re-injecting only content.js gives it a fresh chrome.runtime context
+        // to relay events. inject.js guard prevents double-init (no duplicate
+        // XHR wrappers, no DOM scrape flood from empty WeakSet).
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: ['platforms/gemini/content.js']
@@ -990,6 +989,9 @@ isNLMEnabled().then(enabled => {
     chrome.alarms.create('syncNotebookLM', { delayInMinutes: 2, periodInMinutes: 30 });
   }
 });
+
+// NotebookLM cookie export — auto-refresh every 20 min + on startup
+chrome.alarms.create('refreshNLMCookies', { delayInMinutes: 0.1, periodInMinutes: 20 });
 
 // ===== SYNC-ON-PLATFORM-SWITCH =====
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
@@ -1296,6 +1298,19 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
       break;
 
+    case 'refreshNLMCookies':
+      try {
+        const cookieResult = await exportNotebookLMCookies();
+        if (cookieResult.error === 'native_host_not_installed') {
+          // Silently skip — user hasn't set up native host yet
+        } else if (!cookieResult.success) {
+          console.warn(`⚠️ NLM cookie refresh failed: ${cookieResult.error}`);
+        }
+      } catch (error) {
+        console.error('❌ NLM cookie refresh error:', error.message);
+      }
+      break;
+
     default:
       console.warn(`⚠️ Unknown alarm: ${alarm.name}`);
   }
@@ -1565,6 +1580,14 @@ globalThis.KYT_DEBUG = {
     }
     return d;
   },
+  // NotebookLM cookie export
+  refreshNLMCookies: async () => {
+    resetCookieExporter();
+    const result = await exportNotebookLMCookies();
+    console.log('[KYT] Cookie export result:', result);
+    return result;
+  },
+  nlmCookieStatus: () => getCookieExportStatus(),
 };
 
 console.log('✅ KYT Background: Service worker ready');

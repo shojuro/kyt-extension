@@ -79,15 +79,14 @@ export function setPassphrase(passphrase) {
   _passphrase = passphrase;
 }
 
-// Auto-load from env on startup (so .env works without explicit passphrase param)
-if (!_passphrase && process.env.NOTEBOOKLM_PASSPHRASE) {
-  _passphrase = process.env.NOTEBOOKLM_PASSPHRASE;
-}
-
 /**
  * Check if passphrase has been set for this session.
+ * Lazily loads from env var on first check (dotenv runs after ES module imports).
  */
 export function hasPassphrase() {
+  if (!_passphrase && process.env.NOTEBOOKLM_PASSPHRASE) {
+    _passphrase = process.env.NOTEBOOKLM_PASSPHRASE;
+  }
   return _passphrase !== null && _passphrase.length > 0;
 }
 
@@ -99,6 +98,9 @@ export function clearPassphrase() {
 }
 
 function requirePassphrase() {
+  if (!_passphrase && process.env.NOTEBOOKLM_PASSPHRASE) {
+    _passphrase = process.env.NOTEBOOKLM_PASSPHRASE;
+  }
   if (!_passphrase) {
     throw new Error(
       'NotebookLM passphrase not set. Call any NotebookLM tool with the `passphrase` parameter first, ' +
@@ -472,7 +474,13 @@ export async function listSources(notebookId) {
   const sources = [];
   for (const src of rawSources) {
     if (!Array.isArray(src)) continue;
-    const id = typeof src[0] === 'string' ? src[0] : null;
+    // Source ID is nested: [[sourceId], title, ...] or [sourceId, title, ...]
+    let id = null;
+    if (Array.isArray(src[0]) && typeof src[0][0] === 'string') {
+      id = src[0][0]; // [[sourceId]]
+    } else if (typeof src[0] === 'string') {
+      id = src[0]; // [sourceId]
+    }
     const title = typeof src[1] === 'string' ? src[1] : 'Untitled';
     if (id) {
       sources.push({

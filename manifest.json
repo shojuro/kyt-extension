@@ -10,7 +10,8 @@
     "scripting",
     "identity",
     "tabs",
-    "cookies"
+    "cookies",
+    "nativeMessaging"
   ],
   "background": {
     "service_worker": "background.js",
@@ -41,7 +42,11 @@
     "https://api.openai.com/*",
     "https://router.huggingface.co/*",
     "https://api.jina.ai/*",
-    "https://notebooklm.google.com/*"
+    "https://notebooklm.google.com/*",
+    "https://google.com/*",
+    "https://*.google.com/*",
+    "http://127.0.0.1:19418/*",
+    "http://localhost:19418/*"
   ],
   "content_scripts": [
     {
@@ -101,7 +106,7 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https://*.supabase.co https://router.huggingface.co https://api.jina.ai https://notebooklm.google.com"
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https://*.supabase.co https://router.huggingface.co https://api.jina.ai https://notebooklm.google.com http://127.0.0.1:19418 http://localhost:19418"
   },
   "web_accessible_resources": [
     {
