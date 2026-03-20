@@ -509,6 +509,136 @@
   // STATS HANDLER
   // ═══════════════════════════════════════════════════════════════════════
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // RPC PROXY — Make batchexecute/streaming calls with full browser cookies
+  // ═══════════════════════════════════════════════════════════════════════
+
+  const BATCHEXECUTE_URL = 'https://notebooklm.google.com/_/LabsTailwindUi/data/batchexecute';
+  const STREAMING_URL = 'https://notebooklm.google.com/_/LabsTailwindUi/data/google.internal.labs.tailwind.orchestration.v1.LabsTailwindOrchestrationService/GenerateFreeFormStreamed';
+  const NLM_ORIGIN = 'https://notebooklm.google.com';
+
+  /**
+   * Extract auth tokens from the page HTML + cookies.
+   * CSRF (SNlM0e) and session ID (FdrFJe) are in script tags.
+   * SAPISID is in document.cookie (not HttpOnly).
+   */
+  function extractAuthTokens() {
+    const html = document.documentElement.innerHTML;
+    const csrfMatch = html.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
+    const sessionMatch = html.match(/"FdrFJe"\s*:\s*"([^"]+)"/);
+    const sapisidMatch = document.cookie.match(/(?:^|;\s*)SAPISID=([^;]+)/);
+
+    return {
+      csrfToken: csrfMatch ? csrfMatch[1] : null,
+      sessionId: sessionMatch ? sessionMatch[1] : null,
+      sapisid: sapisidMatch ? sapisidMatch[1] : null,
+    };
+  }
+
+  /**
+   * Generate SAPISIDHASH for Authorization header.
+   */
+  function generateSapisidHash(sapisid) {
+    // SHA-1 via SubtleCrypto is async — but we need sync for header building.
+    // Use a simple approach: compute in the request flow.
+    const timestamp = Math.floor(Date.now() / 1000);
+    // We'll compute SHA-1 async and cache it
+    return { timestamp, sapisid };
+  }
+
+  async function computeSha1(input) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(input);
+    const hashBuffer = await crypto.subtle.digest('SHA-1', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  /**
+   * Execute a batchexecute RPC call using the browser's full cookie jar.
+   */
+  async function executeRpcProxy(request) {
+    const { type, methodId, encodedRpc, sourcePath, streamBody } = request;
+
+    const auth = extractAuthTokens();
+    if (!auth.csrfToken || !auth.sessionId) {
+      return { success: false, error: 'Could not extract CSRF/session tokens from page' };
+    }
+
+    // Build SAPISIDHASH
+    let authHeader = null;
+    if (auth.sapisid) {
+      const ts = Math.floor(Date.now() / 1000);
+      const hash = await computeSha1(`${ts} ${auth.sapisid} ${NLM_ORIGIN}`);
+      authHeader = `SAPISIDHASH ${ts}_${hash}`;
+    }
+
+    const headers = {
+      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      'Origin': NLM_ORIGIN,
+      'Referer': window.location.href || `${NLM_ORIGIN}/`,
+    };
+    if (authHeader) headers['Authorization'] = authHeader;
+
+    try {
+      if (type === 'streaming') {
+        // Streaming request (askQuestion)
+        const qs = new URLSearchParams({
+          'hl': 'en',
+          'f.sid': auth.sessionId,
+          'rt': 'c',
+        }).toString();
+
+        const body = `f.req=${encodeURIComponent(streamBody)}&at=${encodeURIComponent(auth.csrfToken)}&`;
+
+        const res = await fetch(`${STREAMING_URL}?${qs}`, {
+          method: 'POST',
+          headers,
+          body,
+          credentials: 'include',
+        });
+
+        if (!res.ok) {
+          return { success: false, error: `HTTP ${res.status}`, status: res.status };
+        }
+
+        const responseText = await res.text();
+        return { success: true, responseText, status: res.status };
+      } else {
+        // Standard batchexecute
+        const qsParams = new URLSearchParams({
+          'rpcids': methodId,
+          'f.sid': auth.sessionId,
+          'hl': 'en',
+          'rt': 'c',
+        });
+        if (sourcePath) qsParams.set('source-path', sourcePath);
+
+        const body = `f.req=${encodeURIComponent(encodedRpc)}&at=${encodeURIComponent(auth.csrfToken)}&`;
+
+        const res = await fetch(`${BATCHEXECUTE_URL}?${qsParams.toString()}`, {
+          method: 'POST',
+          headers,
+          body,
+          credentials: 'include',
+        });
+
+        if (!res.ok) {
+          return { success: false, error: `HTTP ${res.status}`, status: res.status };
+        }
+
+        const responseText = await res.text();
+        return { success: true, responseText, status: res.status };
+      }
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // MESSAGE HANDLER — Stats + RPC Proxy
+  // ═══════════════════════════════════════════════════════════════════════
+
   chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     if (message.type === 'GET_PAGE_STATS') {
       if (typeof window.__kytNotebookLMStats === 'function') {
@@ -521,6 +651,15 @@
         sendResponse({ success: false, error: 'Stats not available' });
       }
       return true;
+    }
+
+    if (message.type === 'KYT_RPC_PROXY') {
+      executeRpcProxy(message.request).then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ success: false, error: err.message });
+      });
+      return true; // async response
     }
   });
 

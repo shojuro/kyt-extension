@@ -98,6 +98,18 @@ async function handleRequest(req, res) {
 
   const url = new URL(req.url, `http://localhost`);
 
+  // ── RPC Proxy endpoints ──────────────────────────────────
+  if (url.pathname === '/rpc' && req.method === 'POST') {
+    return handleRpcRequest(req, res);
+  }
+  if (url.pathname === '/rpc/pending' && req.method === 'GET') {
+    return handleRpcPending(req, res);
+  }
+  const rpcResponseMatch = url.pathname.match(/^\/rpc\/([^/]+)\/response$/);
+  if (rpcResponseMatch && req.method === 'POST') {
+    return handleRpcResponse(req, res, rpcResponseMatch[1]);
+  }
+
   // Health check
   if (url.pathname === '/health' && req.method === 'GET') {
     res.writeHead(200, { ...corsHeaders(), 'Content-Type': 'application/json' });
@@ -181,6 +193,83 @@ function readBody(req) {
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
+}
+
+// --- RPC Proxy Queue ---
+
+const rpcQueue = new Map(); // id → { request, resolve, reject, timer }
+let rpcIdCounter = 0;
+
+/**
+ * POST /rpc — MCP server submits an RPC request.
+ * Holds the HTTP connection open until the extension delivers a response (or timeout).
+ */
+async function handleRpcRequest(req, res) {
+  try {
+    const body = await readBody(req);
+    const request = JSON.parse(body);
+    const id = `rpc_${++rpcIdCounter}_${Date.now()}`;
+
+    const result = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        rpcQueue.delete(id);
+        reject(new Error('RPC proxy timeout (30s) — no browser tab responded'));
+      }, 30000);
+
+      rpcQueue.set(id, { request, resolve, reject, timer });
+    });
+
+    res.writeHead(200, { ...corsHeaders(), 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+  } catch (err) {
+    res.writeHead(504, { ...corsHeaders(), 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: false, error: err.message }));
+  }
+}
+
+/**
+ * GET /rpc/pending — Extension polls for the next pending request.
+ */
+function handleRpcPending(req, res) {
+  // Return the oldest pending request
+  for (const [id, entry] of rpcQueue) {
+    if (!entry.claimed) {
+      entry.claimed = true;
+      res.writeHead(200, { ...corsHeaders(), 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ id, request: entry.request }));
+      return;
+    }
+  }
+
+  // No pending requests
+  res.writeHead(200, { ...corsHeaders(), 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ request: null }));
+}
+
+/**
+ * POST /rpc/:id/response — Extension delivers the response for a pending request.
+ */
+async function handleRpcResponse(req, res, requestId) {
+  try {
+    const body = await readBody(req);
+    const result = JSON.parse(body);
+
+    const entry = rpcQueue.get(requestId);
+    if (entry) {
+      clearTimeout(entry.timer);
+      rpcQueue.delete(requestId);
+      entry.resolve(result);
+
+      res.writeHead(200, { ...corsHeaders(), 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    } else {
+      res.writeHead(404, { ...corsHeaders(), 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Request not found or already resolved' }));
+    }
+  } catch (err) {
+    res.writeHead(500, { ...corsHeaders(), 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: false, error: err.message }));
+  }
 }
 
 // --- Start server ---

@@ -33,6 +33,7 @@ import { detectDeflection } from './src/assistant-quality-detector.js';
 import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/embedding-circuit-breaker.js';
 import { updateRecentTopics } from './src/recent-topic-cache.js';
 import { exportNotebookLMCookies, getCookieExportStatus, resetCookieExporter } from './src/cookie-exporter.js';
+import { startRpcProxy, stopRpcProxy, isRpcProxyRunning, getRpcProxyStatus } from './src/nlm-rpc-proxy.js';
 
 // Extracted modules
 import { getApiConfig, clearConfigCache } from './src/auth-config.js';
@@ -993,6 +994,9 @@ isNLMEnabled().then(enabled => {
 // NotebookLM cookie export — auto-refresh every 20 min + on startup
 chrome.alarms.create('refreshNLMCookies', { delayInMinutes: 0.1, periodInMinutes: 20 });
 
+// NotebookLM RPC proxy — routes API calls through browser tab for full cookie access
+startRpcProxy();
+
 // ===== SYNC-ON-PLATFORM-SWITCH =====
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   try {
@@ -1588,6 +1592,7 @@ globalThis.KYT_DEBUG = {
     return result;
   },
   nlmCookieStatus: () => getCookieExportStatus(),
+  nlmRpcProxy: () => getRpcProxyStatus(),
 };
 
 console.log('✅ KYT Background: Service worker ready');

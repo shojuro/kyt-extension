@@ -41,6 +41,10 @@ import {
 } from './notebooklm-constants.js';
 
 const ORIGIN = 'https://notebooklm.google.com';
+const RPC_PROXY_URL = 'http://127.0.0.1:19418';
+
+// Proxy state: null = untested, true = available, false = unavailable
+let _proxyAvailable = null;
 
 /**
  * Generate Google SAPISIDHASH authorization header.
@@ -111,7 +115,54 @@ function requirePassphrase() {
 }
 
 /**
+ * Try to make an RPC call via the browser proxy (content script on NLM tab).
+ * The browser attaches ALL cookies (including SID) to same-origin requests.
+ *
+ * @returns {Promise<string|null>} Raw response text, or null if proxy unavailable
+ */
+async function tryProxyRpc(methodId, params, opts = {}) {
+  if (_proxyAvailable === false) return null;
+
+  try {
+    const encoded = encodeRpcRequest(methodId, params);
+    const proxyRes = await fetch(`${RPC_PROXY_URL}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'batchexecute',
+        methodId,
+        encodedRpc: encoded,
+        sourcePath: opts.sourcePath || null,
+      }),
+      signal: AbortSignal.timeout(35000), // 30s proxy timeout + 5s buffer
+    });
+
+    if (!proxyRes.ok) {
+      _proxyAvailable = false;
+      return null;
+    }
+
+    const result = await proxyRes.json();
+    if (result.success && result.responseText) {
+      _proxyAvailable = true;
+      return result.responseText;
+    }
+
+    // Proxy returned error (e.g., no tab, no tokens)
+    if (result.error) {
+      process.stderr.write(`RPC proxy error: ${result.error}\n`);
+    }
+    return null;
+  } catch {
+    // Proxy not reachable — fall back to direct
+    _proxyAvailable = false;
+    return null;
+  }
+}
+
+/**
  * Make an authenticated batchexecute RPC call.
+ * Tries proxy first (full browser cookies), falls back to direct (extracted cookies).
  *
  * @param {string} methodId
  * @param {any[]} params
@@ -121,6 +172,17 @@ function requirePassphrase() {
  * @returns {Promise<any>} Decoded result
  */
 async function rpcCall(methodId, params, opts = {}) {
+  // Try proxy first — gets full cookie jar including SID
+  const proxyResponse = await tryProxyRpc(methodId, params, opts);
+  if (proxyResponse) {
+    try {
+      return decodeResponse(proxyResponse, methodId);
+    } catch (decodeErr) {
+      throw new Error(`NotebookLM RPC ${methodId} (proxy) decode failed: ${decodeErr.message}`);
+    }
+  }
+
+  // Fall back to direct call with extracted cookies
   const passphrase = requirePassphrase();
   const auth = await getAuth(passphrase);
   const encoded = encodeRpcRequest(methodId, params);
@@ -331,9 +393,6 @@ export async function addTextSources(notebookId, sources, onProgress) {
  * @returns {Promise<{ answer: string, citations: { source_id: string, cited_text: string, start_char: number|null, end_char: number|null }[] }>}
  */
 export async function askQuestion(notebookId, question) {
-  const passphrase = requirePassphrase();
-  const auth = await getAuth(passphrase);
-
   const params = [
     [], // sources (empty = use all)
     question,
@@ -348,6 +407,36 @@ export async function askQuestion(notebookId, question) {
 
   const paramsJson = JSON.stringify(params);
   const fReq = JSON.stringify([null, paramsJson]);
+
+  // Try proxy first — browser has full cookie jar
+  if (_proxyAvailable !== false) {
+    try {
+      const proxyRes = await fetch(`${RPC_PROXY_URL}/rpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'streaming',
+          streamBody: fReq,
+        }),
+        signal: AbortSignal.timeout(35000),
+      });
+
+      if (proxyRes.ok) {
+        const result = await proxyRes.json();
+        if (result.success && result.responseText) {
+          _proxyAvailable = true;
+          return decodeStreamingResponse(result.responseText);
+        }
+      }
+    } catch {
+      _proxyAvailable = false;
+    }
+  }
+
+  // Fall back to direct with extracted cookies
+  const passphrase = requirePassphrase();
+  const auth = await getAuth(passphrase);
+
   const body = `f.req=${encodeURIComponent(fReq)}&at=${encodeURIComponent(auth.csrfToken)}&`;
 
   const qs = new URLSearchParams({
