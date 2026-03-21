@@ -778,48 +778,62 @@ export async function getNotebookSummary(notebookId) {
  */
 function buildArtifactParams(typeCode, sourceIds, options = {}) {
   const tripleNested = sourceIds.map(id => [[id]]);
+  const doubleNested = sourceIds.map(id => [id]);
   const lang = options.language || 'en';
   const instructions = options.instructions || '';
 
+  // Python reference: /tmp/notebooklm-py/src/notebooklm/_artifacts.py
+  // Outer params are always [[2], notebookId, innerArray] — this function returns innerArray.
   switch (typeCode) {
     case ARTIFACT_TYPE.AUDIO: {
+      // Python: _artifacts.py:383-408 (generate_audio)
       const format = AUDIO_FORMAT[options.format?.toUpperCase()] || AUDIO_FORMAT.DEEP_DIVE;
       const length = AUDIO_LENGTH[options.length?.toUpperCase()] || AUDIO_LENGTH.DEFAULT;
       return [null, null, typeCode, tripleNested, null, null,
-        [null, [instructions, length, null, tripleNested, lang, null, format]]];
+        [null, [instructions || null, length, null, doubleNested, lang, null, format]]];
     }
-    case ARTIFACT_TYPE.REPORT:
+    case ARTIFACT_TYPE.REPORT: {
+      // Python: _artifacts.py:602-627 (generate_report)
+      const title = options.title || 'Briefing Doc';
+      const description = options.description || 'Key insights and important quotes';
+      const prompt = instructions || 'Create a comprehensive briefing document that includes an Executive Summary, detailed analysis of key themes, important quotes with context, and actionable insights.';
       return [null, null, typeCode, tripleNested, null, null, null, null,
-        [null, [instructions, null, null, tripleNested, lang]]];
+        [null, [title, description, null, doubleNested, lang, prompt, null, true]]];
+    }
     case ARTIFACT_TYPE.VIDEO: {
+      // Python: _artifacts.py:470-530 (generate_video)
       const format = VIDEO_FORMAT[options.format?.toUpperCase()] || VIDEO_FORMAT.LECTURE;
       const style = VIDEO_STYLE[options.style?.toUpperCase()] || VIDEO_STYLE.REALISTIC;
       return [null, null, typeCode, tripleNested, null, null, null, null,
-        [null, [instructions, null, null, tripleNested, lang, null, format, style]]];
+        [null, [instructions || null, null, null, doubleNested, lang, null, format, style]]];
     }
     case ARTIFACT_TYPE.QUIZ: {
+      // Python: _artifacts.py:658-713 (generate_quiz)
       const variant = QUIZ_VARIANT[options.variant?.toUpperCase()] || QUIZ_VARIANT.QUIZ;
       const quantity = QUIZ_QUANTITY[options.quantity?.toUpperCase()] || QUIZ_QUANTITY.STANDARD;
       const difficulty = QUIZ_DIFFICULTY[options.difficulty?.toUpperCase()] || QUIZ_DIFFICULTY.MEDIUM;
       return [null, null, typeCode, tripleNested, null, null, null, null,
-        [null, null, tripleNested, lang, quantity, difficulty, variant]];
+        [null, null, doubleNested, lang, quantity, difficulty, variant]];
     }
     case ARTIFACT_TYPE.INFOGRAPHIC: {
+      // Python: _artifacts.py:715-769 (generate_infographic)
       const orientation = INFOGRAPHIC_ORIENTATION[options.orientation?.toUpperCase()] || INFOGRAPHIC_ORIENTATION.PORTRAIT;
       const detail = INFOGRAPHIC_DETAIL[options.detail?.toUpperCase()] || INFOGRAPHIC_DETAIL.DETAILED;
       const style = INFOGRAPHIC_STYLE[options.style?.toUpperCase()] || INFOGRAPHIC_STYLE.MODERN;
       return [null, null, typeCode, tripleNested, null, null, null, null, null,
-        [null, null, tripleNested, lang, orientation, detail, style]];
+        [null, null, doubleNested, lang, orientation, detail, style]];
     }
     case ARTIFACT_TYPE.SLIDE_DECK: {
+      // Python: _artifacts.py:824-878 (generate_slide_deck)
       const format = SLIDE_DECK_FORMAT[options.format?.toUpperCase()] || SLIDE_DECK_FORMAT.PRESENTATION;
       const length = SLIDE_DECK_LENGTH[options.length?.toUpperCase()] || SLIDE_DECK_LENGTH.MEDIUM;
       return [null, null, typeCode, tripleNested, null, null, null, null,
-        [null, tripleNested, lang, format, length]];
+        [null, doubleNested, lang, format, length]];
     }
     case ARTIFACT_TYPE.DATA_TABLE:
+      // Python: _artifacts.py:935-978 (generate_data_table)
       return [null, null, typeCode, tripleNested, null, null, null, null,
-        [null, tripleNested, lang, null]];
+        [null, doubleNested, lang, null]];
     default:
       throw new Error(`Unknown artifact type code: ${typeCode}`);
   }

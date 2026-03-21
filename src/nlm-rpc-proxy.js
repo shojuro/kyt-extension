@@ -20,27 +20,36 @@ let _polling = false;
 let _pollTimer = null;
 
 /**
- * Find an existing NLM tab or create one.
+ * Find a usable NLM tab or create one.
+ *
+ * After extension reload, old tabs have dead content script ports.
+ * We verify liveness by sending a ping before reusing.
  */
 async function ensureNlmTab() {
-  // Check if our tracked tab is still alive
+  // Check if our tracked tab is still alive AND responsive
   if (_proxyTabId) {
     try {
       const tab = await chrome.tabs.get(_proxyTabId);
-      if (tab && tab.url?.startsWith(NLM_URL)) return _proxyTabId;
-    } catch {
-      _proxyTabId = null;
+      if (tab && tab.url?.startsWith(NLM_URL)) {
+        // Verify content script is responsive (not a stale reload survivor)
+        const alive = await pingTab(_proxyTabId);
+        if (alive) return _proxyTabId;
+      }
+    } catch { /* tab gone */ }
+    _proxyTabId = null;
+  }
+
+  // Look for any existing NLM tab with a responsive content script
+  const tabs = await chrome.tabs.query({ url: `${NLM_URL}/*` });
+  for (const tab of tabs) {
+    const alive = await pingTab(tab.id);
+    if (alive) {
+      _proxyTabId = tab.id;
+      return _proxyTabId;
     }
   }
 
-  // Look for any existing NLM tab
-  const tabs = await chrome.tabs.query({ url: `${NLM_URL}/*` });
-  if (tabs.length > 0) {
-    _proxyTabId = tabs[0].id;
-    return _proxyTabId;
-  }
-
-  // Create a new background tab
+  // No responsive tab found — create a fresh one
   const tab = await chrome.tabs.create({ url: NLM_URL, active: false });
   _proxyTabId = tab.id;
 
@@ -53,7 +62,6 @@ async function ensureNlmTab() {
       }
     };
     chrome.tabs.onUpdated.addListener(listener);
-    // Safety timeout
     setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
       resolve();
@@ -61,9 +69,27 @@ async function ensureNlmTab() {
   });
 
   // Give the content script a moment to initialize
-  await new Promise(r => setTimeout(r, 1000));
+  await new Promise(r => setTimeout(r, 2000));
 
   return _proxyTabId;
+}
+
+/**
+ * Ping a tab's content script to verify it's responsive.
+ * Returns false if the content script is dead (extension reload survivor).
+ */
+function pingTab(tabId) {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(false), 2000);
+    chrome.tabs.sendMessage(tabId, { type: 'GET_PAGE_STATS' }, (response) => {
+      clearTimeout(timeout);
+      if (chrome.runtime.lastError) {
+        resolve(false);
+      } else {
+        resolve(true);
+      }
+    });
+  });
 }
 
 /**
