@@ -780,60 +780,79 @@ function buildArtifactParams(typeCode, sourceIds, options = {}) {
   const tripleNested = sourceIds.map(id => [[id]]);
   const doubleNested = sourceIds.map(id => [id]);
   const lang = options.language || 'en';
-  const instructions = options.instructions || '';
+  const instructions = options.instructions || null;
 
-  // Python reference: /tmp/notebooklm-py/src/notebooklm/_artifacts.py
-  // Outer params are always [[2], notebookId, innerArray] — this function returns innerArray.
+  // Each artifact type has its type-specific array at a DIFFERENT position
+  // in the inner array. Verified against Python reference:
+  // /tmp/notebooklm-py/src/notebooklm/_artifacts.py
+
   switch (typeCode) {
     case ARTIFACT_TYPE.AUDIO: {
-      // Python: _artifacts.py:383-408 (generate_audio)
-      const format = AUDIO_FORMAT[options.format?.toUpperCase()] || AUDIO_FORMAT.DEEP_DIVE;
-      const length = AUDIO_LENGTH[options.length?.toUpperCase()] || AUDIO_LENGTH.DEFAULT;
-      return [null, null, typeCode, tripleNested, null, null,
-        [null, [instructions || null, length, null, doubleNested, lang, null, format]]];
+      // Python: _artifacts.py:384-408 — position [6]
+      const format = AUDIO_FORMAT[options.format?.toUpperCase()] || null;
+      const length = AUDIO_LENGTH[options.length?.toUpperCase()] || null;
+      return [
+        null, null, 1, tripleNested, null, null,
+        [null, [instructions, length, null, doubleNested, lang, null, format]],
+      ];
     }
     case ARTIFACT_TYPE.REPORT: {
-      // Python: _artifacts.py:602-627 (generate_report)
+      // Python: _artifacts.py:602-627 — position [8]
       const title = options.title || 'Briefing Doc';
-      const description = options.description || 'Key insights and important quotes';
+      const desc = options.description || 'Key insights and important quotes';
       const prompt = instructions || 'Create a comprehensive briefing document that includes an Executive Summary, detailed analysis of key themes, important quotes with context, and actionable insights.';
-      return [null, null, typeCode, tripleNested, null, null, null, null,
-        [null, [title, description, null, doubleNested, lang, prompt, null, true]]];
+      return [
+        null, null, 2, tripleNested, null, null, null, null,
+        [null, [title, desc, null, doubleNested, lang, prompt, null, true]],
+      ];
     }
     case ARTIFACT_TYPE.VIDEO: {
-      // Python: _artifacts.py:470-530 (generate_video)
-      const format = VIDEO_FORMAT[options.format?.toUpperCase()] || VIDEO_FORMAT.LECTURE;
-      const style = VIDEO_STYLE[options.style?.toUpperCase()] || VIDEO_STYLE.REALISTIC;
-      return [null, null, typeCode, tripleNested, null, null, null, null,
-        [null, [instructions || null, null, null, doubleNested, lang, null, format, style]]];
+      // Python: _artifacts.py:441-467 — position [8], inner at [2]
+      const format = VIDEO_FORMAT[options.format?.toUpperCase()] || null;
+      const style = VIDEO_STYLE[options.style?.toUpperCase()] || null;
+      return [
+        null, null, 3, tripleNested, null, null, null, null,
+        [null, null, [doubleNested, lang, instructions, null, format, style]],
+      ];
     }
     case ARTIFACT_TYPE.QUIZ: {
-      // Python: _artifacts.py:658-713 (generate_quiz)
+      // Python: _artifacts.py:685-713 — position [9]
       const variant = QUIZ_VARIANT[options.variant?.toUpperCase()] || QUIZ_VARIANT.QUIZ;
-      const quantity = QUIZ_QUANTITY[options.quantity?.toUpperCase()] || QUIZ_QUANTITY.STANDARD;
-      const difficulty = QUIZ_DIFFICULTY[options.difficulty?.toUpperCase()] || QUIZ_DIFFICULTY.MEDIUM;
-      return [null, null, typeCode, tripleNested, null, null, null, null,
-        [null, null, doubleNested, lang, quantity, difficulty, variant]];
+      const quantity = QUIZ_QUANTITY[options.quantity?.toUpperCase()] || null;
+      const difficulty = QUIZ_DIFFICULTY[options.difficulty?.toUpperCase()] || null;
+      return [
+        null, null, 4, tripleNested, null, null, null, null, null,
+        [null, [variant, null, instructions, null, null, null, null, [quantity, difficulty]]],
+      ];
     }
     case ARTIFACT_TYPE.INFOGRAPHIC: {
-      // Python: _artifacts.py:715-769 (generate_infographic)
-      const orientation = INFOGRAPHIC_ORIENTATION[options.orientation?.toUpperCase()] || INFOGRAPHIC_ORIENTATION.PORTRAIT;
-      const detail = INFOGRAPHIC_DETAIL[options.detail?.toUpperCase()] || INFOGRAPHIC_DETAIL.DETAILED;
-      const style = INFOGRAPHIC_STYLE[options.style?.toUpperCase()] || INFOGRAPHIC_STYLE.MODERN;
-      return [null, null, typeCode, tripleNested, null, null, null, null, null,
-        [null, null, doubleNested, lang, orientation, detail, style]];
+      // Python: _artifacts.py:803-824 — position [14]
+      const orientation = INFOGRAPHIC_ORIENTATION[options.orientation?.toUpperCase()] || null;
+      const detail = INFOGRAPHIC_DETAIL[options.detail?.toUpperCase()] || null;
+      const style = INFOGRAPHIC_STYLE[options.style?.toUpperCase()] || null;
+      return [
+        null, null, 7, tripleNested,
+        null, null, null, null, null, null, null, null, null, null,
+        [[instructions, lang, null, orientation, detail, style]],
+      ];
     }
     case ARTIFACT_TYPE.SLIDE_DECK: {
-      // Python: _artifacts.py:824-878 (generate_slide_deck)
-      const format = SLIDE_DECK_FORMAT[options.format?.toUpperCase()] || SLIDE_DECK_FORMAT.PRESENTATION;
-      const length = SLIDE_DECK_LENGTH[options.length?.toUpperCase()] || SLIDE_DECK_LENGTH.MEDIUM;
-      return [null, null, typeCode, tripleNested, null, null, null, null,
-        [null, doubleNested, lang, format, length]];
+      // Python: _artifacts.py:855-878 — position [16]
+      const format = SLIDE_DECK_FORMAT[options.format?.toUpperCase()] || null;
+      const length = SLIDE_DECK_LENGTH[options.length?.toUpperCase()] || null;
+      return [
+        null, null, 8, tripleNested,
+        null, null, null, null, null, null, null, null, null, null, null, null,
+        [[instructions, lang, format, length]],
+      ];
     }
     case ARTIFACT_TYPE.DATA_TABLE:
-      // Python: _artifacts.py:935-978 (generate_data_table)
-      return [null, null, typeCode, tripleNested, null, null, null, null,
-        [null, doubleNested, lang, null]];
+      // Python: _artifacts.py:953-978 — position [18]
+      return [
+        null, null, 9, tripleNested,
+        null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+        [null, [instructions, lang]],
+      ];
     default:
       throw new Error(`Unknown artifact type code: ${typeCode}`);
   }
