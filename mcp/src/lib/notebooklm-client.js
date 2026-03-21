@@ -879,23 +879,93 @@ export async function generateArtifact(notebookId, typeCode, sourceIds, options 
   let taskId = null;
 
   if (result) {
-    // Walk for IDs — artifact ID is usually a long string, task ID may be separate
-    const walk = (obj, depth, found) => {
-      if (depth > 5) return;
-      if (typeof obj === 'string' && obj.length > 5 && !obj.includes(' ')) {
-        found.push(obj);
-      }
-      if (Array.isArray(obj)) {
-        for (const item of obj) walk(item, depth + 1, found);
-      }
-    };
-    const ids = [];
-    walk(result, 0, ids);
+    const ids = extractIds(result);
     if (ids.length >= 1) artifactId = ids[0];
     if (ids.length >= 2) taskId = ids[1];
   }
 
+  // If RPC returned null (error [3]/[13]), fall back to Python CLI
+  // Node.js fetch has an incompatibility with some Google batchexecute endpoints
+  // that httpx doesn't have. The Python CLI works for all artifact types.
+  if (!artifactId) {
+    const cliResult = await generateArtifactViaCli(notebookId, typeCode, sourceIds, options);
+    if (cliResult) return cliResult;
+  }
+
   return { artifactId, taskId };
+}
+
+/** Extract string IDs from nested response arrays. */
+function extractIds(obj, depth = 0) {
+  const found = [];
+  if (depth > 5) return found;
+  if (typeof obj === 'string' && obj.length > 5 && !obj.includes(' ')) found.push(obj);
+  if (Array.isArray(obj)) for (const item of obj) found.push(...extractIds(item, depth + 1));
+  return found;
+}
+
+/** CLI type names for the Python notebooklm-py CLI. */
+const CLI_TYPE_MAP = {
+  [ARTIFACT_TYPE.AUDIO]: 'audio',
+  [ARTIFACT_TYPE.REPORT]: 'report',
+  [ARTIFACT_TYPE.VIDEO]: 'video',
+  [ARTIFACT_TYPE.QUIZ]: 'quiz',
+  [ARTIFACT_TYPE.INFOGRAPHIC]: 'infographic',
+  [ARTIFACT_TYPE.SLIDE_DECK]: 'slide-deck',
+  [ARTIFACT_TYPE.DATA_TABLE]: 'data-table',
+};
+
+/**
+ * Fall back to the Python notebooklm-py CLI for artifact generation.
+ * Some Google endpoints reject Node.js fetch but work with Python httpx.
+ */
+async function generateArtifactViaCli(notebookId, typeCode, sourceIds, options = {}) {
+  const typeName = CLI_TYPE_MAP[typeCode];
+  if (!typeName) return null;
+
+  const { execSync } = await import('child_process');
+
+  try {
+    const args = ['notebooklm', 'generate', typeName];
+
+    // Add type-specific options
+    if (typeCode === ARTIFACT_TYPE.REPORT) {
+      args.push('--format', options.format || 'briefing-doc');
+      if (options.instructions) args.push('--append', options.instructions);
+    } else if (typeCode === ARTIFACT_TYPE.AUDIO) {
+      if (options.instructions) args.push(options.instructions);
+      if (options.format) args.push('--format', options.format);
+      if (options.length) args.push('--length', options.length);
+    } else if (typeCode === ARTIFACT_TYPE.VIDEO) {
+      if (options.instructions) args.push(options.instructions);
+      if (options.format) args.push('--format', options.format);
+      if (options.style) args.push('--style', options.style);
+    } else if (typeCode === ARTIFACT_TYPE.QUIZ) {
+      if (options.difficulty) args.push('--difficulty', options.difficulty);
+      if (options.quantity) args.push('--quantity', options.quantity);
+    } else if (typeCode === ARTIFACT_TYPE.INFOGRAPHIC) {
+      if (options.orientation) args.push('--orientation', options.orientation);
+      if (options.detail) args.push('--detail', options.detail);
+      if (options.style) args.push('--style', options.style);
+    } else if (typeCode === ARTIFACT_TYPE.SLIDE_DECK) {
+      if (options.format) args.push('--format', options.format);
+      if (options.length) args.push('--length', options.length);
+    } else if (typeCode === ARTIFACT_TYPE.DATA_TABLE && options.instructions) {
+      args.push(options.instructions);
+    }
+
+    // Add source IDs
+    for (const sid of sourceIds) args.push('-s', sid);
+    args.push('-n', notebookId, '--json');
+
+    if (options.language) args.push('--language', options.language);
+
+    const output = execSync(args.join(' '), { timeout: 30000, encoding: 'utf-8' });
+    const parsed = JSON.parse(output.trim());
+    return { artifactId: parsed.task_id || null, taskId: parsed.task_id || null };
+  } catch {
+    return null;
+  }
 }
 
 /**
