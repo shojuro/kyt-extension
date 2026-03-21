@@ -52,6 +52,7 @@ import { updateNotebookNoteHandler } from './tools/update-notebook-note.js';
 import { deleteNotebookNoteHandler } from './tools/delete-notebook-note.js';
 import { generateMindMapHandler } from './tools/generate-mind-map.js';
 import { saveLessonHandler } from './tools/save-lesson.js';
+import { downloadArtifactHandler } from './tools/download-artifact.js';
 
 const server = new McpServer({
   name: 'kyt-memory',
@@ -539,6 +540,23 @@ server.tool(
     passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
   },
   async (args) => generateMindMapHandler(args),
+);
+
+// --- Tool: download_artifact ---
+server.tool(
+  'download_artifact',
+  'Download a NotebookLM artifact. Text artifacts (report, mind map, data table, quiz, flashcards) return content inline. Binary artifacts (audio, video, slide deck, infographic) download to ~/.kyt/downloads/. Optionally saves to K.Y.T. memory.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID'),
+    type: z.enum(['audio', 'video', 'slide_deck', 'report', 'mind_map', 'data_table', 'quiz', 'flashcards', 'infographic'])
+      .describe('Artifact type to download'),
+    artifactId: z.string().optional().describe('Specific artifact ID (default: latest of this type)'),
+    format: z.string().optional().describe('Output format override: pptx (slide deck), markdown/html (quiz/flashcards)'),
+    outputDir: z.string().optional().describe('Download directory (default: ~/.kyt/downloads/)'),
+    saveToKyt: z.boolean().optional().default(true).describe('Save text content / metadata to K.Y.T. memory'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => downloadArtifactHandler(args),
 );
 
 // --- Tool: save_lesson ---
