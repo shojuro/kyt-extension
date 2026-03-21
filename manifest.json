@@ -137,7 +137,9 @@
     },
     {
       "resources": [
-        "platforms/notebooklm/inject.js"
+        "platforms/notebooklm/inject.js",
+        "platforms/notebooklm/artifact-detector.js",
+        "platforms/notebooklm/content-extractors.js"
       ],
       "matches": [
         "https://notebooklm.google.com/*"

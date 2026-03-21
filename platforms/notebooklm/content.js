@@ -201,15 +201,21 @@
           <option value="">Loading...</option>
         </select>
 
-        <label>Content to send</label>
-        <div class="kyt-scrape-btns"></div>
+        <label>Detected Artifacts</label>
+        <div class="kyt-artifact-list" style="max-height:180px;overflow-y:auto;margin:4px 0;padding:4px;background:#0f0f23;border:1px solid #333;border-radius:6px"></div>
+        <div class="kyt-quick-select" style="display:flex;gap:4px;margin:4px 0">
+          <button class="kyt-scrape-btn" data-action="all">All</button>
+          <button class="kyt-scrape-btn" data-action="none">None</button>
+          <button class="kyt-scrape-btn" data-action="text">Text Only</button>
+        </div>
 
+        <label>Preview</label>
         <div class="kyt-preview"></div>
         <div class="kyt-preview-meta"></div>
 
         <div class="kyt-btn-row">
           <button class="kyt-btn kyt-btn-cancel">Cancel</button>
-          <button class="kyt-btn kyt-btn-send" disabled>Send</button>
+          <button class="kyt-btn kyt-btn-send" disabled>Send to K.Y.T.</button>
         </div>
         <div class="kyt-status"></div>
       </div>
@@ -221,20 +227,18 @@
     const projectSelect = shadow.querySelector('.kyt-project-select');
     const preview = shadow.querySelector('.kyt-preview');
     const previewMeta = shadow.querySelector('.kyt-preview-meta');
-    const scrapeBtns = shadow.querySelector('.kyt-scrape-btns');
+    const artifactList = shadow.querySelector('.kyt-artifact-list');
+    const quickSelect = shadow.querySelector('.kyt-quick-select');
     const sendBtn = shadow.querySelector('.kyt-btn-send');
     const cancelBtn = shadow.querySelector('.kyt-btn-cancel');
     const statusEl = shadow.querySelector('.kyt-status');
-
-    let selectedContent = '';
-    let selectedType = '';
 
     fab.addEventListener('click', async () => {
       panelOpen = !panelOpen;
       panel.classList.toggle('open', panelOpen);
       if (panelOpen) {
         await loadProjects(projectSelect);
-        detectArtifacts(scrapeBtns, preview, previewMeta, sendBtn);
+        await populateArtifactList(artifactList, preview, previewMeta, sendBtn, sendBtn);
         statusEl.textContent = '';
         statusEl.className = 'kyt-status';
       }
@@ -245,66 +249,46 @@
       panel.classList.remove('open');
     });
 
-    // Scrape button click handler — set via detectArtifacts
-    scrapeBtns.addEventListener('click', (e) => {
-      const btn = e.target.closest('.kyt-scrape-btn');
-      if (!btn) return;
+    // Quick select buttons (All / None / Text Only)
+    quickSelect.addEventListener('click', (e) => {
+      const action = e.target.dataset?.action;
+      if (!action) return;
 
-      // Deselect others
-      scrapeBtns.querySelectorAll('.kyt-scrape-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-
-      const type = btn.dataset.type;
-      const text = scrapeArtifact(type);
-      selectedContent = text;
-      selectedType = type;
-
-      preview.textContent = text.slice(0, 2000) + (text.length > 2000 ? '\n\n[... truncated in preview]' : '');
-      const words = text.split(/\s+/).length;
-      previewMeta.textContent = words + ' words · ' + text.length + ' chars · type: ' + type;
-      sendBtn.disabled = !text;
+      const checkboxes = artifactList.querySelectorAll('input[type="checkbox"]');
+      checkboxes.forEach(cb => {
+        const idx = parseInt(cb.dataset.index);
+        const art = _detectedArtifacts[idx];
+        if (action === 'all') {
+          cb.checked = true;
+          _selectedIndices.add(idx);
+        } else if (action === 'none') {
+          cb.checked = false;
+          _selectedIndices.delete(idx);
+        } else if (action === 'text') {
+          const isText = art && (art.contentType === 'text' || art.contentType === 'interactive');
+          cb.checked = isText;
+          if (isText) _selectedIndices.add(idx); else _selectedIndices.delete(idx);
+        }
+      });
+      updateSendButton(sendBtn, sendBtn);
+      showPreviewForSelection(preview, previewMeta);
     });
 
     sendBtn.addEventListener('click', async () => {
-      if (!selectedContent || !chrome.runtime?.id) return;
+      if (_selectedIndices.size === 0 || !chrome.runtime?.id) return;
 
       const projectId = projectSelect.value;
       sendBtn.disabled = true;
-      statusEl.textContent = 'Sending...';
-      statusEl.className = 'kyt-status';
 
-      try {
-        const response = await chrome.runtime.sendMessage({
-          type: 'SAVE_MESSAGE',
-          data: {
-            content: selectedContent,
-            role: 'assistant',
-            platform: 'notebooklm',
-            source: 'manual-send',
-            conversationId: 'nlm-report-' + (getNotebookIdFromPath() || 'unknown'),
-            timestamp: Date.now(),
-            messageId: 'nlm_report_' + Date.now(),
-            url: window.location.href,
-            contentType: 'research',
-            projectId: projectId || undefined,
-          }
-        });
+      await sendSelectedArtifacts(projectId, statusEl);
 
-        if (response?.success !== false) {
-          statusEl.textContent = 'Saved to K.Y.T.';
-          statusEl.className = 'kyt-status success';
-          setTimeout(() => {
-            panelOpen = false;
-            panel.classList.remove('open');
-          }, 1500);
-        } else {
-          statusEl.textContent = 'Error: ' + (response?.error || 'Unknown');
-          statusEl.className = 'kyt-status error';
-          sendBtn.disabled = false;
-        }
-      } catch (err) {
-        statusEl.textContent = 'Error: ' + err.message;
-        statusEl.className = 'kyt-status error';
+      // Auto-close after success
+      if (statusEl.className.includes('success')) {
+        setTimeout(() => {
+          panelOpen = false;
+          panel.classList.remove('open');
+        }, 1500);
+      } else {
         sendBtn.disabled = false;
       }
     });
@@ -318,134 +302,233 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // ARTIFACT DETECTION — Find reports/guides/FAQs in the NotebookLM DOM
+  // ARTIFACT DETECTION + EXTRACTION (v2 — type-aware)
   // ═══════════════════════════════════════════════════════════════════════
 
-  // NotebookLM artifact selectors (these may change as Google updates the UI)
-  const ARTIFACT_SELECTORS = {
-    'study-guide': [
-      '[data-artifact-type="study_guide"]',
-      '.study-guide-container',
-      '[aria-label*="Study Guide" i]',
-    ],
-    'briefing-doc': [
-      '[data-artifact-type="briefing_doc"]',
-      '.briefing-doc-container',
-      '[aria-label*="Briefing" i]',
-    ],
-    'faq': [
-      '[data-artifact-type="faq"]',
-      '.faq-container',
-      '[aria-label*="FAQ" i]',
-    ],
-    'timeline': [
-      '[data-artifact-type="timeline"]',
-      '.timeline-container',
-      '[aria-label*="Timeline" i]',
-    ],
-    'chat-history': [
-      '.chat-history',
-      '.conversation-container',
-      '[role="log"]',
-    ],
-    'selected-text': [], // Special: uses window.getSelection()
-  };
+  // These modules are loaded dynamically from web_accessible_resources
+  let _artifactDetector = null;
+  let _contentExtractors = null;
+
+  async function loadArtifactModules() {
+    if (!_artifactDetector) {
+      try {
+        const detectorSrc = chrome.runtime.getURL('platforms/notebooklm/artifact-detector.js');
+        _artifactDetector = await import(detectorSrc);
+      } catch (e) {
+        console.warn('[KYT] Failed to load artifact-detector.js:', e.message);
+      }
+    }
+    if (!_contentExtractors) {
+      try {
+        const extractorSrc = chrome.runtime.getURL('platforms/notebooklm/content-extractors.js');
+        _contentExtractors = await import(extractorSrc);
+      } catch (e) {
+        console.warn('[KYT] Failed to load content-extractors.js:', e.message);
+      }
+    }
+  }
+
+  // Current detected artifacts (refreshed each time panel opens)
+  let _detectedArtifacts = [];
+  let _selectedIndices = new Set();
 
   /**
-   * Detect which artifacts are currently visible in the NotebookLM UI.
-   * Creates buttons for each detected artifact type.
+   * Detect artifacts and populate the panel checkbox list.
    */
-  function detectArtifacts(container, preview, previewMeta, sendBtn) {
-    container.innerHTML = '';
-    preview.textContent = 'Select content to send';
+  async function populateArtifactList(listContainer, preview, previewMeta, sendBtn, countEl) {
+    await loadArtifactModules();
+
+    listContainer.innerHTML = '';
+    preview.textContent = 'Select artifacts to send';
     previewMeta.textContent = '';
     sendBtn.disabled = true;
+    _selectedIndices.clear();
 
-    // Always offer selected text if there's a selection
-    const selection = window.getSelection();
-    if (selection && selection.toString().trim().length > 10) {
-      addScrapeButton(container, 'selected-text', 'Selected Text');
+    if (_artifactDetector) {
+      _detectedArtifacts = _artifactDetector.detectArtifacts();
+    } else {
+      // Fallback: basic detection without module
+      _detectedArtifacts = [];
+      const selection = window.getSelection();
+      if (selection && selection.toString().trim().length > 10) {
+        _detectedArtifacts.push({
+          type: 'selected-text', title: '✂️ Selected Text',
+          artifactId: null, element: null, contentType: 'text', icon: '✂️',
+        });
+      }
+      _detectedArtifacts.push({
+        type: 'visible-page', title: '📄 Visible Page',
+        artifactId: null, element: document.body, contentType: 'text', icon: '📄',
+      });
     }
 
-    // Check for visible artifacts
-    for (const [type, selectors] of Object.entries(ARTIFACT_SELECTORS)) {
-      if (type === 'selected-text') continue;
-      for (const selector of selectors) {
-        try {
-          const el = document.querySelector(selector);
-          if (el && el.textContent.trim().length > 20) {
-            const label = type.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-            addScrapeButton(container, type, label);
-            break;
+    if (_detectedArtifacts.length === 0) {
+      listContainer.innerHTML = '<div style="color:#888;font-size:12px;padding:8px 0">No artifacts detected. Generate content in the Studio panel first.</div>';
+      return;
+    }
+
+    // Create checkbox list
+    for (let i = 0; i < _detectedArtifacts.length; i++) {
+      const art = _detectedArtifacts[i];
+      const row = document.createElement('label');
+      row.className = 'kyt-artifact-row';
+      row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer;font-size:12px;';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.dataset.index = i;
+      checkbox.checked = art.contentType === 'text' || art.contentType === 'interactive';
+      if (checkbox.checked) _selectedIndices.add(i);
+
+      const label = document.createElement('span');
+      const metaTag = art.contentType === 'binary' ? ' <span style="color:#888;font-size:10px">(metadata)</span>' : '';
+      label.innerHTML = `${art.icon} ${escapeHtml(art.title.substring(0, 50))}${metaTag}`;
+
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) _selectedIndices.add(i);
+        else _selectedIndices.delete(i);
+        updateSendButton(sendBtn, countEl);
+        showPreviewForSelection(preview, previewMeta);
+      });
+
+      row.appendChild(checkbox);
+      row.appendChild(label);
+      listContainer.appendChild(row);
+    }
+
+    updateSendButton(sendBtn, countEl);
+    showPreviewForSelection(preview, previewMeta);
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function updateSendButton(sendBtn, countEl) {
+    const count = _selectedIndices.size;
+    sendBtn.disabled = count === 0;
+    if (countEl) countEl.textContent = count > 0 ? `Send ${count} to K.Y.T.` : 'Send to K.Y.T.';
+  }
+
+  function showPreviewForSelection(preview, previewMeta) {
+    if (_selectedIndices.size === 0) {
+      preview.textContent = 'Select artifacts to send';
+      previewMeta.textContent = '';
+      return;
+    }
+
+    // Show preview of the first selected artifact
+    const firstIdx = [..._selectedIndices][0];
+    const art = _detectedArtifacts[firstIdx];
+
+    if (_contentExtractors && art.element) {
+      const extracted = _contentExtractors.extractContent(art.type, art.element);
+      preview.textContent = extracted.preview || 'No content extracted';
+      const total = [..._selectedIndices].reduce((sum, idx) => {
+        const a = _detectedArtifacts[idx];
+        if (_contentExtractors && a.element) {
+          return sum + _contentExtractors.extractContent(a.type, a.element).charCount;
+        }
+        return sum;
+      }, 0);
+      previewMeta.textContent = `${_selectedIndices.size} item(s) selected · ~${total.toLocaleString()} chars`;
+    } else {
+      preview.textContent = art.title;
+      previewMeta.textContent = `${_selectedIndices.size} item(s) selected`;
+    }
+  }
+
+  /**
+   * Send all selected artifacts to K.Y.T.
+   */
+  async function sendSelectedArtifacts(projectId, statusEl) {
+    const indices = [..._selectedIndices];
+    if (indices.length === 0) return;
+
+    let sent = 0;
+    let failed = 0;
+
+    for (const idx of indices) {
+      const art = _detectedArtifacts[idx];
+      statusEl.textContent = `Sending ${sent + 1}/${indices.length}...`;
+      statusEl.className = 'kyt-status';
+
+      try {
+        let content = '';
+        let isMetadata = false;
+
+        if (art.type === 'visible-page') {
+          content = scrapeVisiblePage();
+        } else if (_contentExtractors && art.element) {
+          const extracted = _contentExtractors.extractContent(art.type, art.element);
+          content = extracted.content;
+          isMetadata = extracted.isMetadata;
+        } else if (art.type === 'selected-text') {
+          content = window.getSelection()?.toString()?.trim() || '';
+        } else {
+          content = art.title + ' (no content extracted)';
+          isMetadata = true;
+        }
+
+        if (!content) { failed++; continue; }
+
+        const response = await chrome.runtime.sendMessage({
+          type: 'SAVE_MESSAGE',
+          data: {
+            content: isMetadata ? `[NotebookLM Artifact Metadata]\n${content}` : content,
+            role: 'assistant',
+            platform: 'notebooklm',
+            source: 'panel-send',
+            conversationId: 'nlm-artifact-' + (getNotebookIdFromPath() || 'unknown'),
+            timestamp: Date.now(),
+            messageId: 'nlm_panel_' + Date.now() + '_' + idx,
+            url: window.location.href,
+            contentType: 'research',
+            projectId: projectId || undefined,
+            metadata: {
+              artifactType: art.type,
+              artifactId: art.artifactId,
+              artifactTitle: art.title,
+              isMetadata,
+            },
           }
-        } catch { /* invalid selector */ }
+        });
+
+        if (response?.success !== false) {
+          sent++;
+        } else {
+          failed++;
+        }
+      } catch {
+        failed++;
       }
     }
 
-    // Always offer "Visible Page" as fallback
-    addScrapeButton(container, 'visible-page', 'Visible Page');
-  }
-
-  function addScrapeButton(container, type, label) {
-    const btn = document.createElement('button');
-    btn.className = 'kyt-scrape-btn';
-    btn.dataset.type = type;
-    btn.textContent = label;
-    container.appendChild(btn);
-  }
-
-  /**
-   * Scrape the content of a specific artifact type from the DOM.
-   */
-  function scrapeArtifact(type) {
-    if (type === 'selected-text') {
-      const selection = window.getSelection();
-      return selection ? selection.toString().trim() : '';
+    if (failed === 0) {
+      statusEl.textContent = `Saved ${sent} item(s) to K.Y.T.`;
+      statusEl.className = 'kyt-status success';
+    } else {
+      statusEl.textContent = `Saved ${sent}, failed ${failed}`;
+      statusEl.className = 'kyt-status error';
     }
-
-    if (type === 'visible-page') {
-      return scrapeVisiblePage();
-    }
-
-    const selectors = ARTIFACT_SELECTORS[type] || [];
-    for (const selector of selectors) {
-      try {
-        const el = document.querySelector(selector);
-        if (el) {
-          const clone = el.cloneNode(true);
-          // Strip UI buttons and actions
-          clone.querySelectorAll('button, [role="button"], .action-bar, .toolbar').forEach(e => e.remove());
-          const text = clone.innerText?.trim();
-          if (text && text.length > 20) return text;
-        }
-      } catch { /* skip */ }
-    }
-
-    return '';
   }
 
   /**
    * Scrape the main visible content area as a fallback.
    */
   function scrapeVisiblePage() {
-    // Try main content area first
     const mainSelectors = ['main', '[role="main"]', '.notebook-content', '.content-area'];
     for (const selector of mainSelectors) {
       try {
         const el = document.querySelector(selector);
         if (el) {
           const clone = el.cloneNode(true);
-          clone.querySelectorAll('button, [role="button"], nav, header, footer, .toolbar, .sidebar, script, style').forEach(e => e.remove());
+          clone.querySelectorAll('button, [role="button"], nav, header, footer, .toolbar, .sidebar, script, style, #kyt-nlm-panel-host').forEach(e => e.remove());
           const text = clone.innerText?.trim();
-          if (text && text.length > 50) {
-            // Truncate to avoid saving massive DOM dumps
-            return text.slice(0, 100_000);
-          }
+          if (text && text.length > 50) return text.slice(0, 100_000);
         }
       } catch { /* skip */ }
     }
-
-    // Last resort: document.body
     const clone = document.body.cloneNode(true);
     clone.querySelectorAll('button, nav, header, footer, script, style, .toolbar, .sidebar, #kyt-nlm-panel-host').forEach(e => e.remove());
     return (clone.innerText?.trim() || '').slice(0, 100_000);
