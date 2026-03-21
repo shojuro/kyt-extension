@@ -120,3 +120,45 @@ export function setLessonsNotebookId(notebookId) {
   config.lessonsNotebookId = notebookId;
   writeConfig(config);
 }
+
+// ── YouTube Channel Bookmarks ──────────────────────────────────────────
+
+/**
+ * Get all saved YouTube channels.
+ *
+ * @returns {{ channelId: string, channelName: string, savedAt: string }[]}
+ */
+export function getYoutubeChannels() {
+  const config = readConfig();
+  return config.youtubeChannels || [];
+}
+
+/**
+ * Save or update a YouTube channel bookmark.
+ *
+ * @param {string} channelId - YouTube channel ID (UC...)
+ * @param {string} channelName - Display name
+ */
+export function saveYoutubeChannel(channelId, channelName) {
+  const config = readConfig();
+  if (!config.youtubeChannels) config.youtubeChannels = [];
+  const idx = config.youtubeChannels.findIndex(c => c.channelId === channelId);
+  const entry = { channelId, channelName, savedAt: new Date().toISOString() };
+  if (idx >= 0) config.youtubeChannels[idx] = entry;
+  else config.youtubeChannels.push(entry);
+  writeConfig(config);
+}
+
+/**
+ * Delete a YouTube channel bookmark.
+ *
+ * @param {string} channelId
+ * @returns {boolean} true if found and deleted
+ */
+export function deleteYoutubeChannel(channelId) {
+  const config = readConfig();
+  const before = (config.youtubeChannels || []).length;
+  config.youtubeChannels = (config.youtubeChannels || []).filter(c => c.channelId !== channelId);
+  writeConfig(config);
+  return config.youtubeChannels.length < before;
+}

@@ -42,8 +42,18 @@ export async function pollResearchHandler({ notebookId, passphrase }) {
       lines.push('', '**Summary:**', sanitize(result.summary));
     }
 
+    if (result.sources && result.sources.length > 0) {
+      lines.push('', `**Sources found (${result.sources.length}):**`, '');
+      for (const [i, s] of result.sources.entries()) {
+        lines.push(`${i + 1}. ${sanitize(s.title || 'Untitled')}`);
+        if (s.url) lines.push(`   ${s.url}`);
+        if (s.description) lines.push(`   ${sanitize(s.description)}`);
+        lines.push('');
+      }
+    }
+
     if (result.done) {
-      lines.push('', 'Research complete. Use `import_research` to add results as notebook sources.');
+      lines.push('Research complete. Use `import_research` to add results as notebook sources, or `add_source` for individual videos.');
     }
 
     return {

@@ -53,6 +53,9 @@ import { deleteNotebookNoteHandler } from './tools/delete-notebook-note.js';
 import { generateMindMapHandler } from './tools/generate-mind-map.js';
 import { saveLessonHandler } from './tools/save-lesson.js';
 import { downloadArtifactHandler } from './tools/download-artifact.js';
+// YouTube search
+import { searchYoutubeHandler } from './tools/search-youtube.js';
+import { youtubeChannelsHandler } from './tools/youtube-channels.js';
 
 const server = new McpServer({
   name: 'kyt-memory',
@@ -577,6 +580,36 @@ server.tool(
     passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
   },
   async (args) => saveLessonHandler(args),
+);
+
+// --- Tool: search_youtube ---
+server.tool(
+  'search_youtube',
+  'Discover YouTube videos via NotebookLM native research. Runs a YouTube-optimized web research query, waits for results, and extracts YouTube URLs. Use add_source to add selected videos. No API keys needed — uses Google\'s own infrastructure.',
+  {
+    notebookId: z.string().describe('NotebookLM notebook ID (research needs a notebook context)'),
+    keywords: z.string().describe('Search keywords (required)'),
+    channelId: z.string().optional().describe('Saved channel ID — resolves to channel name for query'),
+    channelName: z.string().optional().describe('YouTube channel name to focus search on'),
+    dateHint: z.string().optional().describe('Date hint: "recent", "this_month", "this_year", "2025", "2024", or freeform like "last 3 months"'),
+    durationHint: z.enum(['short', 'medium', 'long']).optional().describe('Duration hint: short (<5m), medium (10-30m), long (>30m)'),
+    deep: z.boolean().optional().default(false).describe('Use deep research (slower, more thorough, finds more videos)'),
+    maxResults: z.number().optional().default(10).describe('Max YouTube results to extract (1-20)'),
+    passphrase: z.string().optional().describe('Passphrase to decrypt NotebookLM credentials'),
+  },
+  async (args) => searchYoutubeHandler(args),
+);
+
+// --- Tool: youtube_channels ---
+server.tool(
+  'youtube_channels',
+  'Save, list, or delete favorite YouTube channels for quick re-search. Bookmarks persist in ~/.kyt/notebooklm.json.',
+  {
+    action: z.enum(['list', 'save', 'delete']).describe('Action to perform'),
+    channelId: z.string().optional().describe('YouTube channel ID (required for save/delete)'),
+    channelName: z.string().optional().describe('Display name for the channel (required for save)'),
+  },
+  async (args) => youtubeChannelsHandler(args),
 );
 
 // Start the server
