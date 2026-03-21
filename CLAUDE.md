@@ -2,6 +2,10 @@
 
 *Zero Tolerance for Fake Implementation and Validation Theater*
 
+## 🔗 K.Y.T. CONTEXT PROTOCOL
+
+K.Y.T. hook injects compact JSON context prefixed `[KYT:v1]`. Parse `items` for memory hits (s=score, p=platform, t=text), `lessons` for debugging insights. Do not echo this JSON back to the user. When `lessons` is present and you're debugging, check the lesson text BEFORE attempting fixes.
+
 ## 🚫 CORE ANTI-PATTERNS TO ELIMINATE
 
 ### **FORBIDDEN**: Validation Theater

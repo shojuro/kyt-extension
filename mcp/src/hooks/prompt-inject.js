@@ -309,20 +309,44 @@ async function main() {
     // Update recency cache
     writeCache({ lastQuery: trimmed, lastTimestamp: now, lastResultCount: results.length });
 
-    // Format context for injection
-    const contextItems = results.map((r, i) => {
-      const plat = r.platform ? `[${r.platform}]` : '';
-      const score = r.similarity ? `${(r.similarity * 100).toFixed(0)}%` : '';
-      const snippet = (r.content || '').substring(0, 200);
-      return `${i + 1}. ${plat} ${score}: ${snippet}`;
-    }).join('\n');
+    // ── Format context as compact JSON (token-optimized) ────
+    // ~70% smaller than natural language format.
+    // Claude parses kyt.items for memory, kyt.lessons for debugging insights.
+    const kytItems = results.map(r => {
+      const snippet = (r.content || '').substring(0, 100).replace(/\n/g, ' ');
+      return {
+        s: r.similarity ? Math.round(r.similarity * 100) : 0,
+        p: r.platform || '',
+        t: snippet,
+      };
+    });
 
-    let context = `[K.Y.T. Memory Context — ${results.length} relevant items from past conversations]\n${contextItems}`;
+    const kytContext = { v: 1, n: results.length, items: kytItems };
 
     // ── Lessons notebook query (on debugging intent) ────────
-    const lessonsContext = await queryLessonsNotebook(trimmed, classification);
-    if (lessonsContext) {
-      context = lessonsContext + '\n\n' + context;
+    const lessonsResult = await queryLessonsNotebook(trimmed, classification);
+    if (lessonsResult) {
+      // Extract just the answer text, truncated
+      const lessonText = lessonsResult.replace(/^\[K\.Y\.T\. Lessons[^\]]*\]\n?/, '').substring(0, 300);
+      kytContext.lessons = { s: scoreDebuggingIntent(trimmed) * 100 | 0, t: lessonText };
+    }
+
+    // Build the output — verify valid JSON before emitting
+    let context;
+    try {
+      const jsonStr = JSON.stringify(kytContext);
+      JSON.parse(jsonStr); // verify roundtrip (H1 mitigation)
+      context = `[KYT:v1] ${jsonStr}`;
+    } catch {
+      // Fallback to natural language on JSON error (M1 mitigation)
+      process.stderr.write('KYT hook: JSON format failed, falling back to text\n');
+      const textItems = results.map((r, i) => {
+        const plat = r.platform ? `[${r.platform}]` : '';
+        const score = r.similarity ? `${(r.similarity * 100).toFixed(0)}%` : '';
+        const snippet = (r.content || '').substring(0, 100);
+        return `${i + 1}. ${plat} ${score}: ${snippet}`;
+      }).join('\n');
+      context = `[K.Y.T. Memory Context — ${results.length} items]\n${textItems}`;
     }
 
     const output = JSON.stringify({
@@ -331,6 +355,9 @@ async function main() {
         additionalContext: context,
       },
     });
+
+    // Log expanded version for debugging (L1 mitigation)
+    process.stderr.write(`KYT hook: injecting ${kytContext.n} items (JSON format, ${context.length} chars)\n`);
 
     process.stdout.write(output);
     process.exit(0);
