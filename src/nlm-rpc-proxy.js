@@ -15,6 +15,21 @@ const BRIDGE_URL = 'http://127.0.0.1:19418';
 const POLL_INTERVAL_MS = 1000;
 const NLM_URL = 'https://notebooklm.google.com';
 
+/** Get bridge auth token from chrome.storage.local. */
+async function getBridgeToken() {
+  try {
+    const { kyt_bridge_token } = await chrome.storage.local.get('kyt_bridge_token');
+    return kyt_bridge_token || null;
+  } catch { return null; }
+}
+
+async function bridgeHeaders() {
+  const token = await getBridgeToken();
+  const headers = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
 let _proxyTabId = null;
 let _polling = false;
 let _pollTimer = null;
@@ -122,7 +137,9 @@ async function pollForRequests() {
   if (!_polling) return;
 
   try {
+    const headers = await bridgeHeaders();
     const res = await fetch(`${BRIDGE_URL}/rpc/pending`, {
+      headers,
       signal: AbortSignal.timeout(3000),
     });
 
@@ -145,17 +162,21 @@ async function pollForRequests() {
       const result = await proxyRpcToTab(request);
 
       // Deliver response back to the bridge
+      const respHeaders = await bridgeHeaders();
+      respHeaders['Content-Type'] = 'application/json';
       await fetch(`${BRIDGE_URL}/rpc/${id}/response`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: respHeaders,
         body: JSON.stringify(result),
         signal: AbortSignal.timeout(5000),
       });
     } catch (proxyErr) {
       // Deliver error response
+      const respHeaders = await bridgeHeaders();
+      respHeaders['Content-Type'] = 'application/json';
       await fetch(`${BRIDGE_URL}/rpc/${id}/response`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: respHeaders,
         body: JSON.stringify({ success: false, error: proxyErr.message }),
         signal: AbortSignal.timeout(5000),
       }).catch(() => {});

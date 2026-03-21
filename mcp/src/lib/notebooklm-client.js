@@ -46,6 +46,24 @@ const RPC_PROXY_URL = 'http://127.0.0.1:19418';
 // Proxy state: null = untested, true = available, false = unavailable
 let _proxyAvailable = null;
 
+// Bridge auth token — read from ~/.kyt/bridge-token (same file the server writes)
+import { readFileSync as _readFileSync, existsSync as _existsSync } from 'fs';
+import { join as _join } from 'path';
+import { homedir as _homedir } from 'os';
+
+function getBridgeToken() {
+  const tokenPath = _join(_homedir(), '.kyt', 'bridge-token');
+  if (_existsSync(tokenPath)) return _readFileSync(tokenPath, 'utf8').trim();
+  return null;
+}
+
+function bridgeHeaders() {
+  const token = getBridgeToken();
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
 /**
  * Generate Google SAPISIDHASH authorization header.
  * Required for batchexecute API calls.
@@ -127,7 +145,7 @@ async function tryProxyRpc(methodId, params, opts = {}) {
     const encoded = encodeRpcRequest(methodId, params);
     const proxyRes = await fetch(`${RPC_PROXY_URL}/rpc`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: bridgeHeaders(),
       body: JSON.stringify({
         type: 'batchexecute',
         methodId,
@@ -413,7 +431,7 @@ export async function askQuestion(notebookId, question) {
     try {
       const proxyRes = await fetch(`${RPC_PROXY_URL}/rpc`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: bridgeHeaders(),
         body: JSON.stringify({
           type: 'streaming',
           streamBody: fReq,
@@ -923,8 +941,6 @@ async function generateArtifactViaCli(notebookId, typeCode, sourceIds, options =
   const typeName = CLI_TYPE_MAP[typeCode];
   if (!typeName) return null;
 
-  const { execSync } = await import('child_process');
-
   try {
     const args = ['notebooklm', 'generate', typeName];
 
@@ -960,7 +976,17 @@ async function generateArtifactViaCli(notebookId, typeCode, sourceIds, options =
 
     if (options.language) args.push('--language', options.language);
 
-    const output = execSync(args.join(' '), { timeout: 30000, encoding: 'utf-8' });
+    // Validate inputs to prevent injection (execFileSync is safe but belt+suspenders)
+    if (notebookId && !/^[0-9a-f-]{36}$/i.test(notebookId)) {
+      throw new Error('Invalid notebook ID format');
+    }
+    for (const sid of sourceIds) {
+      if (!/^[0-9a-f-]{36}$/i.test(sid)) throw new Error('Invalid source ID format');
+    }
+
+    // execFileSync with array args — no shell, immune to command injection
+    const { execFileSync } = await import('child_process');
+    const output = execFileSync(args[0], args.slice(1), { timeout: 30000, encoding: 'utf-8' });
     const parsed = JSON.parse(output.trim());
     return { artifactId: parsed.task_id || null, taskId: parsed.task_id || null };
   } catch {

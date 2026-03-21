@@ -15,6 +15,21 @@ const COOKIE_BRIDGE_URLS = [
   `http://127.0.0.1:${COOKIE_BRIDGE_PORT}`,   // native or WSL2 localhost proxy
   `http://localhost:${COOKIE_BRIDGE_PORT}`,     // fallback hostname
 ];
+
+/** Get bridge auth token from chrome.storage.local. */
+async function getBridgeToken() {
+  try {
+    const { kyt_bridge_token } = await chrome.storage.local.get('kyt_bridge_token');
+    return kyt_bridge_token || null;
+  } catch { return null; }
+}
+
+async function bridgeHeaders() {
+  const token = await getBridgeToken();
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
 const NATIVE_HOST_NAME = 'com.kyt.cookie_host';
 
 // Google auth cookie names needed for NotebookLM API calls
@@ -132,11 +147,12 @@ export async function exportNotebookLMCookies() {
  * Try the HTTP bridge — attempts multiple URLs for cross-OS compatibility.
  */
 async function tryHttpBridge(cookies) {
+  const headers = await bridgeHeaders();
   for (const baseUrl of COOKIE_BRIDGE_URLS) {
     try {
       const res = await fetch(`${baseUrl}/cookies`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ cookies }),
         signal: AbortSignal.timeout(3000),
       });

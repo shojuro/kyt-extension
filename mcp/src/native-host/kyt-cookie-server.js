@@ -29,6 +29,33 @@ import { homedir } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const KYT_DIR = join(homedir(), '.kyt');
+const TOKEN_PATH = join(KYT_DIR, 'bridge-token');
+
+// --- Bridge auth token ---
+// Generated on first start, written to ~/.kyt/bridge-token.
+// All endpoints except /health require Authorization: Bearer <token>.
+function ensureBridgeToken() {
+  if (!existsSync(KYT_DIR)) mkdirSync(KYT_DIR, { recursive: true });
+  if (existsSync(TOKEN_PATH)) {
+    return readFileSync(TOKEN_PATH, 'utf8').trim();
+  }
+  const token = randomBytes(32).toString('hex');
+  writeFileSync(TOKEN_PATH, token + '\n', { mode: 0o600 });
+  return token;
+}
+
+const BRIDGE_TOKEN = ensureBridgeToken();
+
+function requireAuth(req, res) {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (token !== BRIDGE_TOKEN) {
+    res.writeHead(401, { ...corsHeaders(), 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized — pass Authorization: Bearer <token> from ~/.kyt/bridge-token' }));
+    return false;
+  }
+  return true;
+}
 const AUTH_PATH = join(KYT_DIR, 'notebooklm-auth.enc');
 const DEFAULT_PORT = 19418;
 
@@ -98,6 +125,16 @@ async function handleRequest(req, res) {
 
   const url = new URL(req.url, `http://localhost`);
 
+  // Health check — no auth required (liveness only, no sensitive data)
+  if (url.pathname === '/health' && req.method === 'GET') {
+    res.writeHead(200, { ...corsHeaders(), 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', service: 'kyt-cookie-bridge' }));
+    return;
+  }
+
+  // All other endpoints require bridge token auth
+  if (!requireAuth(req, res)) return;
+
   // ── RPC Proxy endpoints ──────────────────────────────────
   if (url.pathname === '/rpc' && req.method === 'POST') {
     return handleRpcRequest(req, res);
@@ -108,13 +145,6 @@ async function handleRequest(req, res) {
   const rpcResponseMatch = url.pathname.match(/^\/rpc\/([^/]+)\/response$/);
   if (rpcResponseMatch && req.method === 'POST') {
     return handleRpcResponse(req, res, rpcResponseMatch[1]);
-  }
-
-  // Health check
-  if (url.pathname === '/health' && req.method === 'GET') {
-    res.writeHead(200, { ...corsHeaders(), 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'kyt-cookie-bridge' }));
-    return;
   }
 
   // Auth status

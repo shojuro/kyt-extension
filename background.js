@@ -1593,6 +1593,11 @@ globalThis.KYT_DEBUG = {
   },
   nlmCookieStatus: () => getCookieExportStatus(),
   nlmRpcProxy: () => getRpcProxyStatus(),
+  setBridgeToken: async (token) => {
+    await chrome.storage.local.set({ kyt_bridge_token: token });
+    console.log('[KYT] Bridge token saved to chrome.storage.local');
+    return { saved: true };
+  },
 };
 
 console.log('✅ KYT Background: Service worker ready');
