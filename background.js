@@ -309,12 +309,18 @@ async function _saveMessageCore(messageData) {
     // Detect user questions (P1: exclude from retrieval)
     const isQuestion = detectIsQuestion(messageData.content, messageData.role);
 
+    // Normalize and validate content_type from panel (camelCase→snake_case)
+    const VALID_CONTENT_TYPES = new Set(['conversation', 'note', 'research', 'journal', 'imported']);
+    const rawContentType = messageData.contentType || messageData.content_type;
+    const validContentType = rawContentType && VALID_CONTENT_TYPES.has(rawContentType) ? rawContentType : undefined;
+
     const newMessage = {
       ...messageData,
       contentHash,
       capturedAt: Date.now(),
       messageId: messageData.messageId || generateMessageId(),
       timestamp: timestamp,
+      ...(validContentType ? { content_type: validContentType } : {}),
       ...(deflectionCheck.isDeflection ? { deflection: deflectionCheck.confidence } : {}),
       ...(isQuestion ? { is_question: true } : {}),
       ...(hadInjection ? { is_injection: true } : {})

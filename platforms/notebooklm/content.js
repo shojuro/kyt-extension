@@ -189,6 +189,9 @@
         }
         .kyt-scrape-btn:hover { border-color: #e94560; color: #e94560; }
         .kyt-scrape-btn.active { border-color: #e94560; background: #e9456020; color: #e94560; }
+        .kyt-artifact-list input[type="checkbox"] {
+          accent-color: #e94560; flex-shrink: 0; margin: 0;
+        }
       </style>
 
       <button class="kyt-fab" title="Send to K.Y.T.">K</button>
@@ -302,8 +305,25 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // ARTIFACT DETECTION + EXTRACTION (v2 — type-aware)
+  // ARTIFACT DETECTION + EXTRACTION (v3 — API-first with per-type dropdowns)
   // ═══════════════════════════════════════════════════════════════════════
+
+  // Artifact type constants (matches notebooklm-constants.js)
+  const ARTIFACT_TYPE_CODE = {
+    1: 'audio', 2: 'report', 3: 'video', 4: 'quiz',
+    5: 'mind_map', 7: 'infographic', 8: 'slide_deck', 9: 'data_table',
+  };
+  const ARTIFACT_STATUS_LABEL = { 1: 'processing', 2: 'pending', 3: 'completed', 4: 'failed' };
+  const ARTIFACT_TYPE_ICONS = {
+    audio: '🎧', video: '🎬', report: '📄', quiz: '❓',
+    flashcards: '🃏', infographic: '📊', slide_deck: '📽️',
+    data_table: '📋', mind_map: '🧠', note: '📝',
+  };
+  const ARTIFACT_CONTENT_TYPE = {
+    audio: 'binary', video: 'binary', slide_deck: 'binary', infographic: 'binary',
+    report: 'text', quiz: 'interactive', flashcards: 'interactive',
+    data_table: 'text', mind_map: 'text', note: 'text',
+  };
 
   // These modules are loaded dynamically from web_accessible_resources
   let _artifactDetector = null;
@@ -328,74 +348,386 @@
     }
   }
 
+  /**
+   * Fetch artifact list from NotebookLM API via batchexecute RPC.
+   * Uses the content script's executeRpcProxy() which has full cookie access.
+   *
+   * @param {string} notebookId
+   * @returns {Promise<Array<{id, title, type, typeLabel, contentType, icon, status, statusLabel}>>}
+   */
+  async function fetchArtifactList(notebookId) {
+    const methodId = 'gArtLc';
+    const params = [[2], notebookId, 'NOT artifact.status = "ARTIFACT_STATUS_SUGGESTED"'];
+    const encodedRpc = JSON.stringify([[[methodId, JSON.stringify(params), null, 'generic']]]);
+
+    const result = await executeRpcProxy({
+      type: 'batchexecute',
+      methodId,
+      encodedRpc,
+      sourcePath: `/notebook/${notebookId}`,
+    });
+
+    if (!result.success) {
+      console.warn('[KYT] list_artifacts RPC failed:', result.error);
+      return null; // Signal to fall back to DOM detection
+    }
+
+    // Decode the batchexecute chunked response
+    let responseText = result.responseText;
+    if (responseText.startsWith(")]}'")) {
+      responseText = responseText.slice(responseText.indexOf('\n') + 1);
+    }
+
+    // Parse chunked format to find wrb.fr frame
+    const parsed = parseRpcResponse(responseText, methodId);
+    if (!parsed || !Array.isArray(parsed)) return [];
+
+    const artifacts = [];
+    const entries = Array.isArray(parsed[0]) ? parsed[0] : parsed;
+
+    for (const entry of entries) {
+      if (!Array.isArray(entry)) continue;
+      const id = typeof entry[0] === 'string' ? entry[0] : null;
+      const title = typeof entry[1] === 'string' ? entry[1] : 'Untitled';
+      const typeCode = typeof entry[2] === 'number' ? entry[2] : null;
+      const status = typeof entry[3] === 'number' ? entry[3] : null;
+
+      if (id) {
+        const typeName = ARTIFACT_TYPE_CODE[typeCode] || `type_${typeCode}`;
+        artifacts.push({
+          id,
+          title,
+          type: typeName,
+          typeLabel: typeName.replace(/_/g, ' '),
+          contentType: ARTIFACT_CONTENT_TYPE[typeName] || 'text',
+          icon: ARTIFACT_TYPE_ICONS[typeName] || '📦',
+          status,
+          statusLabel: ARTIFACT_STATUS_LABEL[status] || `status_${status}`,
+        });
+      }
+    }
+
+    return artifacts;
+  }
+
+  /**
+   * Fetch notes and mind maps from NotebookLM API via batchexecute RPC.
+   * Notes carry their full content directly — no separate download step needed.
+   *
+   * @param {string} notebookId
+   * @returns {Promise<Array<{id, title, content, type, contentType, icon, source}>>}
+   */
+  async function fetchNotesList(notebookId) {
+    const methodId = 'cFji9';
+    const params = [notebookId];
+    const encodedRpc = JSON.stringify([[[methodId, JSON.stringify(params), null, 'generic']]]);
+
+    const result = await executeRpcProxy({
+      type: 'batchexecute',
+      methodId,
+      encodedRpc,
+      sourcePath: `/notebook/${notebookId}`,
+    });
+
+    if (!result.success) {
+      console.warn('[KYT] list_notes RPC failed:', result.error);
+      return null;
+    }
+
+    let responseText = result.responseText;
+    if (responseText.startsWith(")]}'")) {
+      responseText = responseText.slice(responseText.indexOf('\n') + 1);
+    }
+
+    const parsed = parseRpcResponse(responseText, methodId);
+    if (!parsed || !Array.isArray(parsed)) return [];
+
+    const notes = [];
+    const entries = Array.isArray(parsed[0]) ? parsed[0] : parsed;
+
+    for (const entry of entries) {
+      if (!Array.isArray(entry)) continue;
+      const id = typeof entry[0] === 'string' ? entry[0] : null;
+      if (!id) continue;
+
+      // Skip deleted notes (status 2 at entry[2] when entry is short)
+      if (entry.length <= 3 && entry[2] === 2) continue;
+
+      // Entry format: [id, [title, content, ...], ...] or [id, title, content, ...]
+      let title = 'Untitled';
+      let contentStr = '';
+      if (Array.isArray(entry[1])) {
+        title = typeof entry[1][0] === 'string' ? entry[1][0] : 'Untitled';
+        contentStr = typeof entry[1][1] === 'string' ? entry[1][1] : '';
+      } else {
+        title = typeof entry[1] === 'string' ? entry[1] : 'Untitled';
+        contentStr = typeof entry[2] === 'string' ? entry[2] : '';
+      }
+
+      // Detect mind maps by checking if content is JSON with children/nodes
+      let isMindMap = false;
+      if (contentStr) {
+        try {
+          const obj = JSON.parse(contentStr);
+          if (obj.children || obj.nodes) isMindMap = true;
+        } catch { /* not JSON — regular note */ }
+      }
+
+      notes.push({
+        id,
+        title,
+        content: contentStr,
+        type: isMindMap ? 'mind_map' : 'note',
+        contentType: 'text',
+        icon: isMindMap ? '🧠' : '📝',
+        source: 'api',
+      });
+    }
+
+    return notes;
+  }
+
+  /**
+   * Extract human-readable text from artifact RPC result data.
+   * Walks nested arrays to find the longest meaningful string, strips HTML.
+   */
+  function extractTextFromArtifactData(data) {
+    if (!data) return null;
+
+    if (typeof data === 'string') {
+      if (data.includes('<') && data.includes('>')) {
+        return data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      }
+      return data;
+    }
+
+    if (Array.isArray(data)) {
+      let longest = '';
+      function walk(obj, depth) {
+        if (depth > 8) return;
+        if (typeof obj === 'string' && obj.length > longest.length && obj.length > 20) {
+          longest = obj;
+        }
+        if (Array.isArray(obj)) {
+          for (const item of obj) walk(item, depth + 1);
+        }
+      }
+      walk(data, 0);
+
+      if (longest.length > 20) {
+        if (longest.includes('<') && longest.includes('>')) {
+          return longest.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        }
+        return longest;
+      }
+    }
+
+    try {
+      const json = JSON.stringify(data, null, 2);
+      if (json.length > 20) return json;
+    } catch { /* skip */ }
+
+    return null;
+  }
+
+  /**
+   * Parse batchexecute chunked response to extract the wrb.fr data.
+   */
+  function parseRpcResponse(text, methodId) {
+    const lines = text.split('\n');
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i].trim();
+      if (/^\d+$/.test(line)) {
+        i++;
+        const jsonLines = [];
+        while (i < lines.length) {
+          const next = lines[i].trim();
+          if (/^\d+$/.test(next) && jsonLines.length > 0) break;
+          if (next) jsonLines.push(lines[i]);
+          i++;
+        }
+        if (jsonLines.length > 0) {
+          try {
+            const chunk = JSON.parse(jsonLines.join('\n').trim());
+            if (!Array.isArray(chunk)) continue;
+            for (const item of chunk) {
+              if (!Array.isArray(item)) continue;
+              if (item[0] === 'wrb.fr' && item[1] === methodId) {
+                const resultData = item[2];
+                if (resultData === null) return null;
+                if (typeof resultData === 'string') {
+                  try { return JSON.parse(resultData); } catch { return resultData; }
+                }
+                return resultData;
+              }
+            }
+          } catch { /* skip unparseable chunk */ }
+        }
+      } else {
+        i++;
+      }
+    }
+    return null;
+  }
+
   // Current detected artifacts (refreshed each time panel opens)
   let _detectedArtifacts = [];
   let _selectedIndices = new Set();
+  // Track which type groups are expanded
+  let _expandedGroups = new Set();
 
   /**
-   * Detect artifacts and populate the panel checkbox list.
+   * Detect artifacts via API first, DOM fallback, and populate grouped dropdowns.
    */
   async function populateArtifactList(listContainer, preview, previewMeta, sendBtn, countEl) {
     await loadArtifactModules();
 
-    listContainer.innerHTML = '';
-    preview.textContent = 'Select artifacts to send';
+    listContainer.innerHTML = '<div style="color:#888;font-size:12px;padding:8px 0">Loading artifacts & notes...</div>';
+    preview.textContent = 'Select items to send';
     previewMeta.textContent = '';
     sendBtn.disabled = true;
     _selectedIndices.clear();
 
-    if (_artifactDetector) {
-      _detectedArtifacts = _artifactDetector.detectArtifacts();
-    } else {
-      // Fallback: basic detection without module
-      _detectedArtifacts = [];
-      const selection = window.getSelection();
-      if (selection && selection.toString().trim().length > 10) {
-        _detectedArtifacts.push({
-          type: 'selected-text', title: '✂️ Selected Text',
-          artifactId: null, element: null, contentType: 'text', icon: '✂️',
-        });
+    const notebookId = getNotebookIdFromPath();
+    _detectedArtifacts = [];
+
+    if (notebookId) {
+      // Fetch artifacts and notes in parallel — one failure doesn't block the other
+      const [artResult, noteResult] = await Promise.allSettled([
+        fetchArtifactList(notebookId),
+        fetchNotesList(notebookId),
+      ]);
+
+      const apiArtifacts = artResult.status === 'fulfilled' ? artResult.value : null;
+      const apiNotes = noteResult.status === 'fulfilled' ? noteResult.value : null;
+
+      if (apiArtifacts && apiArtifacts.length > 0) {
+        _detectedArtifacts = apiArtifacts.map(a => ({
+          ...a,
+          element: null,
+          source: 'api',
+        }));
+      } else if (_artifactDetector) {
+        // Fallback: DOM detection for artifacts only
+        _detectedArtifacts = _artifactDetector.detectArtifacts().map(a => ({ ...a, source: 'dom' }));
       }
-      _detectedArtifacts.push({
-        type: 'visible-page', title: '📄 Visible Page',
-        artifactId: null, element: document.body, contentType: 'text', icon: '📄',
+
+      // Append notes (already carry content from API)
+      if (apiNotes && apiNotes.length > 0) {
+        for (const note of apiNotes) {
+          _detectedArtifacts.push({ ...note, element: null });
+        }
+      }
+    } else {
+      // No notebook ID — DOM-only fallback
+      if (_artifactDetector) {
+        _detectedArtifacts = _artifactDetector.detectArtifacts().map(a => ({ ...a, source: 'dom' }));
+      }
+    }
+
+    // Always include selected text at the top if available
+    const selection = window.getSelection();
+    if (selection && selection.toString().trim().length > 10) {
+      _detectedArtifacts.unshift({
+        type: 'selected-text',
+        title: 'Selected Text (' + selection.toString().trim().length + ' chars)',
+        artifactId: null, id: null, element: null,
+        contentType: 'text', icon: '✂️', source: 'dom',
       });
     }
 
     if (_detectedArtifacts.length === 0) {
-      listContainer.innerHTML = '<div style="color:#888;font-size:12px;padding:8px 0">No artifacts detected. Generate content in the Studio panel first.</div>';
+      listContainer.innerHTML = '<div style="color:#888;font-size:12px;padding:8px 0">No artifacts or notes found. Create content in the Studio panel first.</div>';
       return;
     }
 
-    // Create checkbox list
+    // Group by type
+    const groups = {};
     for (let i = 0; i < _detectedArtifacts.length; i++) {
       const art = _detectedArtifacts[i];
-      const row = document.createElement('label');
-      row.className = 'kyt-artifact-row';
-      row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer;font-size:12px;';
-
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.dataset.index = i;
-      checkbox.checked = art.contentType === 'text' || art.contentType === 'interactive';
-      if (checkbox.checked) _selectedIndices.add(i);
-
-      const label = document.createElement('span');
-      const metaTag = art.contentType === 'binary' ? ' <span style="color:#888;font-size:10px">(metadata)</span>' : '';
-      label.innerHTML = `${art.icon} ${escapeHtml(art.title.substring(0, 50))}${metaTag}`;
-
-      checkbox.addEventListener('change', () => {
-        if (checkbox.checked) _selectedIndices.add(i);
-        else _selectedIndices.delete(i);
-        updateSendButton(sendBtn, countEl);
-        showPreviewForSelection(preview, previewMeta);
-      });
-
-      row.appendChild(checkbox);
-      row.appendChild(label);
-      listContainer.appendChild(row);
+      const groupKey = art.type;
+      if (!groups[groupKey]) groups[groupKey] = [];
+      groups[groupKey].push({ art, index: i });
     }
 
+    // Render grouped dropdowns
+    listContainer.innerHTML = '';
+
+    // Define display order
+    const typeOrder = ['selected-text', 'note', 'mind_map', 'report', 'audio', 'video', 'quiz', 'flashcards', 'slide_deck', 'infographic', 'data_table'];
+    const sortedKeys = Object.keys(groups).sort((a, b) => {
+      const ai = typeOrder.indexOf(a);
+      const bi = typeOrder.indexOf(b);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
+
+    for (const groupKey of sortedKeys) {
+      const items = groups[groupKey];
+      const icon = items[0].art.icon || '📦';
+      const label = groupKey === 'selected-text' ? 'Selected Text'
+        : groupKey.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      const isText = items[0].art.contentType === 'text' || items[0].art.contentType === 'interactive';
+
+      // Default: expand text groups, collapse binary groups
+      if (!_expandedGroups.has('__initialized')) {
+        if (isText || groupKey === 'selected-text') _expandedGroups.add(groupKey);
+      }
+      const expanded = _expandedGroups.has(groupKey);
+
+      // Group header
+      const header = document.createElement('div');
+      header.style.cssText = 'display:flex;align-items:center;gap:4px;padding:5px 0 2px;cursor:pointer;font-size:12px;font-weight:600;color:#ccc;user-select:none;';
+      header.innerHTML = `<span style="width:12px;text-align:center;font-size:10px">${expanded ? '▼' : '►'}</span> ${icon} ${escapeHtml(label)} <span style="color:#888;font-weight:400">(${items.length})</span>`;
+
+      const itemContainer = document.createElement('div');
+      itemContainer.style.cssText = `display:${expanded ? 'block' : 'none'};padding-left:16px;`;
+
+      header.addEventListener('click', () => {
+        const isNowExpanded = itemContainer.style.display === 'none';
+        itemContainer.style.display = isNowExpanded ? 'block' : 'none';
+        header.querySelector('span').textContent = isNowExpanded ? '▼' : '►';
+        if (isNowExpanded) _expandedGroups.add(groupKey);
+        else _expandedGroups.delete(groupKey);
+      });
+
+      // Individual artifact rows
+      for (const { art, index } of items) {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer;font-size:12px;';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.dataset.index = index;
+        // Pre-check text artifacts
+        checkbox.checked = isText || art.type === 'selected-text';
+        if (checkbox.checked) _selectedIndices.add(index);
+
+        const titleSpan = document.createElement('span');
+        titleSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
+        const isBinary = art.contentType === 'binary';
+        const metaTag = isBinary ? ' <span style="color:#888;font-size:10px">(metadata)</span>' : '';
+        const statusTag = art.statusLabel && art.statusLabel !== 'completed'
+          ? ` <span style="color:#f0ad4e;font-size:10px">(${escapeHtml(art.statusLabel)})</span>` : '';
+        titleSpan.innerHTML = `${escapeHtml((art.title || art.type).substring(0, 60))}${metaTag}${statusTag}`;
+
+        checkbox.addEventListener('change', () => {
+          if (checkbox.checked) _selectedIndices.add(index);
+          else _selectedIndices.delete(index);
+          updateSendButton(sendBtn, countEl);
+          showPreviewForSelection(preview, previewMeta);
+        });
+
+        row.appendChild(checkbox);
+        row.appendChild(titleSpan);
+        itemContainer.appendChild(row);
+      }
+
+      listContainer.appendChild(header);
+      listContainer.appendChild(itemContainer);
+    }
+
+    _expandedGroups.add('__initialized');
     updateSendButton(sendBtn, countEl);
     showPreviewForSelection(preview, previewMeta);
   }
@@ -417,29 +749,25 @@
       return;
     }
 
-    // Show preview of the first selected artifact
-    const firstIdx = [..._selectedIndices][0];
-    const art = _detectedArtifacts[firstIdx];
+    const selected = [..._selectedIndices].map(i => _detectedArtifacts[i]);
+    const textCount = selected.filter(a => a.contentType === 'text' || a.contentType === 'interactive').length;
+    const metaCount = selected.filter(a => a.contentType === 'binary').length;
 
-    if (_contentExtractors && art.element) {
-      const extracted = _contentExtractors.extractContent(art.type, art.element);
-      preview.textContent = extracted.preview || 'No content extracted';
-      const total = [..._selectedIndices].reduce((sum, idx) => {
-        const a = _detectedArtifacts[idx];
-        if (_contentExtractors && a.element) {
-          return sum + _contentExtractors.extractContent(a.type, a.element).charCount;
-        }
-        return sum;
-      }, 0);
-      previewMeta.textContent = `${_selectedIndices.size} item(s) selected · ~${total.toLocaleString()} chars`;
-    } else {
-      preview.textContent = art.title;
-      previewMeta.textContent = `${_selectedIndices.size} item(s) selected`;
-    }
+    // Show titles of selected artifacts
+    const titles = selected.slice(0, 3).map(a => a.title || a.type).join('\n');
+    const more = selected.length > 3 ? `\n... and ${selected.length - 3} more` : '';
+    preview.textContent = titles + more;
+
+    const parts = [`${_selectedIndices.size} item(s) selected`];
+    if (textCount > 0) parts.push(`${textCount} text`);
+    if (metaCount > 0) parts.push(`${metaCount} meta`);
+    previewMeta.textContent = parts.join(' · ');
   }
 
   /**
    * Send all selected artifacts to K.Y.T.
+   * For API-sourced text artifacts without DOM elements, requests content
+   * download via background.js (Python CLI fallback).
    */
   async function sendSelectedArtifacts(projectId, statusEl) {
     const indices = [..._selectedIndices];
@@ -447,6 +775,7 @@
 
     let sent = 0;
     let failed = 0;
+    const notebookId = getNotebookIdFromPath() || 'unknown';
 
     for (const idx of indices) {
       const art = _detectedArtifacts[idx];
@@ -457,37 +786,98 @@
         let content = '';
         let isMetadata = false;
 
-        if (art.type === 'visible-page') {
+        if (art.type === 'selected-text') {
+          // Selected text — always from DOM
+          content = window.getSelection()?.toString()?.trim() || '';
+        } else if (art.type === 'visible-page') {
           content = scrapeVisiblePage();
+        } else if ((art.type === 'note' || art.type === 'mind_map') && art.content) {
+          // Notes carry content from the list API — no download needed
+          content = art.content;
+        } else if (art.contentType === 'binary') {
+          // Binary artifacts — always metadata only
+          isMetadata = true;
+          content = [
+            `Type: ${art.typeLabel || art.type}`,
+            `Title: ${art.title}`,
+            `Status: ${art.statusLabel || 'unknown'}`,
+            art.id ? `Artifact ID: ${art.id}` : null,
+            `Notebook: ${notebookId}`,
+          ].filter(Boolean).join('\n');
+        } else if (art.source === 'api' && art.id && chrome.runtime?.id) {
+          // API-sourced text artifact — direct RPC download (no background roundtrip)
+          statusEl.textContent = `Downloading ${sent + 1}/${indices.length}: ${art.title.substring(0, 30)}...`;
+          try {
+            const methodId = 'v9rmvd';
+            const params = [notebookId, art.id];
+            const encodedRpc = JSON.stringify([[[methodId, JSON.stringify(params), null, 'generic']]]);
+            const rpcResult = await executeRpcProxy({
+              type: 'batchexecute', methodId, encodedRpc,
+              sourcePath: `/notebook/${notebookId}`,
+            });
+            if (rpcResult.success && rpcResult.responseText) {
+              let responseText = rpcResult.responseText;
+              if (responseText.startsWith(")]}'")) {
+                responseText = responseText.slice(responseText.indexOf('\n') + 1);
+              }
+              const parsed = parseRpcResponse(responseText, methodId);
+              content = extractTextFromArtifactData(parsed);
+            }
+          } catch (dlErr) {
+            console.warn('[KYT] Direct download error for', art.title, dlErr.message);
+          }
+          if (!content) {
+            isMetadata = true;
+            content = [
+              `Type: ${art.typeLabel || art.type}`,
+              `Title: ${art.title}`,
+              `Status: ${art.statusLabel || 'unknown'}`,
+              `Note: Content download failed`,
+              art.id ? `Artifact ID: ${art.id}` : null,
+            ].filter(Boolean).join('\n');
+          }
         } else if (_contentExtractors && art.element) {
+          // DOM-sourced artifact with element — extract from DOM
           const extracted = _contentExtractors.extractContent(art.type, art.element);
           content = extracted.content;
           isMetadata = extracted.isMetadata;
-        } else if (art.type === 'selected-text') {
-          content = window.getSelection()?.toString()?.trim() || '';
         } else {
+          // Last resort — metadata only
           content = art.title + ' (no content extracted)';
           isMetadata = true;
         }
 
         if (!content) { failed++; continue; }
 
+        // Sanitize content (strip injection patterns, control chars)
+        const sanitize = _contentExtractors?.sanitize || (t => t);
+        const MAX_LEN = 100_000;
+
+        // Format: metadata header + sanitized body, capped at 100KB
+        const typeLabel = art.typeLabel || art.type;
+        const finalContent = isMetadata
+          ? `[NotebookLM Artifact Metadata]\n${content}`
+          : `[NotebookLM ${typeLabel}] ${art.title}\n---\n${sanitize(content)}`.slice(0, MAX_LEN);
+
+        // Set content_type per item type: notes→'note', artifacts→'research'
+        const itemContentType = (art.type === 'note' || art.type === 'mind_map') ? 'note' : 'research';
+
         const response = await chrome.runtime.sendMessage({
           type: 'SAVE_MESSAGE',
           data: {
-            content: isMetadata ? `[NotebookLM Artifact Metadata]\n${content}` : content,
+            content: finalContent,
             role: 'assistant',
             platform: 'notebooklm',
             source: 'panel-send',
-            conversationId: 'nlm-artifact-' + (getNotebookIdFromPath() || 'unknown'),
+            conversationId: 'nlm-artifact-' + notebookId,
             timestamp: Date.now(),
             messageId: 'nlm_panel_' + Date.now() + '_' + idx,
             url: window.location.href,
-            contentType: 'research',
+            contentType: itemContentType,
             projectId: projectId || undefined,
             metadata: {
               artifactType: art.type,
-              artifactId: art.artifactId,
+              artifactId: art.id || art.artifactId || null,
               artifactTitle: art.title,
               isMetadata,
             },

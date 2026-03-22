@@ -224,6 +224,14 @@ export function messagesToTurnChunks(messages, userId) {
       chunk.hypothetical_questions = []; // Will be filled by HyDE preprocessing (Phase 4)
     }
 
+    // Propagate content_type from source messages if all agree
+    const allContentTypes = msgs.map(m => m.content_type).filter(Boolean);
+    if (allContentTypes.length > 0 && new Set(allContentTypes).size === 1) {
+      for (const chunk of chunks) {
+        chunk.content_type = allContentTypes[0];
+      }
+    }
+
     allChunks.push(...chunks);
   }
 

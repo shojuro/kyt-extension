@@ -204,6 +204,7 @@ serve(async (req) => {
                     conversation_id: turn.conversation_id,
                     platform: normalizePlatform(turn.platform),
                     content: turn.content,
+                    content_type: turn.content_type || 'conversation',
                     embedding: null, // Will be backfilled later
                     impact_score: 0,
                     intimacy_level: 0,
@@ -278,6 +279,7 @@ serve(async (req) => {
                             conversation_id: turn.conversation_id,
                             platform: normalizePlatform(turn.platform),
                             content: turn.content,
+                            content_type: turn.content_type || 'conversation',
                             embedding: null,
                             impact_score: 0,
                             intimacy_level: 0,
@@ -350,6 +352,7 @@ serve(async (req) => {
                     conversation_id: turn.conversation_id,
                     platform: normalizePlatform(turn.platform),
                     content: turn.content,
+                    content_type: turn.content_type || 'conversation',
                     embedding,
                     impact_score: gravity.impact_score,
                     intimacy_level: gravity.intimacy_level,
