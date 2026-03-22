@@ -1177,98 +1177,93 @@ export async function pollResearch(notebookId, targetTaskId = null) {
     return { status: 0, statusLabel: 'unknown', summary: null, sources: null, taskId: null, done: false };
   }
 
-  // Parse research result from known structure:
-  // [[task1, task2, ...]] — outer array wraps the task list
-  // Each task: [taskId, [notebookId, [query, 1], statusInner, [[sources...], summary], statusOuter], ...]
+  // Verified response structure (2026-03-22):
+  //   result = [task0, task1, ..., taskN]     — flat array of research tasks
+  //   task[0] = taskId (UUID string)
+  //   task[1] = details array:
+  //     [0] = notebookId
+  //     [1] = [query, sourceType]
+  //     [2] = statusInner (1=in_progress, 5=completed)
+  //     [3] = [sourcesArray]  — sources at [3][0], each source:
+  //            source[0] = url (null for generated report)
+  //            source[1] = title
+  //            source[2] = description
+  //            source[3] = type (1=web, 5=generated_report)
+  //     [4] = statusOuter (2=fast_done, 5=deep_done, 6=completed_with_deep)
+  //     [5] = [deepSubTaskId, base64data, deepStatus] (only for deep research)
+
   let status = 0;
   let summary = null;
   let taskId = null;
   let sources = null;
 
-  if (Array.isArray(result)) {
-    const tasks = Array.isArray(result[0]) && Array.isArray(result[0][0]) ? result[0] : [result];
+  if (!Array.isArray(result)) {
+    return { status: 0, statusLabel: 'unknown', summary, sources, taskId, done: false };
+  }
 
-    // Find the right task: match targetTaskId, or pick the first in-progress, or first overall
-    let task = tasks[0];
-    if (targetTaskId) {
-      const match = tasks.find(t => Array.isArray(t) && t[0] === targetTaskId);
-      if (match) task = match;
-    } else {
-      // Prefer in-progress task (most likely the one we're waiting for)
-      // Check each task's status — in_progress tasks have status 1 at inner[2]
-      for (const t of tasks) {
-        if (Array.isArray(t) && Array.isArray(t[1])) {
-          const inner = t[1];
-          // Check if any top-level number in inner equals 1 (in_progress)
-          let hasInProgress = false;
-          let hasCompleted = false;
-          for (let i = 2; i < inner.length; i++) {
-            if (inner[i] === 1) hasInProgress = true;
-            if (typeof inner[i] === 'number' && inner[i] >= 2 && inner[i] !== 3) hasCompleted = true;
-          }
-          if (hasInProgress && !hasCompleted) { task = t; break; }
-        }
-      }
+  // result[0] is the task list — each element is [taskId, details, ...]
+  const tasks = Array.isArray(result[0]) && Array.isArray(result[0][0]) ? result[0] : result;
+
+  // Find the right task
+  let task = null;
+  if (targetTaskId) {
+    // Match by main taskId OR deep research sub-taskId
+    task = tasks.find(t =>
+      Array.isArray(t) && (
+        t[0] === targetTaskId ||
+        (Array.isArray(t[1]) && Array.isArray(t[1][5]) && t[1][5][0] === targetTaskId)
+      )
+    );
+  }
+
+  if (!task) {
+    // Prefer in-progress task, then most recently completed
+    const inProgress = tasks.find(t =>
+      Array.isArray(t) && Array.isArray(t[1]) && t[1][2] === 1
+    );
+    task = inProgress || tasks[0];
+  }
+
+  if (!Array.isArray(task)) {
+    return { status: 0, statusLabel: 'unknown', summary, sources, taskId, done: false };
+  }
+
+  // Extract taskId
+  if (typeof task[0] === 'string') {
+    taskId = task[0];
+  }
+
+  const inner = Array.isArray(task[1]) ? task[1] : null;
+  if (inner) {
+    // Status: take the higher of inner[2] and inner[4]
+    const statusInner = typeof inner[2] === 'number' ? inner[2] : 0;
+    const statusOuter = typeof inner[4] === 'number' ? inner[4] : 0;
+    status = Math.max(statusInner, statusOuter);
+
+    // Sources at inner[3][0]
+    if (Array.isArray(inner[3]) && Array.isArray(inner[3][0])) {
+      sources = inner[3][0].map(s => ({
+        url: s[0] || null,
+        title: s[1] || null,
+        description: s[2] || null,
+        type: s[3] === 5 ? 'generated_report' : 'web',
+      }));
     }
 
-    // task[0] = taskId string
-    if (typeof task[0] === 'string' && task[0].length > 5 && task[0].length < 50 && !task[0].includes(' ')) {
-      taskId = task[0];
+    // Summary: query text as fallback
+    if (Array.isArray(inner[1]) && typeof inner[1][0] === 'string') {
+      summary = inner[1][0];
     }
 
-    // task[1] = [notebookId, [query, ...], statusInner, [sourcesArray, summary], statusOuter, ...]
-    const inner = Array.isArray(task[1]) ? task[1] : null;
-    if (inner) {
-      // Find the completion status — it's a small number (2 or 6) at the top level of inner
-      // after the sources block. Walk inner's direct children for the status.
-      for (let i = 2; i < inner.length; i++) {
-        if (typeof inner[i] === 'number' && inner[i] >= 1 && inner[i] <= 10) {
-          // Prefer higher status codes (2=completed > 1=in_progress)
-          if (inner[i] > status) status = inner[i];
-        }
-      }
-
-      // Find sources block — an array containing [[url, title, desc, flag], ...] and a summary string
-      for (let i = 2; i < inner.length; i++) {
-        if (Array.isArray(inner[i]) && inner[i].length >= 2) {
-          const block = inner[i];
-          // Check if first element is an array of source arrays
-          if (Array.isArray(block[0]) && Array.isArray(block[0][0])) {
-            sources = block[0].map(s => ({
-              url: s[0] || null,
-              title: s[1] || null,
-              description: s[2] || null,
-            }));
-            // Last string in block = summary
-            for (let j = block.length - 1; j >= 0; j--) {
-              if (typeof block[j] === 'string' && block[j].length > 20) {
-                summary = block[j];
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      // Fallback summary: extract query text
-      if (!summary && Array.isArray(inner[1]) && typeof inner[1][0] === 'string') {
-        summary = inner[1][0];
-      }
-    }
-
-    // Fallback: generic walk for taskId if not found
-    if (!taskId) {
-      const walk = (obj, depth) => {
-        if (depth > 4 || taskId) return;
-        if (typeof obj === 'string' && obj.length > 5 && obj.length < 50 && !obj.includes(' ')) { taskId = obj; return; }
-        if (Array.isArray(obj)) for (const item of obj) walk(item, depth + 1);
-      };
-      walk(result, 0);
+    // Deep research sub-task info
+    if (Array.isArray(inner[5]) && typeof inner[5][0] === 'string') {
+      // Attach deep sub-task ID for reference
+      if (!taskId) taskId = inner[5][0];
     }
   }
 
-  const done = status >= 2 && status !== 3; // 2=completed_fast, 5=completed, 6=completed_deep (3=error)
-  const statusLabel = done ? 'completed' : status === 1 ? 'in_progress' : `status_${status}`;
+  const done = status >= 2 && status !== 3; // 2=fast_done, 5=completed, 6=completed_with_deep (3=error)
+  const statusLabel = done ? 'completed' : status === 1 ? 'in_progress' : status === 0 ? 'unknown' : `status_${status}`;
 
   return { status, statusLabel, summary, sources, taskId, done };
 }

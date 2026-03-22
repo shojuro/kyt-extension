@@ -10,7 +10,7 @@
  * Requires a NotebookLM notebook as the research context.
  */
 
-import { startResearch, pollResearch, setPassphrase, hasPassphrase } from '../lib/notebooklm-client.js';
+import { startResearch, pollResearch, importResearch, setPassphrase, hasPassphrase } from '../lib/notebooklm-client.js';
 import { isAuthConfigured } from '../lib/notebooklm-auth.js';
 import { sanitize } from '../lib/notebooklm-sanitizer.js';
 import { getYoutubeChannels } from '../lib/notebooklm-config.js';
@@ -171,10 +171,14 @@ export async function searchYoutubeHandler({
     let finalResult = null;
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, intervalMs));
-      const poll = await pollResearch(notebookId);
-      if (poll.done) {
+      const poll = await pollResearch(notebookId, taskId);
+      if (poll.done && poll.sources && poll.sources.length > 0) {
         finalResult = poll;
         break;
+      }
+      if (poll.done) {
+        // Done but sources not yet available — keep polling briefly
+        if (Date.now() + 30_000 > deadline) { finalResult = poll; break; }
       }
     }
 
@@ -187,60 +191,69 @@ export async function searchYoutubeHandler({
       };
     }
 
-    // Extract YouTube URLs from research summary
+    // Auto-import all sources into notebook
+    let importedCount = 0;
+    if (finalResult.sources && finalResult.sources.length > 0) {
+      const webSources = finalResult.sources.filter(s => s.type === 'web' && s.url);
+      if (webSources.length > 0) {
+        try {
+          await importResearch(notebookId, finalResult.taskId, webSources);
+          importedCount = webSources.length;
+        } catch {
+          // Import failed — still show results, user can import manually
+        }
+      }
+    }
+
+    // Extract YouTube URLs from sources (more reliable than summary parsing)
+    const ytFromSources = (finalResult.sources || [])
+      .filter(s => s.url && (s.url.includes('youtube.com') || s.url.includes('youtu.be')))
+      .map(s => {
+        const match = s.url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]{11})/);
+        return match ? { videoId: match[1], url: s.url, title: sanitize(s.title || `Video ${match[1]}`) } : null;
+      })
+      .filter(Boolean);
+
+    // Also extract from summary text as fallback
     const summary = finalResult.summary || '';
-    const ytResults = extractYoutubeResults(summary).slice(0, clampedMax);
+    const ytFromSummary = extractYoutubeResults(summary);
+
+    // Merge, deduplicate by videoId
+    const seen = new Set();
+    const ytResults = [];
+    for (const v of [...ytFromSources, ...ytFromSummary]) {
+      if (!seen.has(v.videoId)) {
+        seen.add(v.videoId);
+        ytResults.push(v);
+      }
+    }
+    const clampedResults = ytResults.slice(0, clampedMax);
 
     lines.length = 0; // Clear the waiting lines
 
-    if (ytResults.length === 0) {
+    if (clampedResults.length === 0) {
       lines.push(`**YouTube Search** — "${keywords.trim()}"`, '');
       lines.push('No YouTube videos found in research results.');
+      if (finalResult.sources && finalResult.sources.length > 0) {
+        lines.push(`(${finalResult.sources.length} web sources found and ${importedCount > 0 ? 'auto-imported' : 'queued'} — none are YouTube)`);
+      }
       lines.push('', 'The research summary may still contain useful context:');
       lines.push('', sanitize(summary).slice(0, 500));
-
-      // Also show the importable sources from research
-      if (finalResult.sources && finalResult.sources.length > 0) {
-        const ytSources = finalResult.sources.filter(s =>
-          s.url && (s.url.includes('youtube.com') || s.url.includes('youtu.be'))
-        );
-        if (ytSources.length > 0) {
-          lines.push('', '**YouTube sources found in research:**', '');
-          for (const [i, s] of ytSources.entries()) {
-            lines.push(`${i + 1}. ${sanitize(s.title || 'Untitled')}`);
-            lines.push(`   ${s.url}`, '');
-          }
-          lines.push('Use import_research to add these as notebook sources, or add_source sourceType:"youtube" url:"<url>"');
-        }
-      }
     } else {
       lines.push(`**YouTube Search Results** — "${keywords.trim()}"`, '');
-      lines.push(`Found ${ytResults.length} YouTube video${ytResults.length !== 1 ? 's' : ''}:`, '');
+      lines.push(`Found ${clampedResults.length} YouTube video${clampedResults.length !== 1 ? 's' : ''}:`, '');
 
-      for (const [i, v] of ytResults.entries()) {
+      for (const [i, v] of clampedResults.entries()) {
         lines.push(`${String(i + 1).padStart(2)}. ${v.title}`);
         lines.push(`    ${v.url}`, '');
       }
 
-      // Also show non-YouTube sources from research
-      if (finalResult.sources && finalResult.sources.length > 0) {
-        const ytSources = finalResult.sources.filter(s =>
-          s.url && (s.url.includes('youtube.com') || s.url.includes('youtu.be'))
-        );
-        if (ytSources.length > ytResults.length) {
-          lines.push('**Additional YouTube sources from research:**', '');
-          for (const s of ytSources) {
-            if (!ytResults.some(r => s.url?.includes(r.videoId))) {
-              lines.push(`  • ${sanitize(s.title || 'Untitled')} — ${s.url}`);
-            }
-          }
-          lines.push('');
-        }
+      if (importedCount > 0) {
+        lines.push(`---`);
+        lines.push(`Auto-imported ${importedCount} source(s) into notebook.`);
       }
 
-      lines.push('---');
-      lines.push('To add a video: add_source sourceType:"youtube" url:"<url>" notebookId:"<id>"');
-      lines.push('To import all research sources: import_research notebookId:"<id>" taskId:"' + (taskId || '') + '"');
+      lines.push('To add a specific video: add_source sourceType:"youtube" url:"<url>" notebookId:"<id>"');
     }
 
     return {

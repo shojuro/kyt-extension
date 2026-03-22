@@ -5,7 +5,7 @@
  * Optionally saves summary to K.Y.T.
  */
 
-import { startResearch, pollResearch, setPassphrase, hasPassphrase } from '../lib/notebooklm-client.js';
+import { startResearch, pollResearch, importResearch, setPassphrase, hasPassphrase } from '../lib/notebooklm-client.js';
 import { isAuthConfigured } from '../lib/notebooklm-auth.js';
 import { callEdgeFunction, getUserId } from '../lib/supabase-client.js';
 import { sanitize, wrapWithProvenance } from '../lib/notebooklm-sanitizer.js';
@@ -58,15 +58,35 @@ export async function startResearchHandler({
       let finalResult = null;
       while (Date.now() < deadline) {
         await new Promise(r => setTimeout(r, intervalMs));
-        const poll = await pollResearch(notebookId);
-        if (poll.done) {
+        const poll = await pollResearch(notebookId, taskId);
+        if (poll.done && poll.sources && poll.sources.length > 0) {
           finalResult = poll;
           break;
+        }
+        if (poll.done) {
+          // Done but sources not yet available — keep polling briefly
+          if (Date.now() + 30_000 > deadline) { finalResult = poll; break; }
         }
       }
 
       if (finalResult) {
         lines.push(`Status: ${finalResult.statusLabel}`);
+
+        // Auto-import sources into notebook
+        if (finalResult.sources && finalResult.sources.length > 0) {
+          const webSources = finalResult.sources.filter(s => s.type === 'web' && s.url);
+          if (webSources.length > 0) {
+            try {
+              await importResearch(notebookId, finalResult.taskId, webSources);
+              lines.push(`\nAuto-imported ${webSources.length} source(s) into notebook.`);
+            } catch (importErr) {
+              lines.push(`\nWarning: Auto-import failed: ${importErr.message}`);
+              lines.push('Use import_research to add sources manually.');
+            }
+          }
+          lines.push(`Sources found: ${finalResult.sources.length} (${webSources.length} web)`);
+        }
+
         if (finalResult.summary) {
           const sanitizedSummary = sanitize(finalResult.summary);
           lines.push('', '**Research Summary:**', sanitizedSummary);
