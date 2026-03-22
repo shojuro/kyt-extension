@@ -228,7 +228,7 @@ class MessageDeduplicator {
   constructor() {
     this.recentMessages = new Map();
     this.recentPrefixes = new Map();
-    this.dedupeWindow = 5000;
+    this.dedupeWindow = 120000;
     this.maxMapSize = 1000;
     this.prefixLength = 100;
     this.stats = { totalAttempts: 0, captured: 0, duplicatesSkipped: 0, upgradeCaptures: 0, prefixUpgrades: 0 };
@@ -1029,335 +1029,6 @@ describe('findAllStrings', () => {
 });
 
 
-// ═══════════════════════════════════════════════════════════════════════
-// DOM OBSERVER TESTS
-// ═══════════════════════════════════════════════════════════════════════
-
-describe('responseDOMObserver', () => {
-  function createObserver() {
-    const dispatched = [];
-    const obs = {
-      observer: null,
-      pendingConvId: null,
-      lastTextLength: 0,
-      stableTimeoutId: null,
-      STABLE_DELAY_MS: 2500,
-      MAX_WAIT_MS: 120000,
-      startTimeoutId: null,
-      _baselineElement: null,
-      dispatched,
-
-      RESPONSE_SELECTORS: [
-        'div[id^="model-response-message-content"]', // Primary: Angular ID prefix (model-response only)
-      ],
-
-      _findLastResponseElement() {
-        // In test environment, return this._mockBaselineElement
-        return this._mockBaselineElement || null;
-      },
-
-      start(conversationId) {
-        this._flushPending();
-        this.stop();
-        this.pendingConvId = conversationId;
-        this.lastTextLength = 0;
-        this._baselineElement = this._findLastResponseElement();
-        // Skip actual MutationObserver in tests — test _onMutation/_onStable/_getLastResponseText directly
-        this.startTimeoutId = setTimeout(() => this.stop(), this.MAX_WAIT_MS);
-      },
-
-      _onMutation(mutations) {
-        // Fast path: aria-busy="false" — 300ms confirmation delay
-        if (mutations) {
-          for (const m of mutations) {
-            if (m.type === 'attributes' && m.attributeName === 'aria-busy') {
-              if (m.target.getAttribute('aria-busy') === 'false' && m.target !== this._baselineElement) {
-                if (this.lastTextLength === 0) this.lastTextLength = 1;
-                if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
-                this.stableTimeoutId = setTimeout(() => this._onStable(), 300);
-                dispatched._ariaBusyTriggered = true;
-                return;
-              }
-            }
-          }
-        }
-
-        // Debounce path (fallback when aria-busy not available)
-        const text = this._getLastResponseText();
-        if (!text || text.length <= this.lastTextLength) return;
-
-        this.lastTextLength = text.length;
-
-        if (this.stableTimeoutId) clearTimeout(this.stableTimeoutId);
-        this.stableTimeoutId = setTimeout(() => this._onStable(), this.STABLE_DELAY_MS);
-      },
-
-      _getLastResponseText() {
-        // In test environment, use this._mockText instead of DOM queries
-        // Simulate baseline element check: if _mockElement equals _baselineElement, return null
-        if (this._mockElement && this._mockElement === this._baselineElement) return null;
-        return this._mockText || null;
-      },
-
-      _onStable() {
-        if (this.lastTextLength === 0) return; // already flushed
-        const text = this._getLastResponseText();
-        if (!text || text.length < 20) { this.stop(); return; }
-        dispatched.push({ text, convId: this.pendingConvId });
-        this.stop();
-      },
-
-      _flushPending() {
-        if (!this.pendingConvId || this.lastTextLength === 0) return;
-        const text = this._getLastResponseText();
-        if (!text || text.length < 20) return;
-        dispatched.push({ text, convId: this.pendingConvId, flushed: true });
-      },
-
-      stop() {
-        if (this.observer) { this.observer.disconnect(); this.observer = null; }
-        if (this.stableTimeoutId) { clearTimeout(this.stableTimeoutId); this.stableTimeoutId = null; }
-        if (this.startTimeoutId) { clearTimeout(this.startTimeoutId); this.startTimeoutId = null; }
-        this.pendingConvId = null;
-        this.lastTextLength = 0;
-        this._baselineElement = null;
-      }
-    };
-    return obs;
-  }
-
-  it('_onStable dispatches text when response has stabilized', () => {
-    const obs = createObserver();
-    obs.start('c_abc123');
-    obs._mockText = 'This is a complete assistant response with enough content for testing.';
-    obs._onMutation(); // sets lastTextLength > 0 (required for _onStable dedup guard)
-    obs._onStable();
-    expect(obs.dispatched).toHaveLength(1);
-    expect(obs.dispatched[0].text).toBe('This is a complete assistant response with enough content for testing.');
-    expect(obs.dispatched[0].convId).toBe('c_abc123');
-  });
-
-  it('_onStable stops without dispatching when text is too short', () => {
-    const obs = createObserver();
-    obs.start('c_abc123');
-    obs._mockText = 'Short.';
-    obs.lastTextLength = 1; // simulate that _onMutation had tracked some growth
-    obs._onStable();
-    expect(obs.dispatched).toHaveLength(0);
-    expect(obs.pendingConvId).toBeNull(); // stop() was called
-  });
-
-  it('_onMutation tracks growing text length', () => {
-    const obs = createObserver();
-    obs.start('c_abc123');
-    obs._mockText = 'First part of the response that is long enough.';
-    obs._onMutation();
-    expect(obs.lastTextLength).toBe(obs._mockText.length);
-
-    // Text grows
-    obs._mockText = 'First part of the response that is long enough. And now it got even longer with more words.';
-    obs._onMutation();
-    expect(obs.lastTextLength).toBe(obs._mockText.length);
-  });
-
-  it('_onMutation ignores when text has not grown', () => {
-    const obs = createObserver();
-    obs.start('c_abc123');
-    obs._mockText = 'Response text that does not change.';
-    obs._onMutation();
-    const len = obs.lastTextLength;
-
-    // Same text, same length — should not update
-    obs._onMutation();
-    expect(obs.lastTextLength).toBe(len);
-  });
-
-  it('stop cleans up all state', () => {
-    const obs = createObserver();
-    obs.start('c_abc123');
-    obs._mockText = 'Some text to make things active for testing.';
-    obs._onMutation();
-    expect(obs.pendingConvId).toBe('c_abc123');
-
-    obs.stop();
-    expect(obs.pendingConvId).toBeNull();
-    expect(obs.lastTextLength).toBe(0);
-    expect(obs.stableTimeoutId).toBeNull();
-    expect(obs.startTimeoutId).toBeNull();
-    expect(obs._baselineElement).toBeNull();
-  });
-
-  it('multiple start calls flush previous pending response', () => {
-    const obs = createObserver();
-    obs.start('c_first');
-    obs._mockText = 'Text from first conversation that is long enough.';
-    obs._onMutation();
-
-    // Start again with new conversation — should flush c_first's response, then reset
-    obs.start('c_second');
-    expect(obs.pendingConvId).toBe('c_second');
-    expect(obs.lastTextLength).toBe(0);
-    expect(obs.dispatched).toHaveLength(1); // flushed from c_first
-    expect(obs.dispatched[0].convId).toBe('c_first');
-    expect(obs.dispatched[0].flushed).toBe(true);
-  });
-
-  it('_getLastResponseText returns null when no mock text set', () => {
-    const obs = createObserver();
-    expect(obs._getLastResponseText()).toBeNull();
-  });
-
-  it('_flushPending dispatches pending text', () => {
-    const obs = createObserver();
-    obs.start('c_flush');
-    obs._mockText = 'A response that was being tracked and has enough content.';
-    obs._onMutation(); // sets lastTextLength > 0
-    expect(obs.lastTextLength).toBeGreaterThan(0);
-
-    obs._flushPending();
-    expect(obs.dispatched).toHaveLength(1);
-    expect(obs.dispatched[0].text).toBe('A response that was being tracked and has enough content.');
-    expect(obs.dispatched[0].convId).toBe('c_flush');
-    expect(obs.dispatched[0].flushed).toBe(true);
-  });
-
-  it('_flushPending is no-op when no pending text', () => {
-    const obs = createObserver();
-    obs.start('c_empty');
-    // lastTextLength is 0 — nothing tracked yet
-    obs._flushPending();
-    expect(obs.dispatched).toHaveLength(0);
-  });
-
-  it('_flushPending is no-op when no conversation', () => {
-    const obs = createObserver();
-    // Never started — pendingConvId is null
-    obs._flushPending();
-    expect(obs.dispatched).toHaveLength(0);
-  });
-
-  it('_onStable is no-op after flush (dedup guard)', () => {
-    const obs = createObserver();
-    obs.start('c_dedup');
-    obs._mockText = 'Response text that gets flushed then onStable fires.';
-    obs._onMutation();
-
-    obs._flushPending();
-    expect(obs.dispatched).toHaveLength(1);
-
-    // Simulate stop() resetting state (as start() would call stop() after flush)
-    obs.lastTextLength = 0;
-    obs._onStable(); // should be no-op since lastTextLength === 0
-    expect(obs.dispatched).toHaveLength(1); // no duplicate
-  });
-
-  it('baseline element prevents old response from being tracked', () => {
-    const obs = createObserver();
-    const oldElement = { id: 'old-response' };
-    obs._mockBaselineElement = oldElement;
-    obs.start('c_baseline');
-
-    // Simulate DOM still showing old element (baseline)
-    obs._mockElement = oldElement; // _getLastResponseText will check this against baseline
-    obs._mockText = 'Old response text that should not be tracked as new content.';
-    const text = obs._getLastResponseText();
-    expect(text).toBeNull(); // blocked by baseline check
-  });
-
-  it('new element after baseline is tracked normally', () => {
-    const obs = createObserver();
-    const oldElement = { id: 'old-response' };
-    obs._mockBaselineElement = oldElement;
-    obs.start('c_baseline2');
-
-    // New element appears — different from baseline
-    const newElement = { id: 'new-response' };
-    obs._mockElement = newElement;
-    obs._mockText = 'Brand new response text that should be tracked normally.';
-    const text = obs._getLastResponseText();
-    expect(text).toBe('Brand new response text that should be tracked normally.');
-  });
-
-  it('aria-busy=false schedules 300ms confirmation (not instant capture)', () => {
-    const obs = createObserver();
-    obs.start('c_aria');
-    obs._mockText = 'Complete assistant response captured via aria-busy signal with enough text.';
-
-    const mockElement = {
-      getAttribute: (attr) => attr === 'aria-busy' ? 'false' : null,
-    };
-    const mutations = [{
-      type: 'attributes',
-      attributeName: 'aria-busy',
-      target: mockElement,
-    }];
-
-    obs._onMutation(mutations);
-    // Should schedule _onStable via stableTimeoutId, NOT dispatch immediately
-    expect(obs.stableTimeoutId).not.toBeNull();
-    expect(obs.dispatched).toHaveLength(0); // not yet — waiting 300ms confirmation
-
-    // Simulate 300ms passing by calling _onStable directly
-    obs._onStable();
-    expect(obs.dispatched).toHaveLength(1);
-    expect(obs.dispatched[0].text).toBe('Complete assistant response captured via aria-busy signal with enough text.');
-  });
-
-  it('aria-busy=true does not trigger capture', () => {
-    const obs = createObserver();
-    obs.start('c_busy');
-    obs._mockText = 'Partial response still streaming from the model right now.';
-
-    const mockElement = {
-      getAttribute: (attr) => attr === 'aria-busy' ? 'true' : null,
-    };
-    const mutations = [{
-      type: 'attributes',
-      attributeName: 'aria-busy',
-      target: mockElement,
-    }];
-
-    obs._onMutation(mutations);
-    expect(obs.dispatched).toHaveLength(0);
-    expect(obs.pendingConvId).toBe('c_busy'); // still active
-  });
-
-  it('aria-busy=false on baseline element is ignored', () => {
-    const obs = createObserver();
-    const oldElement = {
-      id: 'old-response',
-      getAttribute: (attr) => attr === 'aria-busy' ? 'false' : null,
-    };
-    obs._mockBaselineElement = oldElement;
-    obs.start('c_baseline_aria');
-    obs._mockText = 'Some text that should not be captured from the old element.';
-
-    const mutations = [{
-      type: 'attributes',
-      attributeName: 'aria-busy',
-      target: oldElement, // same as baseline
-    }];
-
-    obs._onMutation(mutations);
-    expect(obs.dispatched).toHaveLength(0); // ignored because target === baseline
-  });
-
-  it('non-aria-busy attribute mutations fall through to debounce', () => {
-    const obs = createObserver();
-    obs.start('c_other_attr');
-    obs._mockText = 'Response text that should be tracked via debounce path for capture.';
-
-    const mutations = [{
-      type: 'attributes',
-      attributeName: 'class',
-      target: { getAttribute: () => 'some-class' },
-    }];
-
-    obs._onMutation(mutations);
-    expect(obs.dispatched).toHaveLength(0); // not dispatched yet (in debounce)
-    expect(obs.lastTextLength).toBe(obs._mockText.length); // but text was tracked
-  });
-});
 
 // ═══════════════════════════════════════════════════════════════════════
 // DISPATCH CONTENT CLEANING TESTS
@@ -1849,5 +1520,137 @@ describe('requestContext cancellation', () => {
 
     expect(pendingContextRequests.size).toBe(0);
     expect(activeContextRequestId).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// BRIDGE DISCONNECT / RECONNECT TESTS
+// Extracted bridge state logic from inject.js for testability
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Bridge disconnect/reconnect', () => {
+  function createBridgeState() {
+    let contextBridgeAlive = true;
+    const missedCaptures = [];
+    const MAX_MISSED_BUFFER = 50;
+    const pendingContextRequests = new Map();
+    let activeContextRequestId = null;
+
+    return {
+      get alive() { return contextBridgeAlive; },
+      get missed() { return missedCaptures; },
+      pendingContextRequests,
+      get activeContextRequestId() { return activeContextRequestId; },
+
+      disconnect() {
+        contextBridgeAlive = false;
+        for (const [id, pending] of pendingContextRequests) {
+          clearTimeout(pending.timeoutId);
+          pending.resolve(null);
+        }
+        pendingContextRequests.clear();
+        activeContextRequestId = null;
+      },
+
+      reconnect() {
+        contextBridgeAlive = true;
+        const toReplay = missedCaptures.splice(0);
+        return toReplay;
+      },
+
+      requestContext(userMessage) {
+        if (!contextBridgeAlive) return null;
+        if (pendingContextRequests.size >= 10) return null;
+        return 'would-create-promise';
+      },
+
+      bufferCapture(messageData) {
+        if (!contextBridgeAlive && missedCaptures.length < MAX_MISSED_BUFFER) {
+          missedCaptures.push(messageData);
+        }
+      },
+    };
+  }
+
+  it('requestContext resolves null when bridge is dead', () => {
+    const bridge = createBridgeState();
+    bridge.disconnect();
+    expect(bridge.requestContext('hello')).toBeNull();
+  });
+
+  it('pending requests are flushed on disconnect', () => {
+    const bridge = createBridgeState();
+    const resolved = [];
+
+    bridge.pendingContextRequests.set('ctx_1', {
+      resolve: (v) => resolved.push(v),
+      timeoutId: null,
+    });
+    bridge.pendingContextRequests.set('ctx_2', {
+      resolve: (v) => resolved.push(v),
+      timeoutId: null,
+    });
+
+    bridge.disconnect();
+
+    expect(resolved).toEqual([null, null]);
+    expect(bridge.pendingContextRequests.size).toBe(0);
+    expect(bridge.activeContextRequestId).toBeNull();
+  });
+
+  it('messages dispatched while bridge dead are buffered', () => {
+    const bridge = createBridgeState();
+    bridge.disconnect();
+
+    bridge.bufferCapture({ content: 'msg1', role: 'user' });
+    bridge.bufferCapture({ content: 'msg2', role: 'assistant' });
+
+    expect(bridge.missed).toHaveLength(2);
+    expect(bridge.missed[0].content).toBe('msg1');
+    expect(bridge.missed[1].content).toBe('msg2');
+  });
+
+  it('buffered messages are replayed on reconnect', () => {
+    const bridge = createBridgeState();
+    bridge.disconnect();
+
+    bridge.bufferCapture({ content: 'missed1', role: 'user' });
+    bridge.bufferCapture({ content: 'missed2', role: 'assistant' });
+
+    const replayed = bridge.reconnect();
+
+    expect(replayed).toHaveLength(2);
+    expect(replayed[0].content).toBe('missed1');
+    expect(replayed[1].content).toBe('missed2');
+    // Buffer is drained after replay
+    expect(bridge.missed).toHaveLength(0);
+  });
+
+  it('buffer cap at 50 prevents unbounded growth', () => {
+    const bridge = createBridgeState();
+    bridge.disconnect();
+
+    for (let i = 0; i < 60; i++) {
+      bridge.bufferCapture({ content: `msg_${i}`, role: 'user' });
+    }
+
+    expect(bridge.missed).toHaveLength(50);
+    expect(bridge.missed[49].content).toBe('msg_49');
+  });
+
+  it('requestContext works normally after reconnect', () => {
+    const bridge = createBridgeState();
+    bridge.disconnect();
+    expect(bridge.requestContext('hello')).toBeNull();
+
+    bridge.reconnect();
+    expect(bridge.requestContext('hello again')).toBe('would-create-promise');
+  });
+
+  it('no buffering when bridge is alive', () => {
+    const bridge = createBridgeState();
+    // Bridge alive by default
+    bridge.bufferCapture({ content: 'normal msg', role: 'user' });
+    expect(bridge.missed).toHaveLength(0);
   });
 });

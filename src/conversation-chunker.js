@@ -7,7 +7,7 @@
  * - Group messages by conversation_id
  * - Pair user-assistant messages into "turns"
  * - Chunk turns with sliding window (5-7 turns, 2-3 overlap)
- * - Format as: "User: ...\nAssistant: ...\n..."
+ * - Format as: "User: ...\nAssistant: ..." (prefix only for multi-speaker chunks)
  * - Extract topics for filtering
  *
  * Output: Turn chunks ready for Supabase chat_turns table
@@ -129,20 +129,27 @@ function chunkTurns(turns, windowSize = 5, overlap = 2) {
 
     if (window.length === 0) continue;
 
-    // Format as: "User: ...\nAssistant: ...\n..."
+    // Collect speakers first to decide on prefix format
     const contentParts = [];
     const speakers = new Set();
     const timestamps = [];
 
     for (const turn of window) {
+      if (turn.user) { speakers.add('user'); }
+      if (turn.assistant) { speakers.add('assistant'); }
+    }
+
+    // Only prefix with "User:"/"Assistant:" when chunk has BOTH speakers.
+    // Single-speaker chunks use speakers[] array for role — no prefix noise.
+    const needsPrefix = speakers.size > 1;
+
+    for (const turn of window) {
       if (turn.user) {
-        contentParts.push(`User: ${turn.user.content}`);
-        speakers.add('user');
+        contentParts.push(needsPrefix ? `User: ${turn.user.content}` : turn.user.content);
         timestamps.push(turn.user.timestamp);
       }
       if (turn.assistant) {
-        contentParts.push(`Assistant: ${turn.assistant.content}`);
-        speakers.add('assistant');
+        contentParts.push(needsPrefix ? `Assistant: ${turn.assistant.content}` : turn.assistant.content);
         timestamps.push(turn.assistant.timestamp);
       }
     }

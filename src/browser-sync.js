@@ -631,7 +631,7 @@ export async function syncMessages(messagesToSync) {
       const skipEmbeddingIndexes = new Set();
       for (let i = 0; i < chunksWithHyDE.length; i++) {
         const content = (chunksWithHyDE[i].content || '').trim();
-        if (content.length < 100 && !content.includes('Assistant:')) {
+        if (content.length < 100 && !chunksWithHyDE[i].speakers?.includes('assistant')) {
           console.log(`⏭️ Skipping embedding for short user-only chunk: "${content.substring(0, 60)}..."`);
           skipEmbeddingIndexes.add(i);
         } else {

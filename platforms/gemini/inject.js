@@ -24,10 +24,10 @@
     constructor() {
       this.recentMessages = new Map();
       this.recentPrefixes = new Map(); // prefix hash → { contentHash, length, timestamp }
-      this.dedupeWindow = 5000;
+      this.dedupeWindow = 120000; // 2min — must outlast periodic sweep (60s) to prevent re-capture
       this.maxMapSize = 1000;
       this.prefixLength = 100;
-      this.cleanupInterval = setInterval(() => this._cleanup(), 2000);
+      this.cleanupInterval = setInterval(() => this._cleanup(), 30000); // Clean every 30s (window is 2min)
       this.stats = { totalAttempts: 0, captured: 0, duplicatesSkipped: 0, upgradeCaptures: 0, prefixUpgrades: 0 };
     }
 
@@ -775,13 +775,15 @@
   // Periodic sweep: captures any responses that weren't caught by next-turn trigger.
   // Handles: last response before tab close, long reading pauses, single-turn conversations.
   // Resets lastSeenConversationId on SPA navigation to prevent cross-conversation contamination.
+  // commit=true: by the time the sweep fires (60s), responses are fully rendered.
+  // The deduplicator's prefix-upgrade still handles wire-truncated vs DOM-complete overlap.
   setInterval(function () {
     const currentUrl = window.location.href;
     if (currentUrl !== lastSeenUrl) {
       lastSeenUrl = currentUrl;
       lastSeenConversationId = null; // SEC: prevent cross-conversation contamination
     }
-    scrapeAllUncaptured(lastSeenConversationId, false); // safety net — don't commit
+    scrapeAllUncaptured(lastSeenConversationId, true); // commit — response is stable after 60s
   }, 60000);
 
   /**
@@ -986,6 +988,42 @@
   });
 
   // ═══════════════════════════════════════════════════════════════════════
+  // PERSISTENT CONTENT HASH — Survives page reloads (localStorage)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  const PERSISTED_HASH_KEY = 'kyt_gemini_captured_hashes';
+  const PERSISTED_HASH_MAX = 500; // Ring buffer — oldest evicted first
+  const PERSISTED_HASH_TTL = 24 * 60 * 60 * 1000; // 24h
+
+  function _loadPersistedHashes() {
+    try {
+      const raw = localStorage.getItem(PERSISTED_HASH_KEY);
+      if (!raw) return [];
+      const entries = JSON.parse(raw);
+      // Evict expired entries on load
+      const cutoff = Date.now() - PERSISTED_HASH_TTL;
+      return entries.filter(e => e.t > cutoff);
+    } catch (_) { return []; }
+  }
+
+  function _isPersistedDuplicate(contentHash) {
+    const entries = _loadPersistedHashes();
+    return entries.some(e => e.h === contentHash);
+  }
+
+  function _persistHash(contentHash) {
+    try {
+      let entries = _loadPersistedHashes();
+      entries.push({ h: contentHash, t: Date.now() });
+      // Ring buffer: keep newest PERSISTED_HASH_MAX entries
+      if (entries.length > PERSISTED_HASH_MAX) {
+        entries = entries.slice(entries.length - PERSISTED_HASH_MAX);
+      }
+      localStorage.setItem(PERSISTED_HASH_KEY, JSON.stringify(entries));
+    } catch (_) {} // localStorage full or disabled — fail-open
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // DISPATCH CAPTURE
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -1018,6 +1056,13 @@
 
     if (!deduplicator.shouldCapture(content, captureMethod)) return;
 
+    // Cross-session dedup: check localStorage hash ring buffer (survives page reload)
+    const contentHash = deduplicator._hash(content.trim().replace(/\s+/g, ' ').toLowerCase());
+    if (_isPersistedDuplicate(contentHash)) {
+      _kytDebug() && console.log('🔁 KYT Gemini: Skipped cross-session duplicate (' + content.substring(0, 40) + '...)');
+      return;
+    }
+    _persistHash(contentHash);
 
     const messageData = {
       content: content.trim(),

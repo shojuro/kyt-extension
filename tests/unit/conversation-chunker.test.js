@@ -121,7 +121,9 @@ describe('messagesToTurnChunks', () => {
     expect(chunks).toHaveLength(1);
     expect(chunks[0].speakers).toContain('user');
     expect(chunks[0].speakers).not.toContain('assistant');
-    expect(chunks[0].content).toContain('User: Anyone there?');
+    // Single-speaker chunk: no "User:" prefix (speakers[] carries the role)
+    expect(chunks[0].content).toContain('Anyone there?');
+    expect(chunks[0].content).not.toMatch(/^User:/m);
   });
 
   // Test 7: Empty input → empty output
