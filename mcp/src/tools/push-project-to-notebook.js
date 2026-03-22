@@ -41,7 +41,7 @@ export async function pushProjectToNotebookHandler({
     return {
       content: [{
         type: 'text',
-        text: 'Passphrase required to decrypt NotebookLM credentials. Pass `passphrase` parameter.',
+        text: 'Auth unavailable. Import cookies first (auto-key handles encryption), or pass `passphrase` to override.',
       }],
       isError: true,
     };

@@ -11,7 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { getAuth, clearAuthCache } from './notebooklm-auth.js';
+import { getAuth, clearAuthCache, getEffectivePassphrase } from './notebooklm-auth.js';
 import {
   RPC,
   BATCHEXECUTE_URL,
@@ -86,14 +86,14 @@ const SOURCE_UPLOAD_DELAY_MS = 2000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 1000;
 
-// --- Passphrase management (in-memory only) ---
+// --- Passphrase management ---
+// Priority chain: explicit setPassphrase() > auto-key file > NOTEBOOKLM_PASSPHRASE env var
 
 let _passphrase = null;
 
 /**
- * Set the passphrase for decrypting stored cookies.
+ * Set an explicit passphrase for this session (overrides auto-key and env var).
  * Held in memory only — never persisted.
- * Falls back to NOTEBOOKLM_PASSPHRASE env var if not explicitly set.
  *
  * @param {string} passphrase
  */
@@ -102,34 +102,28 @@ export function setPassphrase(passphrase) {
 }
 
 /**
- * Check if passphrase has been set for this session.
- * Lazily loads from env var on first check (dotenv runs after ES module imports).
+ * Check if any passphrase source is available (explicit, auto-key, or env var).
  */
 export function hasPassphrase() {
-  if (!_passphrase && process.env.NOTEBOOKLM_PASSPHRASE) {
-    _passphrase = process.env.NOTEBOOKLM_PASSPHRASE;
-  }
-  return _passphrase !== null && _passphrase.length > 0;
+  return getEffectivePassphrase(_passphrase) !== null;
 }
 
 /**
- * Clear the in-memory passphrase.
+ * Clear the in-memory explicit passphrase.
  */
 export function clearPassphrase() {
   _passphrase = null;
 }
 
 function requirePassphrase() {
-  if (!_passphrase && process.env.NOTEBOOKLM_PASSPHRASE) {
-    _passphrase = process.env.NOTEBOOKLM_PASSPHRASE;
-  }
-  if (!_passphrase) {
+  const effective = getEffectivePassphrase(_passphrase);
+  if (!effective) {
     throw new Error(
-      'NotebookLM passphrase not set. Call any NotebookLM tool with the `passphrase` parameter first, ' +
-      'or run the login flow.'
+      'NotebookLM auth not available. Import cookies first (auto-key will be generated), ' +
+      'or pass the `passphrase` parameter explicitly.'
     );
   }
-  return _passphrase;
+  return effective;
 }
 
 /**
