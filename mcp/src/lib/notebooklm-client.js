@@ -488,7 +488,13 @@ export async function askQuestion(notebookId, question) {
   const fReq = JSON.stringify([null, paramsJson]);
 
   // Try proxy first — browser has full cookie jar
+  // Reset stale proxy unavailability
+  if (_proxyAvailable === false && Date.now() - _proxyLastCheck > PROXY_RECHECK_MS) {
+    _proxyAvailable = null;
+  }
   if (_proxyAvailable !== false) {
+    _proxyLastCheck = Date.now();
+    await ensureBridgeRunning();
     try {
       const proxyRes = await fetch(`${RPC_PROXY_URL}/rpc`, {
         method: 'POST',
@@ -505,6 +511,10 @@ export async function askQuestion(notebookId, question) {
         if (result.success && result.responseText) {
           _proxyAvailable = true;
           return decodeStreamingResponse(result.responseText);
+        }
+        // Proxy returned error — don't poison _proxyAvailable, just fall through
+        if (result.error) {
+          process.stderr.write(`RPC proxy streaming error: ${result.error}\n`);
         }
       }
     } catch {
