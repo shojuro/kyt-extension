@@ -125,16 +125,15 @@ class InjectionBuilderTest {
     }
 
     @Test
-    fun `visible injection truncates long content`() {
-        val longContent = "A".repeat(200) + " very important ending that should be truncated"
+    fun `visible injection truncates long content per item`() {
+        val longContent = "A".repeat(300) + " very important ending that should be truncated"
         val items = listOf(
             MemoryItem("1", longContent, "chatgpt", "", 0.85),
         )
-        val result = buildVisibleInjection(items, "query", maxCharsPerItem = 80)
-        // Content portion should be at most 80 chars (before platform tag)
+        val result = buildVisibleInjection(items, "query", maxCharsPerItem = 150)
         val inner = result.text.removePrefix("(KYT: ").removeSuffix(")")
         val contentPart = inner.substringBefore(" [chatgpt]")
-        assertTrue("Content too long: ${contentPart.length}", contentPart.length <= 80)
+        assertTrue("Content too long: ${contentPart.length}", contentPart.length <= 150)
     }
 
     @Test
@@ -172,14 +171,14 @@ class InjectionBuilderTest {
     }
 
     @Test
-    fun `visible injection enforces 200 char inner limit`() {
+    fun `visible injection drops second item if it would exceed limit`() {
         val items = listOf(
-            MemoryItem("1", "A".repeat(120), "chatgpt", "", 0.90),
-            MemoryItem("2", "B".repeat(120), "gemini", "", 0.85),
+            MemoryItem("1", "A".repeat(300), "chatgpt", "", 0.90),
+            MemoryItem("2", "B".repeat(300), "gemini", "", 0.85),
         )
-        val result = buildVisibleInjection(items, "query", maxCharsPerItem = 120)
-        val inner = result.text.removePrefix("(KYT: ").removeSuffix(")")
-        assertTrue("Inner too long: ${inner.length}", inner.length <= 200)
+        val result = buildVisibleInjection(items, "query", maxCharsPerItem = 300)
+        // With 300-char items, second item would exceed 350 limit — should be dropped
+        assertEquals(1, result.itemCount)
     }
 
     // ── buildCompactInjection — full context format ─────────────

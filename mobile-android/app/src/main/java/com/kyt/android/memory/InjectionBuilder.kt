@@ -163,7 +163,7 @@ fun buildVisibleInjection(
     items: List<MemoryItem>,
     query: String,
     maxItems: Int = 2,
-    maxCharsPerItem: Int = 80
+    maxCharsPerItem: Int = 150
 ): InjectionResult {
     if (items.isEmpty()) return InjectionResult("", 0, 0.0)
 
@@ -179,12 +179,18 @@ fun buildVisibleInjection(
         "$prefix$content [${item.platform}]"
     }
 
-    var inner = parts.joinToString(" | ")
-    if (inner.length > 200) {
-        inner = inner.take(197) + "..."
+    // Build progressively — add items until we exceed the limit
+    val usedParts = mutableListOf<String>()
+    var totalLen = 0
+    for (part in parts) {
+        val addLen = if (usedParts.isEmpty()) part.length else part.length + 3  // " | "
+        if (totalLen + addLen > 350 && usedParts.isNotEmpty()) break
+        usedParts.add(part)
+        totalLen += addLen
     }
 
-    return InjectionResult("(KYT: $inner)", sorted.size, confidence)
+    val inner = usedParts.joinToString(" | ")
+    return InjectionResult("(KYT: $inner)", usedParts.size, confidence)
 }
 
 // ── Compact Mobile Format ────────────────────────────────────
