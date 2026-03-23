@@ -164,10 +164,6 @@ class KytKeyboardView @JvmOverloads constructor(
         if (BuildConfig.DEBUG) {
             Log.d("KytKeyboard", "onSizeChanged: actual=${h}px (${h / resources.displayMetrics.density}dp)")
         }
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
         recomputeLayout()
     }
 
