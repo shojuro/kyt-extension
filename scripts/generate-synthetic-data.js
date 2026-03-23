@@ -1,448 +1,350 @@
+#!/usr/bin/env node
 /**
- * Main Orchestrator for Synthetic Data Generation
+ * Synthetic Conversation Generator for K.Y.T. Pipeline Testing
  *
- * Coordinates generation of NER, Entity Linking, and Reranking datasets
- * with quality sampling workflow
+ * Generates 1000 diverse conversations across two ICPs (developers + lonelies)
+ * using Claude Haiku 4.5, covering all 4 Russell's Circumplex quadrants.
+ *
+ * Output: scripts/synthetic-conversations.json
+ *
+ * Usage:
+ *   node scripts/generate-synthetic-data.js [--count 1000] [--output path.json]
  */
 
-import { generateNERDataset } from './generate-ner-dataset.js';
-import { generateLinkingDataset } from './generate-linking-dataset.js';
-import { generateRerankingDataset } from './generate-reranking-dataset.js';
-import { assessQuality } from './lib/validation.js';
-import fs from 'fs/promises';
-import readline from 'readline';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-/**
- * 6-Step Quality Sampling Workflow
- */
-export async function generateSyntheticData(options = {}) {
-  const {
-    nerCount = 10000,
-    linkingCount = 10000,
-    rerankingCount = 5000,
-    sampleSize = 50,
-    outputDir = 'data'
-  } = options;
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
-  console.log(`
-╔══════════════════════════════════════════════════════════════╗
-║                                                              ║
-║        🧬 SYNTHETIC DATA GENERATION ORCHESTRATOR 🧬          ║
-║                                                              ║
-║  Phase 1: Quality Sampling (${sampleSize} examples per dataset)       ║
-║  Phase 2: User Review & Approval                            ║
-║  Phase 3: Full-Scale Generation                             ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-`);
-
-  console.log(`📊 Target Volumes:`);
-  console.log(`   - NER: ${nerCount.toLocaleString()} examples`);
-  console.log(`   - Entity Linking: ${linkingCount.toLocaleString()} examples`);
-  console.log(`   - Reranking: ${rerankingCount.toLocaleString()} examples`);
-  console.log(`   - Total: ${(nerCount + linkingCount + rerankingCount).toLocaleString()} examples\n`);
-
-  // ============================================
-  // STEP 1: Generate Quality Samples
-  // ============================================
-  console.log(`\n${'═'.repeat(60)}`);
-  console.log(`📝 STEP 1: GENERATING QUALITY SAMPLES (${sampleSize} each)`);
-  console.log(`${'═'.repeat(60)}\n`);
-
-  const sampleResults = {
-    ner: null,
-    linking: null,
-    reranking: null
-  };
-
-  try {
-    // NER Samples
-    console.log(`\n🧬 Generating NER samples...`);
-    const nerResult = await generateNERDataset({
-      count: sampleSize,
-      outputPath: `${outputDir}/samples/ner-sample.json`,
-      datasetName: 'ner-sample'
-    });
-    sampleResults.ner = nerResult;
-
-    // Entity Linking Samples
-    console.log(`\n🔗 Generating Entity Linking samples...`);
-    const linkingResult = await generateLinkingDataset({
-      count: sampleSize,
-      outputPath: `${outputDir}/samples/linking-sample.json`,
-      datasetName: 'linking-sample'
-    });
-    sampleResults.linking = linkingResult;
-
-    // Reranking Samples
-    console.log(`\n🎯 Generating Reranking samples...`);
-    const rerankingResult = await generateRerankingDataset({
-      count: sampleSize,
-      outputPath: `${outputDir}/samples/reranking-sample.json`,
-      datasetName: 'reranking-sample'
-    });
-    sampleResults.reranking = rerankingResult;
-
-  } catch (error) {
-    console.error(`\n❌ Fatal error during sample generation:`, error);
-    return {
-      success: false,
-      phase: 'sampling',
-      error: error.message
-    };
+// Load .env
+const envPath = resolve(__dirname, '../mcp/.env');
+try {
+  const envContent = readFileSync(envPath, 'utf-8');
+  for (const line of envContent.split('\n')) {
+    const match = line.match(/^([A-Z_]+)=(.+)$/);
+    if (match && !process.env[match[1]]) {
+      process.env[match[1]] = match[2].trim();
+    }
   }
+} catch { /* no .env */ }
 
-  // ============================================
-  // STEP 2: Quality Assessment
-  // ============================================
-  console.log(`\n${'═'.repeat(60)}`);
-  console.log(`📊 STEP 2: QUALITY ASSESSMENT`);
-  console.log(`${'═'.repeat(60)}\n`);
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const TEST_USER_ID = 'b0000002-0000-4000-a000-000000000002';
 
-  const qualityReports = {};
+// ============================================================================
+// PERSONAS
+// ============================================================================
 
-  try {
-    // Load and assess each sample
-    const nerSamples = JSON.parse(await fs.readFile(`${outputDir}/samples/ner-sample.json`, 'utf-8'));
-    const linkingSamples = JSON.parse(await fs.readFile(`${outputDir}/samples/linking-sample.json`, 'utf-8'));
-    const rerankingSamples = JSON.parse(await fs.readFile(`${outputDir}/samples/reranking-sample.json`, 'utf-8'));
+const DEV_PERSONAS = [
+  { id: 'DEV_001', name: 'Marcus Thorne', tone: 'Executive, concise, focused on ROI and strategic risk', focus: 'business strategy' },
+  { id: 'DEV_002', name: 'Elena Vance', tone: 'Highly technical, uses DevOps jargon, focused on implementation details', focus: 'CI/CD and infrastructure' },
+  { id: 'DEV_003', name: 'Sloane Whitaker', tone: 'Impatient startup founder, fast-paced, wants automation yesterday', focus: 'AI orchestration' },
+  { id: 'DEV_004', name: 'David Chen', tone: 'Formal compliance officer, detail-oriented, worried about legalities', focus: 'compliance and security' },
+  { id: 'DEV_005', name: 'Jax Miller', tone: 'Blunt senior pentester, hacker-speak, focused on exploit chains', focus: 'vulnerability research' },
+];
 
-    qualityReports.ner = assessQuality(nerSamples, 'ner');
-    qualityReports.linking = assessQuality(linkingSamples, 'linking');
-    qualityReports.reranking = assessQuality(rerankingSamples, 'reranking');
+const LONELY_PERSONAS = [
+  { id: 'LON_001', name: 'Sarah M.', tone: 'Vulnerable and reflective, sometimes hopeful', emotionalRange: 'grief, nostalgia, hope, occasional joy' },
+  { id: 'LON_002', name: 'Kevin G.', tone: 'Dry humor masking deep pain, self-deprecating', emotionalRange: 'loneliness, self-deprecation, small victories, contentment' },
+  { id: 'LON_003', name: 'Maya R.', tone: 'Anxious and fast-talking, spirals easily but rebounds', emotionalRange: 'panic, relief, excitement, dread' },
+  { id: 'LON_004', name: 'Leo T.', tone: 'Philosophical and searching, alternates between wonder and anger', emotionalRange: 'existential wonder, anger at injustice, calm acceptance' },
+  { id: 'LON_005', name: 'Jamie W.', tone: 'Warm and chatty, shares everything, emotionally expressive', emotionalRange: 'excitement about hobbies, frustration with family, gratitude, jealousy' },
+];
 
-    // Display quality reports
-    console.log(`\n🧬 NER Quality Report:`);
-    console.log(`   ✅ Pass Rate: ${qualityReports.ner.passRate}`);
-    console.log(`   📏 Avg Text Length: ${qualityReports.ner.avgTextLength} chars`);
-    console.log(`   🏷️  Unique Entities: ${qualityReports.ner.uniqueEntities}`);
-    console.log(`   ❌ Failed: ${qualityReports.ner.failed}`);
+// ============================================================================
+// TOPIC MAPS — All 4 Russell's Circumplex Quadrants
+// ============================================================================
 
-    console.log(`\n🔗 Entity Linking Quality Report:`);
-    console.log(`   ✅ Pass Rate: ${qualityReports.linking.passRate}`);
-    console.log(`   📏 Avg Context Length: ${qualityReports.linking.avgTextLength} chars`);
-    console.log(`   🏷️  Unique Entities: ${qualityReports.linking.uniqueEntities}`);
-    console.log(`   ❌ Failed: ${qualityReports.linking.failed}`);
+const DEV_TOPICS = [
+  'SQL injection vulnerability in a legacy database',
+  'API authentication bypass discovered during pentest',
+  'CI/CD pipeline security — secrets scanning failing',
+  'Setting up a multi-agent AI orchestration workflow',
+  'Cloud misconfiguration exposing S3 buckets',
+  'Handling sales objections for cybersecurity services',
+  'SOC 2 compliance audit preparation',
+  'Incident response to suspected ransomware',
+  'Identity and access management overhaul',
+  'Post-mortem analysis of a production outage',
+];
 
-    console.log(`\n🎯 Reranking Quality Report:`);
-    console.log(`   ✅ Pass Rate: ${qualityReports.reranking.passRate}`);
-    console.log(`   📏 Avg Passage Length: ${qualityReports.reranking.avgTextLength} chars`);
-    console.log(`   ❌ Failed: ${qualityReports.reranking.failed}`);
+const EMOTIONAL_TOPICS = [
+  // High-arousal negative (panic, rage, betrayal)
+  'Career panic — might lose job and visa',
+  'Furious at a friend who betrayed a deeply personal secret',
+  'Public humiliation during a work presentation gone wrong',
+  'Financial crisis — behind on rent with no safety net',
+  'Discovered partner was lying about something major for months',
+  // Low-arousal negative (grief, melancholy, emptiness)
+  'Processing the anniversary of a parent passing away',
+  'Chronic loneliness — days without speaking to another person',
+  'Feeling completely invisible and forgotten by old friends',
+  'Burnout so deep that even hobbies feel like chores',
+  'Missing home desperately after moving to a new country alone',
+  // High-arousal positive (excitement, euphoria, celebration)
+  'Just got the dream job offer after months of rejection',
+  'Falling in love with someone new and it feels incredible',
+  'Creative breakthrough on a personal passion project',
+  'First day exploring a new country — everything feels magical',
+  'Unexpected reunion with a childhood best friend after 10 years',
+  // Low-arousal positive (contentment, gratitude, peace)
+  'Quiet Sunday morning with coffee and a really good book',
+  'Gratitude for a small unexpected act of kindness from a stranger',
+  'Happy nostalgia remembering childhood summers at grandparents house',
+  'Peaceful acceptance after finally letting go of an old grudge',
+  'Small daily win — finally fixed something that was broken for weeks',
+];
 
-    // Check if quality meets threshold (95%)
-    const allPassRates = [
-      parseFloat(qualityReports.ner.passRate),
-      parseFloat(qualityReports.linking.passRate),
-      parseFloat(qualityReports.reranking.passRate)
-    ];
+const NOISE_TOPICS = [
+  'What is the weather like today?',
+  'Add milk and eggs to my grocery list',
+  'What time is it in Tokyo right now?',
+  'Tell me a joke',
+  'How do I convert 30 Celsius to Fahrenheit?',
+  'What is 15% tip on a $47 bill?',
+  'What year did the Berlin Wall fall?',
+  'Translate hello into Japanese',
+  'How do I reset my wifi router?',
+  'What is the capital of Thailand?',
+];
 
-    const minPassRate = Math.min(...allPassRates);
-    if (minPassRate < 95.0) {
-      console.log(`\n⚠️  WARNING: Quality below 95% threshold (minimum: ${minPassRate.toFixed(1)}%)`);
-      console.log(`   Consider adjusting prompts or validation rules before proceeding.\n`);
+const PLATFORMS = ['chatgpt', 'chatgpt', 'chatgpt', 'chatgpt', 'chatgpt',
+                   'claude', 'claude', 'claude',
+                   'gemini', 'gemini'];
+
+// ============================================================================
+// GENERATION via Edge Function (no local API key needed)
+// ============================================================================
+
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+async function callLLM(prompt) {
+  if (ANTHROPIC_KEY) {
+    // Direct Anthropic API
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 4000,
+        system: 'You generate realistic conversations. Return ONLY a JSON array of {"role":"user","content":"..."} and {"role":"assistant","content":"..."} objects. No markdown fencing, no explanation. Do not include real PII — use fictional details only.',
+        messages: [
+          { role: 'user', content: prompt },
+          { role: 'assistant', content: '[' },
+        ],
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`Haiku ${res.status}: ${errText.substring(0, 100)}`);
     }
 
-  } catch (error) {
-    console.error(`\n❌ Error during quality assessment:`, error);
-    return {
-      success: false,
-      phase: 'quality_assessment',
-      error: error.message
-    };
+    const data = await res.json();
+    let text = '[' + (data.content?.[0]?.text || '[]');
+    // Strip markdown code fencing if present
+    text = text.replace(/```(?:json)?\s*\n?/gm, '').replace(/\n?```\s*$/gm, '');
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      // Try to repair truncated JSON — find last complete object
+      const arrayStart = text.indexOf('[');
+      if (arrayStart >= 0) {
+        let repaired = text.substring(arrayStart);
+        // Find last complete }, then close the array
+        const lastBrace = repaired.lastIndexOf('}');
+        if (lastBrace > 0) {
+          repaired = repaired.substring(0, lastBrace + 1) + ']';
+          try { return JSON.parse(repaired); } catch { /* fall through */ }
+        }
+      }
+      throw new Error('No JSON array in response: ' + text.substring(0, 80));
+    }
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch {
+      // Truncated — find last complete object
+      let repaired = jsonMatch[0];
+      const lastBrace = repaired.lastIndexOf('}');
+      if (lastBrace > 0) {
+        repaired = repaired.substring(0, lastBrace + 1) + ']';
+        return JSON.parse(repaired);
+      }
+      throw new Error('JSON parse failed after repair attempt');
+    }
   }
 
-  // ============================================
-  // STEP 3: User Review & Approval
-  // ============================================
-  console.log(`\n${'═'.repeat(60)}`);
-  console.log(`👀 STEP 3: USER REVIEW`);
-  console.log(`${'═'.repeat(60)}\n`);
+  // Fallback: edge function
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/llm_completion`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'apikey': SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({
+      system: 'You generate realistic conversations. Return ONLY a JSON array.',
+      user: prompt,
+      max_tokens: 1500,
+    }),
+  });
 
-  console.log(`Sample files saved to:`);
-  console.log(`   - ${outputDir}/samples/ner-sample.json`);
-  console.log(`   - ${outputDir}/samples/linking-sample.json`);
-  console.log(`   - ${outputDir}/samples/reranking-sample.json\n`);
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`llm_completion ${res.status}: ${errText.substring(0, 100)}`);
+  }
 
-  console.log(`📋 Total Sample Cost: $${(
-    sampleResults.ner.cost +
-    sampleResults.linking.cost +
-    sampleResults.reranking.cost
-  ).toFixed(4)}\n`);
+  const data = await res.json();
+  const text = data.content || data.text || JSON.stringify(data);
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) throw new Error('No JSON array in LLM response');
+  return JSON.parse(jsonMatch[0]);
+}
 
-  // Interactive approval (only in interactive mode)
-  if (options.autoApprove) {
-    console.log(`✅ Auto-approved (--approve flag)\n`);
-  } else if (process.stdin.isTTY) {
-    const approved = await promptUserApproval();
-    if (!approved) {
-      console.log(`\n❌ Generation cancelled by user.\n`);
-      return {
-        success: false,
-        phase: 'user_approval',
-        message: 'User declined to proceed with full generation'
-      };
-    }
+async function generateConversation(persona, topic, turns, type) {
+  let prompt;
+
+  if (type === 'dev') {
+    prompt = `Generate a ${turns}-turn conversation between ${persona.name} and an AI assistant. ${persona.name}'s personality: ${persona.tone}. Focus area: ${persona.focus}. Topic: "${topic}". Make it professional and technically specific. Each turn has a user message and an assistant response.`;
+  } else if (type === 'emotional') {
+    prompt = `Generate a ${turns}-turn conversation between ${persona.name} and an AI assistant (like ChatGPT). ${persona.name}'s personality: ${persona.tone}. Their emotional range includes: ${persona.emotionalRange}. Topic: "${topic}". Make the conversation emotionally authentic and deeply personal — ${persona.name} shares real feelings, specific memories, and vulnerable thoughts. The AI responds with genuine empathy. NOT surface-level — go deep.`;
   } else {
-    console.log(`⚠️  Non-interactive mode: Skipping user approval prompt`);
-    console.log(`   Use --approve flag to auto-approve in CI/CD\n`);
+    prompt = `Generate a ${turns}-turn trivial conversation between a user and an AI assistant. Topic: "${topic}". Keep it completely surface-level with zero emotional depth. Short, practical exchanges.`;
   }
 
-  // ============================================
-  // STEP 4: Full-Scale Generation
-  // ============================================
-  console.log(`\n${'═'.repeat(60)}`);
-  console.log(`🚀 STEP 4: FULL-SCALE GENERATION`);
-  console.log(`${'═'.repeat(60)}\n`);
-
-  const fullResults = {
-    ner: null,
-    linking: null,
-    reranking: null
-  };
-
-  try {
-    // NER Full Dataset
-    console.log(`\n🧬 Generating NER dataset (${nerCount.toLocaleString()} examples)...`);
-    fullResults.ner = await generateNERDataset({
-      count: nerCount,
-      outputPath: `${outputDir}/ner-dataset.json`,
-      datasetName: 'ner'
-    });
-
-    // Entity Linking Full Dataset
-    console.log(`\n🔗 Generating Entity Linking dataset (${linkingCount.toLocaleString()} examples)...`);
-    fullResults.linking = await generateLinkingDataset({
-      count: linkingCount,
-      outputPath: `${outputDir}/linking-dataset.json`,
-      datasetName: 'linking'
-    });
-
-    // Reranking Full Dataset
-    console.log(`\n🎯 Generating Reranking dataset (${rerankingCount.toLocaleString()} examples)...`);
-    fullResults.reranking = await generateRerankingDataset({
-      count: rerankingCount,
-      outputPath: `${outputDir}/reranking-dataset.json`,
-      datasetName: 'reranking'
-    });
-
-  } catch (error) {
-    console.error(`\n❌ Fatal error during full generation:`, error);
-    return {
-      success: false,
-      phase: 'full_generation',
-      error: error.message,
-      partialResults: fullResults
-    };
-  }
-
-  // ============================================
-  // STEP 5: Final Validation
-  // ============================================
-  console.log(`\n${'═'.repeat(60)}`);
-  console.log(`✅ STEP 5: FINAL VALIDATION`);
-  console.log(`${'═'.repeat(60)}\n`);
-
-  try {
-    // Load and validate final datasets
-    const nerFinal = JSON.parse(await fs.readFile(`${outputDir}/ner-dataset.json`, 'utf-8'));
-    const linkingFinal = JSON.parse(await fs.readFile(`${outputDir}/linking-dataset.json`, 'utf-8'));
-    const rerankingFinal = JSON.parse(await fs.readFile(`${outputDir}/reranking-dataset.json`, 'utf-8'));
-
-    const finalQuality = {
-      ner: assessQuality(nerFinal, 'ner'),
-      linking: assessQuality(linkingFinal, 'linking'),
-      reranking: assessQuality(rerankingFinal, 'reranking')
-    };
-
-    console.log(`🧬 NER Final: ${finalQuality.ner.valid}/${nerFinal.length} valid (${finalQuality.ner.passRate})`);
-    console.log(`🔗 Linking Final: ${finalQuality.linking.valid}/${linkingFinal.length} valid (${finalQuality.linking.passRate})`);
-    console.log(`🎯 Reranking Final: ${finalQuality.reranking.valid}/${rerankingFinal.length} valid (${finalQuality.reranking.passRate})\n`);
-
-  } catch (error) {
-    console.error(`\n⚠️  Warning: Final validation failed:`, error.message);
-    console.log(`   Datasets were generated but validation could not be completed.\n`);
-  }
-
-  // ============================================
-  // STEP 6: Summary Report
-  // ============================================
-  console.log(`\n${'═'.repeat(60)}`);
-  console.log(`📊 STEP 6: FINAL SUMMARY`);
-  console.log(`${'═'.repeat(60)}\n`);
-
-  const totalCost = (
-    sampleResults.ner.cost +
-    sampleResults.linking.cost +
-    sampleResults.reranking.cost +
-    fullResults.ner.cost +
-    fullResults.linking.cost +
-    fullResults.reranking.cost
-  );
-
-  const totalExamples = (
-    fullResults.ner.count +
-    fullResults.linking.count +
-    fullResults.reranking.count
-  );
-
-  console.log(`✨ Generation Complete!`);
-  console.log(`\n📈 Statistics:`);
-  console.log(`   - Total Examples: ${totalExamples.toLocaleString()}`);
-  console.log(`   - NER: ${fullResults.ner.count.toLocaleString()} examples`);
-  console.log(`   - Entity Linking: ${fullResults.linking.count.toLocaleString()} examples`);
-  console.log(`   - Reranking: ${fullResults.reranking.count.toLocaleString()} examples`);
-  console.log(`\n💰 Cost Breakdown:`);
-  console.log(`   - Sampling Phase: $${(
-    sampleResults.ner.cost +
-    sampleResults.linking.cost +
-    sampleResults.reranking.cost
-  ).toFixed(4)}`);
-  console.log(`   - Full Generation: $${(
-    fullResults.ner.cost +
-    fullResults.linking.cost +
-    fullResults.reranking.cost
-  ).toFixed(4)}`);
-  console.log(`   - Total Cost: $${totalCost.toFixed(4)}`);
-  console.log(`   - Cost Per Example: $${(totalCost / totalExamples).toFixed(6)}`);
-  console.log(`\n📁 Output Files:`);
-  console.log(`   - ${outputDir}/ner-dataset.json (${fullResults.ner.count.toLocaleString()} examples)`);
-  console.log(`   - ${outputDir}/linking-dataset.json (${fullResults.linking.count.toLocaleString()} examples)`);
-  console.log(`   - ${outputDir}/reranking-dataset.json (${fullResults.reranking.count.toLocaleString()} examples)`);
-  console.log(`\n📊 Cost Tracking Files:`);
-  console.log(`   - ${outputDir}/ner-cost-tracking.json`);
-  console.log(`   - ${outputDir}/linking-cost-tracking.json`);
-  console.log(`   - ${outputDir}/reranking-cost-tracking.json\n`);
-
-  // Save summary report
-  const summaryReport = {
-    timestamp: new Date().toISOString(),
-    configuration: {
-      nerCount,
-      linkingCount,
-      rerankingCount,
-      sampleSize
-    },
-    sampling: {
-      ner: sampleResults.ner,
-      linking: sampleResults.linking,
-      reranking: sampleResults.reranking
-    },
-    full: {
-      ner: fullResults.ner,
-      linking: fullResults.linking,
-      reranking: fullResults.reranking
-    },
-    totals: {
-      examples: totalExamples,
-      cost: totalCost,
-      costPerExample: totalCost / totalExamples
-    }
-  };
-
-  await fs.writeFile(
-    `${outputDir}/generation-summary.json`,
-    JSON.stringify(summaryReport, null, 2)
-  );
-
-  console.log(`💾 Summary saved to: ${outputDir}/generation-summary.json\n`);
-
-  return {
-    success: true,
-    phase: 'complete',
-    summary: summaryReport
-  };
+  return callLLM(prompt);
 }
 
-/**
- * Prompt user for approval (interactive mode only)
- */
-async function promptUserApproval() {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
+// ============================================================================
+// MAIN
+// ============================================================================
 
-  return new Promise((resolve) => {
-    rl.question('Proceed with full-scale generation? (yes/no): ', (answer) => {
-      rl.close();
-      const normalized = answer.toLowerCase().trim();
-      resolve(normalized === 'yes' || normalized === 'y');
-    });
-  });
-}
-
-// CLI execution
-if (import.meta.url === `file://${process.argv[1]}`) {
-  // Parse CLI arguments
+async function main() {
   const args = process.argv.slice(2);
-  const options = {
-    nerCount: 10000,
-    linkingCount: 10000,
-    rerankingCount: 5000,
-    sampleSize: 50,
-    outputDir: 'data',
-    autoApprove: false
-  };
+  const countIdx = args.indexOf('--count');
+  const outputIdx = args.indexOf('--output');
+  const totalCount = countIdx !== -1 ? parseInt(args[countIdx + 1], 10) : 1000;
+  const outputPath = outputIdx !== -1 ? args[outputIdx + 1] : resolve(__dirname, 'synthetic-conversations.json');
 
-  // Simple argument parsing
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--ner-count' && args[i + 1]) {
-      options.nerCount = parseInt(args[i + 1]);
-      i++;
-    } else if (args[i] === '--linking-count' && args[i + 1]) {
-      options.linkingCount = parseInt(args[i + 1]);
-      i++;
-    } else if (args[i] === '--reranking-count' && args[i + 1]) {
-      options.rerankingCount = parseInt(args[i + 1]);
-      i++;
-    } else if (args[i] === '--sample-size' && args[i + 1]) {
-      options.sampleSize = parseInt(args[i + 1]);
-      i++;
-    } else if (args[i] === '--output-dir' && args[i + 1]) {
-      options.outputDir = args[i + 1];
-      i++;
-    } else if (args[i] === '--approve') {
-      options.autoApprove = true;
-    } else if (args[i] === '--help') {
-      console.log(`
-Usage: node scripts/generate-synthetic-data.js [options]
+  console.log(`\n🧪 K.Y.T. Synthetic Data Generator`);
+  console.log(`   Target: ${totalCount} conversations`);
+  console.log(`   Output: ${outputPath}`);
+  console.log(`   User:   ${TEST_USER_ID}\n`);
 
-Options:
-  --ner-count <n>          Number of NER examples (default: 10000)
-  --linking-count <n>      Number of Entity Linking examples (default: 10000)
-  --reranking-count <n>    Number of Reranking examples (default: 5000)
-  --sample-size <n>        Number of samples per dataset for quality check (default: 50)
-  --output-dir <path>      Output directory (default: 'data')
-  --approve                Auto-approve generation (skip user prompt)
-  --help                   Show this help message
+  // Distribution: 45% dev, 45% emotional, 10% noise
+  const devCount = Math.round(totalCount * 0.45);
+  const emotionalCount = Math.round(totalCount * 0.45);
+  const noiseCount = totalCount - devCount - emotionalCount;
 
-Examples:
-  # Generate with defaults (25K total)
-  node scripts/generate-synthetic-data.js
+  console.log(`   Distribution: ${devCount} dev, ${emotionalCount} emotional, ${noiseCount} noise\n`);
 
-  # Generate smaller dataset for testing
-  node scripts/generate-synthetic-data.js --ner-count 100 --linking-count 100 --reranking-count 50
+  const conversations = [];
+  let errors = 0;
 
-  # Custom output directory
-  node scripts/generate-synthetic-data.js --output-dir ./my-data
+  // Resume from existing file if present
+  if (existsSync(outputPath)) {
+    try {
+      const existing = JSON.parse(readFileSync(outputPath, 'utf-8'));
+      if (existing.conversations?.length > 0) {
+        conversations.push(...existing.conversations);
+        console.log(`📂 Resuming from ${conversations.length} existing conversations\n`);
+      }
+    } catch { /* start fresh */ }
+  }
 
-Environment Variables:
-  OPENAI_API_KEY          Required: Your OpenAI API key
-`);
-      process.exit(0);
+  const existingDevs = conversations.filter(c => c.icp === 'dev').length;
+  const existingEmotional = conversations.filter(c => c.icp === 'lonely').length;
+  const existingNoise = conversations.filter(c => c.icp === 'noise').length;
+
+  // Save progress every N conversations
+  function saveProgress() {
+    writeFileSync(outputPath, JSON.stringify({
+      conversations,
+      metadata: {
+        generated: conversations.length,
+        target: totalCount,
+        user_id: TEST_USER_ID,
+        dev_count: conversations.filter(c => c.icp === 'dev').length,
+        emotional_count: conversations.filter(c => c.icp === 'lonely').length,
+        noise_count: conversations.filter(c => c.icp === 'noise').length,
+        errors,
+        generated_at: new Date().toISOString(),
+      }
+    }, null, 2));
+  }
+
+  const PARALLEL = 10; // Concurrent API calls
+
+  // Build job queue: all conversations to generate
+  const jobs = [];
+
+  for (let i = existingDevs; i < devCount; i++) {
+    const persona = pick(DEV_PERSONAS);
+    jobs.push({ idx: i, prefix: 'synth-dev', persona, topic: pick(DEV_TOPICS), platform: pick(PLATFORMS), turns: randInt(3, 7), type: 'dev', icp: 'dev' });
+  }
+  for (let i = existingEmotional; i < emotionalCount; i++) {
+    const persona = pick(LONELY_PERSONAS);
+    jobs.push({ idx: i, prefix: 'synth-lon', persona, topic: pick(EMOTIONAL_TOPICS), platform: pick(PLATFORMS), turns: randInt(3, 8), type: 'emotional', icp: 'lonely' });
+  }
+  for (let i = existingNoise; i < noiseCount; i++) {
+    jobs.push({ idx: i, prefix: 'synth-noise', persona: null, topic: pick(NOISE_TOPICS), platform: pick(PLATFORMS), turns: randInt(2, 3), type: 'noise', icp: 'noise' });
+  }
+
+  console.log(`   Jobs queued: ${jobs.length} (parallel: ${PARALLEL})\n`);
+
+  // Process in parallel batches
+  for (let batch = 0; batch < jobs.length; batch += PARALLEL) {
+    const batchJobs = jobs.slice(batch, batch + PARALLEL);
+
+    const results = await Promise.allSettled(
+      batchJobs.map(async (job) => {
+        const messages = await generateConversation(job.persona, job.topic, job.turns, job.type);
+        return {
+          conversation_id: `${job.prefix}-${String(job.idx).padStart(4, '0')}`,
+          platform: job.platform,
+          persona_id: job.persona?.id || 'NOISE',
+          persona_name: job.persona?.name || 'General User',
+          topic: job.topic,
+          icp: job.icp,
+          messages,
+        };
+      })
+    );
+
+    for (const r of results) {
+      if (r.status === 'fulfilled') {
+        conversations.push(r.value);
+      } else {
+        errors++;
+        console.warn(`  ❌ ${r.reason?.message?.substring(0, 80)}`);
+      }
+    }
+
+    console.log(`  ✅ ${conversations.length}/${totalCount} (batch ${Math.floor(batch / PARALLEL) + 1}/${Math.ceil(jobs.length / PARALLEL)}, errors: ${errors})`);
+    saveProgress();
+
+    // Brief delay between parallel batches
+    if (batch + PARALLEL < jobs.length) {
+      await new Promise(r => setTimeout(r, 500));
     }
   }
 
-  // Run orchestrator
-  const result = await generateSyntheticData(options);
+  saveProgress();
 
-  if (!result.success) {
-    console.error(`\n❌ Generation failed at phase: ${result.phase}`);
-    if (result.error) {
-      console.error(`   Error: ${result.error}`);
-    }
-    process.exit(1);
-  }
-
-  process.exit(0);
+  console.log(`\n📊 Generation complete:`);
+  console.log(`   Total: ${conversations.length}`);
+  console.log(`   Dev:       ${conversations.filter(c => c.icp === 'dev').length}`);
+  console.log(`   Emotional: ${conversations.filter(c => c.icp === 'lonely').length}`);
+  console.log(`   Noise:     ${conversations.filter(c => c.icp === 'noise').length}`);
+  console.log(`   Errors:    ${errors}`);
+  console.log(`   Output:    ${outputPath}\n`);
 }
+
+main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });
