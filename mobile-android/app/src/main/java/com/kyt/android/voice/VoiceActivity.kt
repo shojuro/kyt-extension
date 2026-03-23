@@ -127,7 +127,7 @@ fun VoiceScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Know Your Things",
+                text = "Keep Your Thoughts",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

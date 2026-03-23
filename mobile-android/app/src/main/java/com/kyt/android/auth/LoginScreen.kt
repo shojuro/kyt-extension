@@ -35,7 +35,7 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
             style = MaterialTheme.typography.headlineLarge
         )
         Text(
-            text = "Know Your Things",
+            text = "Keep Your Thoughts",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 48.dp)
