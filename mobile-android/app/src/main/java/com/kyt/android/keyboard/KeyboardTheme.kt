@@ -25,7 +25,7 @@ object KeyboardTheme {
     // ── Dimensions (dp) ──────────────────────────────────────
 
     const val KEY_WIDTH_DP     = 36f
-    const val KEY_HEIGHT_DP    = 58f
+    const val KEY_HEIGHT_DP    = 66f
     const val KEY_RADIUS_DP    = 6f
     const val KEY_GAP_DP       = 3f
     const val CONTEXT_BAR_DP   = 28f
