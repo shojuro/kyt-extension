@@ -50,6 +50,11 @@ class KytInputMethodService : InputMethodService() {
     private var lastInjectionTime = 0L
     private var prefetchJob: Job? = null
 
+    // Query cache — reuse results when user expands a similar query
+    private var lastSearchQuery: String? = null
+    private var lastSearchInjection: String? = null
+    private var lastSearchTime = 0L
+
     // Track committed text ourselves — getExtractedText() fails on ChatGPT/Claude
     private val textBuffer = StringBuilder()
 
@@ -262,6 +267,8 @@ class KytInputMethodService : InputMethodService() {
             textBuffer.clear()
             injectionState = InjectionState.NONE
             injectedContextLength = 0
+            lastSearchQuery = null
+            lastSearchInjection = null
             prefetchJob?.cancel()
             updateContextBar()
             return
@@ -307,6 +314,20 @@ class KytInputMethodService : InputMethodService() {
         return if (!extracted.isNullOrBlank()) extracted else textBuffer.toString()
     }
 
+    /**
+     * Check if current query is similar enough to reuse cached results.
+     * Uses word overlap (Jaccard-like) with 30s TTL.
+     */
+    private fun canReuseLastSearch(currentText: String): Boolean {
+        val last = lastSearchQuery ?: return false
+        if (System.currentTimeMillis() - lastSearchTime > 30_000) return false
+        val currentWords = currentText.lowercase().split(Regex("\\s+")).filter { it.length > 2 }.toSet()
+        val lastWords = last.lowercase().split(Regex("\\s+")).filter { it.length > 2 }.toSet()
+        if (currentWords.isEmpty() || lastWords.isEmpty()) return false
+        val overlap = currentWords.intersect(lastWords).size.toDouble() / maxOf(currentWords.size, lastWords.size)
+        return overlap > 0.6
+    }
+
     private suspend fun prefetchContext() {
         if (BuildConfig.DEBUG) Log.d(TAG, "prefetchContext: start")
         val ic = currentInputConnection
@@ -329,6 +350,16 @@ class KytInputMethodService : InputMethodService() {
         if (classification.intent == KytIntent.SKIP) {
             injectionState = InjectionState.NONE
             return
+        }
+
+        // Cache hit: reuse last result if query is similar (saves full round-trip)
+        if (canReuseLastSearch(text)) {
+            val cached = lastSearchInjection
+            if (cached != null) {
+                if (BuildConfig.DEBUG) Log.d(TAG, "prefetchContext: cache hit, reusing last result")
+                withContext(Dispatchers.Main) { injectContextIntoField(cached) }
+                return
+            }
         }
 
         val userId = AuthManager.getUserId(this)
@@ -386,6 +417,11 @@ class KytInputMethodService : InputMethodService() {
         val injection = buildVisibleInjection(items, text.take(200))
 
         if (injection.itemCount > 0) {
+            // Update cache
+            lastSearchQuery = text
+            lastSearchInjection = injection.text
+            lastSearchTime = System.currentTimeMillis()
+
             // Inject directly into the text field (must be on Main thread)
             withContext(Dispatchers.Main) {
                 injectContextIntoField(injection.text)

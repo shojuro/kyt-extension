@@ -5,10 +5,12 @@ import android.graphics.*
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
+import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import com.kyt.android.BuildConfig
 
 /**
  * K.Y.T. Keyboard — Custom View with Canvas rendering.
@@ -151,7 +153,17 @@ class KytKeyboardView @JvmOverloads constructor(
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val width = MeasureSpec.getSize(widthMeasureSpec)
         val height = KeyboardLayout.totalHeightPx(resources.displayMetrics.density)
+        if (BuildConfig.DEBUG) {
+            Log.d("KytKeyboard", "onMeasure: requested=${height}px (${height / resources.displayMetrics.density}dp), KEY_HEIGHT_DP=${KeyboardTheme.KEY_HEIGHT_DP}")
+        }
         setMeasuredDimension(width, height)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (BuildConfig.DEBUG) {
+            Log.d("KytKeyboard", "onSizeChanged: actual=${h}px (${h / resources.displayMetrics.density}dp)")
+        }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
