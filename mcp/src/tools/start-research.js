@@ -25,7 +25,7 @@ export async function startResearchHandler({
   if (passphrase) setPassphrase(passphrase);
   if (!hasPassphrase()) {
     return {
-      content: [{ type: 'text', text: 'Auth unavailable. Import cookies first (auto-key handles encryption), or pass `passphrase` to override.' }],
+      content: [{ type: 'text', text: 'Passphrase required. Pass `passphrase` parameter.' }],
       isError: true,
     };
   }

@@ -17,7 +17,6 @@ import { randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'node:
 
 const KYT_DIR = join(homedir(), '.kyt');
 const AUTH_PATH = join(KYT_DIR, 'notebooklm-auth.enc');
-const AUTO_KEY_PATH = join(KYT_DIR, 'encryption-key');
 
 const NOTEBOOKLM_HOME = 'https://notebooklm.google.com';
 const TOKEN_RE = /"SNlM0e"\s*:\s*"([^"]+)"/;
@@ -102,119 +101,30 @@ function ensureKytDir() {
   }
 }
 
-// --- Auto-key management ---
-
-/**
- * Get or create the auto-generated encryption key.
- * Key is a 64-char hex string (32 bytes) stored at ~/.kyt/encryption-key.
- * File created with mode 0600 (owner read/write only).
- *
- * @returns {string|null} Hex key string, or null if creation fails
- */
-function ensureAutoKey() {
-  ensureKytDir();
-  if (existsSync(AUTO_KEY_PATH)) {
-    return readFileSync(AUTO_KEY_PATH, 'utf8').trim();
-  }
-  try {
-    const key = randomBytes(32).toString('hex');
-    writeFileSync(AUTO_KEY_PATH, key, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-    return key;
-  } catch (e) {
-    // wx flag: if another process created it between our check and write, read it
-    if (e.code === 'EEXIST') {
-      return readFileSync(AUTO_KEY_PATH, 'utf8').trim();
-    }
-    process.stderr.write(`[kyt-auth] Warning: Could not create auto-key: ${e.message}\n`);
-    return null;
-  }
-}
-
-/**
- * Resolve the effective passphrase for cookie encryption/decryption.
- * Priority: explicit passphrase > auto-key file > NOTEBOOKLM_PASSPHRASE env var
- *
- * @param {string} [explicitPassphrase] - User-provided passphrase (overrides all)
- * @returns {string|null} Effective passphrase, or null if none available
- */
-export function getEffectivePassphrase(explicitPassphrase) {
-  if (explicitPassphrase && explicitPassphrase.length >= 4) return explicitPassphrase;
-
-  // Auto-key (preferred for zero-config operation)
-  const autoKey = existsSync(AUTO_KEY_PATH) ? readFileSync(AUTO_KEY_PATH, 'utf8').trim() : null;
-  if (autoKey && autoKey.length >= 4) return autoKey;
-
-  // Environment variable (legacy)
-  const envPass = process.env.NOTEBOOKLM_PASSPHRASE;
-  if (envPass && envPass.length >= 4) return envPass;
-
-  return null;
-}
-
-/**
- * Migrate from passphrase-encrypted cookies to auto-key encryption.
- * One-time operation: decrypt with old passphrase, re-encrypt with auto-key.
- *
- * @param {string} oldPassphrase - Current passphrase
- * @returns {{ success: boolean, error?: string }}
- */
-export function migrateToAutoKey(oldPassphrase) {
-  try {
-    if (!existsSync(AUTH_PATH)) {
-      return { success: false, error: 'No encrypted auth file found' };
-    }
-    const encrypted = readFileSync(AUTH_PATH, 'utf8').trim();
-    const data = decryptData(encrypted, oldPassphrase);
-
-    const autoKey = ensureAutoKey();
-    if (!autoKey) {
-      return { success: false, error: 'Could not create auto-key file' };
-    }
-
-    const reEncrypted = encryptData(data, autoKey);
-    writeFileSync(AUTH_PATH, reEncrypted, 'utf8');
-    return { success: true };
-  } catch (e) {
-    return { success: false, error: e.message };
-  }
-}
-
-// --- Cookie persistence ---
-
 /**
  * Save encrypted cookies to disk.
- * Uses auto-key if no explicit passphrase provided.
  *
  * @param {{ name: string, value: string, domain: string }[]} cookies
- * @param {string} [passphrase] - Explicit passphrase, or auto-key if omitted
+ * @param {string} passphrase
  */
 function saveCookies(cookies, passphrase) {
   ensureKytDir();
-  const effectivePass = passphrase || ensureAutoKey();
-  if (!effectivePass) {
-    throw new Error('No passphrase or auto-key available for encryption.');
-  }
-  const encrypted = encryptData({ cookies, savedAt: new Date().toISOString() }, effectivePass);
+  const encrypted = encryptData({ cookies, savedAt: new Date().toISOString() }, passphrase);
   writeFileSync(AUTH_PATH, encrypted, 'utf8');
 }
 
 /**
  * Load and decrypt cookies from disk.
- * Uses auto-key if no explicit passphrase provided.
  *
- * @param {string} [passphrase] - Explicit passphrase, or auto-key if omitted
+ * @param {string} passphrase
  * @returns {{ cookies: { name: string, value: string, domain: string }[], savedAt: string }}
  */
 function loadCookies(passphrase) {
   if (!existsSync(AUTH_PATH)) {
     throw new Error('No saved NotebookLM auth found. Run the login flow first.');
   }
-  const effectivePass = getEffectivePassphrase(passphrase);
-  if (!effectivePass) {
-    throw new Error('No passphrase or auto-key available for decryption.');
-  }
   const encrypted = readFileSync(AUTH_PATH, 'utf8').trim();
-  return decryptData(encrypted, effectivePass);
+  return decryptData(encrypted, passphrase);
 }
 
 // --- In-memory session state ---
@@ -285,16 +195,15 @@ async function fetchTokens(cookieHeader) {
  * Playwright MCP server via callback.
  *
  * @param {object} opts
- * @param {string} [opts.passphrase] - Encryption passphrase (optional — uses auto-key if omitted)
+ * @param {string} opts.passphrase - Encryption passphrase for cookie storage
  * @param {(action: string, params: object) => Promise<any>} opts.playwrightCall
  *   Callback to invoke Playwright MCP tools (e.g., browser_navigate, browser_snapshot)
  * @param {number} [opts.timeoutMs=120000] - Max wait for user to complete login
  * @returns {Promise<{ cookieCount: number }>}
  */
 export async function login({ passphrase, playwrightCall, timeoutMs = 120_000 }) {
-  const effectivePass = getEffectivePassphrase(passphrase) || ensureAutoKey();
-  if (!effectivePass || effectivePass.length < 4) {
-    throw new Error('No passphrase or auto-key available. Provide a passphrase or ensure ~/.kyt/ is writable.');
+  if (!passphrase || passphrase.length < 4) {
+    throw new Error('Passphrase must be at least 4 characters.');
   }
 
   // Navigate to NotebookLM (will redirect to Google sign-in if not authenticated)
@@ -366,8 +275,8 @@ export async function login({ passphrase, playwrightCall, timeoutMs = 120_000 })
     );
   }
 
-  // Encrypt and save (uses auto-key if no explicit passphrase)
-  saveCookies(cookies, effectivePass);
+  // Encrypt and save
+  saveCookies(cookies, passphrase);
 
   // Clear in-memory cache to force re-auth with new cookies
   _cachedAuth = null;
@@ -390,13 +299,12 @@ export async function login({ passphrase, playwrightCall, timeoutMs = 120_000 })
  * "SID=xxx; HSID=yyy; ..."
  *
  * @param {string} cookieString - Raw cookie header value
- * @param {string} [passphrase] - Encryption passphrase (optional — uses auto-key if omitted)
+ * @param {string} passphrase - Encryption passphrase
  * @returns {{ cookieCount: number }}
  */
 export function importCookies(cookieString, passphrase) {
-  const effectivePass = getEffectivePassphrase(passphrase) || ensureAutoKey();
-  if (!effectivePass || effectivePass.length < 4) {
-    throw new Error('No passphrase or auto-key available. Provide a passphrase or ensure ~/.kyt/ is writable.');
+  if (!passphrase || passphrase.length < 4) {
+    throw new Error('Passphrase must be at least 4 characters.');
   }
   if (!cookieString || typeof cookieString !== 'string') {
     throw new Error('Cookie string is required.');
@@ -420,7 +328,7 @@ export function importCookies(cookieString, passphrase) {
     );
   }
 
-  saveCookies(cookies, effectivePass);
+  saveCookies(cookies, passphrase);
   _cachedAuth = null;
 
   return { cookieCount: cookies.length };
@@ -432,7 +340,7 @@ export function importCookies(cookieString, passphrase) {
  * Decrypts cookies from disk (if not already cached), fetches fresh
  * CSRF/session tokens from NotebookLM page. Tokens are ephemeral (memory only).
  *
- * @param {string} [passphrase] - Explicit passphrase (optional — uses auto-key if omitted)
+ * @param {string} passphrase - Encryption passphrase
  * @param {boolean} [forceRefresh=false]
  * @returns {Promise<{ cookieHeader: string, csrfToken: string, sessionId: string }>}
  */
@@ -491,8 +399,6 @@ export const __testing__ = {
   encryptData,
   decryptData,
   buildCookieHeader,
-  ensureAutoKey,
   REQUIRED_COOKIE_NAMES,
   AUTH_PATH,
-  AUTO_KEY_PATH,
 };

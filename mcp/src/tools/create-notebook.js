@@ -25,7 +25,7 @@ export async function createNotebookHandler({ title, projectId, passphrase }) {
     return {
       content: [{
         type: 'text',
-        text: 'Auth unavailable. Import cookies first (auto-key handles encryption), or pass `passphrase` to override.',
+        text: 'Passphrase required to decrypt NotebookLM credentials. Pass `passphrase` parameter.',
       }],
       isError: true,
     };
