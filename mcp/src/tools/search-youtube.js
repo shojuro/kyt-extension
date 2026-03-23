@@ -116,7 +116,7 @@ export async function searchYoutubeHandler({
   if (passphrase) setPassphrase(passphrase);
   if (!hasPassphrase()) {
     return {
-      content: [{ type: 'text', text: 'Passphrase required. Pass `passphrase` parameter.' }],
+      content: [{ type: 'text', text: 'Auth unavailable. Import cookies first (auto-key handles encryption), or pass `passphrase` to override.' }],
       isError: true,
     };
   }

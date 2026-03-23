@@ -38,10 +38,10 @@ try {
   }
 } catch { /* no .env */ }
 
-const passphrase = process.env.NOTEBOOKLM_PASSPHRASE;
+// Passphrase is optional — auto-key will be generated if not set
+const passphrase = process.env.NOTEBOOKLM_PASSPHRASE || undefined;
 if (!passphrase) {
-  console.error('❌ NOTEBOOKLM_PASSPHRASE not set in mcp/.env');
-  process.exit(1);
+  console.log('ℹ️  No NOTEBOOKLM_PASSPHRASE set — using auto-generated encryption key');
 }
 
 // Check for --header mode
