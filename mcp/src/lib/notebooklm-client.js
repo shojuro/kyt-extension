@@ -50,6 +50,9 @@ let _proxyAvailable = null;
 import { readFileSync as _readFileSync, existsSync as _existsSync } from 'fs';
 import { join as _join } from 'path';
 import { homedir as _homedir } from 'os';
+import { spawn as _spawn } from 'child_process';
+import { dirname as _dirname } from 'path';
+import { fileURLToPath as _fileURLToPath } from 'url';
 
 function getBridgeToken() {
   const tokenPath = _join(_homedir(), '.kyt', 'bridge-token');
@@ -62,6 +65,62 @@ function bridgeHeaders() {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
   return headers;
+}
+
+// --- Auto-start bridge ---
+
+let _bridgeStartAttempted = false;
+let _proxyLastCheck = 0;
+const PROXY_RECHECK_MS = 60_000;
+
+/**
+ * Ensure the cookie bridge server is running.
+ * Checks health endpoint; if not reachable, spawns as a detached process.
+ * Called once per MCP server lifetime (first NLM tool call).
+ */
+async function ensureBridgeRunning() {
+  if (_bridgeStartAttempted) return;
+  _bridgeStartAttempted = true;
+
+  // Check if already running
+  try {
+    const res = await fetch(`${RPC_PROXY_URL}/health`, { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      const body = await res.json();
+      if (body.service === 'kyt-cookie-bridge') return; // Verified it's ours
+    }
+  } catch { /* not running */ }
+
+  // Spawn bridge as detached process
+  const __dirname = _dirname(_fileURLToPath(import.meta.url));
+  const bridgePath = _join(__dirname, '..', 'native-host', 'kyt-cookie-server.js');
+
+  if (!_existsSync(bridgePath)) {
+    process.stderr.write('[kyt] Cookie bridge not found at ' + bridgePath + '\n');
+    return;
+  }
+
+  try {
+    const child = _spawn('node', [bridgePath], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    process.stderr.write('[kyt] Cookie bridge auto-started on port 19418\n');
+  } catch (e) {
+    process.stderr.write('[kyt] Failed to start cookie bridge: ' + e.message + '\n');
+    return;
+  }
+
+  // Wait for bridge to be ready (up to 3s)
+  for (let i = 0; i < 6; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    try {
+      const res = await fetch(`${RPC_PROXY_URL}/health`, { signal: AbortSignal.timeout(1000) });
+      if (res.ok) return;
+    } catch { /* not ready yet */ }
+  }
+  process.stderr.write('[kyt] Cookie bridge started but health check timed out\n');
 }
 
 /**
@@ -133,7 +192,15 @@ function requirePassphrase() {
  * @returns {Promise<string|null>} Raw response text, or null if proxy unavailable
  */
 async function tryProxyRpc(methodId, params, opts = {}) {
+  // Periodic recheck: if proxy was unavailable, retry after 60s
+  if (_proxyAvailable === false && Date.now() - _proxyLastCheck > PROXY_RECHECK_MS) {
+    _proxyAvailable = null;
+  }
   if (_proxyAvailable === false) return null;
+  _proxyLastCheck = Date.now();
+
+  // Auto-start bridge if needed (first call only)
+  await ensureBridgeRunning();
 
   try {
     const encoded = encodeRpcRequest(methodId, params);
