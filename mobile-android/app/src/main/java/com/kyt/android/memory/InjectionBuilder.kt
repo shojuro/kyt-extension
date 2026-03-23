@@ -148,6 +148,45 @@ private fun calculateConfidence(items: List<MemoryItem>): Double {
     return (maxSim * 0.7) + (avgSim * 0.3)
 }
 
+// ── Visible Pre-inject Format ────────────────────────────────
+
+/**
+ * Build a visible injection line for pre-injecting into the text field.
+ *
+ * Format: (KYT: snippet [platform] | snippet [platform])
+ * Designed to be visible to the user — medium density, single line.
+ * The "(KYT:" prefix is used as a guard marker by the injection state machine.
+ *
+ * @param maxCharsPerItem Maximum characters per content snippet
+ */
+fun buildVisibleInjection(
+    items: List<MemoryItem>,
+    query: String,
+    maxItems: Int = 2,
+    maxCharsPerItem: Int = 80
+): InjectionResult {
+    if (items.isEmpty()) return InjectionResult("", 0, 0.0)
+
+    val sorted = selectDiverseItems(items.sortedByDescending { it.similarity }, maxItems)
+    val confidence = calculateConfidence(sorted)
+
+    val parts = sorted.map { item ->
+        val prefix = if (item.role == "user") "You: " else ""
+        val content = sanitizeForInjection(item.content)
+            .replace(Regex("[\\n\\r]+"), " ")
+            .trim()
+            .take(maxCharsPerItem)
+        "$prefix$content [${item.platform}]"
+    }
+
+    var inner = parts.joinToString(" | ")
+    if (inner.length > 200) {
+        inner = inner.take(197) + "..."
+    }
+
+    return InjectionResult("(KYT: $inner)", sorted.size, confidence)
+}
+
 // ── Compact Mobile Format ────────────────────────────────────
 
 /**
