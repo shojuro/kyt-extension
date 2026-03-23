@@ -24,7 +24,10 @@ RETURNS TABLE (
   impact_score INT,
   intimacy_level INT,
   access_count INT,
-  last_accessed TIMESTAMPTZ
+  last_accessed TIMESTAMPTZ,
+  valence REAL,
+  arousal REAL,
+  emotion_keywords TEXT[]
 ) AS $$
 BEGIN
   -- Input validation
@@ -51,19 +54,24 @@ BEGIN
     ct.created_at::TIMESTAMPTZ,  -- Cast: table has TIMESTAMP, function returns TIMESTAMPTZ
     -- Vector similarity (cosine distance: 1 - distance)
     (1 - (ct.embedding <=> query_embedding)) AS vector_similarity,
-    -- Gravity score (salience-based ranking)
+    -- Gravity score (salience-based ranking with emotional intensity)
     calculate_gravity_score(
       1 - (ct.embedding <=> query_embedding),
       COALESCE(ct.impact_score, 0),
       COALESCE(ct.intimacy_level, 0),
       ct.created_at::TIMESTAMPTZ,  -- Cast for function parameter
       COALESCE(ct.last_accessed, ct.created_at::TIMESTAMPTZ),
-      COALESCE(ct.access_count, 0)
+      COALESCE(ct.access_count, 0),
+      ct.valence,    -- NULL-safe via DEFAULT in function
+      ct.arousal     -- NULL-safe via DEFAULT in function
     ) AS gravity_score,
     ct.impact_score::INT,  -- Cast: table has SMALLINT, function returns INT
     ct.intimacy_level::INT,
     ct.access_count,
-    ct.last_accessed
+    ct.last_accessed,
+    ct.valence,
+    ct.arousal,
+    ct.emotion_keywords
   FROM chat_turns ct
   WHERE
     -- Security: User isolation via RLS
@@ -107,7 +115,10 @@ RETURNS TABLE (
   impact_score INT,
   intimacy_level INT,
   access_count INT,
-  last_accessed TIMESTAMPTZ
+  last_accessed TIMESTAMPTZ,
+  valence REAL,
+  arousal REAL,
+  emotion_keywords TEXT[]
 ) AS $$
 DECLARE
   v_result RECORD;
@@ -140,6 +151,9 @@ BEGIN
     intimacy_level := v_result.intimacy_level;
     access_count := v_result.access_count;
     last_accessed := v_result.last_accessed;
+    valence := v_result.valence;
+    arousal := v_result.arousal;
+    emotion_keywords := v_result.emotion_keywords;
 
     RETURN NEXT;
   END LOOP;

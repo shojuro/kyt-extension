@@ -181,7 +181,7 @@ serve(async (req) => {
     if (gravityResult.status === 'fulfilled') {
       classification = gravityResult.value;
     } else {
-      classification = { impact_score: 0, intimacy_level: 0, reasoning: 'Classification failed' };
+      classification = { impact_score: 0, intimacy_level: 0, valence: 0, arousal: 0, emotion_keywords: [], reasoning: 'Classification failed' };
     }
 
     let entities: any[];
@@ -221,9 +221,13 @@ serve(async (req) => {
         hypothetical_questions: requestData.hypothetical_questions,
         embedding: `[${requestData.embedding.join(',')}]`,  // PostgreSQL vector format
         user_id: requestData.user_id,
-        // NEW GRAVITY COLUMNS
+        // Gravity + emotional classification columns
         impact_score: classification.impact_score,
         intimacy_level: classification.intimacy_level,
+        valence: classification.valence,
+        arousal: classification.arousal,
+        emotion_keywords: classification.emotion_keywords?.length > 0 ? classification.emotion_keywords : null,
+        emotion_classified: true,
         last_accessed: new Date().toISOString(),
         access_count: 0,
         gravity_score: null  // Will be computed during retrieval

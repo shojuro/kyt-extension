@@ -266,6 +266,27 @@ function applyBm25Boost(query: string, items: CandidateWithScore[]): CandidateWi
 }
 
 /**
+ * Gravity boost: gives high-salience memories a tiebreaker advantage.
+ * Applied AFTER BM25 boost, BEFORE confidence filter.
+ * Additive (max +0.15) — cannot promote irrelevant content above threshold.
+ * Preserves reranker's semantic judgment while ensuring important memories surface.
+ */
+function applyGravityBoost(items: CandidateWithScore[]): CandidateWithScore[] {
+    const MAX_GRAVITY_BOOST = 0.15;
+    const GRAVITY_NORMALIZATION = 4.5; // theoretical max gravity score
+
+    return items.map(c => {
+        const gravity = (c as any).gravity_score ?? 0;
+        const normalizedGravity = Math.min(gravity / GRAVITY_NORMALIZATION, 1.0);
+        const boost = normalizedGravity * MAX_GRAVITY_BOOST;
+        return {
+            ...c,
+            rerank_score: c.rerank_score + boost,
+        };
+    });
+}
+
+/**
  * Perform vector search with a given embedding
  */
 async function vectorSearch(
@@ -304,6 +325,7 @@ async function vectorSearch(
 // Concept synonym expansion for server-side entity text search
 // Maps vague referential terms → domain-specific equivalents
 const CONCEPT_SYNONYMS: Record<string, string[]> = {
+    // Domain synonyms
     'nfl': ['football', 'player', 'quarterback'],
     'football': ['nfl', 'player'],
     'player': ['athlete'], 'players': ['athletes'],
@@ -314,6 +336,34 @@ const CONCEPT_SYNONYMS: Record<string, string[]> = {
     'book': ['reading', 'author'], 'books': ['reading', 'authors'],
     'level': ['mode', 'tier'], 'levels': ['modes', 'tiers'],
     'tier': ['mode', 'level'], 'tiers': ['modes', 'levels'],
+    // Emotional synonym clusters (must stay in sync with browser-search.js)
+    'grief': ['loss', 'mourning', 'bereavement', 'death'],
+    'loss': ['grief', 'mourning', 'death', 'passing'],
+    'mourning': ['grief', 'loss', 'bereavement'],
+    'anxiety': ['stress', 'worry', 'panic', 'nervous', 'anxious'],
+    'anxious': ['anxiety', 'stressed', 'worried', 'nervous'],
+    'stress': ['anxiety', 'pressure', 'overwhelmed', 'burnout'],
+    'overwhelmed': ['stress', 'burnout', 'exhausted', 'drained'],
+    'depressed': ['sad', 'depression', 'hopeless', 'down'],
+    'sad': ['unhappy', 'depressed', 'heartbroken', 'upset'],
+    'lonely': ['alone', 'isolated', 'loneliness', 'disconnected'],
+    'loneliness': ['lonely', 'isolated', 'alone'],
+    'angry': ['frustrated', 'mad', 'furious', 'resentful'],
+    'frustrated': ['angry', 'annoyed', 'irritated'],
+    'breakup': ['ex', 'separation', 'divorce', 'heartbreak'],
+    'divorce': ['breakup', 'separation', 'custody'],
+    'love': ['romance', 'relationship', 'partner', 'crush'],
+    'happy': ['joy', 'excited', 'grateful', 'content'],
+    'grateful': ['thankful', 'appreciation', 'gratitude'],
+    'proud': ['achievement', 'accomplishment', 'milestone'],
+    'trauma': ['ptsd', 'abuse', 'recovery', 'healing'],
+    'healing': ['recovery', 'therapy', 'coping'],
+    'confused': ['uncertain', 'lost', 'bewildered', 'ambivalent'],
+    'guilty': ['shame', 'embarrassment', 'regret', 'remorse'],
+    'jealous': ['envy', 'insecurity', 'resentment'],
+    'nostalgic': ['longing', 'homesick', 'wistful', 'reminiscent'],
+    'parent': ['mom', 'dad', 'mother', 'father', 'parenting'],
+    'child': ['kid', 'son', 'daughter', 'baby'],
 };
 
 /**
@@ -377,6 +427,75 @@ function expandQueryWithSynonyms(query: string, dynamicSynonyms?: Record<string,
         }
     }
     return expansions.length > 0 ? query + ' ' + [...new Set(expansions)].join(' ') : query;
+}
+
+/** Emotional terms regex for detecting emotional queries */
+const EMOTIONAL_QUERY_TERMS = /\b(grief|loss|mourning|sad|happy|angry|anxious|depressed|lonely|love|breakup|trauma|healing|stress|fear|joy|proud|grateful|frustrated|overwhelmed|heartbroken|guilty|jealous|confused|nostalgic|divorce|shame|regret|worried|nervous|excited|hopeless|isolated)\b/gi;
+
+/**
+ * Search by emotion_keywords GIN index.
+ * Only fires when query contains emotional terms. Returns up to 10 results
+ * sorted by recency, with entity_boost=true for RRF weight.
+ */
+async function searchByEmotionKeywords(
+    supabase: any,
+    query: string,
+    userId: string,
+    requestId?: string,
+    profileId?: string,
+    projectId?: string | null
+): Promise<Candidate[]> {
+    const matches = query.toLowerCase().match(EMOTIONAL_QUERY_TERMS);
+    if (!matches || matches.length === 0) return [];
+
+    // Deduplicate and expand via static synonyms
+    const uniqueTerms = [...new Set(matches.map(t => t.toLowerCase()))];
+    const expanded = new Set(uniqueTerms);
+    for (const term of uniqueTerms) {
+        const syns = CONCEPT_SYNONYMS[term];
+        if (syns) syns.forEach((s: string) => expanded.add(s));
+    }
+
+    const searchTerms = Array.from(expanded);
+    Logger.info(`Emotion keyword search: [${searchTerms.join(', ')}]`, { requestId });
+
+    try {
+        const { data, error } = await supabase
+            .from('chat_turns')
+            .select('id, content, contextual_content, conversation_id, speakers, topics, created_at, impact_score, intimacy_level, valence, arousal, emotion_keywords, gravity_score, platform')
+            .eq('user_id', userId)
+            .overlaps('emotion_keywords', searchTerms)
+            .not('is_question', 'eq', true)
+            .order('created_at', { ascending: false })
+            .limit(10);
+
+        if (error || !data) {
+            Logger.warn(`Emotion keyword search failed: ${error?.message}`, { requestId });
+            return [];
+        }
+
+        Logger.info(`Emotion keyword search: ${data.length} results`, { requestId });
+        return data.map((row: any) => ({
+            id: row.id,
+            content: row.content,
+            contextual_content: row.contextual_content || undefined,
+            conversation_id: row.conversation_id,
+            speakers: row.speakers,
+            topics: row.topics,
+            created_at: row.created_at,
+            impact_score: row.impact_score,
+            intimacy_level: row.intimacy_level,
+            valence: row.valence,
+            arousal: row.arousal,
+            emotion_keywords: row.emotion_keywords,
+            gravity_score: row.gravity_score ?? 0,
+            platform: row.platform,
+            entity_boost: true,  // Treat as boosted for RRF weight
+        }));
+    } catch (e) {
+        Logger.warn(`Emotion keyword search error: ${(e as Error).message}`, { requestId });
+        return [];
+    }
 }
 
 async function searchEntities(
@@ -794,9 +913,10 @@ export async function getRelevantMemories(
             rerank_score: c.gravity_score ?? 0.5,
         }));
         const boosted = applyBm25Boost(query, scored);
+        const gravityBoosted = applyGravityBoost(boosted);
 
         // Apply quality penalties (fast path gets them too)
-        const penalized = applyQualityPenalties(boosted, { query, requestId });
+        const penalized = applyQualityPenalties(gravityBoosted, { query, requestId });
 
         const threshold = confidenceThreshold ?? 0.40;
         const filtered = penalized
@@ -827,12 +947,13 @@ export async function getRelevantMemories(
     // Load dynamic synonyms from entity co-occurrences (parallel with other init)
     const dynamicSynonyms = await loadDynamicSynonyms(supabase, userId, requestId);
 
-    const [entityResult, hydeResult, conceptEntityIds] = await Promise.all([
+    const [entityResult, hydeResult, conceptEntityIds, emotionKeywordResults] = await Promise.all([
         searchEntities(supabase, rawEmbedding, userId, entitySearchQuery, requestId, resolvedProfileId, dynamicSynonyms, projectId),
         useHyde && anthropicApiKey
             ? generateHyDEWithFallback(query, anthropicApiKey, requestId, costContext)
             : Promise.resolve({ hydeDoc: null, usedHyde: false }),
-        detectConceptEntities(supabase, query, userId, requestId, resolvedProfileId, projectId)
+        detectConceptEntities(supabase, query, userId, requestId, resolvedProfileId, projectId),
+        searchByEmotionKeywords(supabase, query, userId, requestId, resolvedProfileId, projectId)
     ]);
 
     const { ids: embeddingEntityIds, entities } = entityResult;
@@ -1016,39 +1137,51 @@ export async function getRelevantMemories(
     const hydeResults = searchResults[1] || [];
 
     // ========================================================================
-    // STEP 5: RRF Merge (HyDE + Raw + Graph)
+    // STEP 5: RRF Merge (HyDE + Raw + Graph + Emotion Keywords)
     // ========================================================================
     let candidates: Candidate[];
 
+    // Emotion keyword results get a small RRF weight when present
+    const hasEmotionResults = emotionKeywordResults.length > 0;
+    const emotionWeight = hasEmotionResults ? 0.15 : 0;
+
     if (hydeResults.length > 0) {
         if (graphResults.length > 0) {
-            // 3-way RRF merge via reciprocalRankFusion()
-            // Weights: HyDE 0.48, Raw 0.32, Graph 0.20 (graph carves out 20%)
-            const graphWeight = 0.2;
-            const adjustedHydeWeight = hydeWeight * (1 - graphWeight);  // 0.6 * 0.8 = 0.48
-            const adjustedRawWeight = (1 - hydeWeight) * (1 - graphWeight);  // 0.4 * 0.8 = 0.32
+            // N-way RRF merge via reciprocalRankFusion()
+            // Base weights: HyDE 0.48, Raw 0.32, Graph 0.20
+            // With emotion: all weights scaled down proportionally to make room for 0.15
+            const totalNonEmotionWeight = 1.0 - emotionWeight;
+            const graphWeight = 0.2 * totalNonEmotionWeight;
+            const adjustedHydeWeight = hydeWeight * (1 - 0.2) * totalNonEmotionWeight;
+            const adjustedRawWeight = (1 - hydeWeight) * (1 - 0.2) * totalNonEmotionWeight;
 
             // Sort graph results by gravity_score descending for proper RRF ranking
             const sortedGraph = [...graphResults].sort(
                 (a, b) => (b.gravity_score ?? 0) - (a.gravity_score ?? 0)
             );
 
-            const fusedResults = reciprocalRankFusion([
+            const rrfLists: { results: Candidate[]; weight: number }[] = [
                 { results: hydeResults, weight: adjustedHydeWeight },
                 { results: rawResults, weight: adjustedRawWeight },
                 { results: sortedGraph, weight: graphWeight },
-            ], 60, vectorSearchCount);
+            ];
+            if (hasEmotionResults) {
+                rrfLists.push({ results: emotionKeywordResults, weight: emotionWeight });
+            }
+
+            const fusedResults = reciprocalRankFusion(rrfLists, 60, vectorSearchCount);
 
             candidates = fusedResults.map(fr => ({
                 ...fr.item,
                 rrf_score: fr.rrf_score,
             }));
 
-            Logger.info("3-way RRF merge: HyDE + Raw + Graph", {
+            Logger.info(`${hasEmotionResults ? '4' : '3'}-way RRF merge: HyDE + Raw + Graph${hasEmotionResults ? ' + Emotion' : ''}`, {
                 requestId,
                 hydeCount: hydeResults.length,
                 rawCount: rawResults.length,
                 graphCount: graphResults.length,
+                emotionCount: emotionKeywordResults.length,
                 mergedCount: candidates.length
             });
         } else {
@@ -1063,23 +1196,30 @@ export async function getRelevantMemories(
     } else {
         candidates = fallbackToRawResults(rawResults, requestId);
 
-        // Even without HyDE, 2-way RRF with graph results
-        if (graphResults.length > 0) {
-            const sortedGraph = [...graphResults].sort(
-                (a, b) => (b.gravity_score ?? 0) - (a.gravity_score ?? 0)
-            );
-            const fusedResults = reciprocalRankFusion([
-                { results: candidates, weight: 0.8 },
-                { results: sortedGraph, weight: 0.2 },
-            ], 60, vectorSearchCount);
+        // Even without HyDE, RRF with graph + emotion results
+        if (graphResults.length > 0 || hasEmotionResults) {
+            const rrfLists: { results: Candidate[]; weight: number }[] = [
+                { results: candidates, weight: hasEmotionResults ? 0.7 : 0.8 },
+            ];
+            if (graphResults.length > 0) {
+                const sortedGraph = [...graphResults].sort(
+                    (a, b) => (b.gravity_score ?? 0) - (a.gravity_score ?? 0)
+                );
+                rrfLists.push({ results: sortedGraph, weight: hasEmotionResults ? 0.15 : 0.2 });
+            }
+            if (hasEmotionResults) {
+                rrfLists.push({ results: emotionKeywordResults, weight: 0.15 });
+            }
+            const fusedResults = reciprocalRankFusion(rrfLists, 60, vectorSearchCount);
             candidates = fusedResults.map(fr => ({
                 ...fr.item,
                 rrf_score: fr.rrf_score,
             }));
-            Logger.info("2-way RRF merge: Raw + Graph", {
+            Logger.info(`${rrfLists.length}-way RRF merge: Raw${graphResults.length > 0 ? ' + Graph' : ''}${hasEmotionResults ? ' + Emotion' : ''}`, {
                 requestId,
                 rawCount: rawResults.length,
                 graphCount: graphResults.length,
+                emotionCount: emotionKeywordResults.length,
                 mergedCount: candidates.length
             });
         }
@@ -1335,11 +1475,12 @@ async function rerankAndFilter(
         }));
     }
 
-    // Apply BM25 + Entity Boost
+    // Apply BM25 + Entity Boost, then Gravity Boost
     const boosted = applyBm25Boost(query, ordered);
+    const gravityBoosted = applyGravityBoost(boosted);
 
     // Confidence filter — uses param (default 0.40, overridable via intent classification)
-    const filtered = boosted.filter((c) => c.rerank_score >= confidenceThreshold);
+    const filtered = gravityBoosted.filter((c) => c.rerank_score >= confidenceThreshold);
 
     Logger.info("Retrieval complete", {
         requestId,

@@ -10,10 +10,13 @@ CREATE OR REPLACE FUNCTION calculate_gravity_score(
   p_intimacy_level INT,
   p_created_at TIMESTAMPTZ,
   p_last_accessed TIMESTAMPTZ,
-  p_access_count INT
+  p_access_count INT,
+  p_valence FLOAT DEFAULT NULL,
+  p_arousal FLOAT DEFAULT NULL
 ) RETURNS FLOAT AS $$
 DECLARE
   v_importance_multiplier FLOAT;
+  v_emotional_intensity FLOAT;
   v_time_decay FLOAT;
   v_rehearsal_bonus FLOAT;
   v_days_since_creation FLOAT;
@@ -38,14 +41,22 @@ BEGIN
   v_days_since_access := EXTRACT(EPOCH FROM (NOW() - p_last_accessed)) / 86400.0;
 
   -- Component 1: Importance Multiplier
-  -- Formula: 1 + (impact/100) + (intimacy × 0.2)
-  -- Range: [1.0, 2.6]
+  -- Formula: 1 + (impact/100) + (intimacy × 0.2) + emotional_intensity
+  -- Range: [1.0, 3.0] (was [1.0, 2.6] before emotional_intensity)
   --   - Baseline: 1.0 (all memories start equal)
   --   - Impact: +0.0 to +1.0 (Holmes-Rahe scale contribution)
   --   - Intimacy: +0.0 to +0.6 (Aron's 36 Questions contribution)
+  --   - Emotional intensity: +0.0 to +0.4 (Russell's Circumplex: |valence| × arousal)
+
+  -- Emotional intensity: high |valence| × high arousal = emotionally charged content
+  -- Range: [0, 0.4] — enough to shift decay tier but not dominate
+  -- NULL-safe: existing rows without valence/arousal get 0 boost
+  v_emotional_intensity := COALESCE(ABS(p_valence) * COALESCE(p_arousal, 0.5), 0) * 0.4;
+
   v_importance_multiplier := 1.0 +
     (p_impact_score::FLOAT / 100.0) +
-    (p_intimacy_level::FLOAT * 0.2);
+    (p_intimacy_level::FLOAT * 0.2) +
+    v_emotional_intensity;
 
   -- Component 2: Adaptive Time Decay
   -- Strategy: High-importance memories decay slower, low-importance decay faster
@@ -79,9 +90,9 @@ BEGIN
   v_rehearsal_bonus := LEAST(1.0 + (p_access_count::FLOAT * 0.05), 1.5);
 
   -- Final Gravity Score
-  -- Range: [0.0, ~3.9]
+  -- Range: [0.0, ~4.5]
   --   - 0.0: Completely irrelevant (vector_similarity = 0)
-  --   - ~3.9: Max theoretical (similarity=1.0, importance=2.6, decay=1.0, rehearsal=1.5)
+  --   - ~4.5: Max theoretical (similarity=1.0, importance=3.0, decay=1.0, rehearsal=1.5)
   --   - Typical: 0.5-2.5 for most memories
   v_gravity_score := p_vector_similarity *
                      v_importance_multiplier *

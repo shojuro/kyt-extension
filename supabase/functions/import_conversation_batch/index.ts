@@ -222,6 +222,9 @@ interface ProcessedChunk extends TurnChunk {
   hyde_questions: string[];
   impact_score: number;
   intimacy_level: number;
+  valence: number;
+  arousal: number;
+  emotion_keywords: string[];
 }
 
 /**
@@ -317,12 +320,22 @@ async function batchProcessEmbeddings(
 /**
  * Classify chunks for gravity scoring (impact + intimacy)
  */
+interface ChunkClassification {
+  impact_score: number;
+  intimacy_level: number;
+  valence: number;
+  arousal: number;
+  emotion_keywords: string[];
+}
+
+const DEFAULT_CLASSIFICATION: ChunkClassification = { impact_score: 0, intimacy_level: 0, valence: 0, arousal: 0, emotion_keywords: [] };
+
 async function batchClassifyChunks(
   chunks: TurnChunk[],
   anthropicKey: string,
   costContext?: ClientContext
-): Promise<{ impact_score: number; intimacy_level: number }[]> {
-  const results: { impact_score: number; intimacy_level: number }[] = [];
+): Promise<ChunkClassification[]> {
+  const results: ChunkClassification[] = [];
 
   // Process in smaller batches to avoid rate limits
   const batches = chunkArray(chunks, HYDE_BATCH_SIZE);
@@ -339,10 +352,13 @@ async function batchClassifyChunks(
         );
         return {
           impact_score: classification?.impact_score || 0,
-          intimacy_level: classification?.intimacy_level || 0
+          intimacy_level: classification?.intimacy_level || 0,
+          valence: classification?.valence ?? 0,
+          arousal: classification?.arousal ?? 0,
+          emotion_keywords: classification?.emotion_keywords || [],
         };
       } catch (e) {
-        return { impact_score: 0, intimacy_level: 0 };
+        return { ...DEFAULT_CLASSIFICATION };
       }
     });
 
@@ -352,7 +368,7 @@ async function batchClassifyChunks(
       if (result.status === 'fulfilled') {
         results.push(result.value);
       } else {
-        results.push({ impact_score: 0, intimacy_level: 0 });
+        results.push({ ...DEFAULT_CLASSIFICATION });
       }
     }
 
@@ -462,6 +478,9 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
             hyde_questions: [],
             impact_score: 0,
             intimacy_level: 0,
+            valence: 0,
+            arousal: 0,
+            emotion_keywords: [],
           }));
         } else {
           // Stage 4: HyDE generation
@@ -489,6 +508,9 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
             hyde_questions: hydeResults[idx]?.hydeDoc ? [hydeResults[idx].hydeDoc!.substring(0, 500)] : [],
             impact_score: classifications[idx]?.impact_score || 0,
             intimacy_level: classifications[idx]?.intimacy_level || 0,
+            valence: classifications[idx]?.valence ?? 0,
+            arousal: classifications[idx]?.arousal ?? 0,
+            emotion_keywords: classifications[idx]?.emotion_keywords || [],
           }));
         }
 
@@ -515,6 +537,10 @@ async function handleSSEStream(req: Request, body: any): Promise<Response> {
             embedding: chunk.embedding,
             impact_score: chunk.impact_score,
             intimacy_level: chunk.intimacy_level,
+            valence: chunk.valence,
+            arousal: chunk.arousal,
+            emotion_keywords: chunk.emotion_keywords?.length > 0 ? chunk.emotion_keywords : null,
+            emotion_classified: true,
             hypothetical_questions: chunk.hyde_questions,
             last_accessed: new Date().toISOString(),
             access_count: 0,

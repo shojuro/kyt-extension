@@ -335,7 +335,7 @@ serve(async (req) => {
 
                 const gravity = classification.status === 'fulfilled'
                     ? classification.value
-                    : { impact_score: 0, intimacy_level: 0 };
+                    : { impact_score: 0, intimacy_level: 0, valence: 0, arousal: 0, emotion_keywords: [] };
 
                 // Determine what to embed: contextual content if available, else raw
                 // ASYMMETRIC EMBEDDING: stored chunks get context prefix,
@@ -356,6 +356,10 @@ serve(async (req) => {
                     embedding,
                     impact_score: gravity.impact_score,
                     intimacy_level: gravity.intimacy_level,
+                    valence: gravity.valence,
+                    arousal: gravity.arousal,
+                    emotion_keywords: gravity.emotion_keywords?.length > 0 ? gravity.emotion_keywords : null,
+                    emotion_classified: true,
                     turn_range: '1-1',
                     speakers: [turn.role || 'user'],
                     turn_count: 1,

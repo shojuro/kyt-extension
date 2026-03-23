@@ -722,6 +722,46 @@ const ENTITY_CONCEPT_SYNONYMS = new Map([
   ['goals',    ['targets', 'objectives']],
   ['book',     ['reading', 'author']],
   ['books',    ['reading', 'authors']],
+  // === EMOTIONAL SYNONYM CLUSTERS ===
+  // Grief & Loss
+  ['grief',       ['loss', 'mourning', 'bereavement', 'death']],
+  ['loss',        ['grief', 'mourning', 'death', 'passing']],
+  ['mourning',    ['grief', 'loss', 'bereavement']],
+  // Anxiety & Stress
+  ['anxiety',     ['stress', 'worry', 'panic', 'nervous', 'anxious']],
+  ['anxious',     ['anxiety', 'stressed', 'worried', 'nervous']],
+  ['stress',      ['anxiety', 'pressure', 'overwhelmed', 'burnout']],
+  ['overwhelmed', ['stress', 'burnout', 'exhausted', 'drained']],
+  // Depression & Sadness
+  ['depressed',   ['sad', 'depression', 'hopeless', 'down']],
+  ['sad',         ['unhappy', 'depressed', 'heartbroken', 'upset']],
+  ['lonely',      ['alone', 'isolated', 'loneliness', 'disconnected']],
+  ['loneliness',  ['lonely', 'isolated', 'alone']],
+  // Anger & Frustration
+  ['angry',       ['frustrated', 'mad', 'furious', 'resentful']],
+  ['frustrated',  ['angry', 'annoyed', 'irritated']],
+  // Love & Relationships
+  ['breakup',     ['ex', 'separation', 'divorce', 'heartbreak']],
+  ['divorce',     ['breakup', 'separation', 'custody']],
+  ['love',        ['romance', 'relationship', 'partner', 'crush']],
+  // Positive Emotions
+  ['happy',       ['joy', 'excited', 'grateful', 'content']],
+  ['grateful',    ['thankful', 'appreciation', 'gratitude']],
+  ['proud',       ['achievement', 'accomplishment', 'milestone']],
+  // Trauma & Recovery
+  ['trauma',      ['ptsd', 'abuse', 'recovery', 'healing']],
+  ['healing',     ['recovery', 'therapy', 'coping']],
+  // Confusion & Uncertainty
+  ['confused',    ['uncertain', 'lost', 'bewildered', 'ambivalent']],
+  // Guilt & Shame
+  ['guilty',      ['shame', 'embarrassment', 'regret', 'remorse']],
+  // Jealousy
+  ['jealous',     ['envy', 'insecurity', 'resentment']],
+  // Nostalgia
+  ['nostalgic',   ['longing', 'homesick', 'wistful', 'reminiscent']],
+  // Family
+  ['parent',      ['mom', 'dad', 'mother', 'father', 'parenting']],
+  ['child',       ['kid', 'son', 'daughter', 'baby']],
 ]);
 
 async function searchGraphWalk(query, options = {}) {

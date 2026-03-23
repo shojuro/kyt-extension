@@ -219,23 +219,17 @@ function isAlreadyOptimized(query) {
     /\b(advice|support|help|listen|talk|chat|vent)\b/i
   ];
 
-  const allPatterns = [...technicalPatterns, ...emotionalPatterns];
-
-  // If query contains 2+ specific terms, likely already optimized
-  let termCount = 0;
-
-  // Combine all patterns into a single regex for counting
-  // Extract the inner groups (remove / and flags)
-  const allSources = allPatterns.map(p => p.source);
-  // We need to be careful about flags, but here they are all 'i'.
-
-  // Simpler approach: iterate and match
-  for (const pattern of allPatterns) {
+  // Only count TECHNICAL terms toward "already optimized" threshold.
+  // Emotional queries always benefit from LLM expansion — "feeling sad and lonely"
+  // should get expanded, not skipped. Technical queries like "postgres RLS policy"
+  // are genuinely specific enough to skip transformation.
+  let technicalCount = 0;
+  for (const pattern of technicalPatterns) {
     const matches = query.match(new RegExp(pattern.source, 'gi')) || [];
-    termCount += matches.length;
+    technicalCount += matches.length;
   }
 
-  return termCount >= 2;
+  return technicalCount >= 2;
 }
 
 /**

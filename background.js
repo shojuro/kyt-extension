@@ -1206,6 +1206,20 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
       break;
 
+    case 'backfillEmotions':
+      try {
+        console.log('⏰ Emotion backfill alarm fired');
+        const emoResult = await callEdgeFunction('backfill_emotions', { fast_mode: true, max_rows: 50 }, { timeoutMs: 120000 });
+        console.log(`✅ Emotion backfill: ${emoResult.classified} classified, ${emoResult.remaining} remaining`);
+        if (emoResult.remaining > 0) {
+          chrome.alarms.create('backfillEmotions', { delayInMinutes: 3 });
+        }
+      } catch (error) {
+        console.error('❌ Emotion backfill alarm error:', error.message);
+        chrome.alarms.create('backfillEmotions', { delayInMinutes: 10 });
+      }
+      break;
+
     case 'postImportBackfill':
       try {
         console.log('⏰ Post-import backfill orchestrator fired');
@@ -1225,6 +1239,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
             console.log('⏸️ Entity backfill paused — skipping alarm creation');
           }
           chrome.alarms.create('backfillGravity', { delayInMinutes: 1 });
+          chrome.alarms.create('backfillEmotions', { delayInMinutes: 1.5 });
           chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 2 });
         }
       } catch (error) {
@@ -1235,6 +1250,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
           chrome.alarms.create('backfillEntities', { delayInMinutes: 3 });
         }
         chrome.alarms.create('backfillGravity', { delayInMinutes: 4 });
+        chrome.alarms.create('backfillEmotions', { delayInMinutes: 4.5 });
         chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 5 });
       }
       break;
@@ -1500,7 +1516,8 @@ globalThis.KYT_DEBUG = {
     if (ctxResult.remaining > 0) chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
     if (entResult.remaining > 0 && !pausedImport) chrome.alarms.create('backfillEntities', { delayInMinutes: 1 });
     if (gravResult.remaining > 0) chrome.alarms.create('backfillGravity', { delayInMinutes: 1.5 });
-    chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 2 });
+    chrome.alarms.create('backfillEmotions', { delayInMinutes: 2 });
+    chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 2.5 });
     return { contextual: ctxResult, embeddings: embResult, entities: entResult, gravity: gravResult };
   },
   excludeConversation: async (conversationId) => {
@@ -1552,8 +1569,9 @@ globalThis.KYT_DEBUG = {
     chrome.alarms.create('backfillEntities', { delayInMinutes: 1 });
     chrome.alarms.create('backfillContextual', { delayInMinutes: 2 });
     chrome.alarms.create('backfillGravity', { delayInMinutes: 3 });
+    chrome.alarms.create('backfillEmotions', { delayInMinutes: 3.5 });
     chrome.alarms.create('backfillTokenCounts', { delayInMinutes: 4 });
-    console.log('▶️ ALL backfills RESUMED. Entity in 1min, contextual in 2min, gravity in 3min, tokens in 4min.');
+    console.log('▶️ ALL backfills RESUMED. Entity in 1min, contextual in 2min, gravity in 3min, emotions in 3.5min, tokens in 4min.');
     return { paused: false };
   },
   forceSyncAll: async () => {
