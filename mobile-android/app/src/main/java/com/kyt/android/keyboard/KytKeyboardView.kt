@@ -153,17 +153,13 @@ class KytKeyboardView @JvmOverloads constructor(
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val width = MeasureSpec.getSize(widthMeasureSpec)
         val height = KeyboardLayout.totalHeightPx(resources.displayMetrics.density)
-        if (BuildConfig.DEBUG) {
-            Log.d("KytKeyboard", "onMeasure: requested=${height}px (${height / resources.displayMetrics.density}dp), KEY_HEIGHT_DP=${KeyboardTheme.KEY_HEIGHT_DP}")
-        }
+        Log.d("KytKeyboard", "onMeasure: requested=${height}px (${(height / resources.displayMetrics.density).toInt()}dp), KEY_HEIGHT_DP=${KeyboardTheme.KEY_HEIGHT_DP}")
         setMeasuredDimension(width, height)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        if (BuildConfig.DEBUG) {
-            Log.d("KytKeyboard", "onSizeChanged: actual=${h}px (${h / resources.displayMetrics.density}dp)")
-        }
+        Log.d("KytKeyboard", "onSizeChanged: actual=${h}px (${(h / resources.displayMetrics.density).toInt()}dp)")
         recomputeLayout()
     }
 
