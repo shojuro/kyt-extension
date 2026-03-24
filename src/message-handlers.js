@@ -20,6 +20,7 @@ import { getActiveProfileId } from './profile-manager.js';
 import { getActiveProject, setActiveProject, clearActiveProject } from './project-manager.js';
 import { getSyncStatus as getNLMSyncStatus, enableSync as enableNLMSync, disableSync as disableNLMSync, checkGoogleSignIn as checkNLMSignIn } from './notebooklm-sync.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
+import { buildMemoryInjection } from '../kyt-memory-injection-builder.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
 import { withStorageMutex } from './utils/storage-mutex.js';
 
@@ -331,7 +332,6 @@ async function handleGetContextAsync(message, getContextForInjection) {
 
         if (items.length > 0) {
           // Use the standard injection builder for proper formatting
-          const { buildMemoryInjection } = await import('../kyt-memory-injection-builder.js');
           const retrievalResult = {
             state: 'FOUND',
             items,
