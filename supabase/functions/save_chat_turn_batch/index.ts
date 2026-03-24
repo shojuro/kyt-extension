@@ -320,7 +320,7 @@ serve(async (req) => {
                     console.log(`Skipping extraction: role=${turn.role}, is_injection=${turn.is_injection}`);
                 }
                 const [classification, entities, contextResult] = await Promise.allSettled([
-                    classifyMemory({ content: turn.content }, anthropicKey, costContext),
+                    classifyMemory({ content: turn.content, speakers: [turn.role || 'user'] }, anthropicKey, costContext),
                     skipExtraction
                         ? Promise.resolve({ entities: [], preferences: [] })
                         : extractEntities({ content: turn.content, speakers: [turn.role || 'user'] }, anthropicKey, costContext),
@@ -332,6 +332,12 @@ serve(async (req) => {
                         timestamp: turn.timestamp ? new Date(turn.timestamp).toISOString() : undefined,
                     }, anthropicKey, costContext)
                 ]);
+
+                // Diagnostic: capture classifier status for response
+                const classifierStatus = classification.status;
+                const classifierError = classification.status === 'rejected'
+                    ? (classification as PromiseRejectedResult).reason?.message || 'unknown'
+                    : null;
 
                 const gravity = classification.status === 'fulfilled'
                     ? classification.value
@@ -432,7 +438,17 @@ serve(async (req) => {
                         }
                     }
 
-                    results.push({ id: data[0].id, success: true, duplicate: false });
+                    results.push({
+                        id: data[0].id, success: true, duplicate: false,
+                        _diag: {
+                            classifier: classifierStatus,
+                            classifierError,
+                            impact: gravity.impact_score,
+                            valence: gravity.valence,
+                            arousal: gravity.arousal,
+                            keywords: gravity.emotion_keywords?.length || 0,
+                        },
+                    });
                 } else {
                     results.push({ success: true, duplicate: true });
                 }

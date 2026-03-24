@@ -54,24 +54,41 @@ export async function classifyMemory(
 
   const client = new AnthropicClient(anthropicApiKey, context);
 
-  const classification = await client.generateJsonCompletion<{
+  let classification: {
     impact?: number;
     intimacy?: number;
     valence?: number;
     arousal?: number;
     emotion_keywords?: string[];
     reasoning?: string;
-  }>(
-    getClassifierSystemPrompt(),
-    prompt,
-    {
-      temperature: 0.3,
-      maxTokens: 400,
-      maxRetries: 2,
-      timeoutMs: 5000,
-      operation: 'memory_classification',
-    }
-  );
+  };
+
+  try {
+    classification = await client.generateJsonCompletion<typeof classification>(
+      getClassifierSystemPrompt(),
+      prompt,
+      {
+        temperature: 0.3,
+        maxTokens: 400,
+        maxRetries: 2,
+        timeoutMs: 15000,
+        operation: 'memory_classification',
+      }
+    );
+    console.log(`[classifier] Raw result: impact=${classification.impact}, intimacy=${classification.intimacy}, valence=${classification.valence}, arousal=${classification.arousal}, keywords=${classification.emotion_keywords?.length || 0}`);
+  } catch (classifyErr: any) {
+    console.error(`[classifier] FAILED: ${classifyErr.message}`);
+    console.error(`[classifier] Content preview: ${data.content?.substring(0, 100)}`);
+    // Return zeros — but now we know WHY
+    return {
+      impact_score: 0,
+      intimacy_level: 0,
+      valence: 0,
+      arousal: 0,
+      emotion_keywords: [],
+      reasoning: `Classification failed: ${classifyErr.message}`,
+    };
+  }
 
   // Validate and bound scores
   const impact_score = Math.max(0, Math.min(100, classification.impact || 0));

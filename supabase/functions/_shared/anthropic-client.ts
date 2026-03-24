@@ -156,6 +156,11 @@ export class AnthropicClient {
             // Prepend the '{' we used as prefill
             const jsonString = "{" + rawContent;
 
+            // Diagnostic: log raw response for classifier debugging
+            if (operation === 'memory_classification') {
+                console.log(`[anthropic] ${operation}: status=${response.status}, stop=${data.stop_reason}, rawLen=${rawContent.length}, preview=${jsonString.substring(0, 150)}`);
+            }
+
             // Fire-and-forget: cost logging must never block the completion
             this.logCost(data, operation, requestId).catch(err =>
                 Logger.warn(`Cost logging failed (non-fatal): ${err.message}`, { requestId })
