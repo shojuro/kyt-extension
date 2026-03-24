@@ -63,7 +63,8 @@ class KytInputMethodService : InputMethodService() {
         "com.anthropic.claude",
         "com.google.android.apps.bard",
         "com.google.android.apps.gemini",
-        "com.google.android.apps.agentspace"  // Gemini Enterprise
+        "com.google.android.apps.agentspace",          // Gemini Enterprise
+        "com.google.android.googlequicksearchbox"       // Gemini via Google app (Samsung/integrated)
     )
 
     private fun isTargetApp(): Boolean {
