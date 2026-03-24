@@ -17,8 +17,17 @@ const CONFIG_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
  * Get API config with caching to survive service worker sleep
  */
 export async function getApiConfig() {
+  // Always check test mode — even on cached config (toggle takes effect immediately)
+  const testFlags = await chrome.storage.local.get(['kyt_test_mode', 'kyt_test_user_id']);
+  const testModeActive = !!(testFlags.kyt_test_mode && testFlags.kyt_test_user_id);
+
   if (cachedApiConfig && (Date.now() - configLoadTime) < CONFIG_CACHE_TTL) {
-    return cachedApiConfig;
+    // If test mode changed, invalidate cache
+    if (testModeActive !== !!cachedApiConfig._testMode) {
+      cachedApiConfig = null;
+    } else {
+      return cachedApiConfig;
+    }
   }
 
   const result = await chrome.storage.local.get(['api_config', AUTH_SESSION_KEY, 'user_id']);
@@ -44,11 +53,10 @@ export async function getApiConfig() {
   }
 
   // Test mode: override userId for retrieval (dev testing only)
-  const testMode = await chrome.storage.local.get(['kyt_test_mode', 'kyt_test_user_id']);
-  if (testMode.kyt_test_mode && testMode.kyt_test_user_id) {
-    cachedApiConfig.userId = testMode.kyt_test_user_id;
+  if (testModeActive) {
+    cachedApiConfig.userId = testFlags.kyt_test_user_id;
     cachedApiConfig._testMode = true;
-    console.log('🧪 TEST MODE: retrieval using user', testMode.kyt_test_user_id);
+    console.log('🧪 TEST MODE: retrieval using user', testFlags.kyt_test_user_id);
   }
 
   configLoadTime = Date.now();
