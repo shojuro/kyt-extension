@@ -321,19 +321,27 @@ async function handleGetContextAsync(message, getContextForInjection) {
         const items = (Array.isArray(results) ? results : []).map(r => ({
           content: r.content || '',
           similarity: r.score || 0.7,
+          platform: 'chatgpt',
+          timestamp: new Date().toISOString(),
+          role: 'user',
           impact_score: r.impact_score,
           emotion_keywords: r.emotion_keywords,
         }));
         console.log(`🧪 TEST MODE: ${items.length} results found`);
 
         if (items.length > 0) {
-          const lines = ['[KYT Memory — Test Mode]', ''];
-          for (const item of items) {
-            lines.push(`- ${item.content.substring(0, 300)}`);
-            if (item.emotion_keywords?.length) lines.push(`  (emotions: ${item.emotion_keywords.join(', ')})`);
-            lines.push('');
-          }
-          const formattedContext = lines.join('\n');
+          // Use the standard injection builder for proper formatting
+          const { buildMemoryInjection } = await import('../kyt-memory-injection-builder.js');
+          const retrievalResult = {
+            state: 'FOUND',
+            items,
+            latencyMs: performance.now() - injectionStart,
+            queryType: 'SEMANTIC',
+            queryOriginal: message.userMessage,
+            queryTransformed: message.userMessage,
+          };
+          const formattedContext = buildMemoryInjection(retrievalResult);
+          console.log('🧪 TEST MODE: injection built (' + formattedContext.length + ' chars)');
           return { success: true, items, formattedContext, elapsedMs: performance.now() - injectionStart, testMode: true };
         }
         return { success: true, items: [], formattedContext: null, testMode: true };
