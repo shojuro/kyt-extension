@@ -163,19 +163,23 @@ fun buildVisibleInjection(
     items: List<MemoryItem>,
     query: String,
     maxItems: Int = 2,
-    maxCharsPerItem: Int = 150
+    maxCharsPerItem: Int = 150,
+    minConfidence: Double = 0.50
 ): InjectionResult {
     if (items.isEmpty()) return InjectionResult("", 0, 0.0)
 
     val sorted = selectDiverseItems(items.sortedByDescending { it.similarity }, maxItems)
     val confidence = calculateConfidence(sorted)
 
+    // Confidence gate: don't inject irrelevant results
+    if (confidence < minConfidence) return InjectionResult("", 0, confidence)
+
     val parts = sorted.map { item ->
         val prefix = if (item.role == "user") "You: " else ""
         val content = sanitizeForInjection(item.content)
             .replace(Regex("[\\n\\r]+"), " ")
             .trim()
-            .take(maxCharsPerItem)
+            .truncateAtWordBoundary(maxCharsPerItem)
         "$prefix$content [${item.platform}]"
     }
 
@@ -191,6 +195,21 @@ fun buildVisibleInjection(
 
     val inner = usedParts.joinToString(" | ")
     return InjectionResult("(KYT: $inner)", usedParts.size, confidence)
+}
+
+/**
+ * Truncate at the last word boundary before maxLen.
+ * Avoids mid-word cuts like "and th" or "with grav".
+ */
+private fun String.truncateAtWordBoundary(maxLen: Int): String {
+    if (length <= maxLen) return this
+    val truncated = substring(0, maxLen)
+    val lastSpace = truncated.lastIndexOf(' ')
+    return if (lastSpace > maxLen / 2) {
+        truncated.substring(0, lastSpace) + "..."
+    } else {
+        truncated + "..."
+    }
 }
 
 // ── Compact Mobile Format ────────────────────────────────────
