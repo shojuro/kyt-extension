@@ -503,8 +503,42 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
       // Get active project for scoped search
       const { id: activeProjectId } = await getActiveProject();
 
+      // ─── Test mode path: use SECURITY DEFINER RPC (bypasses RLS) ───
+      if (apiConfig._testMode) {
+        console.log('🧪 TEST MODE: using search_test_user RPC for retrieval');
+        try {
+          const testRes = await fetch(`${apiConfig.supabaseUrl}/rest/v1/rpc/search_test_user`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiConfig.supabaseKey}`,
+              'apikey': apiConfig.supabaseKey,
+            },
+            body: JSON.stringify({ query_text: queryToUse, top_k: contextConfig.candidatePoolSize }),
+          });
+          if (testRes.ok) {
+            const testResults = await testRes.json();
+            contextItems = (Array.isArray(testResults) ? testResults : []).map(r => ({
+              id: r.conversation_id,
+              content: r.content,
+              platform: 'chatgpt',
+              similarity: r.score || 0.7,
+              impact_score: r.impact_score,
+              valence: r.valence,
+              arousal: r.arousal,
+              emotion_keywords: r.emotion_keywords,
+            }));
+            diagnostics.edgeItems = contextItems.length;
+            console.log(`🧪 TEST MODE: ${contextItems.length} results from search_test_user`);
+          }
+        } catch (testErr) {
+          console.warn('🧪 TEST MODE search failed:', testErr.message);
+          contextItems = [];
+        }
+      }
+
       // Dual-path: edge function vs legacy client-side search
-      if (routingMode === 'edge') {
+      else if (routingMode === 'edge') {
         // ─── Edge function path (authenticated users) ───
         try {
           contextItems = await searchViaEdgeFunction(queryToUse, {
@@ -540,7 +574,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
         }
       }
 
-      if (routingMode !== 'edge' || contextItems.length === 0) {
+      if (!apiConfig._testMode && (routingMode !== 'edge' || contextItems.length === 0)) {
         // ─── Legacy client-side path ───
         if (routingMode === 'edge') {
           console.warn('⚠️ Edge path returned 0 results or failed — legacy fallback.');
