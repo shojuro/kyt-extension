@@ -111,7 +111,7 @@ async function main() {
       const result = await callEdgeFunction('save_chat_turn_batch', {
         turns,
         userId: TEST_USER_ID,
-        skip_ai_processing: false, // Full AI: classification + embedding + context
+        skip_ai_processing: true, // Fast path — classification backfilled separately
       });
 
       const batchInserted = result.inserted || result.processed || batch.length;
