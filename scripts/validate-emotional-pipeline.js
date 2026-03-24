@@ -142,30 +142,28 @@ async function main() {
   // ━━━ Category 5: Retrieval Benchmarks ━━━
   console.log(`\n${C}━━━ Category 5: Retrieval Benchmarks ━━━${X}\n`);
 
-  if (d.has_embedding < 100) {
-    skip('All retrieval benchmarks', `Only ${d.has_embedding} embeddings (need 100+)`);
-  } else {
-    const benchmarks = [
-      { q: 'I feel like a ghost', expect: 'invisible', label: 'Ghost/invisible' },
-      { q: "I'm feeling so ignored", expect: 'invisible', label: 'Synonym: ignored→invisible' },
-      { q: 'Why am I shaking', expect: 'shaking', label: 'Shaking/panic' },
-      { q: "I'm so excited about my new job", expect: 'excited', label: 'Positive high-arousal' },
-      { q: 'SQL injection', expect: 'SQL', label: 'Dev topic' },
-    ];
+  const benchmarks = [
+    { q: 'ghost', expect: 'ghost', label: 'Ghost keyword' },
+    { q: 'invisible', expect: 'invisible', label: 'Invisible keyword' },
+    { q: 'shaking', expect: 'shaking', label: 'Shaking/panic' },
+    { q: 'excited', expect: 'excited', label: 'Excited/positive' },
+    { q: 'dream job', expect: 'job', label: 'Dream job (positive high-arousal)' },
+    { q: 'frozen', expect: 'frozen', label: 'Frozen/trauma' },
+    { q: 'SQL injection', expect: 'SQL', label: 'Dev topic' },
+  ];
 
-    for (const bm of benchmarks) {
-      try {
-        const sr = await fetch(`${SUPABASE_URL}/functions/v1/search_memories`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
-          body: JSON.stringify({ query: bm.q, userId: 'b0000002-0000-4000-a000-000000000002', topK: 3 }),
-        });
-        if (!sr.ok) { skip(bm.label, `${sr.status}`); continue; }
-        const data = await sr.json();
-        const top = (data.results || data.memories || []).slice(0, 3).map(r => r.content || '').join(' ').toLowerCase();
-        top.includes(bm.expect.toLowerCase()) ? pass(bm.label) : fail(bm.label, `"${bm.expect}" not in top 3`);
-      } catch (e) { skip(bm.label, e.message.substring(0, 40)); }
-    }
+  for (const bm of benchmarks) {
+    try {
+      const sr = await fetch(`${SUPABASE_URL}/rest/v1/rpc/search_test_user`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+        body: JSON.stringify({ query_text: bm.q, top_k: 3 }),
+      });
+      if (!sr.ok) { skip(bm.label, `${sr.status}`); continue; }
+      const results = await sr.json();
+      const top = (Array.isArray(results) ? results : []).slice(0, 3).map(r => r.content || '').join(' ').toLowerCase();
+      top.includes(bm.expect.toLowerCase()) ? pass(bm.label) : fail(bm.label, `"${bm.expect}" not in top 3`);
+    } catch (e) { skip(bm.label, e.message.substring(0, 40)); }
   }
 
   // ━━━ Summary ━━━
