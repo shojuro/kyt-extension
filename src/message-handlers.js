@@ -101,6 +101,115 @@ async function escalateToLayer2(message, classification) {
   return classification;
 }
 
+// ===== NLM ARTIFACT CONTENT EXTRACTION =====
+
+/**
+ * Parse a batchexecute RPC response and extract text content from an artifact.
+ * Used by DOWNLOAD_NLM_ARTIFACT handler to get quiz/report/mind-map content.
+ *
+ * @param {string} responseText - Raw batchexecute response
+ * @param {string} methodId - RPC method ID (e.g. 'v9rmvd')
+ * @param {string} artifactType - Artifact type for formatting
+ * @returns {string|null} Extracted text content
+ */
+function extractTextFromRpcResponse(responseText, methodId, artifactType) {
+  try {
+    let text = responseText;
+    if (text.startsWith(")]}'")) {
+      text = text.slice(text.indexOf('\n') + 1);
+    }
+
+    // Parse chunked response
+    const lines = text.split('\n');
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i].trim();
+      if (/^\d+$/.test(line)) {
+        i++;
+        const jsonLines = [];
+        while (i < lines.length) {
+          const next = lines[i].trim();
+          if (/^\d+$/.test(next) && jsonLines.length > 0) break;
+          if (next) jsonLines.push(lines[i]);
+          i++;
+        }
+        if (jsonLines.length > 0) {
+          try {
+            const chunk = JSON.parse(jsonLines.join('\n').trim());
+            if (!Array.isArray(chunk)) continue;
+            for (const item of chunk) {
+              if (!Array.isArray(item)) continue;
+              if (item[0] === 'wrb.fr' && item[1] === methodId) {
+                let resultData = item[2];
+                if (resultData === null) return null;
+                if (typeof resultData === 'string') {
+                  try { resultData = JSON.parse(resultData); } catch { return resultData; }
+                }
+                // Extract text from the result structure
+                return extractTextFromArtifactData(resultData, artifactType);
+              }
+            }
+          } catch { /* skip */ }
+        }
+      } else {
+        i++;
+      }
+    }
+  } catch (e) {
+    console.warn('[KYT] extractTextFromRpcResponse error:', e.message);
+  }
+  return null;
+}
+
+/**
+ * Extract human-readable text from artifact RPC result data.
+ * GET_INTERACTIVE_HTML returns HTML or JSON depending on type.
+ */
+function extractTextFromArtifactData(data, artifactType) {
+  if (!data) return null;
+
+  // For quiz/flashcards: the response often contains HTML with embedded JSON
+  if (typeof data === 'string') {
+    // Try to extract text from HTML
+    if (data.includes('<') && data.includes('>')) {
+      // Strip HTML tags for a text representation
+      return data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    return data;
+  }
+
+  if (Array.isArray(data)) {
+    // Walk the array to find the longest meaningful string
+    let longest = '';
+    function walk(obj, depth) {
+      if (depth > 8) return;
+      if (typeof obj === 'string' && obj.length > longest.length && obj.length > 20) {
+        longest = obj;
+      }
+      if (Array.isArray(obj)) {
+        for (const item of obj) walk(item, depth + 1);
+      }
+    }
+    walk(data, 0);
+
+    if (longest.length > 20) {
+      // If it looks like HTML, strip tags
+      if (longest.includes('<') && longest.includes('>')) {
+        return longest.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      }
+      return longest;
+    }
+  }
+
+  // Fallback: JSON stringify
+  try {
+    const json = JSON.stringify(data, null, 2);
+    if (json.length > 20) return json;
+  } catch { /* skip */ }
+
+  return null;
+}
+
 // ===== GDPR DATA HELPERS =====
 
 /**
@@ -197,6 +306,42 @@ async function handleGetContextAsync(message, getContextForInjection) {
     }
     diag.query = message.userMessage.substring(0, 80);
     diag.steps.push('start');
+
+    // ─── TEST MODE SHORTCUT: bypass entire pipeline, use SECURITY DEFINER RPC ───
+    const testFlags = await chrome.storage.local.get(['kyt_test_mode', 'kyt_test_user_id']);
+    if (testFlags.kyt_test_mode && testFlags.kyt_test_user_id) {
+      console.log('🧪 TEST MODE: shortcut — bypassing full pipeline for', message.userMessage.substring(0, 50));
+      try {
+        const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/search_test_user`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+          body: JSON.stringify({ query_text: message.userMessage, top_k: 3 }),
+        });
+        const results = rpcRes.ok ? await rpcRes.json() : [];
+        const items = (Array.isArray(results) ? results : []).map(r => ({
+          content: r.content || '',
+          similarity: r.score || 0.7,
+          impact_score: r.impact_score,
+          emotion_keywords: r.emotion_keywords,
+        }));
+        console.log(`🧪 TEST MODE: ${items.length} results found`);
+
+        if (items.length > 0) {
+          const lines = ['[KYT Memory — Test Mode]', ''];
+          for (const item of items) {
+            lines.push(`- ${item.content.substring(0, 300)}`);
+            if (item.emotion_keywords?.length) lines.push(`  (emotions: ${item.emotion_keywords.join(', ')})`);
+            lines.push('');
+          }
+          const formattedContext = lines.join('\n');
+          return { success: true, items, formattedContext, elapsedMs: performance.now() - injectionStart, testMode: true };
+        }
+        return { success: true, items: [], formattedContext: null, testMode: true };
+      } catch (testErr) {
+        console.warn('🧪 TEST MODE search error:', testErr.message);
+        return { success: true, items: [], formattedContext: null, testMode: true, error: testErr.message };
+      }
+    }
 
     const memMode = await getMemoryMode();
     diag.steps.push('memMode:' + memMode);
@@ -1258,6 +1403,100 @@ export function registerMessageHandler(deps) {
             sendResponse({ success: true });
           } catch (e) {
             sendResponse({ error: e.message });
+          }
+        })();
+        return true;
+
+      case 'LIST_PROJECTS':
+        (async () => {
+          try {
+            const session = (await chrome.storage.local.get(['auth_session'])).auth_session;
+            if (!session?.access_token) {
+              sendResponse({ projects: [] });
+              return;
+            }
+            const res = await fetch(
+              `${SUPABASE_URL}/rest/v1/projects?user_id=eq.${session.user.id}&order=name.asc`,
+              {
+                headers: {
+                  'Authorization': `Bearer ${session.access_token}`,
+                  'apikey': SUPABASE_ANON_KEY,
+                },
+              }
+            );
+            if (!res.ok) {
+              sendResponse({ projects: [] });
+              return;
+            }
+            const data = await res.json();
+            const activeProject = await getActiveProject();
+            const projects = (Array.isArray(data) ? data : []).map(p => ({
+              id: p.id,
+              name: p.name,
+              is_vault: p.is_vault || false,
+              is_active: activeProject.id === p.id,
+            }));
+            sendResponse({ projects });
+          } catch (e) {
+            sendResponse({ projects: [], error: e.message });
+          }
+        })();
+        return true;
+
+      case 'DOWNLOAD_NLM_ARTIFACT':
+        (async () => {
+          try {
+            const { notebookId, artifactId, type } = message.data || {};
+            if (!notebookId || !type) {
+              sendResponse({ success: false, error: 'Missing notebookId or type' });
+              return;
+            }
+            // Find the NLM tab and ask it to make the RPC call to get artifact content
+            // Use GET_INTERACTIVE_HTML RPC for text artifacts (quiz, flashcards, mind map)
+            // Use a streaming approach for reports
+            const nlmTabs = await chrome.tabs.query({
+              url: 'https://notebooklm.google.com/*'
+            });
+            if (nlmTabs.length === 0) {
+              sendResponse({ success: false, error: 'No NotebookLM tab found' });
+              return;
+            }
+
+            const tabId = nlmTabs[0].id;
+
+            // For text artifacts, try GET_INTERACTIVE_HTML (v9rmvd) first
+            const textTypes = ['quiz', 'flashcards', 'mind_map', 'data_table', 'report'];
+            if (textTypes.includes(type) && artifactId) {
+              const methodId = 'v9rmvd';
+              const params = [notebookId, artifactId];
+              const encodedRpc = JSON.stringify([[[methodId, JSON.stringify(params), null, 'generic']]]);
+
+              const rpcResult = await chrome.tabs.sendMessage(tabId, {
+                type: 'KYT_RPC_PROXY',
+                request: {
+                  type: 'batchexecute',
+                  methodId,
+                  encodedRpc,
+                  sourcePath: `/notebook/${notebookId}`,
+                },
+              });
+
+              if (rpcResult?.success && rpcResult.responseText) {
+                const content = extractTextFromRpcResponse(rpcResult.responseText, methodId, type);
+                if (content && content.length > 10) {
+                  sendResponse({ success: true, content });
+                  return;
+                }
+              }
+            }
+
+            // Fallback: return metadata only
+            sendResponse({
+              success: false,
+              error: 'Content extraction not available from browser',
+            });
+          } catch (e) {
+            sendResponse({ success: false, error: e.message });
           }
         })();
         return true;
