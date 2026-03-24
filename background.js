@@ -1622,7 +1622,32 @@ globalThis.KYT_DEBUG = {
     console.log('[KYT] Bridge token saved to chrome.storage.local');
     return { saved: true };
   },
+  testMode: (enable) => {
+    const testUserId = 'b0000002-0000-4000-a000-000000000002';
+    chrome.storage.local.set({
+      kyt_test_mode: !!enable,
+      kyt_test_user_id: enable ? testUserId : null,
+    });
+    clearConfigCache();
+    if (enable) {
+      chrome.action.setBadgeText({ text: 'TEST' });
+      chrome.action.setBadgeBackgroundColor({ color: '#e94560' });
+      console.log('🧪 TEST MODE ON — retrieval uses synthetic data (' + testUserId + ')');
+    } else {
+      chrome.action.setBadgeText({ text: '' });
+      console.log('🧪 TEST MODE OFF — retrieval uses real data');
+    }
+    return enable ? 'Test mode ON' : 'Test mode OFF';
+  },
 };
+
+// Restore test mode badge on SW restart
+chrome.storage.local.get(['kyt_test_mode']).then(({ kyt_test_mode }) => {
+  if (kyt_test_mode) {
+    chrome.action.setBadgeText({ text: 'TEST' });
+    chrome.action.setBadgeBackgroundColor({ color: '#e94560' });
+  }
+});
 
 console.log('✅ KYT Background: Service worker ready');
 console.log('   Debug: Use KYT_DEBUG object for testing');
@@ -1642,6 +1667,7 @@ console.log('   - KYT_DEBUG.backfillImported() - Full post-import backfill: cont
 console.log('   - KYT_DEBUG.forceSyncAll() - Reset sync timestamp and sync ALL local messages (deduped)');
 console.log('   - KYT_DEBUG.pauseBackfill() - Pause entity backfill alarm (saves API costs)');
 console.log('   - KYT_DEBUG.resumeBackfill() - Resume entity backfill alarm');
+console.log('   - KYT_DEBUG.testMode(true/false) - Toggle synthetic data retrieval (badge shows TEST)');
 console.log('   - KYT_DEBUG.excludeConversation(id) - Hide a conversation from search (reversible)');
 console.log('   - KYT_DEBUG.includeConversation(id) - Un-hide a conversation from search');
 console.log('   Note: chrome.runtime.sendMessage() from service worker to itself does not work');

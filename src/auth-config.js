@@ -18,11 +18,9 @@ const CONFIG_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
  */
 export async function getApiConfig() {
   if (cachedApiConfig && (Date.now() - configLoadTime) < CONFIG_CACHE_TTL) {
-    console.log('📦 Using cached API config');
     return cachedApiConfig;
   }
 
-  console.log('📥 Loading API config from storage');
   const result = await chrome.storage.local.get(['api_config', AUTH_SESSION_KEY, 'user_id']);
 
   // Prefer auth session for authenticated users
@@ -34,23 +32,25 @@ export async function getApiConfig() {
       accessToken: session.access_token,
       userId: session.user?.id || result.user_id,
       authMode: 'jwt',
-      // Legacy fields — not needed for edge mode, but some code paths read them
       disableQueryTransformation: result.api_config?.disableQueryTransformation ?? true,
     };
-    configLoadTime = Date.now();
-    return cachedApiConfig;
-  }
-
-  // Fall back to legacy api_config
-  if (!result.api_config) {
+  } else if (result.api_config) {
+    cachedApiConfig = result.api_config;
+    if (!cachedApiConfig.userId) {
+      cachedApiConfig.userId = result.user_id || null;
+    }
+  } else {
     throw new Error('API configuration not found - run setup.html');
   }
 
-  cachedApiConfig = result.api_config;
-  // Resolve userId: prefer config > stored user_id (survives session expiry)
-  if (!cachedApiConfig.userId) {
-    cachedApiConfig.userId = result.user_id || null;
+  // Test mode: override userId for retrieval (dev testing only)
+  const testMode = await chrome.storage.local.get(['kyt_test_mode', 'kyt_test_user_id']);
+  if (testMode.kyt_test_mode && testMode.kyt_test_user_id) {
+    cachedApiConfig.userId = testMode.kyt_test_user_id;
+    cachedApiConfig._testMode = true;
+    console.log('🧪 TEST MODE: retrieval using user', testMode.kyt_test_user_id);
   }
+
   configLoadTime = Date.now();
   return cachedApiConfig;
 }
