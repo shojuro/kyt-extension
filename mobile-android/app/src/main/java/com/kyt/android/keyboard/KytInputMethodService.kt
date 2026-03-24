@@ -62,12 +62,15 @@ class KytInputMethodService : InputMethodService() {
         "com.openai.chatgpt",
         "com.anthropic.claude",
         "com.google.android.apps.bard",
-        "com.google.android.apps.gemini"
+        "com.google.android.apps.gemini",
+        "com.google.android.apps.agentspace"  // Gemini Enterprise
     )
 
     private fun isTargetApp(): Boolean {
         val packageName = currentInputEditorInfo?.packageName ?: return false
-        return packageName in TARGET_PACKAGES
+        if (packageName in TARGET_PACKAGES) return true
+        // Catch Gemini variants (Enterprise, regional, etc.)
+        return packageName.contains("gemini") || packageName.contains("bard")
     }
 
     // ── Input View ───────────────────────────────────────────
@@ -81,13 +84,13 @@ class KytInputMethodService : InputMethodService() {
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        Log.d(TAG, "onStartInput: pkg=${attribute?.packageName} isTarget=${isTargetApp()} restarting=$restarting")
         // Only clear buffer for a genuinely new input field, not keyboard hide/show
         if (!restarting) {
             textBuffer.clear()
             injectionState = InjectionState.NONE
             injectedContextLength = 0
             searchStartPackage = null
-            if (BuildConfig.DEBUG) Log.d(TAG, "onStartInput: new field, state reset")
         } else {
             if (BuildConfig.DEBUG) Log.d(TAG, "onStartInput: restarting, buffer kept (${textBuffer.length} chars)")
         }
