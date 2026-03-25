@@ -311,19 +311,25 @@ async function handleGetContextAsync(message, getContextForInjection) {
     // ─── TEST MODE SHORTCUT: bypass entire pipeline, use SECURITY DEFINER RPC ───
     const testFlags = await chrome.storage.local.get(['kyt_test_mode', 'kyt_test_user_id']);
     if (testFlags.kyt_test_mode && testFlags.kyt_test_user_id) {
-      console.log('🧪 TEST MODE: shortcut — bypassing full pipeline for', message.userMessage.substring(0, 50));
+      console.log('🧪 TEST MODE: using full search_memories pipeline for', message.userMessage.substring(0, 50));
       try {
-        const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/search_test_user`, {
+        const rpcRes = await fetch(`${SUPABASE_URL}/functions/v1/search_memories`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
-          body: JSON.stringify({ query_text: message.userMessage, top_k: 3 }),
+          body: JSON.stringify({
+            query: message.userMessage,
+            userId: testFlags.kyt_test_user_id,
+            topK: 5,
+            fast: true,
+          }),
         });
-        const results = rpcRes.ok ? await rpcRes.json() : [];
-        const items = (Array.isArray(results) ? results : []).map(r => ({
+        const json = rpcRes.ok ? await rpcRes.json() : {};
+        const rawResults = json.results || json.memories || [];
+        const items = rawResults.map(r => ({
           content: r.content || '',
-          similarity: r.score || 0.7,
-          platform: 'chatgpt',
-          timestamp: new Date().toISOString(),
+          similarity: r.similarity || r.score || 0.7,
+          platform: r.platform || 'chatgpt',
+          timestamp: r.timestamp || r.created_at || new Date().toISOString(),
           role: 'user',
           impact_score: r.impact_score,
           emotion_keywords: r.emotion_keywords,
