@@ -16,7 +16,7 @@
 // Generation guard: only the latest injected bridge responds to events.
 // On extension reload, a new bridge is injected via chrome.scripting.executeScript().
 // The new bridge overwrites window.__kytBridgeGeneration, silencing old bridge handlers.
-const BRIDGE_GENERATION = Date.now();
+var BRIDGE_GENERATION = Date.now();
 window.__kytBridgeGeneration = BRIDGE_GENERATION;
 
 console.log('🔵 BRIDGE: Content bridge loaded in ISOLATED world at:', new Date().toISOString());
@@ -29,9 +29,9 @@ console.log('🔵 BRIDGE: Generation:', BRIDGE_GENERATION);
 // Tier 2: chrome.storage.local with key kyt_pending_unencrypted_queue (context partially valid)
 // Tier 3: window.localStorage with key kyt_emergency_localStorage_queue (context fully invalid)
 
-const UNENCRYPTED_QUEUE_KEY = 'kyt_pending_unencrypted_queue';
-const LOCALSTORAGE_EMERGENCY_KEY = 'kyt_emergency_localStorage_queue';
-const LOCALSTORAGE_MAX_SIZE = 50;
+var UNENCRYPTED_QUEUE_KEY = 'kyt_pending_unencrypted_queue';
+var LOCALSTORAGE_EMERGENCY_KEY = 'kyt_emergency_localStorage_queue';
+var LOCALSTORAGE_MAX_SIZE = 50;
 
 // ===== SERVICE WORKER DISCONNECTION TRACKING =====
 // When the SW dies mid-request, Tier 1 (sendMessage) fails. Rather than permanently
@@ -39,11 +39,11 @@ const LOCALSTORAGE_MAX_SIZE = 50;
 // or the next sendMessage attempt, so we should retry after a short delay.
 // Extension update re-injects the bridge script entirely, starting fresh.
 
-let swDisconnectedUntil = 0;   // Timestamp when cooldown expires (0 = not cooling down)
-let swDisconnectCount = 0;     // Consecutive failures — drives escalation
+var swDisconnectedUntil = 0;   // Timestamp when cooldown expires (0 = not cooling down)
+var swDisconnectCount = 0;     // Consecutive failures — drives escalation
 
 // Cooldown: 5s → 15s → 30s → 60s (capped)
-const SW_COOLDOWN_STEPS = [5000, 15000, 30000, 60000];
+var SW_COOLDOWN_STEPS = [5000, 15000, 30000, 60000];
 
 function markDisconnected(errorMsg) {
   const cooldownMs = SW_COOLDOWN_STEPS[Math.min(swDisconnectCount, SW_COOLDOWN_STEPS.length - 1)];
