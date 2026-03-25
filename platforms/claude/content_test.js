@@ -371,6 +371,34 @@ if (window.KYT_CLAUDE_INJECTED) {
 
       console.log('🔍 KYT Claude: Requesting context for:', body.prompt.substring(0, 50) + '...');
 
+      // TEST MODE: bypass bridge entirely — direct RPC call from MAIN world
+      try {
+        const testModeFlag = localStorage.getItem('kyt_test_mode');
+        if (testModeFlag === 'true') {
+          console.log('🧪 KYT Claude TEST MODE: direct RPC bypass (no bridge)');
+          const rpcRes = await fetch('https://svrcvfzlwhnixzuxaccf.supabase.co/rest/v1/rpc/search_test_user', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cmN2Znpsd2huaXh6dXhhY2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMzkwNjIsImV4cCI6MjA3NzcxNTA2Mn0.AGh-FsrTLjGuRL0aolR4HYjI6rIE1mpk8X9Fa-E-dUU', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cmN2Znpsd2huaXh6dXhhY2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMzkwNjIsImV4cCI6MjA3NzcxNTA2Mn0.AGh-FsrTLjGuRL0aolR4HYjI6rIE1mpk8X9Fa-E-dUU' },
+            body: JSON.stringify({ query_text: body.prompt.substring(0, 200), top_k: 3 }),
+          });
+          if (rpcRes.ok) {
+            const results = await rpcRes.json();
+            if (Array.isArray(results) && results.length > 0) {
+              // Build injection inline (simplified — no buildMemoryInjection available in MAIN world)
+              const items = results.map((r, i) => `┌─ Item ${i+1}\n│ content: "${(r.content || '').substring(0, 300)}"\n└───`).join('\n\n');
+              const injection = `================================================================================\nK.Y.T. — User's Personal Knowledge Base (Test Mode)\n================================================================================\n\n[RESPONSE_PRIORITY]\nIMPORTANT: The retrieved items below are the user's own stored knowledge.\n1. ALWAYS use these items to answer the user's question FIRST.\n2. Present the retrieved information directly.\n3. Quote the stored text using "from your stored conversations."\n\n[Retrieved Items]\n\n${items}\n\n================================================================================\n[End of Knowledge Base Context]\n================================================================================`;
+              console.log('🧪 KYT Claude TEST MODE: injecting ' + results.length + ' results (' + injection.length + ' chars)');
+              body.prompt = injection + '\n\n---\n\n' + body.prompt;
+              return JSON.stringify(body);
+            }
+          }
+          console.log('🧪 KYT Claude TEST MODE: no results or RPC failed');
+          return bodyString;
+        }
+      } catch (testErr) {
+        console.warn('🧪 KYT Claude TEST MODE error:', testErr.message);
+      }
+
       // Generate unique request ID
       const requestId = `ctx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 

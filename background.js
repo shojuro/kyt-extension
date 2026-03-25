@@ -1629,6 +1629,17 @@ globalThis.KYT_DEBUG = {
       kyt_test_user_id: enable ? testUserId : null,
     });
     clearConfigCache();
+    // Set localStorage on all target tabs (Claude MAIN world reads this directly)
+    chrome.tabs.query({ url: ['*://claude.ai/*', '*://chatgpt.com/*', '*://gemini.google.com/*'] }, (tabs) => {
+      for (const tab of tabs) {
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (flag) => { localStorage.setItem('kyt_test_mode', flag); },
+          args: [enable ? 'true' : 'false'],
+          world: 'MAIN',
+        }).catch(() => {});
+      }
+    });
     if (enable) {
       chrome.action.setBadgeText({ text: 'TEST' });
       chrome.action.setBadgeBackgroundColor({ color: '#e94560' });
