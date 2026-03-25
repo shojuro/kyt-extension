@@ -222,18 +222,24 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
   // For SW cooldown, we still fast-fail but with a different message —
   // the cooldown will expire and the next request will retry Tier 1.
   if (!chrome.runtime?.id) {
-    console.warn('⚠️ BRIDGE: Extension context invalidated - fast-failing context request');
-    window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
-      detail: {
-        requestId: requestId,
-        success: false,
-        formattedContext: null,
-        items: [],
-        elapsedMs: 0,
-        error: 'Extension context invalidated'
-      }
-    }));
-    return;
+    // Extension was reloaded — wait briefly for re-injection to complete
+    console.warn('⚠️ BRIDGE: Extension context invalidated — waiting for re-injection...');
+    await new Promise(r => setTimeout(r, 2000));
+    if (!chrome.runtime?.id) {
+      console.warn('⚠️ BRIDGE: Still invalidated after 2s - fast-failing context request');
+      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+        detail: {
+          requestId: requestId,
+          success: false,
+          formattedContext: null,
+          items: [],
+          elapsedMs: 0,
+          error: 'Extension context invalidated'
+        }
+      }));
+      return;
+    }
+    console.log('✅ BRIDGE: Context restored after re-injection');
   }
 
   if (isSwCoolingDown()) {
