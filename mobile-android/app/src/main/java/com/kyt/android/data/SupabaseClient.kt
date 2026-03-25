@@ -80,4 +80,36 @@ object SupabaseClient {
             Result.failure(e)
         }
     }
+
+    /**
+     * Call a Supabase PostgREST RPC function.
+     * Used for SECURITY DEFINER RPCs that bypass RLS (e.g. search_test_user).
+     * Uses anon key only — no JWT needed.
+     */
+    suspend fun callRpc(
+        rpcName: String,
+        body: JSONObject
+    ): Result<JSONObject> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("$supabaseUrl/rest/v1/rpc/$rpcName")
+                .post(body.toString().toRequestBody(JSON_MEDIA))
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Authorization", "Bearer $supabaseAnonKey")
+                .addHeader("apikey", supabaseAnonKey)
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(IOException("RPC $rpcName returned ${response.code}"))
+            }
+
+            val responseBody = response.body?.string() ?: "[]"
+            // RPC returns array — wrap in object for consistent handling
+            Result.success(JSONObject().put("results", org.json.JSONArray(responseBody)))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

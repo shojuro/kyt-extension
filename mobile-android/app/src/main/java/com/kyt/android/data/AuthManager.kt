@@ -143,8 +143,23 @@ object AuthManager {
         return token
     }
 
+    private const val TEST_USER_ID = "b0000002-0000-4000-a000-000000000002"
+
     fun getUserId(context: Context): String? {
-        return getEncryptedPrefs(context).getString(KEY_USER_ID, null)
+        // Test mode: override userId for synthetic data testing
+        val prefs = getEncryptedPrefs(context)
+        if (prefs.getBoolean("kyt_test_mode", false)) {
+            return TEST_USER_ID
+        }
+        return prefs.getString(KEY_USER_ID, null)
+    }
+
+    fun isTestMode(context: Context): Boolean {
+        return getEncryptedPrefs(context).getBoolean("kyt_test_mode", false)
+    }
+
+    fun setTestMode(context: Context, enabled: Boolean) {
+        getEncryptedPrefs(context).edit().putBoolean("kyt_test_mode", enabled).apply()
     }
 
     fun isAuthenticated(context: Context): Boolean {

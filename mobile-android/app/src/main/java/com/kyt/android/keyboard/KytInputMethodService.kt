@@ -369,18 +369,31 @@ class KytInputMethodService : InputMethodService() {
         val userId = AuthManager.getUserId(this)
         if (userId == null) { injectionState = InjectionState.NONE; return }
 
-        val body = JSONObject().apply {
-            put("query", text.take(200))
-            put("userId", userId)
-            put("top_k", 8)
-            put("fast", true)
-            put("confidenceThreshold", classification.confidenceThreshold ?: 0.40)
-            put("excludePlatforms", JSONArray().apply { put("claude-code") })
-        }
-
         updateContextBar("Searching...")
-        val result = withTimeoutOrNull(18_000) {
-            SupabaseClient.callEdgeFunction("search_memories", body)
+
+        val isTestMode = AuthManager.isTestMode(this)
+        val result = if (isTestMode) {
+            // Test mode: use SECURITY DEFINER RPC (bypasses RLS for synthetic data)
+            if (BuildConfig.DEBUG) Log.d(TAG, "prefetchContext: TEST MODE — using search_test_user RPC")
+            val rpcBody = JSONObject().apply {
+                put("query_text", text.take(200))
+                put("top_k", 3)
+            }
+            withTimeoutOrNull(18_000) {
+                SupabaseClient.callRpc("search_test_user", rpcBody)
+            }
+        } else {
+            val body = JSONObject().apply {
+                put("query", text.take(200))
+                put("userId", userId)
+                put("top_k", 8)
+                put("fast", true)
+                put("confidenceThreshold", classification.confidenceThreshold ?: 0.40)
+                put("excludePlatforms", JSONArray().apply { put("claude-code") })
+            }
+            withTimeoutOrNull(18_000) {
+                SupabaseClient.callEdgeFunction("search_memories", body)
+            }
         }
 
         if (result == null || result.isFailure) {
