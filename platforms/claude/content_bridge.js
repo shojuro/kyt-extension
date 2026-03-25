@@ -218,6 +218,44 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
   const { requestId, userMessage, config } = event.detail;
   console.log('🔍 BRIDGE: Context request from MAIN world');
 
+  // TEST MODE: bypass bridge port — direct fetch from ISOLATED world (no CSP restrictions)
+  try {
+    var testFlag = await chrome.storage.local.get(['kyt_test_mode']);
+    if (testFlag.kyt_test_mode) {
+      console.log('🧪 BRIDGE TEST MODE: direct RPC (bypassing port)');
+      var rpcRes = await fetch('https://svrcvfzlwhnixzuxaccf.supabase.co/rest/v1/rpc/search_test_user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cmN2Znpsd2huaXh6dXhhY2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMzkwNjIsImV4cCI6MjA3NzcxNTA2Mn0.AGh-FsrTLjGuRL0aolR4HYjI6rIE1mpk8X9Fa-E-dUU',
+          'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cmN2Znpsd2huaXh6dXhhY2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMzkwNjIsImV4cCI6MjA3NzcxNTA2Mn0.AGh-FsrTLjGuRL0aolR4HYjI6rIE1mpk8X9Fa-E-dUU',
+        },
+        body: JSON.stringify({ query_text: userMessage.substring(0, 200), top_k: 3 }),
+      });
+      if (rpcRes.ok) {
+        var results = await rpcRes.json();
+        if (Array.isArray(results) && results.length > 0) {
+          var items = results.map(function(r, i) {
+            return '\u250C\u2500 Item ' + (i+1) + '\n\u2502 content: "' + (r.content || '').substring(0, 300) + '"\n\u2514\u2500\u2500\u2500';
+          }).join('\n\n');
+          var injection = '================================================================================\nK.Y.T. \u2014 User\'s Personal Knowledge Base (Test Mode)\n================================================================================\n\n[RESPONSE_PRIORITY]\nIMPORTANT: The retrieved items below are the user\'s own stored knowledge.\n1. ALWAYS use these items to answer the user\'s question FIRST.\n2. Present the retrieved information directly.\n3. Quote the stored text using "from your stored conversations."\n\n[Retrieved Items]\n\n' + items + '\n\n================================================================================\n[End of Knowledge Base Context]\n================================================================================';
+          console.log('🧪 BRIDGE TEST MODE: injecting ' + results.length + ' results (' + injection.length + ' chars)');
+          window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+            detail: { requestId: requestId, success: true, formattedContext: injection, items: results }
+          }));
+          return;
+        }
+      }
+      console.log('🧪 BRIDGE TEST MODE: no results');
+      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+        detail: { requestId: requestId, success: true, formattedContext: null, items: [] }
+      }));
+      return;
+    }
+  } catch (testErr) {
+    console.warn('🧪 BRIDGE TEST MODE error:', testErr.message);
+  }
+
   // Fast-fail when extension context is truly invalidated (unloaded).
   // For SW cooldown, we still fast-fail but with a different message —
   // the cooldown will expire and the next request will retry Tier 1.
