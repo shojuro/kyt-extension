@@ -110,6 +110,12 @@ DO NOT extract preferences from questions:
 "Do I like Ferraris?"                   → NO preference extraction (this is a question)
 "Tell me about my food preferences"     → NO preference extraction (this is a question)
 
+DO NOT extract preferences from recommendations or hearsay:
+"X was recommended to me"              → NO preference extraction (received recommendation, not user's opinion)
+"Someone told me to try X"             → NO preference extraction (third-party suggestion)
+"I heard X is good"                    → NO preference extraction (hearsay, not personal experience)
+"My friend loves X"                    → NO preference extraction (friend's preference, not user's)
+
 CANONICAL NAME CONSTRUCTION:
 The canonical name is constructed as normalized_name + "_" + relationship (e.g., "jennifer_trainer"). This is the primary deduplication key. Follow these rules strictly:
 - Always lowercase the normalized_name
@@ -199,6 +205,9 @@ Users often discuss preferences in nuanced ways. Only extract from clear stateme
 - "I think Rust is better than Go" → preference (category: "programming_language", value: "Rust", sentiment: "positive")
 - "I've been considering switching to Rust" → NOT a preference (considering ≠ decided)
 - "Everyone says Rust is great" → NOT a preference (third-party opinion, not user's)
+- "X was recommended to me" → NOT a preference (recommendation received, not user's own opinion)
+- "Someone suggested I try X" → NOT a preference (third-party suggestion, not endorsement)
+- "I heard X is good" → NOT a preference (hearsay, not personal experience)
 - "If I had to choose, I'd pick Rust" → preference (conditional but indicates preference)
 - "I used to love Java but now I prefer Kotlin" → TWO preferences: (java, negative) + (kotlin, positive)
 - "What do you think about Rust?" → NOT a preference (asking for opinion)
@@ -258,8 +267,37 @@ When extracting preferences, calibrate the confidence based on language strength
 - WEAK negative ("meh", "it's whatever") → do NOT extract as preference (too ambiguous)
 - COMPARATIVE ("X is better than Y", "switched from X to Y") → extract BOTH: X negative/neutral, Y positive
 
+CONTENT CATEGORY CLASSIFICATION:
+In addition to entities and preferences, classify the OVERALL content into one of these categories:
+- "emotional": Personal feelings, life events, relationships, grief, joy, stress, loneliness, celebrations, health concerns, existential questions
+- "technical": Code discussions, debugging, architecture decisions, API issues, database schemas, deployment, CI/CD, error messages, stack traces, framework comparisons, technical learning
+- "factual": Trivia, general knowledge questions, definitions, history, science, geography — no personal or technical depth
+- "mixed": Contains BOTH significant emotional AND technical content (e.g., "I'm frustrated because the auth middleware keeps failing" = emotional frustration + technical debugging)
+
+Classification signals:
+- Code blocks, function names (camelCase/snake_case), file extensions (.js, .py), error messages, stack traces → "technical"
+- Feelings words (scared, happy, lonely, stressed), life events (birthday, death, job loss), relationship language → "emotional"
+- Questions about facts with no personal context → "factual"
+- Both emotional AND technical signals in the same message → "mixed"
+
+TECHNICAL ENTITY EXTRACTION (expanded):
+When content_category is "technical" or "mixed", ALSO extract these code-specific entities that are normally skipped:
+- Function/method names mentioned in discussion context (not just inside code blocks): extract as TECH with relationship "function"
+  Example: "The getUserById function is failing" → TECH entity "get_user_by_id" with relationship "function"
+- File paths discussed: extract as TECH with relationship "file"
+  Example: "Check auth-middleware.js" → TECH entity "auth_middleware_js" with relationship "file"
+- Error types/messages: extract as TECH with relationship "error"
+  Example: "Getting a 403 Forbidden on the API" → TECH entity "403_forbidden" with relationship "error"
+- Architecture decisions: extract as CONCEPT with relationship "decision"
+  Example: "We chose PostgreSQL over MongoDB for the JOINs" → CONCEPT "postgresql_over_mongodb" with relationship "decision"
+- Package/dependency names: extract as TECH with relationship "dependency"
+  Example: "Added express-rate-limit to the project" → TECH entity "express_rate_limit" with relationship "dependency"
+
+NOTE: Rule 4 ("Do NOT extract entities from code blocks") still applies for ISOLATED code snippets pasted for review. But when a user DISCUSSES code entities in natural language ("the auth middleware is broken", "I refactored the UserService class"), those ARE extractable.
+
 Return ONLY valid JSON (no markdown):
 {
+  "content_category": "emotional",
   "entities": [
     {
       "entity_text": "Jennifer",
@@ -412,11 +450,19 @@ Return entities with their relationship to the user, and any user preferences de
  * - Prompt caching: 1600-word system prompt cached after first call (90% discount within 5min TTL)
  * - Better instruction following for structured extraction
  */
+export type ContentCategory = 'emotional' | 'technical' | 'factual' | 'mixed';
+
+export interface ExtractionResult {
+  entities: ExtractedEntity[];
+  preferences: ExtractedPreference[];
+  contentCategory: ContentCategory;
+}
+
 export async function extractEntities(
   data: EntityExtractionData,
   anthropicApiKey: string,
   context?: ClientContext
-): Promise<{ entities: ExtractedEntity[], preferences: ExtractedPreference[] }> {
+): Promise<ExtractionResult> {
   // Input validation
   if (!data.content || data.content.trim().length === 0) {
     throw new Error('Content cannot be empty');
@@ -437,6 +483,7 @@ export async function extractEntities(
     const client = new AnthropicClient(anthropicApiKey, context);
 
     const parsed = await client.generateJsonCompletion<{
+      content_category?: string;
       entities?: Array<{
         entity_text?: string;
         normalized_name?: string;
@@ -484,12 +531,18 @@ export async function extractEntities(
         sentiment: validSentiments.has(p.sentiment) ? p.sentiment : 'positive'
       }));
 
-    return { entities, preferences };
+    // Validate content_category
+    const validCategories = new Set(['emotional', 'technical', 'factual', 'mixed']);
+    const contentCategory: ContentCategory = validCategories.has(parsed.content_category || '')
+      ? (parsed.content_category as ContentCategory)
+      : 'emotional'; // Default to emotional (backward-compatible)
+
+    return { entities, preferences, contentCategory };
 
   } catch (error) {
     // Parse/API error - return empty arrays instead of failing
     console.warn('Entity extraction failed:', (error as Error).message);
-    return { entities: [], preferences: [] };
+    return { entities: [], preferences: [], contentCategory: 'emotional' };
   }
 }
 

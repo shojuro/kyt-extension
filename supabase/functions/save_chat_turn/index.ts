@@ -186,9 +186,11 @@ serve(async (req) => {
 
     let entities: any[];
     let preferences: any[] = [];
+    let contentCategory = 'emotional';
     if (entityResult.status === 'fulfilled') {
       entities = entityResult.value.entities;
       preferences = entityResult.value.preferences;
+      contentCategory = entityResult.value.contentCategory || 'emotional';
     } else {
       entities = [];
     }
@@ -228,6 +230,7 @@ serve(async (req) => {
         arousal: classification.arousal,
         emotion_keywords: classification.emotion_keywords?.length > 0 ? classification.emotion_keywords : null,
         emotion_classified: true,
+        content_category: contentCategory,
         last_accessed: new Date().toISOString(),
         access_count: 0,
         gravity_score: null  // Will be computed during retrieval

@@ -149,7 +149,7 @@ serve(async (req) => {
 
           // Extract entities + preferences using GPT-4o-mini
           const costContext: ClientContext = { userId: row.user_id, edgeFunction: 'backfill_entities' };
-          const { entities, preferences } = await extractEntities(
+          const { entities, preferences, contentCategory } = await extractEntities(
             {
               content: row.content,
               speakers: row.speakers || ["User", "Assistant"],
@@ -176,10 +176,10 @@ serve(async (req) => {
             await savePreferences(preferences, row.id, row.user_id, supabase);
           }
 
-          // Mark as extracted (both entities and preferences)
+          // Mark as extracted + set content_category
           await supabase
             .from("chat_turns")
-            .update({ entities_extracted: true, preferences_extracted: true })
+            .update({ entities_extracted: true, preferences_extracted: true, content_category: contentCategory })
             .eq("id", row.id);
 
           totalProcessed++;

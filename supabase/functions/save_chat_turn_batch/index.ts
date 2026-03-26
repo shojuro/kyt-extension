@@ -322,7 +322,7 @@ serve(async (req) => {
                 const [classification, entities, contextResult] = await Promise.allSettled([
                     classifyMemory({ content: turn.content, speakers: [turn.role || 'user'] }, anthropicKey, costContext),
                     skipExtraction
-                        ? Promise.resolve({ entities: [], preferences: [] })
+                        ? Promise.resolve({ entities: [], preferences: [], contentCategory: 'emotional' as const })
                         : extractEntities({ content: turn.content, speakers: [turn.role || 'user'] }, anthropicKey, costContext),
                     // Context generation — no surrounding chunks in inline path (single-turn batch)
                     generateChunkContext({
@@ -403,9 +403,16 @@ serve(async (req) => {
 
                 if (data && data.length > 0) {
                     // Save extracted entities + preferences
-                    const extractionResult = entities.status === 'fulfilled' ? entities.value : { entities: [], preferences: [] };
+                    const extractionResult = entities.status === 'fulfilled' ? entities.value : { entities: [], preferences: [], contentCategory: 'emotional' };
                     const extractedEntities = extractionResult.entities;
                     const extractedPreferences = extractionResult.preferences;
+
+                    // Update content_category from extraction result
+                    if (extractionResult.contentCategory && extractionResult.contentCategory !== 'emotional') {
+                        await supabase.from('chat_turns')
+                            .update({ content_category: extractionResult.contentCategory })
+                            .eq('id', data[0].id);
+                    }
                     if (extractedEntities.length > 0 && turn.user_id) {
                         try {
                             await saveEntitiesWithMentions(
