@@ -289,7 +289,54 @@ export function scoreTemporalReference(message) {
 }
 
 
-// S7: Synthesis Intent (0.0 – 1.0)
+// S7: Code/Technical Signal (0.0 – 1.0)
+// Detects technical vocabulary indicating developer recall context.
+// When high, retrieval should favor BM25 keywords and entity matches
+// over emotional gravity scoring.
+
+/** Function/method name patterns: camelCase, snake_case, PascalCase with parens */
+const CODE_IDENTIFIERS = /\b([a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*|[a-z_]+_[a-z_]+)\s*\(?\b/;
+
+/** File extensions in context */
+const FILE_EXTENSIONS = /\b\w+\.(js|ts|jsx|tsx|py|rb|go|rs|java|kt|swift|sql|css|scss|html|vue|svelte|yaml|yml|json|toml|env|config|sh|bash|md)\b/i;
+
+/** Technical action verbs */
+const TECH_VERBS = /\b(deploy|refactor|debug|migrate|commit|push|pull|merge|rebase|revert|rollback|compile|transpile|bundle|lint|format|scaffold|bootstrap|containerize|orchestrate|provision|scale)\b/i;
+
+/** Framework/tool names (common, beyond what's in TECH entity type) */
+const TECH_NAMES = /\b(webpack|vite|rollup|eslint|prettier|jest|vitest|mocha|cypress|playwright|docker|kubernetes|k8s|terraform|ansible|nginx|redis|postgres|postgresql|mongodb|mysql|sqlite|graphql|grpc|prisma|drizzle|sequelize|supabase|firebase|vercel|netlify|heroku|aws|gcp|azure|lambda|s3|ec2|cloudfront|cdn|api|sdk|cli|npm|yarn|pnpm|pip|cargo|gradle|maven)\b/i;
+
+/** Error/debugging patterns */
+const ERROR_PATTERNS = /\b(error|exception|stack\s*trace|segfault|crash|null\s*pointer|undefined|NaN|404|500|403|401|CORS|timeout|ECONNREFUSED|ENOMEM|OOM|memory\s*leak|race\s*condition|deadlock)\b/i;
+
+/** Code structure vocabulary */
+const CODE_STRUCTURE = /\b(function|class|interface|enum|struct|module|package|component|middleware|interceptor|controller|service|repository|model|schema|migration|endpoint|route|handler|hook|plugin|extension|decorator)\b/i;
+
+/**
+ * @param {string} message - Trimmed, lowercased message
+ * @returns {number} 0.0–1.0
+ */
+export function scoreCodeSignal(message) {
+  const lower = message;
+  let score = 0;
+  let hits = 0;
+
+  if (CODE_IDENTIFIERS.test(lower)) { hits++; score = Math.max(score, 0.6); }
+  if (FILE_EXTENSIONS.test(lower)) { hits++; score = Math.max(score, 0.7); }
+  if (TECH_VERBS.test(lower)) { hits++; score = Math.max(score, 0.5); }
+  if (TECH_NAMES.test(lower)) { hits++; score = Math.max(score, 0.5); }
+  if (ERROR_PATTERNS.test(lower)) { hits++; score = Math.max(score, 0.6); }
+  if (CODE_STRUCTURE.test(lower)) { hits++; score = Math.max(score, 0.4); }
+
+  // Multiple technical signals compound — 2+ hits is strongly technical
+  if (hits >= 3) score = Math.min(score + 0.2, 1.0);
+  else if (hits >= 2) score = Math.min(score + 0.1, 1.0);
+
+  return score;
+}
+
+
+// S8: Synthesis Intent (0.0 – 1.0)
 // Detects multi-topic bridging language ("connect", "relate", "combine")
 
 export function scoreSynthesisIntent(message) {
@@ -333,7 +380,8 @@ function result(intent, confidenceThreshold, reason, scores = null) {
  *   confidenceThreshold: number|null,
  *   reason: string,
  *   scores: {directive:number, memory:number, density:number,
- *            question:number, personal:number, temporal:number}|null
+ *            question:number, personal:number, temporal:number,
+ *            codeSignal:number}|null
  * }}
  */
 export function classifyIntent(message) {
@@ -359,6 +407,7 @@ export function classifyIntent(message) {
     question:   scoreQuestionStructure(lower),
     personal:   scorePersonalReference(lower),
     temporal:   scoreTemporalReference(lower),
+    codeSignal: scoreCodeSignal(lower),
   };
 
   // ── Classification logic ─────────────────────────────────
@@ -400,6 +449,24 @@ export function classifyIntent(message) {
   // "Continue where we left off yesterday"
   if (scores.directive >= 0.4 && scores.temporal >= 0.4) {
     return result('QUERY', 0.60, 'mixed_directive_temporal', scores);
+  }
+
+  // QUERY_TECHNICAL: Strong code signal + memory/personal/question reference
+  // "Where's the auth middleware we wrote?" "What was the database migration issue?"
+  if (scores.codeSignal >= 0.5 && (scores.memory >= 0.3 || scores.personal >= 0.3 || scores.question >= 0.5)) {
+    return result('QUERY', 0.45, 'technical_recall', scores);
+  }
+
+  // QUERY_TECHNICAL: Strong code signal + temporal reference
+  // "That deployment bug from last week"
+  if (scores.codeSignal >= 0.5 && scores.temporal >= 0.4) {
+    return result('QUERY', 0.50, 'technical_temporal', scores);
+  }
+
+  // PASSIVE_TECHNICAL: Code signal alone with density (dev discussing code broadly)
+  // "The auth middleware keeps failing" — might benefit from context
+  if (scores.codeSignal >= 0.5 && scores.density >= 0.4) {
+    return result('PASSIVE', 0.55, 'technical_passive', scores);
   }
 
   // PASSIVE: Has question structure + sufficient density

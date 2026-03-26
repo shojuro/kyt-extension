@@ -34,6 +34,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
     recentTopics = undefined,
     conversationWindow = undefined,
     projectId = undefined,
+    queryType = undefined, // 'technical' adjusts BM25/HyDE weights server-side
   } = options;
 
   if (!query || query.trim().length === 0) {
@@ -64,6 +65,7 @@ export async function searchViaEdgeFunction(query, options = {}) {
   if (mmrLambda != null) body.mmrLambda = mmrLambda;
   if (recentTopics && recentTopics.length > 0) body.recentTopics = recentTopics;
   if (conversationWindow && conversationWindow.length > 0) body.conversationWindow = conversationWindow;
+  if (queryType) body.queryType = queryType;
 
   const response = await callEdgeFunction(
     'search_memories',

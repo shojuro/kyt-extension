@@ -44,6 +44,7 @@ export interface SearchOptions {
     edgeFunction?: string;  // Source edge function for cost attribution
     excludePlatforms?: string[];  // Platforms to exclude from results (e.g. ["claude-code"])
     speakerFilter?: string;       // Only return turns containing this speaker (e.g. "user"). Filters on speakers[] array.
+    queryType?: string;           // 'technical' for code queries — skips HyDE, increases BM25 weight
 }
 
 // ========================================================================
@@ -233,8 +234,8 @@ function escapeRegex(s: string): string {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Simple BM25-style keyword boost (max 30% of score) */
-function applyBm25Boost(query: string, items: CandidateWithScore[]): CandidateWithScore[] {
+/** Simple BM25-style keyword boost. maxBoost defaults to 0.3 (30%), raised to 0.5 for technical queries. */
+function applyBm25Boost(query: string, items: CandidateWithScore[], maxBoost = 0.3): CandidateWithScore[] {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     if (terms.length === 0) return items;
 
@@ -252,7 +253,7 @@ function applyBm25Boost(query: string, items: CandidateWithScore[]): CandidateWi
 
     const maxScore = Math.max(...bm25Scores, 1);
     return items.map((item, i) => {
-        let boost = (0.3 * bm25Scores[i]) / maxScore;
+        let boost = (maxBoost * bm25Scores[i]) / maxScore;
 
         // Apply Entity Boost (0.1) if present
         if (item.entity_boost) {
@@ -747,8 +748,6 @@ export async function getRelevantMemories(
 
     const {
         topK = 20,
-        useHyde = true,
-        hydeWeight = 0.6,
         fast = false,
         confidenceThreshold,
         mmrLambda = 0.5,
@@ -756,7 +755,18 @@ export async function getRelevantMemories(
         conversationWindow,
         edgeFunction,
         excludePlatforms,
+        queryType,
     } = options;
+
+    // Technical queries: skip HyDE (hallucinates code entities), boost BM25
+    const isTechnical = queryType === 'technical';
+    let useHyde = options.useHyde ?? true;
+    let hydeWeight = options.hydeWeight ?? 0.6;
+    if (isTechnical) {
+        useHyde = false;
+        hydeWeight = 0.0;
+        Logger.info('Technical query detected — HyDE disabled, BM25 boosted', { requestId });
+    }
 
     // Build cost attribution context once, pass to all clients
     const costContext: ClientContext = { userId, edgeFunction };
@@ -926,7 +936,7 @@ export async function getRelevantMemories(
             ...c,
             rerank_score: c.gravity_score ?? 0.5,
         }));
-        const boosted = applyBm25Boost(query, scored);
+        const boosted = applyBm25Boost(query, scored, isTechnical ? 0.5 : 0.3);
         const gravityBoosted = applyGravityBoost(boosted);
 
         // Apply quality penalties (fast path gets them too)
@@ -1504,7 +1514,7 @@ async function rerankAndFilter(
     }
 
     // Apply BM25 + Entity Boost, then Gravity Boost
-    const boosted = applyBm25Boost(query, ordered);
+    const boosted = applyBm25Boost(query, ordered, isTechnical ? 0.5 : 0.3);
     const gravityBoosted = applyGravityBoost(boosted);
 
     // Confidence filter — uses param (default 0.40, overridable via intent classification)

@@ -413,6 +413,13 @@ async function handleGetContextAsync(message, getContextForInjection) {
       config.confidenceThreshold = classification.confidenceThreshold;
     }
 
+    // Pass technical signal to retrieval pipeline for BM25/HyDE weight adjustment
+    const isTechnical = classification.reason?.startsWith('technical_') ||
+      (classification.scores?.codeSignal >= 0.5);
+    if (isTechnical) {
+      config.queryType = 'technical';
+    }
+
     // Pass conversation window context for implicit query resolution
     if (message.conversationWindow && Array.isArray(message.conversationWindow)) {
       config.conversationWindow = message.conversationWindow;

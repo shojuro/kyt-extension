@@ -298,6 +298,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
       debugMode: config?.debugMode || false,
       disableQueryTransformation: config?.disableQueryTransformation ?? apiConfig.disableQueryTransformation ?? false,
       conversationWindow: config?.conversationWindow || null, // Recent messages from current conversation
+      queryType: config?.queryType || null, // 'technical' for code queries — adjusts BM25/HyDE weights in pipeline
     };
 
     // ===== PIPELINE DIAGNOSTICS =====
@@ -548,6 +549,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
             recentTopics: recentTopicBoost || undefined,
             conversationWindow: contextConfig.conversationWindow || undefined,
             projectId: activeProjectId || undefined,
+            queryType: contextConfig.queryType || undefined,
           });
           diagnostics.edgeItems = contextItems.length;
           console.log(`✅ Context Retrieval (edge): Found ${contextItems.length} items (pool: ${contextConfig.candidatePoolSize}, inject cap: ${contextConfig.maxContextItems})`);
