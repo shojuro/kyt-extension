@@ -48,6 +48,7 @@ serve(async (req) => {
             conversationWindow,   // Recent messages from current conversation for coreference resolution
             projectId,            // Project scoping for K.Y.T. Vault
             excludePlatforms,     // Platforms to exclude from results (e.g. ["claude-code"])
+            speakerFilter,        // Only return turns with this speaker (e.g. "user")
         } = body;
 
         // Extract user from JWT if present (authenticated mode)
@@ -125,6 +126,7 @@ serve(async (req) => {
             conversationWindow: conversationWindow || undefined,
             edgeFunction: 'search_memories',
             excludePlatforms: excludePlatforms || undefined,
+            speakerFilter: speakerFilter || undefined,
         };
 
         // Get relevant memories using the full Hybrid HyDE pipeline:

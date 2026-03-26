@@ -297,7 +297,7 @@
         var rpcRes = await fetch('https://svrcvfzlwhnixzuxaccf.supabase.co/functions/v1/search_memories', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'apikey': anonKey, 'Authorization': 'Bearer ' + anonKey },
-          body: JSON.stringify({ query: userMessage, userId: 'b0000002-0000-4000-a000-000000000002', topK: 5, fast: true }),
+          body: JSON.stringify({ query: userMessage, userId: 'b0000002-0000-4000-a000-000000000002', topK: 5, fast: true, speakerFilter: 'user' }),
         });
         if (rpcRes.ok) {
           var json = await rpcRes.json();

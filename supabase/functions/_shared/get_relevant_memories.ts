@@ -43,6 +43,7 @@ export interface SearchOptions {
     conversationWindow?: Array<{ role: string; content: string }>;  // Recent messages for coreference resolution
     edgeFunction?: string;  // Source edge function for cost attribution
     excludePlatforms?: string[];  // Platforms to exclude from results (e.g. ["claude-code"])
+    speakerFilter?: string;       // Only return turns containing this speaker (e.g. "user"). Filters on speakers[] array.
 }
 
 // ========================================================================
@@ -906,6 +907,19 @@ export async function getRelevantMemories(
             }
         }
 
+        // Speaker filter: only return turns containing the specified speaker
+        // (e.g. "user" to exclude assistant-only responses from injection)
+        if (options.speakerFilter) {
+            const before = fastCandidates.length;
+            fastCandidates = fastCandidates.filter(c => {
+                const speakers = (c as any).speakers;
+                return Array.isArray(speakers) && speakers.includes(options.speakerFilter);
+            });
+            if (fastCandidates.length < before) {
+                Logger.info(`speakerFilter '${options.speakerFilter}': ${before} → ${fastCandidates.length}`, { requestId });
+            }
+        }
+
         const echoFiltered = filterQueryEchoes(query, fastCandidates);
 
         const scored: CandidateWithScore[] = echoFiltered.map(c => ({
@@ -1293,6 +1307,20 @@ export async function getRelevantMemories(
         candidates = candidates.filter(c => !excluded.has(c.platform || ''));
         if (candidates.length < before) {
             Logger.info(`excludePlatforms filter: ${before} → ${candidates.length}`, { requestId });
+        }
+    }
+
+    // ========================================================================
+    // STEP 5c-ii: Speaker filter (only return turns with specified speaker)
+    // ========================================================================
+    if (options.speakerFilter) {
+        const before = candidates.length;
+        candidates = candidates.filter(c => {
+            const speakers = (c as any).speakers;
+            return Array.isArray(speakers) && speakers.includes(options.speakerFilter);
+        });
+        if (candidates.length < before) {
+            Logger.info(`speakerFilter '${options.speakerFilter}': ${before} → ${candidates.length}`, { requestId });
         }
     }
 
