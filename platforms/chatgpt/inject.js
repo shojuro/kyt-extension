@@ -234,6 +234,9 @@
       // Pattern 4: Separator lines (80+ equals signs)
       const separatorPattern = /={80,}/g;
 
+      // Pattern 5: Natural-language context blocks (appended to user message)
+      const naturalLangPattern = /\(For context: I've talked about[\s\S]*?I'm sharing these so you have the full picture[^)]*\.\)/g;
+
       let cleaned = content;
 
       // Apply all patterns
@@ -241,6 +244,7 @@
       cleaned = cleaned.replace(contextBlockPattern, '');
       cleaned = cleaned.replace(standaloneMarkers, '');
       cleaned = cleaned.replace(separatorPattern, '');
+      cleaned = cleaned.replace(naturalLangPattern, '');
 
       // Clean up excessive whitespace/newlines left by removals
       cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
@@ -342,17 +346,20 @@
         console.log('📝 Context items:', event.detail.items?.length || 0);
         console.log('📄 Context preview:', event.detail.formattedContext?.substring(0, 200) + '...');
 
-        // Inject context as a system message
-        const contextMessage = {
-          author: { role: 'system' },
-          content: { content_type: 'text', parts: [event.detail.formattedContext] },
-          metadata: { kyt_context: true }
-        };
-
-        pending.body.messages.splice(pending.body.messages.length - 1, 0, contextMessage);
-
-        console.log('🔧 Modified request body (messages count):', pending.body.messages.length);
-        console.log('🔧 System message injected at position:', pending.body.messages.length - 2);
+        // Append context to user's own message (not a separate system message).
+        // ChatGPT's backend validates the messages array schema strictly and
+        // silently strips injected system messages that lack valid id/create_time.
+        // Embedding context in the user's message guarantees it reaches the model.
+        const lastMessage = pending.body.messages[pending.body.messages.length - 1];
+        if (lastMessage?.content?.parts && Array.isArray(lastMessage.content.parts)) {
+          const originalText = typeof lastMessage.content.parts[0] === 'string'
+            ? lastMessage.content.parts[0]
+            : '';
+          lastMessage.content.parts[0] = originalText + '\n\n' + event.detail.formattedContext;
+          console.log('🔧 Context appended to user message (' + event.detail.formattedContext.length + ' chars)');
+        } else {
+          console.warn('⚠️ KYT ChatGPT: Could not append context — unexpected message structure');
+        }
 
         pending.resolve(JSON.stringify(pending.body));
       } else {

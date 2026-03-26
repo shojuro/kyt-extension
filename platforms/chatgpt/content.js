@@ -287,6 +287,49 @@
     const { requestId, userMessage, config } = event.detail;
     console.log('🔍 KYT ChatGPT Content: Context request from page context');
 
+    // TEST MODE: bypass background pipeline — direct fetch from ISOLATED world (no CSP)
+    // Mirrors platforms/claude/content_bridge.js test mode (lines 221-259)
+    try {
+      var testFlag = await chrome.storage.local.get(['kyt_test_mode']);
+      if (testFlag.kyt_test_mode) {
+        console.log('🧪 ChatGPT TEST MODE: using full search_memories pipeline');
+        var anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cmN2Znpsd2huaXh6dXhhY2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMzkwNjIsImV4cCI6MjA3NzcxNTA2Mn0.AGh-FsrTLjGuRL0aolR4HYjI6rIE1mpk8X9Fa-E-dUU';
+        var rpcRes = await fetch('https://svrcvfzlwhnixzuxaccf.supabase.co/functions/v1/search_memories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'apikey': anonKey, 'Authorization': 'Bearer ' + anonKey },
+          body: JSON.stringify({ query: userMessage, userId: 'b0000002-0000-4000-a000-000000000002', topK: 5, fast: true }),
+        });
+        if (rpcRes.ok) {
+          var json = await rpcRes.json();
+          var results = json.results || json.memories || [];
+          if (results.length > 0) {
+            // Natural-language parenthetical format — same approach as Claude bridge.
+            // Appended to user message by inject.js (not injected as system message).
+            var quotes = results.map(function(r) {
+              var content = (r.content || '').substring(0, 250).replace(/"/g, '\\"');
+              return '- "' + content + '..."';
+            }).join('\n\n');
+            var injection = '(For context: I\'ve talked about things like this before in past conversations. '
+              + 'Here are some things I\'ve previously shared that might be relevant to what I\'m about to say:\n\n'
+              + quotes + '\n\n'
+              + 'I\'m sharing these so you have the full picture of where I\'m coming from.)';
+            console.log('🧪 ChatGPT TEST MODE: natural-language injection (' + results.length + ' items, ' + injection.length + ' chars)');
+            window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+              detail: { requestId: requestId, success: true, formattedContext: injection, items: results }
+            }));
+            return;
+          }
+        }
+        console.log('🧪 ChatGPT TEST MODE: no results');
+        window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
+          detail: { requestId: requestId, success: true, formattedContext: null, items: [] }
+        }));
+        return;
+      }
+    } catch (testErr) {
+      console.warn('🧪 ChatGPT TEST MODE error:', testErr.message);
+    }
+
     // Check if extension context is still valid
     if (!chrome.runtime?.id) {
       console.warn('⚠️ KYT ChatGPT Content: Extension context invalidated - cannot get context');
