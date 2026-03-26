@@ -212,6 +212,47 @@ private fun String.truncateAtWordBoundary(maxLen: Int): String {
     }
 }
 
+// ── Natural-Language Injection ────────────────────────────────
+
+/**
+ * Build a natural-language parenthetical injection.
+ * Same format as the web extension (platforms/claude/content_bridge.js,
+ * platforms/chatgpt/content.js). Gives the AI rich user-authored context.
+ *
+ * Uses 5 items × 250 chars — matches the web extension's density.
+ * The "(For context:" prefix is detected by the injection state machine.
+ */
+fun buildNaturalLanguageInjection(
+    items: List<MemoryItem>,
+    query: String,
+    maxItems: Int = 5,
+    maxCharsPerItem: Int = 250,
+    minConfidence: Double = 0.50
+): InjectionResult {
+    if (items.isEmpty()) return InjectionResult("", 0, 0.0)
+
+    val sorted = selectDiverseItems(items.sortedByDescending { it.similarity }, maxItems)
+    val confidence = calculateConfidence(sorted)
+
+    if (confidence < minConfidence) return InjectionResult("", 0, confidence)
+
+    val quotes = sorted.joinToString("\n\n") { item ->
+        val role = if (item.role == "user") "User" else "Assistant"
+        val content = sanitizeForInjection(item.content)
+            .replace(Regex("[\\n\\r]+"), " ")
+            .trim()
+            .truncateAtWordBoundary(maxCharsPerItem)
+        "- \"$role: $content...\""
+    }
+
+    val text = "(For context: I've talked about things like this before in past conversations. " +
+        "Here are some things I've previously shared that might be relevant to what I'm about to say:\n\n" +
+        quotes + "\n\n" +
+        "I'm sharing these so you have the full picture of where I'm coming from.)"
+
+    return InjectionResult(text, sorted.size, confidence)
+}
+
 // ── Compact Mobile Format ────────────────────────────────────
 
 /**

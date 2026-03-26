@@ -13,6 +13,7 @@ import com.kyt.android.memory.MemoryModeManager
 import com.kyt.android.memory.classifyIntent
 import com.kyt.android.memory.Intent as KytIntent
 import com.kyt.android.memory.MemoryItem
+import com.kyt.android.memory.buildNaturalLanguageInjection
 import com.kyt.android.memory.buildVisibleInjection
 import kotlinx.coroutines.*
 import org.json.JSONArray
@@ -162,7 +163,8 @@ class KytInputMethodService : InputMethodService() {
 
         if (isTargetApp() && fullText.isNotBlank()) {
             // Extract user's original text (strip pre-injected context)
-            val userText = if (injectionState == InjectionState.INJECTED && fullText.startsWith("(KYT:")) {
+            val userText = if (injectionState == InjectionState.INJECTED && (fullText.startsWith("(KYT:") || fullText.startsWith("(For context:"))) {
+                // Strip injected context: find the closing paren + double newline
                 val end = fullText.indexOf(")\n\n")
                 if (end >= 0) fullText.substring(end + 3) else fullText
             } else {
@@ -281,7 +283,7 @@ class KytInputMethodService : InputMethodService() {
         // Double-injection guard
         if (injectionState == InjectionState.INJECTED) {
             val currentText = getCurrentText()
-            if (!currentText.startsWith("(KYT:")) {
+            if (!currentText.startsWith("(KYT:") && !currentText.startsWith("(For context:")) {
                 // User deleted the context line — allow re-prefetch after cooldown
                 if (BuildConfig.DEBUG) Log.d(TAG, "onUpdateSelection: user deleted context, resetting")
                 injectionState = InjectionState.NONE
@@ -341,7 +343,7 @@ class KytInputMethodService : InputMethodService() {
         if (text.isBlank()) { if (BuildConfig.DEBUG) Log.d(TAG, "prefetchContext: empty"); return }
 
         // Guard: don't re-search our own injection output
-        if (text.startsWith("(KYT:") || text.startsWith("[K.Y.T.")) {
+        if (text.startsWith("(KYT:") || text.startsWith("(For context:") || text.startsWith("[K.Y.T.")) {
             if (BuildConfig.DEBUG) Log.d(TAG, "prefetchContext: skipping own injection")
             return
         }
@@ -373,14 +375,17 @@ class KytInputMethodService : InputMethodService() {
 
         val isTestMode = AuthManager.isTestMode(this)
         val result = if (isTestMode) {
-            // Test mode: use SECURITY DEFINER RPC (bypasses RLS for synthetic data)
-            if (BuildConfig.DEBUG) Log.d(TAG, "prefetchContext: TEST MODE — using search_test_user RPC")
-            val rpcBody = JSONObject().apply {
-                put("query_text", text.take(200))
-                put("top_k", 3)
+            // Test mode: use search_memories edge function (full vector pipeline).
+            // Old: search_test_user RPC (text search, returned wrong/anemic results).
+            if (BuildConfig.DEBUG) Log.d(TAG, "prefetchContext: TEST MODE — using search_memories pipeline")
+            val body = JSONObject().apply {
+                put("query", text.take(200))
+                put("userId", "b0000002-0000-4000-a000-000000000002")
+                put("topK", 5)
+                put("fast", true)
             }
             withTimeoutOrNull(18_000) {
-                SupabaseClient.callRpc("search_test_user", rpcBody)
+                SupabaseClient.callEdgeFunction("search_memories", body)
             }
         } else {
             val body = JSONObject().apply {
@@ -431,7 +436,7 @@ class KytInputMethodService : InputMethodService() {
             )
         }
 
-        val injection = buildVisibleInjection(items, text.take(200))
+        val injection = buildNaturalLanguageInjection(items, text.take(200))
 
         if (injection.itemCount > 0) {
             // Update cache
