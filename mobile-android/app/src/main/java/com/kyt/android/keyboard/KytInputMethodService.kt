@@ -400,6 +400,7 @@ class KytInputMethodService : InputMethodService() {
                 put("userId", "b0000002-0000-4000-a000-000000000002")
                 put("topK", 5)
                 put("fast", true)
+                put("speakerFilter", "user")
             }
             withTimeoutOrNull(18_000) {
                 SupabaseClient.callEdgeFunction("search_memories", body)
@@ -412,6 +413,7 @@ class KytInputMethodService : InputMethodService() {
                 put("fast", true)
                 put("confidenceThreshold", classification.confidenceThreshold ?: 0.40)
                 put("excludePlatforms", JSONArray().apply { put("claude-code") })
+                put("speakerFilter", "user")
             }
             withTimeoutOrNull(18_000) {
                 SupabaseClient.callEdgeFunction("search_memories", body)
