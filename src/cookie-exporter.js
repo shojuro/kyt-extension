@@ -108,18 +108,7 @@ export async function exportNotebookLMCookies() {
       domain: c.domain,
     }));
 
-    // Try HTTP bridge first (or skip if we know it's unavailable)
-    if (_transport !== 'native') {
-      const httpResult = await tryHttpBridge(cookiePayload);
-      if (httpResult.success) {
-        _transport = 'http';
-        _consecutiveFailures = 0;
-        _lastExportTime = Date.now();
-        return { ...httpResult, transport: 'http' };
-      }
-    }
-
-    // Fall back to native messaging
+    // Try native messaging FIRST (no separate server needed, production default)
     if (_transport !== 'http') {
       const nativeResult = await tryNativeMessaging(cookiePayload);
       if (nativeResult.success) {
@@ -127,6 +116,17 @@ export async function exportNotebookLMCookies() {
         _consecutiveFailures = 0;
         _lastExportTime = Date.now();
         return { ...nativeResult, transport: 'native' };
+      }
+    }
+
+    // Fall back to HTTP bridge (for WSL or when native host not registered)
+    if (_transport !== 'native') {
+      const httpResult = await tryHttpBridge(cookiePayload);
+      if (httpResult.success) {
+        _transport = 'http';
+        _consecutiveFailures = 0;
+        _lastExportTime = Date.now();
+        return { ...httpResult, transport: 'http' };
       }
     }
 

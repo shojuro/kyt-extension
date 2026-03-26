@@ -39,21 +39,32 @@ function encryptData(data, passphrase) {
   return Buffer.concat([salt, iv, authTag, encrypted]).toString('base64');
 }
 
-// --- Load passphrase from mcp/.env ---
+// --- Load passphrase (auto-key priority) ---
 function loadPassphrase() {
-  // Try mcp/.env first (2 levels up from native-host/)
-  const envPath = join(__dirname, '..', '..', '.env');
-  if (!existsSync(envPath)) {
-    // Fall back to environment variable
-    if (process.env.NOTEBOOKLM_PASSPHRASE) {
-      return process.env.NOTEBOOKLM_PASSPHRASE;
-    }
-    throw new Error(`Passphrase not found: ${envPath} missing and NOTEBOOKLM_PASSPHRASE env var not set`);
+  // Priority 1: Auto-key file (production default — no manual passphrase needed)
+  const autoKeyPath = join(KYT_DIR, 'encryption-key');
+  if (existsSync(autoKeyPath)) {
+    return readFileSync(autoKeyPath, 'utf8').trim();
   }
-  const content = readFileSync(envPath, 'utf8');
-  const match = content.match(/^NOTEBOOKLM_PASSPHRASE=(.+)$/m);
-  if (!match) throw new Error('NOTEBOOKLM_PASSPHRASE not found in mcp/.env');
-  return match[1].trim();
+
+  // Priority 2: mcp/.env (2 levels up from native-host/)
+  const envPath = join(__dirname, '..', '..', '.env');
+  if (existsSync(envPath)) {
+    const content = readFileSync(envPath, 'utf8');
+    const match = content.match(/^NOTEBOOKLM_PASSPHRASE=(.+)$/m);
+    if (match) return match[1].trim();
+  }
+
+  // Priority 3: Environment variable
+  if (process.env.NOTEBOOKLM_PASSPHRASE) {
+    return process.env.NOTEBOOKLM_PASSPHRASE;
+  }
+
+  // Priority 4: Generate auto-key (first run)
+  const key = randomBytes(32).toString('hex');
+  if (!existsSync(KYT_DIR)) mkdirSync(KYT_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(autoKeyPath, key, { mode: 0o600 });
+  return key;
 }
 
 // --- Native messaging I/O ---
