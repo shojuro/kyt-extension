@@ -231,18 +231,27 @@ fun buildNaturalLanguageInjection(
 ): InjectionResult {
     if (items.isEmpty()) return InjectionResult("", 0, 0.0)
 
-    val sorted = selectDiverseItems(items.sortedByDescending { it.similarity }, maxItems)
+    // Filter to user-authored content only. Assistant responses are echoes/advice,
+    // not personal memories. Also strip items that are previous injection blocks.
+    val userItems = items.filter { item ->
+        item.role == "user" &&
+        !item.content.startsWith("(KYT:") &&
+        !item.content.startsWith("(For context:") &&
+        !item.content.startsWith("[K.Y.T.")
+    }
+    if (userItems.isEmpty()) return InjectionResult("", 0, 0.0)
+
+    val sorted = selectDiverseItems(userItems.sortedByDescending { it.similarity }, maxItems)
     val confidence = calculateConfidence(sorted)
 
     if (confidence < minConfidence) return InjectionResult("", 0, confidence)
 
     val quotes = sorted.joinToString("\n\n") { item ->
-        val role = if (item.role == "user") "User" else "Assistant"
         val content = sanitizeForInjection(item.content)
             .replace(Regex("[\\n\\r]+"), " ")
             .trim()
             .truncateAtWordBoundary(maxCharsPerItem)
-        "- \"$role: $content...\""
+        "- \"$content...\""
     }
 
     val text = "(For context: I've talked about things like this before in past conversations. " +
