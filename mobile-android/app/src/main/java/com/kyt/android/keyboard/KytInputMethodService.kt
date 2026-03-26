@@ -93,8 +93,25 @@ class KytInputMethodService : InputMethodService() {
             injectionState = InjectionState.NONE
             injectedContextLength = 0
             searchStartPackage = null
+            lastSearchQuery = null
+            lastSearchInjection = null
         } else {
-            if (BuildConfig.DEBUG) Log.d(TAG, "onStartInput: restarting, buffer kept (${textBuffer.length} chars)")
+            // Keyboard restarting on same field — check if field was cleared
+            // while keyboard was hidden (user tapped app's send button).
+            // Without this, injectionState stays INJECTED forever and blocks
+            // new searches because onUpdateSelection never saw the field-clear.
+            val currentText = getCurrentText()
+            if (currentText.isBlank() || (!currentText.startsWith("(KYT:") && !currentText.startsWith("(For context:") && injectionState == InjectionState.INJECTED)) {
+                if (BuildConfig.DEBUG) Log.d(TAG, "onStartInput: restarting but field changed/cleared, resetting state")
+                textBuffer.clear()
+                if (currentText.isNotBlank()) textBuffer.append(currentText)
+                injectionState = InjectionState.NONE
+                injectedContextLength = 0
+                lastSearchQuery = null
+                lastSearchInjection = null
+            } else {
+                if (BuildConfig.DEBUG) Log.d(TAG, "onStartInput: restarting, buffer kept (${textBuffer.length} chars)")
+            }
         }
         keyboardView?.updateEnterKey(attribute)
         updateContextBar()

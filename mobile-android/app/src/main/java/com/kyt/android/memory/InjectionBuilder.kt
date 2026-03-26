@@ -231,17 +231,18 @@ fun buildNaturalLanguageInjection(
 ): InjectionResult {
     if (items.isEmpty()) return InjectionResult("", 0, 0.0)
 
-    // Filter to user-authored content only. Assistant responses are echoes/advice,
-    // not personal memories. Also strip items that are previous injection blocks.
-    val userItems = items.filter { item ->
-        item.role == "user" &&
+    // Strip injection pollution and explicit assistant-only items.
+    // Don't require role=="user" — search_memories often returns null role
+    // for user content (chat_turns uses speakers[] not role).
+    val filtered = items.filter { item ->
+        item.role != "assistant" &&
         !item.content.startsWith("(KYT:") &&
         !item.content.startsWith("(For context:") &&
         !item.content.startsWith("[K.Y.T.")
     }
-    if (userItems.isEmpty()) return InjectionResult("", 0, 0.0)
+    if (filtered.isEmpty()) return InjectionResult("", 0, 0.0)
 
-    val sorted = selectDiverseItems(userItems.sortedByDescending { it.similarity }, maxItems)
+    val sorted = selectDiverseItems(filtered.sortedByDescending { it.similarity }, maxItems)
     val confidence = calculateConfidence(sorted)
 
     if (confidence < minConfidence) return InjectionResult("", 0, confidence)
