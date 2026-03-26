@@ -168,6 +168,15 @@
     const requestId = detail.requestId;
     const userMessage = detail.userMessage;
 
+    // Early bail if extension context is dead (reload race)
+    if (!isRuntimeAlive()) {
+      dispatchContextResponse(requestId, {
+        success: false, formattedContext: null, items: [],
+        error: 'Extension context invalidated'
+      });
+      return;
+    }
+
     // TEST MODE: bypass background pipeline — direct fetch from ISOLATED world.
     // Avoids service worker congestion (embedding CB failures, backfill retries)
     // that cause the 26s port timeout. Same pattern as Claude + ChatGPT bridges.
