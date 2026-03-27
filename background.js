@@ -33,6 +33,7 @@ import { detectDeflection } from './src/assistant-quality-detector.js';
 import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/embedding-circuit-breaker.js';
 import { updateRecentTopics } from './src/recent-topic-cache.js';
 import { exportNotebookLMCookies, getCookieExportStatus, resetCookieExporter } from './src/cookie-exporter.js';
+import { handlePollAlarm, getPollerStatus, pollPlatformNow } from './src/conversation-poller.js';
 import { startRpcProxy, stopRpcProxy, isRpcProxyRunning, getRpcProxyStatus } from './src/nlm-rpc-proxy.js';
 
 // Extracted modules
@@ -1025,6 +1026,10 @@ isNLMEnabled().then(enabled => {
 // NotebookLM cookie export — auto-refresh every 20 min + on startup
 chrome.alarms.create('refreshNLMCookies', { delayInMinutes: 0.1, periodInMinutes: 20 });
 
+// Background conversation polling — fetches phone conversations from platform APIs
+chrome.alarms.create('pollChatGPT', { delayInMinutes: 3, periodInMinutes: 15 });
+chrome.alarms.create('pollClaude', { delayInMinutes: 8, periodInMinutes: 20 });
+
 // NotebookLM RPC proxy — routes API calls through browser tab for full cookie access
 startRpcProxy();
 
@@ -1362,6 +1367,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
       break;
 
+    case 'pollChatGPT':
+    case 'pollClaude':
+      try { await handlePollAlarm(alarm.name); }
+      catch (e) { console.error(`❌ Poller ${alarm.name} error:`, e.message); }
+      break;
+
     default:
       console.warn(`⚠️ Unknown alarm: ${alarm.name}`);
   }
@@ -1675,6 +1686,8 @@ globalThis.KYT_DEBUG = {
     }
     return enable ? 'Test mode ON' : 'Test mode OFF';
   },
+  pollerStatus: () => getPollerStatus(),
+  pollNow: (platform) => pollPlatformNow(platform),
 };
 
 // Restore test mode badge on SW restart
