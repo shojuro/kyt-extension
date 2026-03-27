@@ -20,7 +20,7 @@ import { getActiveProfileId } from './profile-manager.js';
 import { getActiveProject, setActiveProject, clearActiveProject } from './project-manager.js';
 import { getSyncStatus as getNLMSyncStatus, enableSync as enableNLMSync, disableSync as disableNLMSync, checkGoogleSignIn as checkNLMSignIn } from './notebooklm-sync.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
-import { buildMemoryInjection } from '../kyt-memory-injection-builder.js';
+import { buildMemoryInjection, buildNaturalLanguageInjection } from '../kyt-memory-injection-builder.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
 import { withStorageMutex } from './utils/storage-mutex.js';
 
@@ -346,8 +346,8 @@ async function handleGetContextAsync(message, getContextForInjection) {
             queryOriginal: message.userMessage,
             queryTransformed: message.userMessage,
           };
-          const formattedContext = buildMemoryInjection(retrievalResult);
-          console.log('🧪 TEST MODE: injection built (' + formattedContext.length + ' chars)');
+          const formattedContext = buildNaturalLanguageInjection(retrievalResult);
+          console.log('🧪 TEST MODE: injection built (' + (formattedContext?.length || 0) + ' chars)');
           return { success: true, items, formattedContext, elapsedMs: performance.now() - injectionStart, testMode: true };
         }
         return { success: true, items: [], formattedContext: null, testMode: true };

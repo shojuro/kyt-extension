@@ -11,7 +11,7 @@
 
 import { searchHybrid } from './browser-search.js';
 import { transformQuery, fetchRecentTopicsFromSupabase } from './query-transformer.js';
-import { buildMemoryInjection, buildErrorInjection } from '../kyt-memory-injection-builder.js';
+import { buildMemoryInjection, buildNaturalLanguageInjection, buildErrorInjection } from '../kyt-memory-injection-builder.js';
 import { filterByConfidence } from './confidence-filter.js';
 import { searchViaEdgeFunction } from './edge-search.js';
 import { scoreTemporalReference, scoreSynthesisIntent } from './intent-classifier.js';
@@ -358,9 +358,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
               queryTransformed: null,
             };
 
-            const formattedContext = buildMemoryInjection(retrievalResult, {
-              debugMode: contextConfig.debugMode || false,
-            });
+            const formattedContext = buildNaturalLanguageInjection(retrievalResult);
 
             return {
               success: true,
@@ -826,10 +824,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
         queryTransformed: transformationMetadata.transformed ? transformationMetadata.optimized : null
       };
 
-      formattedContext = buildMemoryInjection(retrievalResult, {
-        debugMode: contextConfig.debugMode || false,
-        facetedGrouping: synthesisScore >= 0.5,
-      });
+      formattedContext = buildNaturalLanguageInjection(retrievalResult);
 
       console.log('✅ Memory Injection Protocol: Injection block built with', filteredItems.length, 'items');
     } else {
