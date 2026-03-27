@@ -1540,10 +1540,8 @@
         if (!isUser && !isAssistant) continue;
 
         const contentParts = node.message.content?.parts || [];
-        const content = contentParts.map(part => {
-          if (typeof part === 'string') return part;
-          return JSON.stringify(part);
-        }).join('\n').trim();
+        // Use extractTextFromParts (handles audio_transcription, skips audio_asset_pointer)
+        const content = extractTextFromParts(contentParts) || '';
 
         if (!content) continue;
 

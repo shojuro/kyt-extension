@@ -237,25 +237,50 @@ async function _saveMessageCore(messageData) {
       throw new Error('Invalid message content: expected non-empty string');
     }
 
-    // Clean audio transcription JSON — extract text from ChatGPT voice messages
-    if (messageData.content.includes('"audio_transcription"') && messageData.content.startsWith('{')) {
+    // Clean audio transcription JSON — extract text from ChatGPT voice messages.
+    // Also strip audio_asset_pointer, metadata objects, and other non-text content.
+    if (messageData.content.startsWith('{') || messageData.content.includes('"content_type"')) {
       try {
         const lines = messageData.content.split('\n');
         const texts = [];
         for (const line of lines) {
           const trimmed = line.trim();
-          if (!trimmed.startsWith('{')) continue;
+          if (!trimmed.startsWith('{')) { texts.push(trimmed); continue; }
           try {
             const obj = JSON.parse(trimmed);
             if (obj.content_type === 'audio_transcription' && obj.text) {
               texts.push(obj.text);
             }
-          } catch (_) {}
+            // Skip audio_asset_pointer, metadata objects, binary refs — no useful text
+            // (previously these were silently dropped; now we explicitly skip them)
+          } catch (_) {
+            // Not JSON — keep as plain text
+            texts.push(trimmed);
+          }
         }
-        if (texts.length > 0) {
-          messageData.content = texts.join('\n\n');
+        const cleaned = texts.filter(t => t.length > 0).join('\n\n');
+        if (cleaned.length > 0) {
+          messageData.content = cleaned;
         }
       } catch (_) {}
+    }
+
+    // ── Noise filter: skip system UI text, status messages, placeholders ──
+    const trimmed = messageData.content.trim();
+    const NOISE_PATTERNS = [
+      /^\[User dismissed/i,
+      /^Transcript Unavailable/i,
+      /^Transcribing[\s…\.]*$/i,
+      /^Searching[\s…\.]*$/i,
+      /^Loading[\s…\.]*$/i,
+      /^Thinking[\s…\.]*$/i,
+      /^Generating[\s…\.]*$/i,
+      /^\d{1,2}:\d{2}$/,                    // Bare timestamps "00:00"
+      /^[\s…\.]+$/,                          // Only whitespace/ellipsis/dots
+    ];
+    if (trimmed.length < 10 || NOISE_PATTERNS.some(p => p.test(trimmed))) {
+      console.log(`🗑️ Noise filtered: "${trimmed.substring(0, 50)}" (${trimmed.length} chars)`);
+      return { success: true, queued: false, reason: 'noise_filtered' };
     }
 
     const result = await chrome.storage.local.get(['captured_messages', 'kyt_stats']);
