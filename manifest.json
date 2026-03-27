@@ -106,7 +106,7 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https://*.supabase.co https://router.huggingface.co https://api.jina.ai https://notebooklm.google.com http://127.0.0.1:19418 http://localhost:19418"
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https://*.supabase.co https://router.huggingface.co https://api.jina.ai https://notebooklm.google.com https://chatgpt.com https://claude.ai http://127.0.0.1:19418 http://localhost:19418"
   },
   "web_accessible_resources": [
     {
