@@ -295,6 +295,50 @@ When content_category is "technical" or "mixed", ALSO extract these code-specifi
 
 NOTE: Rule 4 ("Do NOT extract entities from code blocks") still applies for ISOLATED code snippets pasted for review. But when a user DISCUSSES code entities in natural language ("the auth middleware is broken", "I refactored the UserService class"), those ARE extractable.
 
+DECISION EXTRACTION (for technical and mixed content):
+When the conversation contains decisions, architectural choices, threshold changes, or trade-off discussions, extract structured decision records. These are separate from entities — they capture the WHY and WHAT of choices.
+
+For each decision found, add an entry to the "decisions" array:
+- decision: What was decided (one sentence)
+- value: Specific value if applicable (number, name, version, config)
+- rationale: Why it was decided (brief)
+- alternatives: What was considered but rejected (array of strings, may be empty)
+- constraints: Requirements that shaped the decision (array of strings, may be empty)
+- context: Domain/topic this relates to (e.g., "auth_middleware", "database_selection", "api_versioning")
+
+Decision examples:
+- "We chose PostgreSQL over MongoDB because of the JOIN requirements" →
+  {decision: "Selected PostgreSQL as primary database", value: "PostgreSQL", rationale: "JOIN requirements for entity relationships", alternatives: ["MongoDB"], constraints: [], context: "database_selection"}
+
+- "Raised the confidence threshold from 0.40 to 0.65 because garbage was getting through" →
+  {decision: "Raised confidence threshold to 0.65", value: "0.65", rationale: "Lower values permitted low-quality results", alternatives: [], constraints: [], context: "retrieval_thresholds"}
+
+- "Using Haiku instead of GPT-4o for classification because of prompt caching" →
+  {decision: "Using Haiku for classification", value: "claude-haiku-4-5", rationale: "Prompt caching reduces cost by 90%", alternatives: ["gpt-4o-mini"], constraints: ["must complete in <2000ms"], context: "llm_selection"}
+
+Only extract from USER statements, not assistant recommendations. If the user hasn't committed to a decision (just exploring options), do NOT extract.
+
+TEMPORAL NORMALIZATION:
+When content contains relative time references, resolve them to approximate absolute dates based on the conversation timestamp. Apply this to decision dates and life events:
+- "yesterday" → resolve to the day before the message timestamp
+- "last week" → resolve to ~7 days before
+- "a few days ago" → resolve to ~3 days before
+- "last month" → resolve to ~30 days before
+Include the resolved date in the decision or entity context where applicable.
+
+CONTENT CATEGORY — STRENGTHENED DETECTION:
+The content_category classification MUST default to "technical" when ANY of these signals are present:
+- Code blocks (triple backticks or indented code)
+- Function/method names (camelCase, snake_case with parentheses)
+- File paths or extensions (.js, .ts, .py, .go, .rs, .sql, .yaml, .json, .env)
+- Error messages, status codes (401, 403, 500, TypeError, null pointer)
+- Technical nouns: API, endpoint, middleware, schema, migration, deployment, container, cluster, pipeline, repository, branch, commit, merge
+- Package/framework names: React, Docker, Kubernetes, PostgreSQL, Redis, etc.
+- Database operations: SELECT, INSERT, JOIN, INDEX, query, table, column, row
+- Infrastructure terms: server, instance, pod, node, load balancer, CDN, DNS, SSL
+
+Only classify as "emotional" when there are NO technical signals and the content is purely about feelings, relationships, or life events. When in doubt between technical and emotional, choose "technical" — the gravity scoring depends on correct classification.
+
 Return ONLY valid JSON (no markdown):
 {
   "content_category": "emotional",
@@ -333,6 +377,16 @@ Return ONLY valid JSON (no markdown):
       "category": "car",
       "value": "Lamborghini",
       "sentiment": "positive"
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Selected PostgreSQL as primary database",
+      "value": "PostgreSQL",
+      "rationale": "JOIN requirements for entity relationships",
+      "alternatives": ["MongoDB"],
+      "constraints": [],
+      "context": "database_selection"
     }
   ]
 }`;
@@ -452,9 +506,19 @@ Return entities with their relationship to the user, and any user preferences de
  */
 export type ContentCategory = 'emotional' | 'technical' | 'factual' | 'mixed';
 
+export interface ExtractedDecision {
+  decision: string;
+  value: string | null;
+  rationale: string | null;
+  alternatives: string[];
+  constraints: string[];
+  context: string;
+}
+
 export interface ExtractionResult {
   entities: ExtractedEntity[];
   preferences: ExtractedPreference[];
+  decisions: ExtractedDecision[];
   contentCategory: ContentCategory;
 }
 
@@ -496,12 +560,20 @@ export async function extractEntities(
         value?: string;
         sentiment?: string;
       }>;
+      decisions?: Array<{
+        decision?: string;
+        value?: string;
+        rationale?: string;
+        alternatives?: string[];
+        constraints?: string[];
+        context?: string;
+      }>;
     }>(
       ENTITY_EXTRACTION_SYSTEM_PROMPT,
       prompt,
       {
         temperature: 0.2,
-        maxTokens: 900,
+        maxTokens: 1200,  // Increased for decisions array output
         maxRetries: 2,
         timeoutMs: 8000,
         operation: 'entity_extraction',
@@ -537,12 +609,25 @@ export async function extractEntities(
       ? (parsed.content_category as ContentCategory)
       : 'emotional'; // Default to emotional (backward-compatible)
 
-    return { entities, preferences, contentCategory };
+    // Parse decisions
+    const rawDecisions = Array.isArray(parsed.decisions) ? parsed.decisions : [];
+    const decisions: ExtractedDecision[] = rawDecisions
+      .filter((d: any) => d.decision && d.decision.trim().length > 0)
+      .map((d: any) => ({
+        decision: String(d.decision).trim(),
+        value: d.value ? String(d.value).trim() : null,
+        rationale: d.rationale ? String(d.rationale).trim() : null,
+        alternatives: Array.isArray(d.alternatives) ? d.alternatives.map((a: any) => String(a)) : [],
+        constraints: Array.isArray(d.constraints) ? d.constraints.map((c: any) => String(c)) : [],
+        context: d.context ? String(d.context).trim() : 'general',
+      }));
+
+    return { entities, preferences, decisions, contentCategory };
 
   } catch (error) {
     // Parse/API error - return empty arrays instead of failing
     console.warn('Entity extraction failed:', (error as Error).message);
-    return { entities: [], preferences: [], contentCategory: 'emotional' };
+    return { entities: [], preferences: [], decisions: [], contentCategory: 'emotional' };
   }
 }
 

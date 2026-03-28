@@ -149,7 +149,7 @@ serve(async (req) => {
 
           // Extract entities + preferences using GPT-4o-mini
           const costContext: ClientContext = { userId: row.user_id, edgeFunction: 'backfill_entities' };
-          const { entities, preferences, contentCategory } = await extractEntities(
+          const { entities, preferences, decisions, contentCategory } = await extractEntities(
             {
               content: row.content,
               speakers: row.speakers || ["User", "Assistant"],
@@ -176,6 +176,101 @@ serve(async (req) => {
             await savePreferences(preferences, row.id, row.user_id, supabase);
           }
 
+          // Save decisions as enriched entities with metadata
+          for (const dec of decisions) {
+            const canonicalName = dec.context.toLowerCase().replace(/[^\w]+/g, '_');
+            // Upsert decision entity — if same context exists, check for supersession
+            const { data: existing } = await supabase
+              .from('entities')
+              .select('id, metadata')
+              .eq('user_id', row.user_id)
+              .eq('entity_type', 'CONCEPT')
+              .eq('normalized_name', canonicalName)
+              .is('superseded_by', null)
+              .limit(1);
+
+            const decisionMetadata = {
+              decision: dec.decision,
+              value: dec.value,
+              rationale: dec.rationale,
+              alternatives: dec.alternatives,
+              constraints: dec.constraints,
+              type: 'decision',
+            };
+
+            if (existing && existing.length > 0) {
+              const oldEntity = existing[0];
+              const oldValue = (oldEntity.metadata as any)?.value;
+              if (oldValue && dec.value && oldValue !== dec.value) {
+                // Value changed — supersede the old entity
+                const { data: newEntity } = await supabase
+                  .from('entities')
+                  .insert({
+                    user_id: row.user_id,
+                    entity_text: dec.decision,
+                    normalized_name: canonicalName,
+                    entity_type: 'CONCEPT',
+                    relationship: 'decision',
+                    context_category: 'technical',
+                    metadata: decisionMetadata,
+                  })
+                  .select('id')
+                  .single();
+
+                if (newEntity) {
+                  await supabase
+                    .from('entities')
+                    .update({ superseded_by: newEntity.id })
+                    .eq('id', oldEntity.id);
+
+                  // Audit trail
+                  await supabase.from('memory_audit_log').insert({
+                    user_id: row.user_id,
+                    action: 'supersede',
+                    entity_id: oldEntity.id,
+                    old_value: oldValue,
+                    new_value: dec.value,
+                    reason: `Decision value changed: ${oldValue} → ${dec.value}`,
+                    metadata: { new_entity_id: newEntity.id, context: dec.context },
+                  });
+                }
+              } else {
+                // Same value or no value — update metadata (enrich, don't supersede)
+                await supabase
+                  .from('entities')
+                  .update({ metadata: decisionMetadata })
+                  .eq('id', oldEntity.id);
+              }
+            } else {
+              // New decision — create entity
+              const { data: newEntity } = await supabase
+                .from('entities')
+                .insert({
+                  user_id: row.user_id,
+                  entity_text: dec.decision,
+                  normalized_name: canonicalName,
+                  entity_type: 'CONCEPT',
+                  relationship: 'decision',
+                  context_category: 'technical',
+                  metadata: decisionMetadata,
+                })
+                .select('id')
+                .single();
+
+              if (newEntity) {
+                // Audit trail
+                await supabase.from('memory_audit_log').insert({
+                  user_id: row.user_id,
+                  action: 'create_decision',
+                  entity_id: newEntity.id,
+                  new_value: dec.value || dec.decision,
+                  reason: dec.rationale || 'New decision extracted',
+                  metadata: { context: dec.context },
+                });
+              }
+            }
+          }
+
           // Mark as extracted + set content_category
           await supabase
             .from("chat_turns")
@@ -183,7 +278,7 @@ serve(async (req) => {
             .eq("id", row.id);
 
           totalProcessed++;
-          console.log(`  Row ${row.id}: ${entities.length} entities, ${preferences.length} preferences extracted`);
+          console.log(`  Row ${row.id}: ${entities.length} entities, ${preferences.length} preferences, ${decisions.length} decisions extracted`);
         } catch (rowErr) {
           errors++;
           console.error(`  Row ${row.id} failed: ${(rowErr as Error).message}`);

@@ -403,15 +403,36 @@ serve(async (req) => {
 
                 if (data && data.length > 0) {
                     // Save extracted entities + preferences
-                    const extractionResult = entities.status === 'fulfilled' ? entities.value : { entities: [], preferences: [], contentCategory: 'emotional' };
+                    const extractionResult = entities.status === 'fulfilled' ? entities.value : { entities: [], preferences: [], decisions: [], contentCategory: 'emotional' };
                     const extractedEntities = extractionResult.entities;
                     const extractedPreferences = extractionResult.preferences;
+                    const extractedDecisions = extractionResult.decisions || [];
 
                     // Update content_category from extraction result
                     if (extractionResult.contentCategory && extractionResult.contentCategory !== 'emotional') {
                         await supabase.from('chat_turns')
                             .update({ content_category: extractionResult.contentCategory })
                             .eq('id', data[0].id);
+                    }
+
+                    // Save decisions as enriched entities with metadata + supersession
+                    for (const dec of extractedDecisions) {
+                        try {
+                            const canonicalName = dec.context.toLowerCase().replace(/[^\w]+/g, '_');
+                            const decMeta = {
+                                decision: dec.decision, value: dec.value, rationale: dec.rationale,
+                                alternatives: dec.alternatives, constraints: dec.constraints, type: 'decision',
+                            };
+                            await supabase.from('entities').insert({
+                                user_id: turn.user_id || userId,
+                                entity_text: dec.decision,
+                                normalized_name: canonicalName,
+                                entity_type: 'CONCEPT',
+                                relationship: 'decision',
+                                context_category: 'technical',
+                                metadata: decMeta,
+                            });
+                        } catch { /* dedup constraint may fire — OK */ }
                     }
                     if (extractedEntities.length > 0 && turn.user_id) {
                         try {

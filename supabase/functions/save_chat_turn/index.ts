@@ -186,10 +186,12 @@ serve(async (req) => {
 
     let entities: any[];
     let preferences: any[] = [];
+    let decisions: any[] = [];
     let contentCategory = 'emotional';
     if (entityResult.status === 'fulfilled') {
       entities = entityResult.value.entities;
       preferences = entityResult.value.preferences;
+      decisions = entityResult.value.decisions || [];
       contentCategory = entityResult.value.contentCategory || 'emotional';
     } else {
       entities = [];
