@@ -759,13 +759,15 @@ export async function getRelevantMemories(
     } = options;
 
     // Technical queries: skip HyDE (hallucinates code entities), boost BM25
-    const isTechnical = queryType === 'technical';
+    // Auto-detect when client doesn't pass queryType (test mode bypasses skip intent classifier)
+    const TECH_SIGNAL_RE = /\b(function|class|interface|middleware|schema|migration|deploy|refactor|debug|endpoint|api|database|index|query|cache|redis|docker|kubernetes|helm|terraform|pipeline|ci.?cd|connection.?pool|sharding|jwt|oauth|ssl|tls|grpc|websocket|caching|session|rate.?limit|auth)\b/i;
+    const isTechnical = queryType === 'technical' || (!queryType && TECH_SIGNAL_RE.test(queryInput));
     let useHyde = options.useHyde ?? true;
     let hydeWeight = options.hydeWeight ?? 0.6;
     if (isTechnical) {
         useHyde = false;
         hydeWeight = 0.0;
-        Logger.info('Technical query detected — HyDE disabled, BM25 boosted', { requestId });
+        Logger.info(`Technical query detected${queryType ? ' (client)' : ' (auto)'} — HyDE disabled, BM25 boosted`, { requestId });
     }
 
     // Build cost attribution context once, pass to all clients
