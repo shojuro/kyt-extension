@@ -760,7 +760,7 @@ export async function getRelevantMemories(
 
     // Technical queries: skip HyDE (hallucinates code entities), boost BM25
     // Auto-detect when client doesn't pass queryType (test mode bypasses skip intent classifier)
-    const TECH_SIGNAL_RE = /\b(function|class|interface|middleware|schema|migration|deploy|refactor|debug|endpoint|api|database|index|query|cache|redis|docker|kubernetes|helm|terraform|pipeline|ci.?cd|connection.?pool|sharding|jwt|oauth|ssl|tls|grpc|websocket|caching|session|rate.?limit|auth)\b/i;
+    const TECH_SIGNAL_RE = /\b(function|class|interface|middleware|schema|migration|deploy|refactor|debug|endpoint|api|database|index|query|cache|redis|docker|kubernetes|helm|terraform|pipeline|ci.?cd|connection.?pool|sharding|jwt|oauth|ssl|tls|grpc|websocket|caching|session|rate.?limit\w*|auth|payment|dedup\w*|idempoten\w*|retry|backoff|throttl\w*|batch|queue|webhook|transaction|ledger|stripe|error.?handl\w*|failover|rollback|replicat\w*|jsonb|metadata|column|field|table|primary.?key|uuid|auto.?increment|status.?code|http|latency|timeout|pool\w*|config\w*|yaml|json|env\w*|secret|token|certificate|dns|cdn|load.?balanc\w*|nginx|postgres\w*|mongo\w*|sql\w*)\b/i;
     const isTechnical = queryType === 'technical' || (!queryType && TECH_SIGNAL_RE.test(queryInput));
     let useHyde = options.useHyde ?? true;
     let hydeWeight = options.hydeWeight ?? 0.6;
