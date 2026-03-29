@@ -942,6 +942,45 @@ export async function getRelevantMemories(
         // Apply quality penalties (fast path gets them too)
         const penalized = applyQualityPenalties(gravityBoosted, { query, requestId });
 
+        // ── Gap 4: Structured decision entity lookup for technical queries ──
+        // Decision entities have exact values (e.g., "connection pool = 20") that
+        // semantic search can't find because the value lives in entity metadata,
+        // not in conversation text. Inject as high-priority synthetic candidates.
+        if (isTechnical) {
+            try {
+                const { data: decisions } = await supabase.rpc('search_decision_entities', {
+                    p_query: query,
+                    p_user_id: userId,
+                    p_limit: 3,
+                });
+                if (decisions && decisions.length > 0) {
+                    const decisionCandidates: CandidateWithScore[] = decisions
+                        .filter((d: any) => d.relevance >= 0.25)
+                        .map((d: any) => {
+                            const meta = d.metadata || {};
+                            const parts = [`DECISION: ${meta.decision || d.entity_text}`];
+                            if (meta.value) parts.push(`Value: ${meta.value}`);
+                            if (meta.rationale) parts.push(`Rationale: ${meta.rationale}`);
+                            if (meta.alternatives?.length) parts.push(`Alternatives rejected: ${meta.alternatives.join(', ')}`);
+                            if (meta.constraints?.length) parts.push(`Constraints: ${meta.constraints.join(', ')}`);
+                            return {
+                                id: d.id,
+                                content: parts.join('\n'),
+                                gravity_score: 2.0, // High priority — structured facts outrank fuzzy matches
+                                rerank_score: 0.85 + (d.relevance * 0.15), // 0.85-1.0 range
+                                platform: 'decision_entity',
+                                entity_boost: true,
+                            } as CandidateWithScore;
+                        });
+                    Logger.info(`Decision entities injected: ${decisionCandidates.length} (from ${decisions.length} matches)`, { requestId });
+                    // Prepend decisions — they should appear first
+                    penalized.unshift(...decisionCandidates);
+                }
+            } catch (decErr) {
+                Logger.warn(`Decision entity lookup failed: ${(decErr as Error).message}`, { requestId });
+            }
+        }
+
         const threshold = confidenceThreshold ?? 0.40;
         const filtered = penalized
             .filter(c => c.rerank_score >= threshold)
@@ -952,6 +991,7 @@ export async function getRelevantMemories(
             candidates: fastCandidates.length,
             returned: filtered.length,
             threshold,
+            decisionsInjected: isTechnical,
         });
 
         return filtered;
@@ -1517,6 +1557,41 @@ async function rerankAndFilter(
     const boosted = applyBm25Boost(query, ordered, isTechnical ? 0.5 : 0.3);
     const gravityBoosted = applyGravityBoost(boosted);
 
+    // ── Gap 4: Structured decision entity lookup for technical queries (full path) ──
+    if (isTechnical) {
+        try {
+            const { data: decisions } = await supabase.rpc('search_decision_entities', {
+                p_query: query,
+                p_user_id: userId,
+                p_limit: 3,
+            });
+            if (decisions && decisions.length > 0) {
+                const decisionCandidates: CandidateWithScore[] = decisions
+                    .filter((d: any) => d.relevance >= 0.25)
+                    .map((d: any) => {
+                        const meta = d.metadata || {};
+                        const parts = [`DECISION: ${meta.decision || d.entity_text}`];
+                        if (meta.value) parts.push(`Value: ${meta.value}`);
+                        if (meta.rationale) parts.push(`Rationale: ${meta.rationale}`);
+                        if (meta.alternatives?.length) parts.push(`Alternatives rejected: ${meta.alternatives.join(', ')}`);
+                        if (meta.constraints?.length) parts.push(`Constraints: ${meta.constraints.join(', ')}`);
+                        return {
+                            id: d.id,
+                            content: parts.join('\n'),
+                            gravity_score: 2.0,
+                            rerank_score: 0.85 + (d.relevance * 0.15),
+                            platform: 'decision_entity',
+                            entity_boost: true,
+                        } as CandidateWithScore;
+                    });
+                Logger.info(`Decision entities injected (full path): ${decisionCandidates.length}`, { requestId });
+                gravityBoosted.unshift(...decisionCandidates);
+            }
+        } catch (decErr) {
+            Logger.warn(`Decision entity lookup failed: ${(decErr as Error).message}`, { requestId });
+        }
+    }
+
     // Confidence filter — uses param (default 0.40, overridable via intent classification)
     const filtered = gravityBoosted.filter((c) => c.rerank_score >= confidenceThreshold);
 
@@ -1525,7 +1600,8 @@ async function rerankAndFilter(
         candidateCount: candidates.length,
         afterRerank: ordered.length,
         afterFilter: filtered.length,
-        returning: Math.min(filtered.length, returnCount)
+        returning: Math.min(filtered.length, returnCount),
+        decisionsInjected: isTechnical,
     });
 
     return filtered.slice(0, returnCount);
