@@ -235,7 +235,8 @@
       const separatorPattern = /={80,}/g;
 
       // Pattern 5: Natural-language context blocks (appended to user message)
-      const naturalLangPattern = /\(For context: I've talked about[\s\S]*?I'm sharing these so you have the full picture[^)]*\.\)/g;
+      // Matches both Claude format ("talked about things like this before") and Gemini format ("mentioned some of these topics before")
+      const naturalLangPattern = /\(For context: I've (?:talked about things like this before|mentioned some of these topics before)[\s\S]*?(?:I'm sharing these so you have the full picture[^)]*|Do not add specific dates[^)]*)\)\s*(?:---\s*)?/g;
 
       let cleaned = content;
 

@@ -441,7 +441,15 @@ if (window.KYT_CLAUDE_INJECTED) {
  * @returns {string} - Clean content without injection blocks
  */
 function stripInjectionBlock(content) {
-  // SAFER: Only strip if K.Y.T. markers are actually present
+  // Pattern 5: Natural-language parenthetical injection format
+  // Matches: (For context: I've talked about things like this before...I'm sharing these so you have the full picture.)
+  // Also matches variant: (For context: I've mentioned some of these topics before...Do not add specific dates...)
+  const naturalLangPattern = /\(For context: I've (?:talked about things like this before|mentioned some of these topics before)[\s\S]*?(?:I'm sharing these so you have the full picture[^)]*|Do not add specific dates[^)]*)\)\s*(?:---\s*)?/g;
+  if (naturalLangPattern.test(content)) {
+    content = content.replace(naturalLangPattern, '').trim();
+  }
+
+  // SAFER: Only strip structured formats if K.Y.T. markers are actually present
   const hasKYTMarkers = content.includes('[SESSION_CONTEXT]') ||
                         content.includes('[RETRIEVAL_CONTEXT]') ||
                         content.includes('[DATA_PROVENANCE]') ||
@@ -449,7 +457,7 @@ function stripInjectionBlock(content) {
                         content.includes('K.Y.T.');
 
   if (!hasKYTMarkers) {
-    return content; // Fast path: nothing to strip
+    return content; // Fast path: nothing more to strip
   }
 
   // Line-by-line approach - much safer than greedy regex
@@ -717,7 +725,7 @@ window.fetch = async function(...args) {
           // Claude API structure: { prompt: "user message text", ... }
           if (body.prompt) {
             messageData = {
-              content: body.prompt,
+              content: stripInjectionBlock(body.prompt),
               role: 'user',
               conversationId: conversationId,
               model: modelName,
