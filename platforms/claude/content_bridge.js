@@ -227,7 +227,7 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
       var _lm = userMessage.toLowerCase();
       var _isTech = /\b(function|class|interface|middleware|schema|migration|deploy|refactor|debug|endpoint|api|database|index|query|cache|redis|docker|kubernetes|helm|terraform|pipeline|connection|pool|sharding|jwt|oauth|grpc|websocket|payment|dedup|idempoten|retry|backoff|transaction|ledger|stripe|jsonb|metadata|column|table|field|primary.?key|uuid|auto.?increment|status.?code|http|latency|timeout|config|yaml|certificate|nginx|postgres|mongo|sql)\b/i.test(_lm);
       var anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cmN2Znpsd2huaXh6dXhhY2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMzkwNjIsImV4cCI6MjA3NzcxNTA2Mn0.AGh-FsrTLjGuRL0aolR4HYjI6rIE1mpk8X9Fa-E-dUU';
-      var _body = { query: userMessage, userId: 'b0000002-0000-4000-a000-000000000002', topK: 5, fast: true, speakerFilter: 'user' };
+      var _body = { query: userMessage, userId: '6430273f-f159-4225-888d-e06f52a4ab11', topK: 5, fast: true, speakerFilter: 'user' };
       if (_isTech) _body.queryType = 'technical';
       var rpcRes = await fetch('https://svrcvfzlwhnixzuxaccf.supabase.co/functions/v1/search_memories', {
         method: 'POST',

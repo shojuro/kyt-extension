@@ -302,7 +302,7 @@ async function vectorSearch(
     projectId?: string
 ): Promise<Candidate[]> {
     const { data, error } = await supabase
-        .rpc("match_messages_with_gravity", {
+        .rpc("match_messages_with_gravity_v2", {
             query_embedding: embedding,
             match_threshold: 0.5,
             match_count: topK,
@@ -310,7 +310,8 @@ async function vectorSearch(
             p_user_id: userId,
             boost_entity_ids: boostEntityIds,
             p_profile_id: profileId,
-            p_project_id: projectId || null
+            p_project_id: projectId || null,
+            p_candidate_pool: 50
         });
 
     if (error) {
@@ -1138,7 +1139,7 @@ export async function getRelevantMemories(
         if (shortCircuitResults.length === 0 && queryTargetPlatform) {
             Logger.info(`Platform rescue (SC): searching within "${queryTargetPlatform}" only`, { requestId });
             const { data: rescueData, error: rescueError } = await supabase
-                .rpc("match_messages_with_gravity", {
+                .rpc("match_messages_with_gravity_v2", {
                     query_embedding: rawEmbedding,
                     match_threshold: 0.35,
                     match_count: topK,
@@ -1148,6 +1149,7 @@ export async function getRelevantMemories(
                     p_profile_id: resolvedProfileId,
                     p_platform: queryTargetPlatform,
                     p_project_id: projectId || null,
+                    p_candidate_pool: 50
                 });
             if (!rescueError && rescueData && rescueData.length > 0) {
                 const rescueCandidates = rescueData as Candidate[];
@@ -1419,7 +1421,7 @@ export async function getRelevantMemories(
     if (results.length === 0 && queryTargetPlatform) {
         Logger.info(`Platform rescue: penalty killed all results, searching within "${queryTargetPlatform}" only`, { requestId });
         const { data: rescueData, error: rescueError } = await supabase
-            .rpc("match_messages_with_gravity", {
+            .rpc("match_messages_with_gravity_v2", {
                 query_embedding: rawEmbedding,
                 match_threshold: 0.35,  // Lower threshold for rescue
                 match_count: topK,
@@ -1429,6 +1431,7 @@ export async function getRelevantMemories(
                 p_profile_id: resolvedProfileId,
                 p_platform: queryTargetPlatform,
                 p_project_id: projectId || null,
+                p_candidate_pool: 50
             });
         if (!rescueError && rescueData && rescueData.length > 0) {
             const rescueCandidates = rescueData as Candidate[];
