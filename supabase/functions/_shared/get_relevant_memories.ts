@@ -920,16 +920,22 @@ export async function getRelevantMemories(
             }
         }
 
-        // Speaker filter: only return turns containing the specified speaker
-        // (e.g. "user" to exclude assistant-only responses from injection)
+        // Speaker filter: only return turns from the specified speaker EXCLUSIVELY.
+        // "user" means user-only chunks — excludes multi-speaker chunks that contain
+        // assistant responses (which cause feedback loops when wrong answers get re-injected).
         if (options.speakerFilter) {
             const before = fastCandidates.length;
             fastCandidates = fastCandidates.filter(c => {
                 const speakers = (c as any).speakers;
-                return Array.isArray(speakers) && speakers.includes(options.speakerFilter);
+                if (!Array.isArray(speakers)) return false;
+                if (options.speakerFilter === 'user') {
+                    // Strict: user-only, no assistant content mixed in
+                    return speakers.includes('user') && !speakers.includes('assistant');
+                }
+                return speakers.includes(options.speakerFilter);
             });
             if (fastCandidates.length < before) {
-                Logger.info(`speakerFilter '${options.speakerFilter}': ${before} → ${fastCandidates.length}`, { requestId });
+                Logger.info(`speakerFilter '${options.speakerFilter}' (strict): ${before} → ${fastCandidates.length}`, { requestId });
             }
         }
 
@@ -1365,16 +1371,21 @@ export async function getRelevantMemories(
     }
 
     // ========================================================================
-    // STEP 5c-ii: Speaker filter (only return turns with specified speaker)
+    // STEP 5c-ii: Speaker filter (strict: user-only excludes multi-speaker chunks)
+    // Prevents feedback loop where wrong assistant answers get re-injected as context
     // ========================================================================
     if (options.speakerFilter) {
         const before = candidates.length;
         candidates = candidates.filter(c => {
             const speakers = (c as any).speakers;
-            return Array.isArray(speakers) && speakers.includes(options.speakerFilter);
+            if (!Array.isArray(speakers)) return false;
+            if (options.speakerFilter === 'user') {
+                return speakers.includes('user') && !speakers.includes('assistant');
+            }
+            return speakers.includes(options.speakerFilter);
         });
         if (candidates.length < before) {
-            Logger.info(`speakerFilter '${options.speakerFilter}': ${before} → ${candidates.length}`, { requestId });
+            Logger.info(`speakerFilter '${options.speakerFilter}' (strict): ${before} → ${candidates.length}`, { requestId });
         }
     }
 
