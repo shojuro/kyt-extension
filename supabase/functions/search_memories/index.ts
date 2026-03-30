@@ -50,6 +50,7 @@ serve(async (req) => {
             excludePlatforms,     // Platforms to exclude from results (e.g. ["claude-code"])
             speakerFilter,        // Only return turns with this speaker (e.g. "user")
             queryType,            // 'technical' for code queries — adjusts BM25/HyDE weights
+            isRecallQuery,        // True when user is recalling past conversation — tightens echo filtering
         } = body;
 
         // Extract user from JWT if present (authenticated mode)
@@ -129,6 +130,7 @@ serve(async (req) => {
             excludePlatforms: excludePlatforms || undefined,
             speakerFilter: speakerFilter || undefined,
             queryType: queryType || undefined,
+            isRecallQuery: isRecallQuery || undefined,
         };
 
         // Get relevant memories using the full Hybrid HyDE pipeline:

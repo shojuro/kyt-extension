@@ -24,11 +24,15 @@ type Candidate = {
     content: string;
     contextual_content?: string;  // Contextual retrieval: LLM-generated context prefix + raw content
     gravity_score?: number;
+    vector_similarity?: number;   // Raw cosine similarity from RPC (1 - distance)
     entity_boost?: boolean;
     rrf_score?: number;  // Added by RRF merge
     platform?: string;   // Source platform (gemini, chatgpt, claude, claude-code)
+    speakers?: string[]; // Turn speakers (e.g. ["user"], ["user","assistant"])
     impact_score?: number;     // Holmes-Rahe: 0-100, from memory-classifier.ts
     intimacy_level?: number;   // Aron's 36 Questions: 0-3, from memory-classifier.ts
+    content_category?: string; // emotional/technical/factual/mixed
+    is_question?: boolean;     // True if content is a question (scoring penalty, not filter)
 };
 export type CandidateWithScore = Candidate & { rerank_score: number };
 
@@ -45,6 +49,7 @@ export interface SearchOptions {
     excludePlatforms?: string[];  // Platforms to exclude from results (e.g. ["claude-code"])
     speakerFilter?: string;       // Only return turns containing this speaker (e.g. "user"). Filters on speakers[] array.
     queryType?: string;           // 'technical' for code queries — skips HyDE, increases BM25 weight
+    isRecallQuery?: boolean;      // True when user is trying to recall past conversation — tightens echo filtering
 }
 
 // ========================================================================
@@ -190,11 +195,40 @@ function applyPlatformPenalty(
 }
 
 /**
- * Filter self-referential results — retrieved content that echoes the query
- * provides no new information and causes circular retrieval.
- * Targets short content (<80 chars) with >70% word overlap with the query.
+ * Detect if a query is a recall attempt (user trying to remember past conversation).
+ * Returns 0-1 confidence score. Used to tighten echo filtering thresholds.
  */
-function filterQueryEchoes(query: string, candidates: Candidate[]): Candidate[] {
+function detectRecallIntent(query: string): number {
+    const q = query.toLowerCase();
+    let score = 0;
+    // Strong signals (each adds 0.4)
+    if (/\b(?:do you|can you)\s+remember\b/.test(q)) score += 0.4;
+    if (/\bwhat (?:did|were) we (?:say|talk|discuss)/.test(q)) score += 0.4;
+    if (/\bwe (?:talked|discussed|mentioned|said|were saying)\s+about\b/.test(q)) score += 0.4;
+    if (/\bfrom (?:earlier|before|last time|our (?:previous|last))/.test(q)) score += 0.4;
+    // Moderate signals (each adds 0.25)
+    if (/\bremember when\b/.test(q)) score += 0.25;
+    if (/\bwhat was (?:that|the)\b/.test(q)) score += 0.25;
+    if (/\byou (?:told|said|mentioned|explained)\b/.test(q)) score += 0.25;
+    if (/\bin (?:that|our) (?:conversation|discussion|chat)\b/.test(q)) score += 0.25;
+    if (/\bwe (?:were|are) (?:just )?(?:talking|discussing|saying)\b/.test(q)) score += 0.25;
+    return Math.min(score, 1.0);
+}
+
+/**
+ * Filter self-referential results using 3-layer defense:
+ *
+ * Layer A (lexical): Word overlap — catches exact/near-exact echoes.
+ * Layer B (semantic): Embedding distance + new-information ratio — catches
+ *   rephrased recall attempts by detecting high vector similarity + low
+ *   lexical divergence from the query. A result semantically identical to
+ *   the query but adding no new words is an echo, not an answer.
+ * Layer C (verbatim): Substring containment for long content.
+ *
+ * When isRecallQuery=true, thresholds are tightened because the probability
+ * of echo contamination is much higher.
+ */
+function filterQueryEchoes(query: string, candidates: Candidate[], isRecallQuery = false): Candidate[] {
     const ECHO_STOP = new Set([
         'the','and','for','with','from','that','this','have','has','what','when',
         'where','which','who','how','why','are','was','were','been','being','can',
@@ -202,29 +236,63 @@ function filterQueryEchoes(query: string, candidates: Candidate[]): Candidate[] 
         'them','they','your','you','our','its','his','her','their','does','did',
         'top','best','most','need','needs','want','use','like','just','also',
         'some','any','all','each','every','tell','know','think','make','take',
+        'talked','discussed','mentioned','said','remember','conversation',
+        'earlier','before','saying','were',
     ]);
     const queryNorm = query.toLowerCase().replace(/[^\w\s]/g, '').trim();
     const queryWords = new Set(queryNorm.split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w)));
     if (queryWords.size === 0) return candidates;
 
+    // Thresholds tighten when query is a recall attempt
+    const lexicalThreshold = isRecallQuery ? 0.50 : 0.70;
+    const semanticSimilarityGate = isRecallQuery ? 0.60 : 0.72;
+    const newInfoThreshold = isRecallQuery ? 0.35 : 0.25;
+
     return candidates.filter(c => {
-        const contentNorm = (c.content || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
+        const rawContent = c.content || '';
+        // For multi-speaker chunks, analyze only the USER portion for echo detection.
+        // Assistant responses in the same chunk inflate new-info ratio with irrelevant words.
+        const speakers = c.speakers;
+        let analysisContent = rawContent;
+        if (Array.isArray(speakers) && speakers.includes('assistant') && speakers.includes('user')) {
+            // Extract text before first "Assistant:" marker
+            const assistantIdx = rawContent.indexOf('Assistant:');
+            const asstAltIdx = rawContent.indexOf('\nA:');
+            const splitIdx = assistantIdx >= 0 ? assistantIdx : (asstAltIdx >= 0 ? asstAltIdx : -1);
+            if (splitIdx > 0) {
+                analysisContent = rawContent.substring(0, splitIdx);
+            }
+        }
+
+        const contentNorm = analysisContent.toLowerCase().replace(/[^\w\s]/g, '').trim();
         const contentWords = new Set(contentNorm.split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w)));
         if (contentWords.size < 3) return true; // too few content words for reliable echo detection
 
-        if (contentNorm.length < 80) {
-            // Short content: high overlap = echo (user prompt re-captured)
-            const overlap = [...queryWords].filter(w => contentWords.has(w)).length;
-            const overlapRatio = overlap / Math.max(queryWords.size, 1);
-            if (overlapRatio > 0.7) return false;
-        } else {
-            // Long content: check if it contains the verbatim query as a substring.
-            // This catches assistant responses that quote/discuss the query itself
-            // (meta-echo: "You asked about X" → captured → retrieved for query "X").
-            if (queryNorm.length >= 10 && contentNorm.includes(queryNorm)) {
+        // ── Layer A: Lexical overlap (threshold-adjusted for recall queries) ─
+        const overlap = [...queryWords].filter(w => contentWords.has(w)).length;
+        const overlapRatio = overlap / Math.max(queryWords.size, 1);
+        if (overlapRatio > lexicalThreshold) {
+            return false;
+        }
+
+        // ── Layer B: Embedding distance + new-information ratio ─────────────
+        // High vector_similarity = semantically close to query.
+        // Low new-information ratio = doesn't add words the query doesn't have.
+        // Both together = restated query, not useful content.
+        const vecSim = c.vector_similarity ?? 0;
+        if (vecSim > semanticSimilarityGate && contentWords.size > 0) {
+            const newWords = [...contentWords].filter(w => !queryWords.has(w));
+            const newInfoRatio = newWords.length / contentWords.size;
+            if (newInfoRatio < newInfoThreshold) {
                 return false;
             }
         }
+
+        // ── Layer C: Verbatim containment ───────────────────────────────────
+        if (queryNorm.length >= 10 && contentNorm.includes(queryNorm)) {
+            return false;
+        }
+
         return true;
     });
 }
@@ -902,7 +970,9 @@ export async function getRelevantMemories(
     // Target: <300ms total.
     // ========================================================================
     if (fast) {
-        Logger.info("Fast path activated", { requestId });
+        const recallScore = detectRecallIntent(query);
+        const isRecallQuery = options.isRecallQuery || recallScore > 0.3;
+        Logger.info("Fast path activated", { requestId, isRecallQuery, recallScore: recallScore.toFixed(2) });
 
         let fastCandidates = await vectorSearch(
             supabase, rawEmbedding, userId, [],
@@ -920,26 +990,35 @@ export async function getRelevantMemories(
             }
         }
 
-        // Speaker filter: only return turns from the specified speaker EXCLUSIVELY.
-        // "user" means user-only chunks — excludes multi-speaker chunks that contain
-        // assistant responses (which cause feedback loops when wrong answers get re-injected).
-        if (options.speakerFilter) {
+        // Speaker filter: weighted approach, not binary exclusion.
+        // Pure assistant-only chunks are excluded (no user content).
+        // Multi-speaker chunks are kept but penalized later (they contain original
+        // conversation content that's valuable, mixed with assistant responses).
+        // The echo filter handles deduplication of actual echo content.
+        if (options.speakerFilter === 'user') {
             const before = fastCandidates.length;
             fastCandidates = fastCandidates.filter(c => {
-                const speakers = (c as any).speakers;
+                const speakers = c.speakers;
                 if (!Array.isArray(speakers)) return false;
-                if (options.speakerFilter === 'user') {
-                    // Strict: user-only, no assistant content mixed in
-                    return speakers.includes('user') && !speakers.includes('assistant');
-                }
-                return speakers.includes(options.speakerFilter);
+                // Exclude assistant-only chunks (no user content at all)
+                if (!speakers.includes('user')) return false;
+                return true;
             });
             if (fastCandidates.length < before) {
-                Logger.info(`speakerFilter '${options.speakerFilter}' (strict): ${before} → ${fastCandidates.length}`, { requestId });
+                Logger.info(`speakerFilter 'user' (exclude assistant-only): ${before} → ${fastCandidates.length}`, { requestId });
+            }
+        } else if (options.speakerFilter) {
+            const before = fastCandidates.length;
+            fastCandidates = fastCandidates.filter(c => {
+                const speakers = c.speakers;
+                return Array.isArray(speakers) && speakers.includes(options.speakerFilter);
+            });
+            if (fastCandidates.length < before) {
+                Logger.info(`speakerFilter '${options.speakerFilter}': ${before} → ${fastCandidates.length}`, { requestId });
             }
         }
 
-        const echoFiltered = filterQueryEchoes(query, fastCandidates);
+        const echoFiltered = filterQueryEchoes(query, fastCandidates, isRecallQuery);
 
         const scored: CandidateWithScore[] = echoFiltered.map(c => ({
             ...c,
@@ -947,6 +1026,28 @@ export async function getRelevantMemories(
         }));
         const boosted = applyBm25Boost(query, scored, isTechnical ? 0.5 : 0.3);
         const gravityBoosted = applyGravityBoost(boosted);
+
+        // ── Scoring penalties (applied before quality penalties) ────────────
+        for (const c of gravityBoosted) {
+            // Multi-speaker penalty: demote chunks containing assistant responses.
+            // Prevents wrong assistant answers from dominating while allowing
+            // original conversation content (often multi-speaker) to surface.
+            if (options.speakerFilter === 'user') {
+                const speakers = (c as any).speakers;
+                if (Array.isArray(speakers) && speakers.includes('assistant')) {
+                    c.rerank_score *= 0.6;
+                }
+            }
+
+            // is_question penalty: demote questions (which are often recall attempts
+            // or meta-queries). But DON'T hard-filter — questions containing specific
+            // entity names are valuable for recall (e.g., "How does the basilisk
+            // measure against the Mexican Beaded Lizard?").
+            // The echo filter handles the truly redundant recall echoes.
+            if ((c as any).is_question) {
+                c.rerank_score *= isRecallQuery ? 0.5 : 0.7;
+            }
+        }
 
         // Apply quality penalties (fast path gets them too)
         const penalized = applyQualityPenalties(gravityBoosted, { query, requestId });
@@ -1009,6 +1110,13 @@ export async function getRelevantMemories(
     // ========================================================================
     // STEP 2: PARALLEL - Entity search + HyDE generation + Concept detection
     // ========================================================================
+    // Recall intent detection for full path (tightens echo filtering)
+    const fullPathRecallScore = detectRecallIntent(query);
+    const fullPathIsRecall = options.isRecallQuery || fullPathRecallScore > 0.3;
+    if (fullPathIsRecall) {
+        Logger.info(`Recall query detected (score=${fullPathRecallScore.toFixed(2)}) — tightening echo filter`, { requestId });
+    }
+
     // Enrich entity search query with recent topics for vague/implicit queries
     const entitySearchQuery = recentTopics && recentTopics.length > 0
         ? query + ' ' + recentTopics.join(' ')
@@ -1126,7 +1234,7 @@ export async function getRelevantMemories(
             }
         }
 
-        const scFiltered = filterQueryEchoes(query, candidates);
+        const scFiltered = filterQueryEchoes(query, candidates, fullPathIsRecall);
         let shortCircuitResults = await rerankAndFilter(query, scFiltered, hfClient, requestId, topK, confidenceThreshold ?? 0.4);
 
         // Apply quality penalties AFTER reranking, BEFORE MMR
@@ -1159,7 +1267,7 @@ export async function getRelevantMemories(
                 });
             if (!rescueError && rescueData && rescueData.length > 0) {
                 const rescueCandidates = rescueData as Candidate[];
-                const rescueFiltered = filterQueryEchoes(query, rescueCandidates);
+                const rescueFiltered = filterQueryEchoes(query, rescueCandidates, fullPathIsRecall);
                 const rescueResults = await rerankAndFilter(query, rescueFiltered, hfClient, requestId, topK);
                 shortCircuitResults.push(...rescueResults);
                 Logger.info(`Platform rescue (SC): recovered ${rescueResults.length} items`, { requestId });
@@ -1371,21 +1479,27 @@ export async function getRelevantMemories(
     }
 
     // ========================================================================
-    // STEP 5c-ii: Speaker filter (strict: user-only excludes multi-speaker chunks)
-    // Prevents feedback loop where wrong assistant answers get re-injected as context
+    // STEP 5c-ii: Speaker filter (weighted, not binary exclusion)
+    // Excludes assistant-only chunks. Multi-speaker kept but penalized later.
     // ========================================================================
-    if (options.speakerFilter) {
+    if (options.speakerFilter === 'user') {
         const before = candidates.length;
         candidates = candidates.filter(c => {
             const speakers = (c as any).speakers;
             if (!Array.isArray(speakers)) return false;
-            if (options.speakerFilter === 'user') {
-                return speakers.includes('user') && !speakers.includes('assistant');
-            }
-            return speakers.includes(options.speakerFilter);
+            return speakers.includes('user'); // keep anything with user content
         });
         if (candidates.length < before) {
-            Logger.info(`speakerFilter '${options.speakerFilter}' (strict): ${before} → ${candidates.length}`, { requestId });
+            Logger.info(`speakerFilter 'user' (exclude assistant-only): ${before} → ${candidates.length}`, { requestId });
+        }
+    } else if (options.speakerFilter) {
+        const before = candidates.length;
+        candidates = candidates.filter(c => {
+            const speakers = (c as any).speakers;
+            return Array.isArray(speakers) && speakers.includes(options.speakerFilter);
+        });
+        if (candidates.length < before) {
+            Logger.info(`speakerFilter '${options.speakerFilter}': ${before} → ${candidates.length}`, { requestId });
         }
     }
 
@@ -1393,7 +1507,7 @@ export async function getRelevantMemories(
     // STEP 5d: Filter self-referential query echoes
     // Short content that just repeats the search query provides no new info
     // ========================================================================
-    const echoFiltered = filterQueryEchoes(query, candidates);
+    const echoFiltered = filterQueryEchoes(query, candidates, fullPathIsRecall);
     if (echoFiltered.length < candidates.length) {
         Logger.info(`Query echo filter: removed ${candidates.length - echoFiltered.length} echo candidates`, { requestId });
     }
@@ -1446,7 +1560,7 @@ export async function getRelevantMemories(
             });
         if (!rescueError && rescueData && rescueData.length > 0) {
             const rescueCandidates = rescueData as Candidate[];
-            const rescueFiltered = filterQueryEchoes(query, rescueCandidates);
+            const rescueFiltered = filterQueryEchoes(query, rescueCandidates, fullPathIsRecall);
             const rescueResults = await rerankAndFilter(query, rescueFiltered, hfClient, requestId, topK);
             results.push(...rescueResults);
             Logger.info(`Platform rescue: recovered ${rescueResults.length} items from "${queryTargetPlatform}"`, { requestId });
