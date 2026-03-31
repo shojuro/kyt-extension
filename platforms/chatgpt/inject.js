@@ -879,7 +879,7 @@
             // Dispatch captured voice message
             window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
               detail: {
-                content: transcriptText,
+                content: platform.stripInjectionBlock(transcriptText),
                 role: 'user',
                 source: 'chatgpt',
                 captureMethod: 'websocket',
@@ -969,7 +969,7 @@
 
                 window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', {
                   detail: {
-                    content: content,
+                    content: platform.stripInjectionBlock(content),
                     role: 'user',
                     conversationId: metadata.conversationId,
                     model: metadata.model,
@@ -1028,7 +1028,7 @@
       // Dispatch Assistant Message
       if (assistantText.trim().length > 0) {
         const assistantMessage = {
-          content: assistantText.trim(),
+          content: platform.stripInjectionBlock(assistantText.trim()),
           role: 'assistant',
           conversationId: metadata.conversationId,
           model: metadata.model,
@@ -1547,7 +1547,7 @@
         if (!content) continue;
 
         const messageData = {
-          content: content,
+          content: platform.stripInjectionBlock(content),
           role: node.message.author.role,
           conversationId: response.conversation_id,
           model: node.message.metadata?.model_slug || 'unknown',

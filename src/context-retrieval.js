@@ -56,15 +56,47 @@ export function withTimeout(promise, ms, label) {
 // so both messages and chat_turns tables get polluted with the full injection context.
 export function stripInjectionPrefix(content) {
   if (!content) return { content, hadInjection: false };
+  let hadInjection = false;
+
+  // Format 1: Natural-language parenthetical (production format for all 3 platforms)
+  // Handles both Claude/ChatGPT ("talked about things like this before") and Gemini ("mentioned some of these topics before")
+  // Must run first — this is the format that was bypassing the old separator-based check
+  const nlPattern = /\(For context: I've (?:talked about things like this before|mentioned some of these topics before)[\s\S]*?(?:I'm sharing these so you have the full picture[^)]*|Do not add specific dates[^)]*)\)\s*(?:---\s*)?/g;
+  if (nlPattern.test(content)) {
+    nlPattern.lastIndex = 0; // reset after .test()
+    content = content.replace(nlPattern, '').trim();
+    hadInjection = true;
+  }
+
+  // Format 2: Structured K.Y.T. header blocks (legacy)
+  if (content.includes('K.Y.T.') && content.includes('===')) {
+    const kytPattern = /={3,}[\s\S]*?K\.Y\.T\.[\s\S]*?(?:={3,}|$)/g;
+    content = content.replace(kytPattern, '').trim();
+    hadInjection = true;
+  }
+
+  // Format 3: Context block markers (legacy)
+  if (content.includes('[SESSION_CONTEXT]') || content.includes('[RETRIEVAL_CONTEXT]') ||
+      content.includes('[DATA_PROVENANCE]') || content.includes('[Retrieved Items]')) {
+    const ctxPattern = /\[(SESSION_CONTEXT|RETRIEVAL_CONTEXT|DATA_PROVENANCE|Retrieved Items)\][\s\S]*?(?=\n\n[^\[]|$)/g;
+    content = content.replace(ctxPattern, '').trim();
+    hadInjection = true;
+  }
+
+  // Format 4: Legacy separator-based (oldest format)
   const separator = '\n---\n\n';
   const sepIdx = content.lastIndexOf(separator);
-  if (sepIdx === -1) return { content, hadInjection: false };
-  const prefix = content.substring(0, sepIdx);
-  if (prefix.includes('K.Y.T.') || prefix.includes('[RETRIEVAL_CONTEXT]') ||
-      prefix.includes('[SESSION_CONTEXT]') || prefix.includes('[DATA_PROVENANCE]')) {
-    return { content: content.substring(sepIdx + separator.length).trim(), hadInjection: true };
+  if (sepIdx !== -1) {
+    const prefix = content.substring(0, sepIdx);
+    if (prefix.includes('K.Y.T.') || prefix.includes('[RETRIEVAL_CONTEXT]') ||
+        prefix.includes('[SESSION_CONTEXT]') || prefix.includes('[DATA_PROVENANCE]')) {
+      content = content.substring(sepIdx + separator.length).trim();
+      hadInjection = true;
+    }
   }
-  return { content, hadInjection: false };
+
+  content = content.replace(/\n{3,}/g, '\n\n').trim();
+  return { content, hadInjection };
 }
 
 // ===== QUESTION DETECTION =====

@@ -206,12 +206,25 @@ function detectRecallIntent(query: string): number {
     if (/\bwhat (?:did|were) we (?:say|talk|discuss)/.test(q)) score += 0.4;
     if (/\bwe (?:talked|discussed|mentioned|said|were saying)\s+about\b/.test(q)) score += 0.4;
     if (/\bfrom (?:earlier|before|last time|our (?:previous|last))/.test(q)) score += 0.4;
+    // Statement-form recall (0.4) — "that was a great conversation about X"
+    if (/\bthat was (?:a |an )?(?:great |good |nice |interesting |fun )?(?:conversation|discussion|chat)\b/.test(q)) score += 0.4;
+    // "we had a conversation about X"
+    if (/\bwe (?:had a |were having a )?(?:conversation|discussion|chat)\s+(?:about|regarding|on)\b/.test(q)) score += 0.4;
     // Moderate signals (each adds 0.25)
     if (/\bremember when\b/.test(q)) score += 0.25;
     if (/\bwhat was (?:that|the)\b/.test(q)) score += 0.25;
     if (/\byou (?:told|said|mentioned|explained)\b/.test(q)) score += 0.25;
     if (/\bin (?:that|our) (?:conversation|discussion|chat)\b/.test(q)) score += 0.25;
     if (/\bwe (?:were|are) (?:just )?(?:talking|discussing|saying)\b/.test(q)) score += 0.25;
+    // "we discussed X" (without requiring "about" after it)
+    if (/\b(?:we|you)\s+discussed\b/.test(q)) score += 0.25;
+    // Temporal marker + recall word combination
+    if (/\b(?:yesterday|this morning|last (?:night|week|time)|the other day|earlier today)\b/.test(q) &&
+        /\b(?:about|conversation|discussed|talked|chat)\b/.test(q)) score += 0.25;
+    // "when we discussed/talked about"
+    if (/\b(?:when|as)\s+we\s+(?:discussed|talked|were\s+talking)\b/.test(q)) score += 0.25;
+    // "I told/shared/mentioned/brought up"
+    if (/\bI (?:told|shared|mentioned|brought up)\b/.test(q)) score += 0.25;
     return Math.min(score, 1.0);
 }
 

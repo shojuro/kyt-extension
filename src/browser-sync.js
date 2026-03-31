@@ -25,6 +25,7 @@ import { normalizePlatform } from './utils/normalize-platform.js';
 import { callEdgeFunction } from './api-client.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { refreshSession } from './auth/auth-service.js';
+import { stripInjectionPrefix } from './context-retrieval.js';
 
 // Defensive flag: set after first error indicating profile_id column doesn't exist on chat_turns.
 // Once set, all subsequent syncs skip profile_id for this SW lifecycle.
@@ -515,9 +516,9 @@ export async function syncMessages(messagesToSync) {
     // Resolve profile ID for this sync batch
     const profileId = await getActiveProfileId() || config.userId || '00000000-0000-0000-0000-000000000000';
 
-    // Prepare data for Supabase
+    // Prepare data for Supabase (defense-in-depth: strip injection at sync boundary)
     const messagesWithEmbeddings = deflectionFiltered.map((msg, idx) => ({
-      content: msg.content,
+      content: stripInjectionPrefix(msg.content).content,
       role: msg.role || 'user', // Default to 'user' (DB constraint: user|assistant|system)
       conversation_id: msg.conversationId || null,
       model: msg.model || null,
@@ -597,7 +598,12 @@ export async function syncMessages(messagesToSync) {
     }
 
     console.log('📦 Creating conversation-turn chunks...');
-    const turnChunks = messagesToTurnChunks(deflectionFiltered, userId);
+    // Defense-in-depth: strip injection from content before chunking
+    const cleanedForChunking = deflectionFiltered.map(msg => ({
+      ...msg,
+      content: stripInjectionPrefix(msg.content).content,
+    }));
+    const turnChunks = messagesToTurnChunks(cleanedForChunking, userId);
 
     if (turnChunks.length > 0) {
       // PHASE 8: HyDE Preprocessing - Generate hypothetical questions
