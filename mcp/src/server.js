@@ -56,6 +56,10 @@ import { downloadArtifactHandler } from './tools/download-artifact.js';
 // YouTube search
 import { searchYoutubeHandler } from './tools/search-youtube.js';
 import { youtubeChannelsHandler } from './tools/youtube-channels.js';
+// Cross-notebook intelligence
+import { searchAcrossNotebooksHandler } from './tools/search-across-notebooks.js';
+import { recommendNotebooksHandler } from './tools/recommend-notebooks.js';
+import { linkRelatedNotebooksHandler } from './tools/link-related-notebooks.js';
 
 const server = new McpServer({
   name: 'kyt-memory',
@@ -610,6 +614,44 @@ server.tool(
     channelName: z.string().optional().describe('Display name for the channel (required for save)'),
   },
   async (args) => youtubeChannelsHandler(args),
+);
+
+// --- Tool: search_across_notebooks ---
+server.tool(
+  'search_across_notebooks',
+  'Search across multiple NotebookLM notebooks. Discovers relevant notebooks via title matching and K.Y.T. entity graph, then queries each for answers with citations and provenance.',
+  {
+    question: z.string().describe('Question to search across notebooks'),
+    notebookIds: z.array(z.string()).optional().describe('Specific notebook IDs to query (skips discovery)'),
+    maxNotebooks: z.number().optional().default(3).describe('Max notebooks to query (1-5, default: 3)'),
+    saveToKyt: z.boolean().optional().default(true).describe('Save answers to K.Y.T. memory'),
+    passphrase: z.string().optional().describe('Passphrase for NotebookLM credentials'),
+  },
+  async (args) => searchAcrossNotebooksHandler(args),
+);
+
+// --- Tool: recommend_notebooks ---
+server.tool(
+  'recommend_notebooks',
+  'Find relevant notebooks for a topic without querying them. Fast discovery via title matching and entity graph (~200ms cached). Use search_across_notebooks to query the recommended notebooks.',
+  {
+    query: z.string().describe('Topic or question to find notebooks for'),
+    maxResults: z.number().optional().default(10).describe('Max recommendations (default: 10)'),
+    passphrase: z.string().optional().describe('Passphrase for NotebookLM credentials'),
+  },
+  async (args) => recommendNotebooksHandler(args),
+);
+
+// --- Tool: link_related_notebooks ---
+server.tool(
+  'link_related_notebooks',
+  'Find notebooks related to a given notebook via title similarity and shared entities. Helps discover cross-notebook connections.',
+  {
+    notebookId: z.string().describe('Notebook ID to find related notebooks for'),
+    maxResults: z.number().optional().default(5).describe('Max related notebooks (default: 5)'),
+    passphrase: z.string().optional().describe('Passphrase for NotebookLM credentials'),
+  },
+  async (args) => linkRelatedNotebooksHandler(args),
 );
 
 // Start the server

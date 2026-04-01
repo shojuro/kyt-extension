@@ -226,10 +226,20 @@ async function main() {
 
     // Batch send to save_chat_turn_batch (max 50 per batch)
     const BATCH_SIZE = 50;
+    const HOOK_DEADLINE = Date.now() + 50000; // 50s hard deadline (60s hook timeout - 10s headroom)
+    const FETCH_TIMEOUT_MS = 15000; // 15s per batch fetch
     let totalInserted = 0;
+    let lastBatchEnd = 0; // Track how far we actually got
     const conversationId = `cc-${sessionId}`;
 
     for (let i = 0; i < memorableTurns.length; i += BATCH_SIZE) {
+      // Deadline check: abort gracefully before Claude Code kills us
+      const remaining = HOOK_DEADLINE - Date.now();
+      if (remaining < 5000) {
+        debugLog(`TIMEOUT: Aborting with ${memorableTurns.length - i} turns remaining (deadline approaching)`);
+        break;
+      }
+
       const batch = memorableTurns.slice(i, i + BATCH_SIZE).map(t => ({
         user_id: userId,
         conversation_id: conversationId,
@@ -241,24 +251,41 @@ async function main() {
         content_type: 'imported',
       }));
 
-      const res = await fetch(`${supabaseUrl}/functions/v1/save_chat_turn_batch`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          'apikey': process.env.SUPABASE_ANON_KEY || token,
-        },
-        body: JSON.stringify({ turns: batch, skip_ai_processing: false }),
-      });
+      try {
+        const controller = new AbortController();
+        const fetchTimeout = setTimeout(() => controller.abort(), Math.min(FETCH_TIMEOUT_MS, remaining));
 
-      if (res.ok) {
-        const result = await res.json();
-        totalInserted += result.inserted || 0;
+        const res = await fetch(`${supabaseUrl}/functions/v1/save_chat_turn_batch`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'apikey': process.env.SUPABASE_ANON_KEY || token,
+          },
+          body: JSON.stringify({ turns: batch, skip_ai_processing: false }),
+          signal: controller.signal,
+        });
+        clearTimeout(fetchTimeout);
+
+        if (res.ok) {
+          const result = await res.json();
+          totalInserted += result.inserted || 0;
+        }
+      } catch (fetchErr) {
+        if (fetchErr.name === 'AbortError') {
+          debugLog(`TIMEOUT: Batch ${Math.floor(i / BATCH_SIZE) + 1} timed out after ${FETCH_TIMEOUT_MS}ms`);
+          break; // Save progress so far, don't retry
+        }
+        debugLog(`FETCH_ERROR: Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${fetchErr.message}`);
+        // Continue to next batch — one failure shouldn't block others
       }
+
+      lastBatchEnd = i + batch.length;
     }
 
-    // Track progress
-    markSessionIngested(sessionId, lastCount + newTurns.length);
+    // Track progress (even partial — hook can resume from here next session)
+    const actuallyProcessed = lastBatchEnd || memorableTurns.length;
+    markSessionIngested(sessionId, lastCount + actuallyProcessed);
     const summary = `${sessionId} — ${newTurns.length} new, ${filteredCount} filtered, ${memorableTurns.length} memorable, ${totalInserted} inserted`;
     debugLog(`SUCCESS: ${summary}`);
     process.stderr.write(`KYT session-ingest: ${summary}\n`);
