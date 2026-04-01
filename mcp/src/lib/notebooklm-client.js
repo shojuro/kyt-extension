@@ -472,12 +472,25 @@ export async function addTextSources(notebookId, sources, onProgress) {
  * @returns {Promise<{ answer: string, citations: { source_id: string, cited_text: string, start_char: number|null, end_char: number|null }[] }>}
  */
 export async function askQuestion(notebookId, question) {
+  // NotebookLM API requires explicit source IDs — empty [] causes error code [16].
+  // Fetch all sources for the notebook and format as [["sourceId"]] arrays.
+  let sourceIds = [];
+  try {
+    const sources = await listSources(notebookId);
+    sourceIds = sources.map(s => [[s.id]]);
+  } catch (e) {
+    process.stderr.write(`[askQuestion] Warning: could not fetch sources: ${e.message}\n`);
+  }
+
+  // Generate a conversation ID for new conversations (required by API)
+  const conversationId = crypto.randomUUID();
+
   const params = [
-    [], // sources (empty = use all)
+    sourceIds,        // sources — explicit [["sourceId"]] for each source
     question,
-    null, // no conversation history
+    [],               // conversation history (empty for new conversation, not null)
     [2, null, [1], [1]],
-    null, // no conversation ID (new conversation)
+    conversationId,   // conversation ID (required, not null)
     null,
     null,
     notebookId,
@@ -529,17 +542,20 @@ export async function askQuestion(notebookId, question) {
   const body = `f.req=${encodeURIComponent(fReq)}&at=${encodeURIComponent(auth.csrfToken)}&`;
 
   const qs = new URLSearchParams({
-    'hl': 'en',
+    'bl': 'boq_labs-tailwind-frontend_20260329.03_p0',
     'f.sid': auth.sessionId,
+    'hl': 'en',
+    '_reqid': String(Math.floor(Math.random() * 9000000) + 1000000),
     'rt': 'c',
   }).toString();
 
   const streamHeaders = {
     'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
     'Cookie': auth.cookieHeader,
-    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
     'Origin': ORIGIN,
     'Referer': `${ORIGIN}/notebook/${notebookId}`,
+    'x-same-domain': '1',
   };
   const streamSapisid = generateSapisidHash(auth.cookieHeader);
   if (streamSapisid) streamHeaders['Authorization'] = streamSapisid;
@@ -564,7 +580,14 @@ export async function askQuestion(notebookId, question) {
   }
 
   const responseText = await res.text();
-  return decodeStreamingResponse(responseText);
+  // DEBUG: log raw response to diagnose empty answer issue
+  const preview = responseText.substring(0, 500);
+  console.error(`[askQuestion DEBUG] status=${res.status} len=${responseText.length} preview=${preview}`);
+  const result = decodeStreamingResponse(responseText);
+  if (!result.answer) {
+    console.error(`[askQuestion DEBUG] Empty answer. Full response (first 2000 chars): ${responseText.substring(0, 2000)}`);
+  }
+  return result;
 }
 
 /**
