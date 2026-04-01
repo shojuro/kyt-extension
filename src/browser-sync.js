@@ -339,8 +339,6 @@ async function queryExistingIdsChunked(messageIds, config, chunkSize = 50) {
  *
  * @returns {Promise<Object[]>} Messages to sync
  */
-async function getMessagesToSync() {
-
 /**
  * Gather full conversation context for chunking.
  *
@@ -369,6 +367,8 @@ async function getConversationContextForChunking(batchMessages) {
     return convId && batchConvIds.has(convId);
   });
 }
+
+async function getMessagesToSync() {
   const result = await chrome.storage.local.get([
     'captured_messages',
     'last_successful_sync_time'
