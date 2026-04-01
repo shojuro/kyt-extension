@@ -319,7 +319,8 @@
         requestId: requestId,
         userMessage: detail.userMessage,
         config: detail.config || {},
-        conversationWindow: conversationWindow
+        conversationWindow: conversationWindow,
+        platform: 'gemini'
       });
 
     } catch (error) {

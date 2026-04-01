@@ -425,6 +425,11 @@ async function handleGetContextAsync(message, getContextForInjection) {
       config.conversationWindow = message.conversationWindow;
     }
 
+    // Pass platform for platform-specific injection formatting (Gemini anti-hallucination)
+    if (message.platform) {
+      config.platform = message.platform;
+    }
+
     diag.steps.push('pipeline_start');
     await diagSave();
     const contextData = await Promise.race([

@@ -378,6 +378,7 @@ export function buildMemoryInjection(result, configOverrides = {}) {
 export function buildNaturalLanguageInjection(result, configOverrides = {}) {
     const items = result.items || [];
     if (items.length === 0) return null;
+    const platform = configOverrides.platform || null;
 
     // Sort newest-first
     const sorted = [...items].sort((a, b) => {
@@ -394,6 +395,20 @@ export function buildNaturalLanguageInjection(result, configOverrides = {}) {
         return `- "${content}..."`;
     }).join('\n\n');
 
+    // Gemini-specific: anti-hallucination guardrails.
+    // Gemini fabricates dates, expands truncated quotes, and infers unstated details
+    // from injected context. These constraints are empirically validated to prevent this.
+    if (platform === 'gemini') {
+        return '(For context: I\'ve mentioned some of these topics before. ' +
+            'Here are brief, truncated excerpts from past conversations — they may be cut off mid-sentence:\n\n' +
+            quotes + '\n\n' +
+            'These excerpts are the complete extent of what I\'ve shared on this topic. ' +
+            'Only reference what is directly written above. Do not add specific dates, ' +
+            'expand truncated quotes, or infer details I have not explicitly stated. ' +
+            'If a quote is cut off, leave it as-is.)';
+    }
+
+    // Claude / ChatGPT: lighter format (they don't hallucinate from injected context)
     return '(For context: I\'ve talked about things like this before in past conversations. ' +
         'Here are some things I\'ve previously shared that might be relevant to what I\'m about to say:\n\n' +
         quotes + '\n\n' +

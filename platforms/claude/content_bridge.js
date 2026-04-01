@@ -371,7 +371,7 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
       }));
     });
 
-    port.postMessage({ requestId, userMessage, config });
+    port.postMessage({ requestId, userMessage, config, platform: 'claude' });
   } catch (error) {
     // connect() itself can throw if context is invalidated
     if (isDisconnectionError(error.message)) {

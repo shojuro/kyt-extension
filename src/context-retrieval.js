@@ -390,7 +390,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
               queryTransformed: null,
             };
 
-            const formattedContext = buildNaturalLanguageInjection(retrievalResult);
+            const formattedContext = buildNaturalLanguageInjection(retrievalResult, { platform: contextConfig.platform });
 
             return {
               success: true,
@@ -856,9 +856,9 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
         queryTransformed: transformationMetadata.transformed ? transformationMetadata.optimized : null
       };
 
-      formattedContext = buildNaturalLanguageInjection(retrievalResult);
+      formattedContext = buildNaturalLanguageInjection(retrievalResult, { platform: contextConfig.platform });
 
-      console.log('✅ Memory Injection Protocol: Injection block built with', filteredItems.length, 'items');
+      console.log('✅ Memory Injection Protocol: Injection block built with', filteredItems.length, 'items', contextConfig.platform ? `(${contextConfig.platform})` : '');
     } else {
       formattedContext = null;
       console.log('ℹ️ Memory Injection Protocol: No results — skipping injection (no negative signal)');
