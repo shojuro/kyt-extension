@@ -340,6 +340,35 @@ async function queryExistingIdsChunked(messageIds, config, chunkSize = 50) {
  * @returns {Promise<Object[]>} Messages to sync
  */
 async function getMessagesToSync() {
+
+/**
+ * Gather full conversation context for chunking.
+ *
+ * The sliding window chunker needs both user AND assistant messages to create
+ * proper multi-speaker chunks. But getMessagesToSync() only returns new messages
+ * since lastSyncTime, so user and assistant messages arrive in separate batches.
+ *
+ * This function gathers ALL local messages for conversations that have new
+ * messages in the current batch, so the chunker can pair them correctly.
+ *
+ * @param {Object[]} batchMessages - New messages from the current sync batch
+ * @returns {Promise<Object[]>} Full conversation context for chunking
+ */
+async function getConversationContextForChunking(batchMessages) {
+  const result = await chrome.storage.local.get(['captured_messages']);
+  const allMessages = result.captured_messages || [];
+
+  const batchConvIds = new Set(
+    batchMessages.map(m => m.conversationId || m.conversation_id).filter(Boolean)
+  );
+
+  if (batchConvIds.size === 0) return batchMessages;
+
+  return allMessages.filter(m => {
+    const convId = m.conversationId || m.conversation_id;
+    return convId && batchConvIds.has(convId);
+  });
+}
   const result = await chrome.storage.local.get([
     'captured_messages',
     'last_successful_sync_time'
@@ -598,12 +627,16 @@ export async function syncMessages(messagesToSync) {
     }
 
     console.log('📦 Creating conversation-turn chunks...');
+    // Gather full conversation context so the sliding window chunker can pair
+    // user messages with assistant responses (they arrive in separate sync batches)
+    const contextMessages = await getConversationContextForChunking(deflectionFiltered);
     // Defense-in-depth: strip injection from content before chunking
-    const cleanedForChunking = deflectionFiltered.map(msg => ({
+    const cleanedForChunking = contextMessages.map(msg => ({
       ...msg,
       content: stripInjectionPrefix(msg.content).content,
     }));
     const turnChunks = messagesToTurnChunks(cleanedForChunking, userId);
+    console.log(`📦 Chunking with full context: ${contextMessages.length} messages (batch had ${deflectionFiltered.length} new)`);
 
     if (turnChunks.length > 0) {
       // PHASE 8: HyDE Preprocessing - Generate hypothetical questions
@@ -681,7 +714,7 @@ export async function syncMessages(messagesToSync) {
         config,
         {
           method: 'POST',
-          headers: { 'Prefer': 'resolution=ignore-duplicates,return=minimal' },
+          headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
           body: JSON.stringify(chunksWithEmbeddings)
         }
       );
@@ -701,7 +734,7 @@ export async function syncMessages(messagesToSync) {
             config,
             {
               method: 'POST',
-              headers: { 'Prefer': 'resolution=ignore-duplicates,return=minimal' },
+              headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
               body: JSON.stringify(fallbackChunks)
             }
           );

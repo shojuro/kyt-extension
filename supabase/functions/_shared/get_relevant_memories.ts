@@ -1041,22 +1041,15 @@ export async function getRelevantMemories(
         const gravityBoosted = applyGravityBoost(boosted);
 
         // ── Scoring penalties (applied before quality penalties) ────────────
+        // Multi-speaker penalty REMOVED: with full-context chunking, assistant
+        // content is properly paired with user questions in sliding window chunks.
+        // The echo filter handles recall-attempt echoes; multi-speaker chunks
+        // containing original answers (e.g., "Thalia Mara") must surface at
+        // full weight for cross-platform recall to work.
         for (const c of gravityBoosted) {
-            // Multi-speaker penalty: demote chunks containing assistant responses.
-            // Prevents wrong assistant answers from dominating while allowing
-            // original conversation content (often multi-speaker) to surface.
-            if (options.speakerFilter === 'user') {
-                const speakers = (c as any).speakers;
-                if (Array.isArray(speakers) && speakers.includes('assistant')) {
-                    c.rerank_score *= 0.6;
-                }
-            }
-
             // is_question penalty: demote questions (which are often recall attempts
             // or meta-queries). But DON'T hard-filter — questions containing specific
-            // entity names are valuable for recall (e.g., "How does the basilisk
-            // measure against the Mexican Beaded Lizard?").
-            // The echo filter handles the truly redundant recall echoes.
+            // entity names are valuable for recall.
             if ((c as any).is_question) {
                 c.rerank_score *= isRecallQuery ? 0.5 : 0.7;
             }
