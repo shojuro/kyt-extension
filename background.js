@@ -26,7 +26,7 @@ import { prewarmEmbeddingModel } from './src/browser-search.js';
 import { queueProcessor } from './src/background/queue-processor.js';
 import { callEdgeFunction } from './src/api-client.js';
 import { HistoryImporter } from './src/history-import/index.js';
-import { refreshSession, isAuthenticated, AUTH_SESSION_KEY, AUTH_EXPIRED_KEY } from './src/auth/auth-service.js';
+import { refreshSession, refreshSessionWithLock, proactiveRefreshCheck, isAuthenticated, AUTH_SESSION_KEY, AUTH_EXPIRED_KEY } from './src/auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
 import { syncToNotebookLM, enableSync as enableNLMSync, disableSync as disableNLMSync, getSyncStatus as getNLMStatus, isSyncEnabled as isNLMEnabled } from './src/notebooklm-sync.js';
 import { detectDeflection } from './src/assistant-quality-detector.js';
@@ -931,7 +931,7 @@ chrome.runtime.onInstalled.addListener((details) => {
       try {
         const authed = await isAuthenticated();
         if (authed) {
-          await refreshSession();
+          await refreshSessionWithLock();
           console.log('✅ Auth session refreshed on extension update');
         }
       } catch (err) {
@@ -1013,7 +1013,7 @@ chrome.runtime.onInstalled.addListener((details) => {
 // ===== ALARM CREATION =====
 chrome.alarms.create('health_check', { periodInMinutes: 5 });
 chrome.alarms.create('prewarmEmbedding', { delayInMinutes: 1, periodInMinutes: 30 });
-chrome.alarms.create('tokenRefresh', { periodInMinutes: 45 });
+chrome.alarms.create('tokenRefresh', { periodInMinutes: 2 }); // Proactive: check every 2min, refresh when <5min remaining
 chrome.alarms.create('syncTier', { delayInMinutes: 1, periodInMinutes: 5 });
 
 // NotebookLM sync alarm — only if enabled
@@ -1310,14 +1310,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       break;
 
     case 'tokenRefresh':
+      // Proactive refresh: checks if JWT expires within 5 minutes,
+      // refreshes with mutex to prevent concurrent races.
+      // Runs every 2 minutes — ensures JWT is always fresh.
       try {
-        const authenticated = await isAuthenticated();
-        if (authenticated) {
-          await refreshSession();
-          console.log('✅ Token refresh: session refreshed via alarm');
-        }
+        await proactiveRefreshCheck();
       } catch (error) {
-        console.warn('⚠️ Token refresh alarm failed:', error.message);
+        console.warn('⚠️ Proactive token refresh failed:', error.message);
       }
       break;
 

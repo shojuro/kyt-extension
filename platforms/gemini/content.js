@@ -177,64 +177,6 @@
       return;
     }
 
-    // TEST MODE: bypass background pipeline — direct fetch from ISOLATED world.
-    // Avoids service worker congestion (embedding CB failures, backfill retries)
-    // that cause the 26s port timeout. Same pattern as Claude + ChatGPT bridges.
-    try {
-      var testFlag = await chrome.storage.local.get(['kyt_test_mode']);
-      if (testFlag.kyt_test_mode) {
-        console.log('🧪 Gemini TEST MODE: using full search_memories pipeline');
-        // Lightweight codeSignal detection — mirrors src/intent-classifier.js scoreCodeSignal()
-        var _lm = userMessage.toLowerCase();
-        var _isTech = /\b(function|class|interface|middleware|schema|migration|deploy|refactor|debug|endpoint|api|database|index|query|cache|redis|docker|kubernetes|helm|terraform|pipeline|connection|pool|sharding|jwt|oauth|grpc|websocket|payment|dedup|idempoten|retry|backoff|transaction|ledger|stripe|jsonb|metadata|column|table|field|primary.?key|uuid|auto.?increment|status.?code|http|latency|timeout|config|yaml|certificate|nginx|postgres|mongo|sql)\b/i.test(_lm);
-        var anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cmN2Znpsd2huaXh6dXhhY2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMzkwNjIsImV4cCI6MjA3NzcxNTA2Mn0.AGh-FsrTLjGuRL0aolR4HYjI6rIE1mpk8X9Fa-E-dUU';
-        var _body = { query: userMessage, userId: '6430273f-f159-4225-888d-e06f52a4ab11', topK: 5, fast: true, speakerFilter: 'user' };
-        if (_isTech) _body.queryType = 'technical';
-        var rpcRes = await fetch('https://svrcvfzlwhnixzuxaccf.supabase.co/functions/v1/search_memories', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'apikey': anonKey, 'Authorization': 'Bearer ' + anonKey },
-          body: JSON.stringify(_body),
-        });
-        if (rpcRes.ok) {
-          var json = await rpcRes.json();
-          var results = json.results || json.memories || [];
-          if (results.length > 0) {
-            // Natural-language format with anti-hallucination guardrails.
-            // Gemini tends to fabricate dates, expand quotes, and build timelines
-            // from fragments. The constraint below keeps it to the facts.
-            var quotes = results.map(function(r) {
-              var content = (r.content || '').substring(0, 250).replace(/"/g, '\\"');
-              return '- "' + content + '..."';
-            }).join('\n\n');
-            var injection = '(For context: I\'ve mentioned some of these topics before. '
-              + 'Here are brief, truncated excerpts from past conversations — they may be cut off mid-sentence:\n\n'
-              + quotes + '\n\n'
-              + 'These excerpts are the complete extent of what I\'ve shared on this topic. '
-              + 'Only reference what is directly written above. Do not add specific dates, '
-              + 'expand truncated quotes, or infer details I have not explicitly stated. '
-              + 'If a quote is cut off, leave it as-is.)';
-            console.log('🧪 Gemini TEST MODE: constrained injection (' + results.length + ' items, ' + injection.length + ' chars)');
-            dispatchContextResponse(requestId, {
-              success: true,
-              formattedContext: injection,
-              items: results
-            });
-            return;
-          }
-        }
-        console.log('🧪 Gemini TEST MODE: no results');
-        dispatchContextResponse(requestId, {
-          success: true,
-          formattedContext: null,
-          items: []
-        });
-        return;
-      }
-    } catch (testErr) {
-      console.warn('🧪 Gemini TEST MODE error:', testErr.message);
-      // Fall through to normal pipeline
-    }
-
     // Check extension context validity — warn once, then cache
     if (!isRuntimeAlive()) {
       dispatchContextResponse(requestId, {

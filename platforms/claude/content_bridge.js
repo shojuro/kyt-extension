@@ -218,54 +218,6 @@ window.addEventListener('KYT_CONTEXT_REQUEST', async (event) => {
   const { requestId, userMessage, config } = event.detail;
   console.log('🔍 BRIDGE: Context request from MAIN world');
 
-  // TEST MODE: bypass bridge port — direct fetch from ISOLATED world (no CSP restrictions)
-  try {
-    var testFlag = await chrome.storage.local.get(['kyt_test_mode']);
-    if (testFlag.kyt_test_mode) {
-      console.log('🧪 BRIDGE TEST MODE: using full search_memories pipeline');
-      // Lightweight codeSignal detection — mirrors src/intent-classifier.js scoreCodeSignal()
-      var _lm = userMessage.toLowerCase();
-      var _isTech = /\b(function|class|interface|middleware|schema|migration|deploy|refactor|debug|endpoint|api|database|index|query|cache|redis|docker|kubernetes|helm|terraform|pipeline|connection|pool|sharding|jwt|oauth|grpc|websocket|payment|dedup|idempoten|retry|backoff|transaction|ledger|stripe|jsonb|metadata|column|table|field|primary.?key|uuid|auto.?increment|status.?code|http|latency|timeout|config|yaml|certificate|nginx|postgres|mongo|sql)\b/i.test(_lm);
-      var anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2cmN2Znpsd2huaXh6dXhhY2NmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxMzkwNjIsImV4cCI6MjA3NzcxNTA2Mn0.AGh-FsrTLjGuRL0aolR4HYjI6rIE1mpk8X9Fa-E-dUU';
-      var _body = { query: userMessage, userId: '6430273f-f159-4225-888d-e06f52a4ab11', topK: 5, fast: true, speakerFilter: 'user' };
-      if (_isTech) _body.queryType = 'technical';
-      var rpcRes = await fetch('https://svrcvfzlwhnixzuxaccf.supabase.co/functions/v1/search_memories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': anonKey, 'Authorization': 'Bearer ' + anonKey },
-        body: JSON.stringify(_body),
-      });
-      if (rpcRes.ok) {
-        var json = await rpcRes.json();
-        var results = json.results || json.memories || [];
-        if (results.length > 0) {
-          // Claude-specific: natural language format avoids safety filter rejection.
-          // Structured headers like [RESPONSE_PRIORITY] trigger Claude's injection
-          // detector. First-person parenthetical framing appears user-authored.
-          var quotes = results.map(function(r, i) {
-            var content = (r.content || '').substring(0, 250).replace(/"/g, '\\"');
-            return '- "' + content + '..."';
-          }).join('\n\n');
-          var injection = '(For context: I\'ve talked about things like this before in past conversations. '
-            + 'Here are some things I\'ve previously shared that might be relevant to what I\'m about to say:\n\n'
-            + quotes + '\n\n'
-            + 'I\'m sharing these so you have the full picture of where I\'m coming from.)';
-          console.log('🧪 BRIDGE TEST MODE: Claude natural-language injection (' + results.length + ' items, ' + injection.length + ' chars)');
-          window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
-            detail: { requestId: requestId, success: true, formattedContext: injection, items: results }
-          }));
-          return;
-        }
-      }
-      console.log('🧪 BRIDGE TEST MODE: no results');
-      window.dispatchEvent(new CustomEvent('KYT_CONTEXT_RESPONSE', {
-        detail: { requestId: requestId, success: true, formattedContext: null, items: [] }
-      }));
-      return;
-    }
-  } catch (testErr) {
-    console.warn('🧪 BRIDGE TEST MODE error:', testErr.message);
-  }
-
   // Fast-fail when extension context is truly invalidated (unloaded).
   // For SW cooldown, we still fast-fail but with a different message —
   // the cooldown will expire and the next request will retry Tier 1.

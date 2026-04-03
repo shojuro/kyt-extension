@@ -53,8 +53,11 @@ serve(async (req) => {
             isRecallQuery,        // True when user is recalling past conversation — tightens echo filtering
         } = body;
 
-        // Extract user from JWT if present (authenticated mode)
-        let userId = bodyUserId;
+        // Extract user from JWT — MANDATORY for authenticated operations.
+        // The edge function uses service role key internally (bypasses RLS), so
+        // we MUST verify the caller's identity via JWT. Falling back to bodyUserId
+        // would allow anyone with the anon key to query any user's memories.
+        let userId: string | null = null;
         const authHeader = req.headers.get("Authorization");
         if (authHeader?.startsWith("Bearer ") && authHeader.length > 50) {
             try {
@@ -66,18 +69,27 @@ serve(async (req) => {
                     authHeader.slice(7),
                 );
                 if (user && !error) {
-                    userId = user.id; // Override with authenticated user ID
+                    userId = user.id;
                     Logger.info("JWT user extracted", { requestId, userId });
                 }
             } catch (jwtErr) {
-                Logger.warn("JWT extraction failed, using body userId", { requestId, error: jwtErr.message });
+                Logger.warn("JWT extraction failed", { requestId, error: jwtErr.message });
             }
+        }
+
+        // If JWT didn't yield a user, check if bodyUserId was provided as fallback
+        // ONLY for development (--no-verify-jwt). In production, JWT is mandatory.
+        if (!userId && bodyUserId) {
+            // Only allow body userId when Supabase gateway didn't enforce JWT
+            // (i.e., function deployed with --no-verify-jwt for development)
+            Logger.warn("Using body userId (no JWT) — development mode only", { requestId, bodyUserId });
+            userId = bodyUserId;
         }
 
         if (!query || !userId) {
             Logger.warn("Missing query or userId", { requestId, query, userId });
-            return new Response(JSON.stringify({ error: "Missing query or userId" }), {
-                status: 400,
+            return new Response(JSON.stringify({ error: !userId ? "Authentication required" : "Missing query" }), {
+                status: !userId ? 401 : 400,
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
         }

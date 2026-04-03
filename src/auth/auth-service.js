@@ -13,7 +13,9 @@ import { fetchWithTimeout } from '../utils/fetch.js';
 
 const AUTH_SESSION_KEY = 'auth_session';
 const AUTH_EXPIRED_KEY = 'auth_expired';
+const REFRESH_LOCK_KEY = 'kyt_auth_refresh_lock';
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000; // Refresh when <5 min left
+const REFRESH_LOCK_TTL_MS = 10000; // 10s stale lock expiry
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -160,10 +162,10 @@ export async function getSession() {
   const nowSec = Math.floor(Date.now() / 1000);
   const marginSec = TOKEN_REFRESH_MARGIN_MS / 1000;
 
-  // Token already expired or about to expire — try refreshing
+  // Token already expired or about to expire — try refreshing (with mutex)
   if (session.expires_at - nowSec < marginSec) {
     try {
-      return await refreshSession(session.refresh_token);
+      return await refreshSessionWithLock(session.refresh_token);
     } catch (err) {
       console.warn('Auto-refresh failed:', err.message);
       // If refresh fails and token is truly expired, mark as expired
@@ -211,6 +213,75 @@ export async function refreshSession(refreshToken) {
 
   // Store new tokens immediately (idempotent)
   return storeSession(data);
+}
+
+/**
+ * Mutex-protected refresh — serializes concurrent refresh attempts.
+ * Multiple tabs/alarm handlers may trigger refresh simultaneously.
+ * Supabase refresh token rotation invalidates the old token on first use,
+ * so a second concurrent refresh with the same token will fail permanently.
+ *
+ * @param {string} [refreshToken] - If omitted, reads from stored session
+ * @returns {Promise<Object>} New stored session
+ */
+export async function refreshSessionWithLock(refreshToken) {
+  const lock = await chrome.storage.local.get(REFRESH_LOCK_KEY);
+  const lockTime = lock[REFRESH_LOCK_KEY] || 0;
+
+  // If another caller is currently refreshing (lock < TTL), wait and read result
+  if (Date.now() - lockTime < REFRESH_LOCK_TTL_MS) {
+    console.log('🔒 Auth refresh: waiting for concurrent refresh to complete');
+    await new Promise(r => setTimeout(r, 2000));
+    const result = await chrome.storage.local.get(AUTH_SESSION_KEY);
+    if (result[AUTH_SESSION_KEY]?.access_token) {
+      return result[AUTH_SESSION_KEY];
+    }
+    // Other caller may have failed — fall through and try ourselves
+  }
+
+  // Acquire lock
+  await chrome.storage.local.set({ [REFRESH_LOCK_KEY]: Date.now() });
+
+  try {
+    const session = await refreshSession(refreshToken);
+    return session;
+  } finally {
+    // Release lock
+    await chrome.storage.local.remove(REFRESH_LOCK_KEY);
+  }
+}
+
+/**
+ * Proactive refresh check — call from any SW entry point (alarm, message, etc.)
+ * Refreshes if token expires within 5 minutes. Safe to call frequently.
+ * Uses mutex to prevent concurrent refreshes.
+ *
+ * @returns {Promise<boolean>} True if refresh was performed
+ */
+export async function proactiveRefreshCheck() {
+  const result = await chrome.storage.local.get(AUTH_SESSION_KEY);
+  const session = result[AUTH_SESSION_KEY];
+  if (!session?.access_token || !session.refresh_token) return false;
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const marginSec = TOKEN_REFRESH_MARGIN_MS / 1000;
+
+  if (session.expires_at - nowSec < marginSec) {
+    try {
+      await refreshSessionWithLock(session.refresh_token);
+      console.log('✅ Proactive auth refresh completed');
+      return true;
+    } catch (e) {
+      console.warn('⚠️ Proactive refresh failed:', e.message);
+      // If refresh token itself is dead (weeks of inactivity), flag for re-auth
+      if (e.message.includes('Invalid Refresh Token') || e.message.includes('refresh_token_not_found')) {
+        await chrome.storage.local.set({ [AUTH_EXPIRED_KEY]: true });
+        console.error('🔒 Refresh token expired — user must re-authenticate');
+      }
+      return false;
+    }
+  }
+  return false;
 }
 
 /**
