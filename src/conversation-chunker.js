@@ -145,11 +145,17 @@ function chunkTurns(turns, windowSize = 5, overlap = 2) {
 
     for (const turn of window) {
       if (turn.user) {
-        contentParts.push(needsPrefix ? `User: ${turn.user.content}` : turn.user.content);
+        // Defensive: strip existing role prefix to prevent double-prefixing
+        // (some API responses/imports bake "User: " into the content text)
+        let userContent = turn.user.content;
+        if (userContent.startsWith('User: ')) userContent = userContent.substring(6);
+        contentParts.push(needsPrefix ? `User: ${userContent}` : userContent);
         timestamps.push(turn.user.timestamp);
       }
       if (turn.assistant) {
-        contentParts.push(needsPrefix ? `Assistant: ${turn.assistant.content}` : turn.assistant.content);
+        let asstContent = turn.assistant.content;
+        if (asstContent.startsWith('Assistant: ')) asstContent = asstContent.substring(12);
+        contentParts.push(needsPrefix ? `Assistant: ${asstContent}` : asstContent);
         timestamps.push(turn.assistant.timestamp);
       }
     }
