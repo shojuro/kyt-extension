@@ -1,0 +1,53 @@
+{
+  "capturedAt": "2026-04-04",
+  "conversationList": {
+    "rpcId": "MaZiqc",
+    "endpoint": "https://gemini.google.com/_/BardChatUi/data/batchexecute",
+    "queryParams": {
+      "rpcids": "MaZiqc",
+      "source-path": "/app",
+      "bl": "boq_assistant-bard-web-server_20260331.03_p2",
+      "f.sid": "<session_id>",
+      "hl": "en",
+      "_reqid": "<counter>",
+      "rt": "c"
+    },
+    "requestParams": {
+      "format": "[pageSize, cursorToken_or_null, [0, null, 1]]",
+      "pageSize": 20,
+      "firstPageCursor": null,
+      "configParam": [0, null, 1]
+    },
+    "responseFormat": {
+      "wrbFrFrame": "[null, next_cursor_string, [[conv_entries...]]]",
+      "conversationEntry": {
+        "format": "[conv_id, title, null, null, null, [epoch_sec, nanosec], null, null, null, type_flag]",
+        "fields": {
+          "0": "conversation_id (c_<hex16>)",
+          "1": "title (string, trailing \\n)",
+          "5": "[epoch_seconds, nanoseconds] — UTC timestamp",
+          "9": "type_flag (1=normal, 2=?)"
+        }
+      },
+      "pagination": {
+        "nextCursor": "response[1] — opaque base64-like string (~6400 chars)",
+        "stopConditions": [
+          "oldest entry timestamp < cutoff date",
+          "next_cursor is null or empty",
+          "empty entries array"
+        ]
+      }
+    }
+  },
+  "conversationDetail": {
+    "rpcId": "hNvQHb",
+    "note": "Existing code in content_test.js extractConversationMessages() handles this format",
+    "responseFormat": "Double-encoded JSON in wrb.fr frame, turn structure at [0][2]"
+  },
+  "auth": {
+    "cookies": "Google session cookies (SID, HSID, SSID, APISID, SAPISID, etc.)",
+    "xsrfToken": "SNlM0e — extracted from page HTML, passed as 'at' param",
+    "buildLabel": "bl param — e.g. boq_assistant-bard-web-server_20260331.03_p2",
+    "note": "bl changes on Gemini deployments; sniff from page or URL params"
+  }
+}
