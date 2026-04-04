@@ -974,7 +974,7 @@ chrome.runtime.onInstalled.addListener((details) => {
         } else {
           console.warn(`⚠️ Update backfill incomplete: ${result.error} (backfilled: ${result.backfilled || 0})`);
           if (result.willRetry || result.remaining) {
-            chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 5 });
+            chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 2 });
             console.log('⏰ Backfill retry alarm set (5 minutes)');
           }
         }
@@ -1165,12 +1165,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
           chrome.alarms.clear('backfillEmbeddings');
         } else if (hasRemaining) {
           console.warn(`⚠️ Backfill retry incomplete, will try again in 5 minutes`);
-          chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 5 });
+          chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 2 });
         }
       } catch (error) {
         console.error('❌ Backfill retry alarm error:', error.message);
         // Reschedule so transient errors don't permanently stall backfill
-        chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 5 });
+        chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 2 });
       }
       break;
 

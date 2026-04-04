@@ -122,29 +122,41 @@ async function patchEmbedding(table, id, embedding) {
 
 // ── Embedding generation (matches extension's Scaleway path) ────────────
 
-async function generateEmbeddings(texts) {
-  const resp = await fetch(HF_ROUTER_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${HF_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ model: HF_MODEL, input: texts }),
-  });
+async function generateEmbeddings(texts, retries = 5) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch(HF_ROUTER_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${HF_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model: HF_MODEL, input: texts }),
+      });
 
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`HuggingFace API ${resp.status}: ${errText}`);
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`HuggingFace API ${resp.status}: ${errText}`);
+      }
+
+      const data = await resp.json();
+
+      if (!data.data || !Array.isArray(data.data)) {
+        throw new Error('Unexpected response format from HuggingFace');
+      }
+
+      // Truncate to 1024d + L2-normalize (Matryoshka, same as browser-sync.js)
+      return data.data.map(item => truncateAndNormalize(item.embedding, EMBEDDING_DIMS));
+    } catch (err) {
+      if (attempt === retries) throw err;
+      // 403 = provider outage → longer backoff (30s)
+      // Others = transient → exponential backoff (1s, 2s, 4s, 8s, 16s)
+      const is403 = err.message.includes('403');
+      const delay = is403 ? 30000 : 1000 * Math.pow(2, attempt);
+      console.log(`   ⚠️ Attempt ${attempt + 1}/${retries + 1} failed: ${err.message}. Retrying in ${delay / 1000}s...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
-
-  const data = await resp.json();
-
-  if (!data.data || !Array.isArray(data.data)) {
-    throw new Error('Unexpected response format from HuggingFace');
-  }
-
-  // Truncate to 1024d + L2-normalize (Matryoshka, same as browser-sync.js)
-  return data.data.map(item => truncateAndNormalize(item.embedding, EMBEDDING_DIMS));
 }
 
 // ── Process one table ───────────────────────────────────────────────────

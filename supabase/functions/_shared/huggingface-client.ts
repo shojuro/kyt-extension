@@ -37,6 +37,10 @@ export class HuggingFaceClient {
         // Use direct Scaleway API for embeddings (more reliable)
         const url = `${HuggingFaceClient.SCALEWAY_API_URL}/v1/embeddings`;
 
+        // Enhanced resilience: 5 retries with longer backoff for provider outages.
+        // Only Scaleway hosts qwen3-embedding-8b (no compatible fallback provider).
+        // Graceful degradation: if all retries fail, circuit breaker catches it
+        // and messages sync with null embeddings (backfill alarm fills them later).
         return retryWrapper(async () => {
             const response = await fetch(url, {
                 method: "POST",
@@ -72,7 +76,7 @@ export class HuggingFaceClient {
             return data.data.map((item: any) =>
                 HuggingFaceClient.truncateAndNormalize(item.embedding, HuggingFaceClient.TARGET_DIMS)
             );
-        });
+        }, { maxRetries: 5, baseDelayMs: 1000, timeoutMs: 15000 });
     }
 
     /**
@@ -87,6 +91,7 @@ export class HuggingFaceClient {
 
         const url = `${HuggingFaceClient.SCALEWAY_API_URL}/v1/embeddings`;
 
+        // Enhanced resilience: 5 retries, 15s timeout, 403-aware backoff.
         return retryWrapper(async () => {
             const response = await fetch(url, {
                 method: "POST",
@@ -125,7 +130,7 @@ export class HuggingFaceClient {
             return sortedData.map((item: any) =>
                 HuggingFaceClient.truncateAndNormalize(item.embedding, HuggingFaceClient.TARGET_DIMS)
             );
-        });
+        }, { maxRetries: 5, baseDelayMs: 1000, timeoutMs: 15000 });
     }
 
     async rerank(query: string, documents: string[], requestId?: string): Promise<HFRerankResponse[]> {
