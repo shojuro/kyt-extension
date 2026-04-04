@@ -253,6 +253,111 @@
       return cleaned;
     },
 
+    /**
+     * Schedule removal of the injection block from the visible ChatGPT message DOM.
+     * After injection + fetch, ChatGPT renders the full message (user text + injected context).
+     * This finds the last user message and strips the visible injection block.
+     *
+     * Uses retry loop because React rendering is async — the message may not be
+     * in the DOM immediately after fetch.
+     */
+    scheduleInjectionCleanup: function (injectedText) {
+      if (!injectedText) return;
+
+      let attempts = 0;
+      const maxAttempts = 10;
+      const interval = 300; // 300ms between checks
+
+      const cleanup = () => {
+        attempts++;
+        // Find the last user message in the DOM
+        const userMessages = document.querySelectorAll('[data-message-author-role="user"]');
+        if (userMessages.length === 0) {
+          if (attempts < maxAttempts) setTimeout(cleanup, interval);
+          return;
+        }
+
+        const lastUserMsg = userMessages[userMessages.length - 1];
+        // Find the text container within the message
+        const textEl = lastUserMsg.querySelector('.whitespace-pre-wrap') ||
+                       lastUserMsg.querySelector('[class*="markdown"]') ||
+                       lastUserMsg.querySelector('div > div');
+        if (!textEl) {
+          if (attempts < maxAttempts) setTimeout(cleanup, interval);
+          return;
+        }
+
+        const currentText = textEl.textContent || '';
+        // Check if this message contains the injection block
+        if (!currentText.includes('(For context:') && !currentText.includes('[SESSION_CONTEXT]') && !currentText.includes('K.Y.T.')) {
+          // No injection found — either wrong message or already cleaned
+          if (attempts < maxAttempts) setTimeout(cleanup, interval);
+          return;
+        }
+
+        // Walk text nodes and hide injection content.
+        // We look for the injection boundary and wrap everything after it in a hidden span.
+        const walker = document.createTreeWalker(textEl, NodeFilter.SHOW_TEXT, null);
+        let found = false;
+        const nodesToHide = [];
+
+        while (walker.nextNode()) {
+          const node = walker.currentNode;
+          const text = node.textContent || '';
+
+          if (!found) {
+            // Look for the start of injection block
+            const idx = text.indexOf('(For context:');
+            const idx2 = text.indexOf('[SESSION_CONTEXT]');
+            const injStart = idx >= 0 ? idx : idx2;
+
+            if (injStart >= 0) {
+              found = true;
+              // Split: keep text before injection, hide text from injection onward
+              if (injStart > 0) {
+                const beforeText = text.substring(0, injStart).trimEnd();
+                const afterText = text.substring(injStart);
+                // Replace this node with clean text + hidden injection
+                const cleanNode = document.createTextNode(beforeText);
+                const hiddenSpan = document.createElement('span');
+                hiddenSpan.style.display = 'none';
+                hiddenSpan.className = 'kyt-injection-hidden';
+                hiddenSpan.textContent = afterText;
+                node.parentNode.insertBefore(cleanNode, node);
+                node.parentNode.insertBefore(hiddenSpan, node);
+                node.parentNode.removeChild(node);
+              } else {
+                // Entire node is injection — hide it
+                nodesToHide.push(node);
+              }
+            }
+          } else {
+            // Everything after injection start gets hidden
+            nodesToHide.push(node);
+          }
+        }
+
+        // Hide remaining nodes that are part of the injection
+        for (const node of nodesToHide) {
+          const hiddenSpan = document.createElement('span');
+          hiddenSpan.style.display = 'none';
+          hiddenSpan.className = 'kyt-injection-hidden';
+          hiddenSpan.textContent = node.textContent;
+          node.parentNode.insertBefore(hiddenSpan, node);
+          node.parentNode.removeChild(node);
+        }
+
+        if (found) {
+          console.log('🧹 KYT: Injection block hidden from displayed message');
+        } else if (attempts < maxAttempts) {
+          setTimeout(cleanup, interval);
+        }
+      };
+
+      // Start checking after a short delay (React needs time to render)
+      setTimeout(cleanup, 200);
+    },
+
     extractMessage: function (bodyString) {
       try {
         const body = JSON.parse(bodyString);
@@ -358,6 +463,11 @@
             : '';
           lastMessage.content.parts[0] = originalText + '\n\n' + event.detail.formattedContext;
           console.log('🔧 Context appended to user message (' + event.detail.formattedContext.length + ' chars)');
+
+          // Schedule DOM cleanup: hide the injection block from the displayed message.
+          // ChatGPT renders the full parts[0] including injected context. We strip it
+          // from the visible DOM after React renders the message (usually <500ms).
+          platform.scheduleInjectionCleanup(event.detail.formattedContext);
         } else {
           console.warn('⚠️ KYT ChatGPT: Could not append context — unexpected message structure');
         }
