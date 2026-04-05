@@ -122,6 +122,15 @@ cp "$PROJECT_ROOT/src/utils/fetch.js" "$TARGET/src/utils/"
 cp "$PROJECT_ROOT/src/utils/normalize-platform.js" "$TARGET/src/utils/"
 cp "$PROJECT_ROOT/src/utils/storage-mutex.js" "$TARGET/src/utils/"
 
+# --- Bridge token (auto-provision for RPC proxy) ---
+BRIDGE_TOKEN_FILE="$HOME/.kyt/bridge-token"
+if [ -f "$BRIDGE_TOKEN_FILE" ]; then
+  echo "{\"bridgeToken\":\"$(cat "$BRIDGE_TOKEN_FILE")\"}" > "$TARGET/kyt-build-config.json"
+  echo "   Bridge token embedded from $BRIDGE_TOKEN_FILE"
+else
+  echo "   ⚠️  No bridge token found at $BRIDGE_TOKEN_FILE — RPC proxy will need manual setup"
+fi
+
 # --- Summary ---
 echo ""
 FILE_COUNT=$(find "$TARGET" -type f | wc -l)
