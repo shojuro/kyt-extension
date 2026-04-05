@@ -965,6 +965,11 @@ export async function getNotebookSummary(notebookId) {
 // Artifacts
 // ============================================================================
 
+/** Normalize user-supplied enum string: uppercase + hyphens to underscores. */
+function normalizeEnumKey(val) {
+  return val ? val.toUpperCase().replace(/-/g, '_') : null;
+}
+
 /**
  * Build type-specific artifact params.
  */
@@ -981,8 +986,8 @@ function buildArtifactParams(typeCode, sourceIds, options = {}) {
   switch (typeCode) {
     case ARTIFACT_TYPE.AUDIO: {
       // Python: _artifacts.py:384-408 — position [6]
-      const format = AUDIO_FORMAT[options.format?.toUpperCase()] || null;
-      const length = AUDIO_LENGTH[options.length?.toUpperCase()] || null;
+      const format = AUDIO_FORMAT[normalizeEnumKey(options.format)] || null;
+      const length = AUDIO_LENGTH[normalizeEnumKey(options.length)] || null;
       return [
         null, null, 1, tripleNested, null, null,
         [null, [instructions, length, null, doubleNested, lang, null, format]],
@@ -1000,8 +1005,8 @@ function buildArtifactParams(typeCode, sourceIds, options = {}) {
     }
     case ARTIFACT_TYPE.VIDEO: {
       // Python: _artifacts.py:441-467 — position [8], inner at [2]
-      const format = VIDEO_FORMAT[options.format?.toUpperCase()] || null;
-      const style = VIDEO_STYLE[options.style?.toUpperCase()] || null;
+      const format = VIDEO_FORMAT[normalizeEnumKey(options.format)] || null;
+      const style = VIDEO_STYLE[normalizeEnumKey(options.style)] || null;
       return [
         null, null, 3, tripleNested, null, null, null, null,
         [null, null, [doubleNested, lang, instructions, null, format, style]],
@@ -1009,9 +1014,9 @@ function buildArtifactParams(typeCode, sourceIds, options = {}) {
     }
     case ARTIFACT_TYPE.QUIZ: {
       // Python: _artifacts.py:685-713 — position [9]
-      const variant = QUIZ_VARIANT[options.variant?.toUpperCase()] || QUIZ_VARIANT.QUIZ;
-      const quantity = QUIZ_QUANTITY[options.quantity?.toUpperCase()] || null;
-      const difficulty = QUIZ_DIFFICULTY[options.difficulty?.toUpperCase()] || null;
+      const variant = QUIZ_VARIANT[normalizeEnumKey(options.variant)] || QUIZ_VARIANT.QUIZ;
+      const quantity = QUIZ_QUANTITY[normalizeEnumKey(options.quantity)] || null;
+      const difficulty = QUIZ_DIFFICULTY[normalizeEnumKey(options.difficulty)] || null;
       return [
         null, null, 4, tripleNested, null, null, null, null, null,
         [null, [variant, null, instructions, null, null, null, null, [quantity, difficulty]]],
@@ -1019,9 +1024,9 @@ function buildArtifactParams(typeCode, sourceIds, options = {}) {
     }
     case ARTIFACT_TYPE.INFOGRAPHIC: {
       // Python: _artifacts.py:803-824 — position [14]
-      const orientation = INFOGRAPHIC_ORIENTATION[options.orientation?.toUpperCase()] || null;
-      const detail = INFOGRAPHIC_DETAIL[options.detail?.toUpperCase()] || null;
-      const style = INFOGRAPHIC_STYLE[options.style?.toUpperCase()] || null;
+      const orientation = INFOGRAPHIC_ORIENTATION[normalizeEnumKey(options.orientation)] || null;
+      const detail = INFOGRAPHIC_DETAIL[normalizeEnumKey(options.detail)] || null;
+      const style = INFOGRAPHIC_STYLE[normalizeEnumKey(options.style)] || null;
       return [
         null, null, 7, tripleNested,
         null, null, null, null, null, null, null, null, null, null,
@@ -1030,8 +1035,8 @@ function buildArtifactParams(typeCode, sourceIds, options = {}) {
     }
     case ARTIFACT_TYPE.SLIDE_DECK: {
       // Python: _artifacts.py:855-878 — position [16]
-      const format = SLIDE_DECK_FORMAT[options.format?.toUpperCase()] || null;
-      const length = SLIDE_DECK_LENGTH[options.length?.toUpperCase()] || null;
+      const format = SLIDE_DECK_FORMAT[normalizeEnumKey(options.format)] || null;
+      const length = SLIDE_DECK_LENGTH[normalizeEnumKey(options.length)] || null;
       return [
         null, null, 8, tripleNested,
         null, null, null, null, null, null, null, null, null, null, null, null,

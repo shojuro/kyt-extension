@@ -48,15 +48,22 @@ export const AUDIO_LENGTH = {
 
 // --- Video enums ---
 export const VIDEO_FORMAT = {
-  LECTURE: 1,
-  DOCUMENTARY: 2,
-  EXPLAINER: 3,
+  EXPLAINER: 1,
+  BRIEF: 2,
+  CINEMATIC: 3,
 };
 
 export const VIDEO_STYLE = {
-  REALISTIC: 1,
-  ANIMATED: 2,
-  WHITEBOARD: 3,
+  AUTO_SELECT: 1,
+  CUSTOM: 2,
+  CLASSIC: 3,
+  WHITEBOARD: 4,
+  KAWAII: 5,
+  ANIME: 6,
+  WATERCOLOR: 7,
+  RETRO_PRINT: 8,
+  HERITAGE: 9,
+  PAPER_CRAFT: 10,
 };
 
 // --- Quiz enums ---
@@ -66,9 +73,8 @@ export const QUIZ_VARIANT = {
 };
 
 export const QUIZ_QUANTITY = {
-  FEW: 5,
-  STANDARD: 10,
-  MANY: 15,
+  FEWER: 1,
+  STANDARD: 2,
 };
 
 export const QUIZ_DIFFICULTY = {
@@ -79,31 +85,40 @@ export const QUIZ_DIFFICULTY = {
 
 // --- Infographic enums ---
 export const INFOGRAPHIC_ORIENTATION = {
-  PORTRAIT: 1,
-  LANDSCAPE: 2,
+  LANDSCAPE: 1,
+  PORTRAIT: 2,
+  SQUARE: 3,
 };
 
 export const INFOGRAPHIC_DETAIL = {
-  SIMPLE: 1,
-  DETAILED: 2,
+  CONCISE: 1,
+  STANDARD: 2,
+  DETAILED: 3,
 };
 
 export const INFOGRAPHIC_STYLE = {
-  MODERN: 1,
-  CLASSIC: 2,
-  MINIMAL: 3,
+  AUTO_SELECT: 1,
+  SKETCH_NOTE: 2,
+  PROFESSIONAL: 3,
+  BENTO_GRID: 4,
+  EDITORIAL: 5,
+  INSTRUCTIONAL: 6,
+  BRICKS: 7,
+  CLAY: 8,
+  ANIME: 9,
+  KAWAII: 10,
+  SCIENTIFIC: 11,
 };
 
 // --- Slide Deck enums ---
 export const SLIDE_DECK_FORMAT = {
-  PRESENTATION: 1,
-  SUMMARY: 2,
+  DETAILED_DECK: 1,
+  PRESENTER_SLIDES: 2,
 };
 
 export const SLIDE_DECK_LENGTH = {
-  SHORT: 1,
-  MEDIUM: 2,
-  LONG: 3,
+  DEFAULT: 1,
+  SHORT: 2,
 };
 
 // --- Research status codes ---
