@@ -222,6 +222,20 @@ export function isRpcProxyRunning() {
 }
 
 /**
+ * Alarm watchdog handler — restarts polling if SW was terminated and restarted.
+ * Called from background.js alarm listener.
+ */
+export function handleRpcPollAlarm() {
+  if (!_polling) return; // proxy was intentionally stopped
+  // If no active poll timer, the SW was terminated and restarted.
+  // setTimeout timers don't survive SW termination, so restart polling.
+  if (!_pollTimer) {
+    console.log('[KYT RPC Proxy] Watchdog: restarting poll loop after SW restart');
+    schedulePoll();
+  }
+}
+
+/**
  * Get proxy status for diagnostics.
  */
 export function getRpcProxyStatus() {

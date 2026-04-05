@@ -34,7 +34,7 @@ import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/emb
 import { updateRecentTopics } from './src/recent-topic-cache.js';
 import { exportNotebookLMCookies, getCookieExportStatus, resetCookieExporter } from './src/cookie-exporter.js';
 import { handlePollAlarm, getPollerStatus, pollPlatformNow } from './src/conversation-poller.js';
-import { startRpcProxy, stopRpcProxy, isRpcProxyRunning, getRpcProxyStatus } from './src/nlm-rpc-proxy.js';
+import { startRpcProxy, stopRpcProxy, isRpcProxyRunning, getRpcProxyStatus, handleRpcPollAlarm } from './src/nlm-rpc-proxy.js';
 
 // Extracted modules
 import { getApiConfig, clearConfigCache } from './src/auth-config.js';
@@ -625,10 +625,30 @@ function maybeApplyUpdate() {
   chrome.runtime.reload();
 }
 
+// ===== AUTO-PROVISION: Bridge token from build config =====
+async function provisionBridgeToken() {
+  try {
+    const { kyt_bridge_token } = await chrome.storage.local.get('kyt_bridge_token');
+    if (kyt_bridge_token) return; // already provisioned
+    const resp = await fetch(chrome.runtime.getURL('kyt-build-config.json'));
+    if (resp.ok) {
+      const config = await resp.json();
+      if (config.bridgeToken) {
+        await chrome.storage.local.set({ kyt_bridge_token: config.bridgeToken });
+        console.log('[KYT] Bridge token auto-provisioned from build config');
+      }
+    }
+  } catch (e) {
+    console.warn('[KYT] Bridge token auto-provision failed (non-fatal):', e.message);
+  }
+}
+
 // ===== LIFECYCLE: onInstalled (sync existing) =====
 chrome.runtime.onInstalled.addListener(async (details) => {
   console.log('🔄 KYT Background: Extension installed/updated');
   console.log(`   Reason: ${details.reason}`);
+
+  await provisionBridgeToken();
 
   // Diagnostic: verify host_permissions
   chrome.permissions.getAll((perms) => {
@@ -669,6 +689,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
 // ===== LIFECYCLE: onStartup (queue processor + auth refresh) =====
 chrome.runtime.onStartup.addListener(() => {
+  provisionBridgeToken(); // fire-and-forget — non-blocking
   try {
     queueProcessor.initialize();
     queueProcessor.processQueue().catch(err =>
@@ -1032,6 +1053,7 @@ chrome.alarms.create('pollClaude', { delayInMinutes: 8, periodInMinutes: 20 });
 
 // NotebookLM RPC proxy — routes API calls through browser tab for full cookie access
 startRpcProxy();
+chrome.alarms.create('kytRpcPoll', { delayInMinutes: 0.5, periodInMinutes: 0.5 });
 
 // ===== SYNC-ON-PLATFORM-SWITCH =====
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
@@ -1370,6 +1392,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     case 'pollClaude':
       try { await handlePollAlarm(alarm.name); }
       catch (e) { console.error(`❌ Poller ${alarm.name} error:`, e.message); }
+      break;
+
+    case 'kytRpcPoll':
+      handleRpcPollAlarm();
       break;
 
     default:
