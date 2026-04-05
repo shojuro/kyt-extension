@@ -139,6 +139,95 @@ describe('notebooklm-rpc: decoding', () => {
 });
 
 // ============================================================================
+// Streaming Response Decoding
+// ============================================================================
+
+describe('notebooklm-rpc: decodeStreamingResponse', () => {
+  function makeStreamingResponse(...chunks) {
+    // Build a Google-format chunked response: anti-XSSI prefix + byte-count + JSON
+    const parts = [")]}'\n"];
+    for (const chunk of chunks) {
+      const json = JSON.stringify(chunk);
+      parts.push(`${json.length}\n${json}\n`);
+    }
+    return parts.join('');
+  }
+
+  test('extracts answer from parsed[4] position', () => {
+    const frame = [['wrb.fr', 'method', JSON.stringify([null, null, null, null, 'This is the answer text from NotebookLM about the topic.'])]];
+    const response = makeStreamingResponse(frame);
+    const result = decodeStreamingResponse(response);
+    assert.equal(result.answer, 'This is the answer text from NotebookLM about the topic.');
+  });
+
+  test('extracts answer from parsed[0] position as fallback', () => {
+    const frame = [['wrb.fr', 'method', JSON.stringify(['This is the answer from position zero which is long enough.', null, null, null, null])]];
+    const response = makeStreamingResponse(frame);
+    const result = decodeStreamingResponse(response);
+    assert.equal(result.answer, 'This is the answer from position zero which is long enough.');
+  });
+
+  test('finds answer via deep walk when not at standard positions', () => {
+    const frame = [['wrb.fr', 'method', JSON.stringify([null, [null, [null, 'This is a deeply nested answer string that should be found by the walker.']]])]];
+    const response = makeStreamingResponse(frame);
+    const result = decodeStreamingResponse(response);
+    assert.equal(result.answer, 'This is a deeply nested answer string that should be found by the walker.');
+  });
+
+  test('returns empty answer for empty response', () => {
+    const result = decodeStreamingResponse('');
+    assert.equal(result.answer, '');
+    assert.deepEqual(result.citations, []);
+    assert.equal(result.conversationId, null);
+  });
+
+  test('returns empty answer when no wrb.fr frames', () => {
+    const response = makeStreamingResponse([['not-wrb', 'method', '[]']]);
+    const result = decodeStreamingResponse(response);
+    assert.equal(result.answer, '');
+  });
+
+  test('extracts conversation ID (UUID format)', () => {
+    const uuid = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+    const frame = [['wrb.fr', 'method', JSON.stringify([null, null, uuid, null, 'Answer text that is long enough to pass.'])]];
+    const response = makeStreamingResponse(frame);
+    const result = decodeStreamingResponse(response);
+    assert.equal(result.conversationId, uuid);
+    assert.equal(result.answer, 'Answer text that is long enough to pass.');
+  });
+
+  test('extracts citations with source_id and cited_text', () => {
+    const frame = [['wrb.fr', 'method', JSON.stringify([
+      null, null, null, null,
+      'The answer referencing sources.',
+      null, null, null, null, null,
+      [['source_abc_123', null, 'This is the cited passage from the source document.', 10, 50]],
+    ])]];
+    const response = makeStreamingResponse(frame);
+    const result = decodeStreamingResponse(response);
+    assert.equal(result.citations.length, 1);
+    assert.equal(result.citations[0].source_id, 'source_abc_123');
+    assert.equal(result.citations[0].cited_text, 'This is the cited passage from the source document.');
+  });
+
+  test('strips anti-XSSI prefix correctly', () => {
+    const frame = [['wrb.fr', 'method', JSON.stringify([null, null, null, null, 'Answer after XSSI stripping works correctly.'])]];
+    const json = JSON.stringify(frame);
+    const response = `)]}'\n${json.length}\n${json}\n`;
+    const result = decodeStreamingResponse(response);
+    assert.equal(result.answer, 'Answer after XSSI stripping works correctly.');
+  });
+
+  test('last meaningful answer wins across multiple chunks', () => {
+    const frame1 = [['wrb.fr', 'method', JSON.stringify([null, null, null, null, 'First partial answer that is long enough.'])]];
+    const frame2 = [['wrb.fr', 'method', JSON.stringify([null, null, null, null, 'Final complete answer that overwrites the first one.'])]];
+    const response = makeStreamingResponse(frame1, frame2);
+    const result = decodeStreamingResponse(response);
+    assert.equal(result.answer, 'Final complete answer that overwrites the first one.');
+  });
+});
+
+// ============================================================================
 // RPC Method ID Constants
 // ============================================================================
 

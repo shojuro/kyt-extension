@@ -1056,9 +1056,16 @@
     try {
       if (type === 'streaming') {
         // Streaming request (askQuestion)
+        // Extract current build label from page HTML (changes with Google deploys)
+        const html = document.documentElement.innerHTML;
+        const blMatch = html.match(/"cfb2h"\s*:\s*"([^"]+)"/);
+        const bl = blMatch ? blMatch[1] : 'boq_labs-tailwind-frontend_20260329.03_p0';
+
         const qs = new URLSearchParams({
-          'hl': 'en',
+          'bl': bl,
           'f.sid': auth.sessionId,
+          'hl': 'en',
+          '_reqid': String(Math.floor(Math.random() * 9000000) + 1000000),
           'rt': 'c',
         }).toString();
 

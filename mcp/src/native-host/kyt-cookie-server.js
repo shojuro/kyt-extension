@@ -241,10 +241,12 @@ async function handleRpcRequest(req, res) {
     const id = `rpc_${++rpcIdCounter}_${Date.now()}`;
 
     const result = await new Promise((resolve, reject) => {
+      // Streaming responses (askQuestion) can take 30-60s+ as Google generates the full answer.
+      // Batchexecute calls (list/create/add) are fast (<5s). Use 90s to accommodate streaming.
       const timer = setTimeout(() => {
         rpcQueue.delete(id);
-        reject(new Error('RPC proxy timeout (30s) — no browser tab responded'));
-      }, 30000);
+        reject(new Error('RPC proxy timeout (90s) — no browser tab responded'));
+      }, 90000);
 
       rpcQueue.set(id, { request, resolve, reject, timer });
     });

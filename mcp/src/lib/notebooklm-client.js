@@ -536,14 +536,26 @@ export async function askQuestion(notebookId, question) {
           type: 'streaming',
           streamBody: fReq,
         }),
-        signal: AbortSignal.timeout(35000),
+        signal: AbortSignal.timeout(95000), // 90s bridge timeout + 5s buffer
       });
 
       if (proxyRes.ok) {
         const result = await proxyRes.json();
+        process.stderr.write(`[askQuestion] proxy response: success=${result.success} len=${result.responseText?.length} status=${result.status}\n`);
         if (result.success && result.responseText) {
+          if (result.responseText.length < 500) {
+            process.stderr.write(`[askQuestion] proxy full response: ${result.responseText}\n`);
+          } else {
+            process.stderr.write(`[askQuestion] proxy preview: ${result.responseText.substring(0, 500)}\n`);
+          }
           _proxyAvailable = true;
-          return decodeStreamingResponse(result.responseText);
+          const decoded = decodeStreamingResponse(result.responseText);
+          if (!decoded.answer) {
+            process.stderr.write(`[askQuestion] proxy decode EMPTY. Response (first 2000): ${result.responseText.substring(0, 2000)}\n`);
+          } else {
+            process.stderr.write(`[askQuestion] proxy decode OK: answer=${decoded.answer.length} chars, citations=${decoded.citations.length}, convId=${decoded.conversationId}\n`);
+          }
+          return decoded;
         }
         // Proxy returned error — don't poison _proxyAvailable, just fall through
         if (result.error) {
