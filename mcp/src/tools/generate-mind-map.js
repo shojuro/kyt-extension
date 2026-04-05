@@ -4,7 +4,7 @@
  * Generate a mind map from selected sources in a NotebookLM notebook.
  */
 
-import { generateMindMap, listSources, setPassphrase, hasPassphrase } from '../lib/notebooklm-client.js';
+import { generateMindMap, listSources, getCachedSourceIds, setPassphrase, hasPassphrase } from '../lib/notebooklm-client.js';
 import { isAuthConfigured } from '../lib/notebooklm-auth.js';
 
 export async function generateMindMapHandler({ notebookId, sourceIds, passphrase }) {
@@ -34,10 +34,16 @@ export async function generateMindMapHandler({ notebookId, sourceIds, passphrase
       const sources = await listSources(notebookId);
       resolvedSourceIds = sources.map(s => s.id);
       if (resolvedSourceIds.length === 0) {
-        return {
-          content: [{ type: 'text', text: 'Error: Notebook has no sources. Add sources before generating a mind map.' }],
-          isError: true,
-        };
+        // listSources returned empty — try cache
+        const cached = getCachedSourceIds(notebookId);
+        if (cached) {
+          resolvedSourceIds = cached.ids;
+        } else {
+          return {
+            content: [{ type: 'text', text: 'Error: Notebook has no sources. Add sources before generating a mind map.' }],
+            isError: true,
+          };
+        }
       }
     }
 

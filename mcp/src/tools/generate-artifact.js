@@ -6,7 +6,7 @@
  */
 
 import {
-  generateArtifact, listArtifacts, listSources,
+  generateArtifact, listArtifacts, listSources, getCachedSourceIds,
   setPassphrase, hasPassphrase,
 } from '../lib/notebooklm-client.js';
 import { isAuthConfigured } from '../lib/notebooklm-auth.js';
@@ -61,10 +61,16 @@ export async function generateArtifactHandler({
       const sources = await listSources(notebookId);
       resolvedSourceIds = sources.map(s => s.id);
       if (resolvedSourceIds.length === 0) {
-        return {
-          content: [{ type: 'text', text: 'Error: Notebook has no sources. Add sources before generating artifacts.' }],
-          isError: true,
-        };
+        // listSources returned empty — try cache
+        const cached = getCachedSourceIds(notebookId);
+        if (cached) {
+          resolvedSourceIds = cached.ids;
+        } else {
+          return {
+            content: [{ type: 'text', text: 'Error: Notebook has no sources. Add sources before generating artifacts.' }],
+            isError: true,
+          };
+        }
       }
     }
 
