@@ -629,10 +629,13 @@
       });
     }
 
-    // DEBUG: Log all fetch URLs to identify changes
-    if (urlString.includes('/backend-api/')) {
-      logToBackground('Fetch intercepted', { url: urlString.substring(0, 100), method: options?.method || 'GET' });
-    }
+    // DEBUG logging disabled for performance — each logToBackground wakes the service worker.
+    // ChatGPT makes 20+ internal fetches per minute (/sentinel/ping, /autocompletions, etc.)
+    // that were causing constant SW wake-ups and 32%+ CPU usage.
+    // Uncomment temporarily for debugging only:
+    // if (urlString.includes('/backend-api/')) {
+    //   logToBackground('Fetch intercepted', { url: urlString.substring(0, 100), method: options?.method || 'GET' });
+    // }
 
     // Check if this is a platform API call
     const isChatGPTAPI = platform.detectAPICall(urlString, options);

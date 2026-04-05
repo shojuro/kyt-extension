@@ -653,10 +653,9 @@ export function registerMessageHandler(deps) {
         return true;
 
       case 'DEBUG_LOG':
-        console.log(`🐛 [Page Log]: ${message.message}`);
-        if (message.data) {
-          console.log('   Data:', message.data);
-        }
+        // Suppressed by default — ChatGPT sends 20+ fetch-intercepted messages per minute,
+        // each waking the service worker and accumulating console entries.
+        // Enable verbose logging: chrome.storage.local.set({ kytDebugMode: true })
         sendResponse({ acknowledged: true });
         return true;
 
