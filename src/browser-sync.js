@@ -407,14 +407,8 @@ async function getMessagesToSync() {
     return messageTime < lastSyncTime && msg.role === 'assistant';
   });
   if (skippedByTimestamp.length > 0) {
-    console.warn(`⚠️ ${skippedByTimestamp.length} assistant message(s) behind sync cursor:`,
-      skippedByTimestamp.map(m => ({
-        id: m.messageId?.substring(0, 20),
-        capturedAt: m.capturedAt,
-        lastSyncTime,
-        gap: lastSyncTime - (m.capturedAt ?? 0) + 'ms'
-      }))
-    );
+    // Log count only — dumping 2000+ entries causes significant console/memory overhead
+    console.warn(`⚠️ ${skippedByTimestamp.length} assistant message(s) behind sync cursor`);
   }
 
   if (candidateMessages.length === 0) {
