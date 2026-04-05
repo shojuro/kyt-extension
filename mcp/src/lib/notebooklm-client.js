@@ -796,6 +796,8 @@ export async function deleteSource(notebookId, sourceId) {
   await rpcCall(RPC.DELETE_SOURCE, [[[sourceId]]], {
     sourcePath: `/notebook/${notebookId}`,
   });
+  // Invalidate source cache — source list has changed
+  invalidateSourceCache(notebookId);
 }
 
 /**
