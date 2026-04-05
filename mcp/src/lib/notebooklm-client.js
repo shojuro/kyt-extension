@@ -1649,3 +1649,6 @@ export async function generateMindMap(notebookId, sourceIds) {
 
   return { mindMap: mindMapData, noteId };
 }
+
+// --- Exports for testing ---
+export const __testing__ = { buildArtifactParams };
