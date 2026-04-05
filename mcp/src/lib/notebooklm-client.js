@@ -46,6 +46,12 @@ const RPC_PROXY_URL = 'http://127.0.0.1:19418';
 // Proxy state: null = untested, true = available, false = unavailable
 let _proxyAvailable = null;
 
+// ── Source ID cache ─────────────────────────────────────────
+// Prevents cascading failures when listSources RPC is flaky.
+// Populated on successful listSources(), consumed by askQuestion() and tool handlers.
+const _sourceCache = new Map(); // Map<notebookId, { sources: Array, fetchedAt: number }>
+const SOURCE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 // Bridge auth token — read from ~/.kyt/bridge-token (same file the server writes)
 import { readFileSync as _readFileSync, existsSync as _existsSync } from 'fs';
 import { join as _join } from 'path';
@@ -421,6 +427,9 @@ export async function addTextSource(notebookId, title, content) {
     }
   }
 
+  // Invalidate source cache — source list has changed
+  invalidateSourceCache(notebookId);
+
   return { sourceId };
 }
 
@@ -473,13 +482,24 @@ export async function addTextSources(notebookId, sources, onProgress) {
  */
 export async function askQuestion(notebookId, question) {
   // NotebookLM API requires explicit source IDs — empty [] causes error code [16].
-  // Fetch all sources for the notebook and format as [["sourceId"]] arrays.
+  // Use cached source IDs if available, fall back to live fetch
   let sourceIds = [];
-  try {
-    const sources = await listSources(notebookId);
-    sourceIds = sources.map(s => [[s.id]]);
-  } catch (e) {
-    process.stderr.write(`[askQuestion] Warning: could not fetch sources: ${e.message}\n`);
+  const cached = getCachedSourceIds(notebookId);
+  if (cached && !cached.stale) {
+    sourceIds = cached.ids.map(id => [[id]]);
+  } else {
+    try {
+      const sources = await listSources(notebookId);
+      sourceIds = sources.map(s => [[s.id]]);
+    } catch (e) {
+      // listSources failed — try stale cache as last resort
+      if (cached) {
+        sourceIds = cached.ids.map(id => [[id]]);
+        process.stderr.write(`[askQuestion] listSources failed, using stale cache (${cached.ids.length} sources)\n`);
+      } else {
+        process.stderr.write(`[askQuestion] Warning: could not fetch sources: ${e.message}\n`);
+      }
+    }
   }
 
   // Generate a conversation ID for new conversations (required by API)
@@ -652,6 +672,9 @@ export async function addSource(notebookId, source) {
     sourceId = walk(result, 0);
   }
 
+  // Invalidate source cache — source list has changed
+  invalidateSourceCache(notebookId);
+
   return { sourceId };
 }
 
@@ -666,21 +689,35 @@ export async function listSources(notebookId) {
     sourcePath: `/notebook/${notebookId}`,
   });
 
-  if (!result || !Array.isArray(result)) return [];
+  if (!result || !Array.isArray(result)) {
+    // RPC returned empty — use cache if available (stale > wrong-empty)
+    const cached = _sourceCache.get(notebookId);
+    if (cached && cached.sources.length > 0) {
+      process.stderr.write(`[listSources] RPC returned empty, using cached ${cached.sources.length} sources\n`);
+      return cached.sources;
+    }
+    return [];
+  }
 
   // Sources are at result[0][1] — array of source entries
   const rawSources = result?.[0]?.[1];
-  if (!Array.isArray(rawSources)) return [];
+  if (!Array.isArray(rawSources)) {
+    const cached = _sourceCache.get(notebookId);
+    if (cached && cached.sources.length > 0) {
+      process.stderr.write(`[listSources] No sources in result structure, using cached ${cached.sources.length} sources\n`);
+      return cached.sources;
+    }
+    return [];
+  }
 
   const sources = [];
   for (const src of rawSources) {
     if (!Array.isArray(src)) continue;
-    // Source ID is nested: [[sourceId], title, ...] or [sourceId, title, ...]
     let id = null;
     if (Array.isArray(src[0]) && typeof src[0][0] === 'string') {
-      id = src[0][0]; // [[sourceId]]
+      id = src[0][0];
     } else if (typeof src[0] === 'string') {
-      id = src[0]; // [sourceId]
+      id = src[0];
     }
     const title = typeof src[1] === 'string' ? src[1] : 'Untitled';
     if (id) {
@@ -694,7 +731,36 @@ export async function listSources(notebookId) {
     }
   }
 
+  // Cache on success
+  if (sources.length > 0) {
+    _sourceCache.set(notebookId, { sources, fetchedAt: Date.now() });
+  }
+
   return sources;
+}
+
+/**
+ * Get cached source IDs for a notebook (no RPC call).
+ * Returns null if cache is empty or expired.
+ *
+ * @param {string} notebookId
+ * @returns {{ ids: string[], stale: boolean } | null}
+ */
+export function getCachedSourceIds(notebookId) {
+  const cached = _sourceCache.get(notebookId);
+  if (!cached || cached.sources.length === 0) return null;
+  const stale = Date.now() - cached.fetchedAt > SOURCE_CACHE_TTL_MS;
+  return { ids: cached.sources.map(s => s.id), stale };
+}
+
+/**
+ * Invalidate the source cache for a notebook.
+ * Call after adding/removing sources.
+ *
+ * @param {string} notebookId
+ */
+export function invalidateSourceCache(notebookId) {
+  _sourceCache.delete(notebookId);
 }
 
 /**
