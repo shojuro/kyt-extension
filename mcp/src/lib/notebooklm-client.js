@@ -77,7 +77,7 @@ function bridgeHeaders() {
 
 let _bridgeStartAttempted = false;
 let _proxyLastCheck = 0;
-const PROXY_RECHECK_MS = 60_000;
+const PROXY_RECHECK_MS = 10_000;
 
 /**
  * Ensure the cookie bridge server is running.
