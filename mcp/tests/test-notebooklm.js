@@ -29,6 +29,17 @@ const { encryptData, decryptData, buildCookieHeader, REQUIRED_COOKIE_NAMES } = a
 
 import { hasPassphrase, setPassphrase, clearPassphrase } from '../src/lib/notebooklm-client.js';
 
+import { __testing__ as clientTesting } from '../src/lib/notebooklm-client.js';
+const { buildArtifactParams } = clientTesting;
+
+import {
+  ARTIFACT_TYPE,
+  INFOGRAPHIC_ORIENTATION, INFOGRAPHIC_DETAIL, INFOGRAPHIC_STYLE,
+  VIDEO_FORMAT, VIDEO_STYLE,
+  QUIZ_QUANTITY,
+  SLIDE_DECK_FORMAT, SLIDE_DECK_LENGTH,
+} from '../src/lib/notebooklm-constants.js';
+
 // ============================================================================
 // RPC Encoding Tests
 // ============================================================================
@@ -477,5 +488,129 @@ describe('notebooklm-client: passphrase', () => {
     setPassphrase('');
     assert.equal(hasPassphrase(), false);
     clearPassphrase();
+  });
+});
+
+describe('Artifact enum values (synced with notebooklm-py v0.3.4)', () => {
+  test('INFOGRAPHIC_ORIENTATION matches Python InfographicOrientation', () => {
+    assert.strictEqual(INFOGRAPHIC_ORIENTATION.LANDSCAPE, 1);
+    assert.strictEqual(INFOGRAPHIC_ORIENTATION.PORTRAIT, 2);
+    assert.strictEqual(INFOGRAPHIC_ORIENTATION.SQUARE, 3);
+    assert.strictEqual(Object.keys(INFOGRAPHIC_ORIENTATION).length, 3);
+  });
+
+  test('INFOGRAPHIC_DETAIL matches Python InfographicDetail', () => {
+    assert.strictEqual(INFOGRAPHIC_DETAIL.CONCISE, 1);
+    assert.strictEqual(INFOGRAPHIC_DETAIL.STANDARD, 2);
+    assert.strictEqual(INFOGRAPHIC_DETAIL.DETAILED, 3);
+    assert.strictEqual(Object.keys(INFOGRAPHIC_DETAIL).length, 3);
+  });
+
+  test('INFOGRAPHIC_STYLE matches Python InfographicStyle (11 values)', () => {
+    assert.strictEqual(INFOGRAPHIC_STYLE.AUTO_SELECT, 1);
+    assert.strictEqual(INFOGRAPHIC_STYLE.SKETCH_NOTE, 2);
+    assert.strictEqual(INFOGRAPHIC_STYLE.PROFESSIONAL, 3);
+    assert.strictEqual(INFOGRAPHIC_STYLE.BENTO_GRID, 4);
+    assert.strictEqual(INFOGRAPHIC_STYLE.EDITORIAL, 5);
+    assert.strictEqual(INFOGRAPHIC_STYLE.INSTRUCTIONAL, 6);
+    assert.strictEqual(INFOGRAPHIC_STYLE.BRICKS, 7);
+    assert.strictEqual(INFOGRAPHIC_STYLE.CLAY, 8);
+    assert.strictEqual(INFOGRAPHIC_STYLE.ANIME, 9);
+    assert.strictEqual(INFOGRAPHIC_STYLE.KAWAII, 10);
+    assert.strictEqual(INFOGRAPHIC_STYLE.SCIENTIFIC, 11);
+    assert.strictEqual(Object.keys(INFOGRAPHIC_STYLE).length, 11);
+  });
+
+  test('VIDEO_FORMAT matches Python VideoFormat', () => {
+    assert.strictEqual(VIDEO_FORMAT.EXPLAINER, 1);
+    assert.strictEqual(VIDEO_FORMAT.BRIEF, 2);
+    assert.strictEqual(VIDEO_FORMAT.CINEMATIC, 3);
+    assert.strictEqual(Object.keys(VIDEO_FORMAT).length, 3);
+  });
+
+  test('VIDEO_STYLE matches Python VideoStyle (10 values)', () => {
+    assert.strictEqual(VIDEO_STYLE.AUTO_SELECT, 1);
+    assert.strictEqual(VIDEO_STYLE.CUSTOM, 2);
+    assert.strictEqual(VIDEO_STYLE.CLASSIC, 3);
+    assert.strictEqual(VIDEO_STYLE.WHITEBOARD, 4);
+    assert.strictEqual(VIDEO_STYLE.KAWAII, 5);
+    assert.strictEqual(VIDEO_STYLE.ANIME, 6);
+    assert.strictEqual(VIDEO_STYLE.WATERCOLOR, 7);
+    assert.strictEqual(VIDEO_STYLE.RETRO_PRINT, 8);
+    assert.strictEqual(VIDEO_STYLE.HERITAGE, 9);
+    assert.strictEqual(VIDEO_STYLE.PAPER_CRAFT, 10);
+    assert.strictEqual(Object.keys(VIDEO_STYLE).length, 10);
+  });
+
+  test('QUIZ_QUANTITY matches Python QuizQuantity', () => {
+    assert.strictEqual(QUIZ_QUANTITY.FEWER, 1);
+    assert.strictEqual(QUIZ_QUANTITY.STANDARD, 2);
+    assert.strictEqual(Object.keys(QUIZ_QUANTITY).length, 2);
+  });
+
+  test('SLIDE_DECK_FORMAT matches Python SlideDeckFormat', () => {
+    assert.strictEqual(SLIDE_DECK_FORMAT.DETAILED_DECK, 1);
+    assert.strictEqual(SLIDE_DECK_FORMAT.PRESENTER_SLIDES, 2);
+    assert.strictEqual(Object.keys(SLIDE_DECK_FORMAT).length, 2);
+  });
+
+  test('SLIDE_DECK_LENGTH matches Python SlideDeckLength', () => {
+    assert.strictEqual(SLIDE_DECK_LENGTH.DEFAULT, 1);
+    assert.strictEqual(SLIDE_DECK_LENGTH.SHORT, 2);
+    assert.strictEqual(Object.keys(SLIDE_DECK_LENGTH).length, 2);
+  });
+});
+
+describe('buildArtifactParams', () => {
+  const SOURCES = ['src-aaa', 'src-bbb'];
+
+  test('infographic with all options produces correct array', () => {
+    const result = buildArtifactParams(ARTIFACT_TYPE.INFOGRAPHIC, SOURCES, {
+      instructions: 'focus on stats',
+      orientation: 'portrait',
+      detail: 'concise',
+      style: 'sketch_note',
+      language: 'en',
+    });
+    assert.strictEqual(result[2], 7);
+    assert.deepStrictEqual(result[3], [[['src-aaa']], [['src-bbb']]]);
+    const opts = result[14];
+    assert.deepStrictEqual(opts, [['focus on stats', 'en', null, 2, 1, 2]]);
+  });
+
+  test('infographic with hyphenated style (bento-grid) resolves correctly', () => {
+    const result = buildArtifactParams(ARTIFACT_TYPE.INFOGRAPHIC, SOURCES, {
+      style: 'bento-grid',
+    });
+    assert.strictEqual(result[14][0][5], 4);
+  });
+
+  test('video with cinematic format and classic style', () => {
+    const result = buildArtifactParams(ARTIFACT_TYPE.VIDEO, SOURCES, {
+      format: 'cinematic',
+      style: 'classic',
+    });
+    assert.strictEqual(result[2], 3);
+    const inner = result[8][2];
+    assert.strictEqual(inner[4], 3);
+    assert.strictEqual(inner[5], 3);
+  });
+
+  test('slide_deck with detailed_deck format and short length', () => {
+    const result = buildArtifactParams(ARTIFACT_TYPE.SLIDE_DECK, SOURCES, {
+      format: 'detailed_deck',
+      length: 'short',
+    });
+    assert.strictEqual(result[2], 8);
+    const opts = result[16];
+    assert.strictEqual(opts[0][2], 1);
+    assert.strictEqual(opts[0][3], 2);
+  });
+
+  test('unknown options resolve to null (not throw)', () => {
+    const result = buildArtifactParams(ARTIFACT_TYPE.INFOGRAPHIC, SOURCES, {
+      style: 'nonexistent_style',
+    });
+    assert.strictEqual(result[14][0][5], null);
   });
 });
