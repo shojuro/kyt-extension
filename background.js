@@ -363,8 +363,16 @@ async function _saveMessageCore(messageData) {
     stats.messagesCaptured[source] = (stats.messagesCaptured[source] || 0) + 1;
     stats.lastCapture[source] = Date.now();
 
+    // Cap captured_messages to prevent unbounded storage growth.
+    // Older messages are already synced to Supabase — local storage is a buffer, not an archive.
+    // Without this cap, 4000+ messages bloat storage to 7+ MB, causing 15-30 min browser startup.
+    const MAX_LOCAL_MESSAGES = 500;
+    const cappedMessages = messages.length > MAX_LOCAL_MESSAGES
+      ? messages.slice(-MAX_LOCAL_MESSAGES)
+      : messages;
+
     await chrome.storage.local.set({
-      captured_messages: messages,
+      captured_messages: cappedMessages,
       kyt_stats: stats
     });
 
@@ -986,9 +994,12 @@ chrome.runtime.onInstalled.addListener((details) => {
       chrome.alarms.create('reInjectContentScripts', { delayInMinutes: 0.1 });
     });
 
-    // Backfill null embeddings
+    // Backfill null embeddings — DEFERRED 5 minutes after startup.
+    // Running immediately causes 15-30 min browser startup delays because
+    // the service worker hammers storage I/O + network while Chrome is still
+    // loading tabs and painting UI.
     setTimeout(async () => {
-      console.log('🔄 Extension update: starting embedding backfill...');
+      console.log('🔄 Extension update: starting embedding backfill (deferred 5min)...');
       try {
         const result = await backfillNullEmbeddings();
         if (result.success) {
@@ -1013,7 +1024,7 @@ chrome.runtime.onInstalled.addListener((details) => {
           console.log('⏸️ Backfill paused — skipping post-update backfill alarms');
         }
       });
-    }, 3000);
+    }, 300000); // 5 minutes — let browser finish loading before hammering storage/network
 
     // Migration: Set Phase 1 default for existing users
     chrome.storage.local.get(['api_config'], (result) => {
