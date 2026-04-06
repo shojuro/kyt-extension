@@ -124,38 +124,19 @@ async function handleFetchUrl(request) {
     }
   } catch { return { success: false, error: 'Invalid URL' }; }
 
-  // Use credentials: 'include' — service worker with host_permissions
-  // for *.google.com and *.googleusercontent.com sends cookies automatically.
-  // Manual Cookie header is forbidden in fetch() — browser silently drops it.
+  // Return fresh cookies so the MCP server (Node.js) can fetch directly.
+  // Node.js doesn't have CORS restrictions and can set Cookie headers.
+  // This avoids the browser's forbidden-header and CORS limitations.
   try {
-    const res = await fetch(url, {
-      credentials: 'include',
-      redirect: 'follow',
-    });
+    const [googleCookies, gucCookies, gapiCookies] = await Promise.all([
+      chrome.cookies.getAll({ domain: '.google.com' }),
+      chrome.cookies.getAll({ domain: '.googleusercontent.com' }),
+      chrome.cookies.getAll({ domain: '.googleapis.com' }),
+    ]);
+    const allCookies = [...googleCookies, ...gucCookies, ...gapiCookies];
+    const cookieHeader = allCookies.map(c => `${c.name}=${c.value}`).join('; ');
 
-    if (!res.ok) {
-      return { success: false, error: `HTTP ${res.status}`, status: res.status };
-    }
-
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('text/html')) {
-      return { success: false, error: 'Received HTML instead of media — auth may have expired' };
-    }
-
-    const buffer = await res.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-
-    // Convert to base64 for text-based bridge transport
-    const chunkSize = 8192;
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      const end = Math.min(i + chunkSize, bytes.length);
-      const chunk = bytes.subarray(i, end);
-      for (let j = 0; j < chunk.length; j++) binary += String.fromCharCode(chunk[j]);
-    }
-    const base64 = btoa(binary);
-
-    return { success: true, base64Data: base64, contentType, size: bytes.length };
+    return { success: true, cookieHeader, url };
   } catch (err) {
     return { success: false, error: err.message };
   }
