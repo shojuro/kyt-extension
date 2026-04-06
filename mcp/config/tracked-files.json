@@ -1,0 +1,131 @@
+{
+  "_comment": "Source budget for the K.Y.T. Codebase Index notebook (300-slot limit). Hot files get individual NLM sources; cold directories are bundled into composite sources. Excluded files are never synced.",
+  "notebookId": "93685862-3951-48e7-95cc-1c2c12b33b27",
+
+  "hot": {
+    "_comment": "Individual NLM sources — change frequently, queried often. ~12 slots.",
+    "files": [
+      "background.js",
+      "manifest.json",
+      "src/context-retrieval.js",
+      "src/message-handlers.js",
+      "src/browser-search.js",
+      "src/browser-sync.js",
+      "src/nlm-rpc-proxy.js",
+      "src/intent-classifier.js",
+      "src/auth-config.js",
+      "src/sync-controller.js",
+      "mcp/src/server.js",
+      "mcp/src/lib/notebooklm-client.js"
+    ]
+  },
+
+  "bundles": {
+    "_comment": "Composite NLM sources — grouped by functional area. ~18 slots.",
+    "entries": [
+      {
+        "title": "src/auth — Authentication & OAuth",
+        "files": ["src/auth/auth-service.js", "src/auth/google-oauth.js", "src/auth/migration.js"]
+      },
+      {
+        "title": "src/utils — Utilities (crypto, fetch, normalize, mutex)",
+        "files": ["src/utils/crypto.js", "src/utils/fetch.js", "src/utils/normalize-platform.js", "src/utils/storage-mutex.js"]
+      },
+      {
+        "title": "src/content — Content Script Modules",
+        "files": ["src/content/queue-manager.js", "src/content/upgrade-banner.js", "src/background/queue-processor.js"]
+      },
+      {
+        "title": "src/search — Search Pipeline (BM25, edge, HyDE, MMR, confidence)",
+        "files": ["src/bm25-search.js", "src/edge-search.js", "src/hyde-preprocessor.js", "src/hyde-search-generator.js", "src/mmr.js", "src/confidence-filter.js", "src/keyword-boost.js", "src/haiku-tiebreaker.js", "src/query-expansion.js", "src/query-transformer.js"]
+      },
+      {
+        "title": "src/sync — Sync & Embedding Pipeline",
+        "files": ["src/edge-sync.js", "src/embedding-circuit-breaker.js", "src/tier-sync.js", "src/notebooklm-sync.js", "src/cookie-exporter.js"]
+      },
+      {
+        "title": "src/classification — Intent, Taxonomy, Quality Detection",
+        "files": ["src/taxonomy-classifier.js", "src/assistant-quality-detector.js", "src/gravity-scorer.js", "src/conversation-chunker.js"]
+      },
+      {
+        "title": "src/state — Memory Mode, Profile, Turn Limiter, Projects, Topics",
+        "files": ["src/memory-mode.js", "src/profile-manager.js", "src/turn-limiter.js", "src/project-manager.js", "src/recent-topic-cache.js", "src/conversation-poller.js"]
+      },
+      {
+        "title": "src/history-import — History Import Pipeline",
+        "files": ["src/history-import/index.js", "src/history-import/chatgpt-fetcher.js", "src/history-import/claude-fetcher.js", "src/history-import/gemini-fetcher.js", "src/history-import/deduplication.js", "src/history-import/tab-fetch.js", "src/history-import/validation.js", "src/history-import/zip-parser.js", "src/history-import/rate-limiter.js", "src/history-import/progress-tracker.js", "src/history-import/error-handlers.js", "src/history-import/types.js"]
+      },
+      {
+        "title": "platforms/chatgpt — ChatGPT Capture",
+        "files": ["platforms/chatgpt/ChatGPTPlatform.js", "platforms/chatgpt/content.js", "platforms/chatgpt/inject.js", "platforms/chatgpt/dom-observer.js", "platforms/chatgpt/deduplication.js"]
+      },
+      {
+        "title": "platforms/claude — Claude Capture",
+        "files": ["platforms/claude/ClaudePlatform.js", "platforms/claude/content.js", "platforms/claude/content_bridge.js", "platforms/claude/content_test.js", "platforms/claude/inject.js"]
+      },
+      {
+        "title": "platforms/gemini — Gemini Capture",
+        "files": ["platforms/gemini/GeminiPlatform.js", "platforms/gemini/content.js", "platforms/gemini/content_bridge.js", "platforms/gemini/content_test.js", "platforms/gemini/inject.js"]
+      },
+      {
+        "title": "platforms/notebooklm — NotebookLM Capture & Circle K",
+        "files": ["platforms/notebooklm/content.js", "platforms/notebooklm/inject.js", "platforms/notebooklm/artifact-detector.js", "platforms/notebooklm/content-extractors.js"]
+      },
+      {
+        "title": "platforms/base — Platform Base Classes",
+        "files": ["platforms/base/Platform.js", "platforms/base/PlatformRegistry.js"]
+      },
+      {
+        "title": "mcp/hooks — Claude Code Hooks (prompt-inject, session-ingest, catch-up)",
+        "files": ["mcp/src/hooks/prompt-inject.js", "mcp/src/hooks/session-ingest.js", "mcp/src/hooks/catch-up-ingest.js"]
+      },
+      {
+        "title": "mcp/lib — MCP Libraries (auth, RPC, config, parser, sanitizer)",
+        "files": ["mcp/src/lib/notebooklm-auth.js", "mcp/src/lib/notebooklm-rpc.js", "mcp/src/lib/notebooklm-constants.js", "mcp/src/lib/notebooklm-config.js", "mcp/src/lib/notebooklm-sanitizer.js", "mcp/src/lib/session-parser.js", "mcp/src/lib/supabase-client.js", "mcp/src/lib/config.js", "mcp/src/lib/platform-utils.js", "mcp/src/lib/intent-classifier.js", "mcp/src/lib/memorability-filter.js", "mcp/src/lib/notebook-discovery.js"]
+      },
+      {
+        "title": "mcp/native-host — Cookie Bridge Server & Native Host",
+        "files": ["mcp/src/native-host/kyt-cookie-server.js", "mcp/src/native-host/kyt-cookie-host.js", "mcp/src/native-host/install.js"]
+      },
+      {
+        "title": "mcp/tools — Notebook Management (create, list, rename, delete, notes, link)",
+        "files": ["mcp/src/tools/create-notebook.js", "mcp/src/tools/delete-notebook.js", "mcp/src/tools/list-notebooks.js", "mcp/src/tools/rename-notebook.js", "mcp/src/tools/create-notebook-note.js", "mcp/src/tools/delete-notebook-note.js", "mcp/src/tools/list-notebook-notes.js", "mcp/src/tools/update-notebook-note.js", "mcp/src/tools/link-related-notebooks.js", "mcp/src/tools/get-notebook-summary.js", "mcp/src/tools/recommend-notebooks.js"]
+      },
+      {
+        "title": "mcp/tools — Source & Artifact Management (add, get, delete, list, download, generate)",
+        "files": ["mcp/src/tools/add-source.js", "mcp/src/tools/delete-source.js", "mcp/src/tools/get-source.js", "mcp/src/tools/list-sources.js", "mcp/src/tools/list-artifacts.js", "mcp/src/tools/download-artifact.js", "mcp/src/tools/generate-artifact.js", "mcp/src/tools/delete-artifact.js", "mcp/src/tools/get-artifact-content.js", "mcp/src/tools/generate-mind-map.js"]
+      },
+      {
+        "title": "mcp/tools — Memory, Search & Research (query, save, search, ingest, projects)",
+        "files": ["mcp/src/tools/query-memory.js", "mcp/src/tools/save-note.js", "mcp/src/tools/save-lesson.js", "mcp/src/tools/search-entities.js", "mcp/src/tools/search-across-notebooks.js", "mcp/src/tools/search-youtube.js", "mcp/src/tools/youtube-channels.js", "mcp/src/tools/get-preferences.js", "mcp/src/tools/set-memory-mode.js", "mcp/src/tools/get-conversation-history.js", "mcp/src/tools/ingest-session.js", "mcp/src/tools/import-research.js", "mcp/src/tools/start-research.js", "mcp/src/tools/poll-research.js", "mcp/src/tools/ask-notebook.js", "mcp/src/tools/query-costs.js", "mcp/src/tools/query-token-stats.js", "mcp/src/tools/push-project-to-notebook.js", "mcp/src/tools/create-project.js", "mcp/src/tools/list-projects.js", "mcp/src/tools/set-active-project.js", "mcp/src/tools/assign-to-project.js", "mcp/src/tools/project-debrief.js", "mcp/src/tools/set-vault-pin.js"]
+      }
+    ]
+  },
+
+  "exclude": {
+    "_comment": "Never synced — test files, debug scripts, third-party libs, config.",
+    "patterns": [
+      "debug_*.js",
+      "diagnostic_*.js",
+      "test_*.js",
+      "generate_*.js",
+      "calibrate_*.js",
+      "check_*.js",
+      "verify_*.js",
+      "phase0_*.js",
+      "*.config.js",
+      "src/lib/jszip.js",
+      "src/test-*.js",
+      "src/search.js",
+      "src/sync.js",
+      "src/config.js",
+      "src/api-client.js",
+      "src/browser-compat.js",
+      "setup.js",
+      "setup_*.js",
+      "run_query.js",
+      "competitor_entities.js",
+      "kyt-memory-injection-builder.js"
+    ]
+  }
+}
