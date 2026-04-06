@@ -7,11 +7,15 @@
  * Optionally saves text content to K.Y.T. as research.
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join, resolve, basename } from 'path';
 import { homedir } from 'os';
 import { execFileSync } from 'child_process';
-import { setPassphrase, hasPassphrase } from '../lib/notebooklm-client.js';
+import {
+  setPassphrase, hasPassphrase,
+  listArtifactsRaw, extractMediaUrl, proxyFetchUrl,
+} from '../lib/notebooklm-client.js';
+import { ARTIFACT_TYPE } from '../lib/notebooklm-constants.js';
 import { isAuthConfigured } from '../lib/notebooklm-auth.js';
 import { callEdgeFunction, getUserId } from '../lib/supabase-client.js';
 import { getActiveProjectId } from '../lib/config.js';
@@ -19,6 +23,14 @@ import { sanitize, wrapWithProvenance } from '../lib/notebooklm-sanitizer.js';
 import { getNotebookMapping } from '../lib/notebooklm-config.js';
 
 const DOWNLOAD_DIR = join(homedir(), '.kyt', 'downloads');
+
+// Map user-facing type names to internal type codes for native download
+const TYPE_CODE = {
+  audio:       ARTIFACT_TYPE.AUDIO,
+  video:       ARTIFACT_TYPE.VIDEO,
+  slide_deck:  ARTIFACT_TYPE.SLIDE_DECK,
+  infographic: ARTIFACT_TYPE.INFOGRAPHIC,
+};
 
 // CLI type names → file extensions
 const TYPE_CONFIG = {
@@ -56,6 +68,30 @@ function validatePath(outputPath, baseDir) {
   return resolved;
 }
 
+/**
+ * Fallback: try downloading via Python CLI when proxy relay is unavailable.
+ */
+function tryPythonCliFallback(notebookId, type, artifactId, config, format, outputPath) {
+  try {
+    const args = ['download', config.cli, outputPath];
+    if (artifactId) args.push('-a', artifactId);
+    args.push('-n', notebookId);
+    if (format) args.push('--format', format);
+
+    execFileSync('notebooklm', args, { timeout: 120000, encoding: 'utf-8' });
+
+    if (existsSync(outputPath)) {
+      const stat = statSync(outputPath);
+      return {
+        content: [{ type: 'text', text: `Downloaded ${type} (CLI fallback). File: ${outputPath}\nSize: ${(stat.size / 1024 / 1024).toFixed(1)} MB` }],
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function downloadArtifactHandler({
   notebookId, type, artifactId, format, outputDir, saveToKyt = true, passphrase,
 }) {
@@ -90,7 +126,6 @@ export async function downloadArtifactHandler({
     const baseDir = outputDir || DOWNLOAD_DIR;
     if (!existsSync(baseDir)) mkdirSync(baseDir, { recursive: true });
 
-    // Choose file extension based on format override
     let ext = config.ext;
     if (format === 'pptx' && type === 'slide_deck') ext = '.pptx';
     if (format === 'markdown' && (type === 'quiz' || type === 'flashcards')) ext = '.md';
@@ -100,58 +135,69 @@ export async function downloadArtifactHandler({
     const filename = `${sanitizeFilename(config.cli)}_${timestamp}${ext}`;
     const outputPath = validatePath(join(baseDir, filename), baseDir);
 
-    // Sync auth to Python CLI before download
-    // (Python CLI uses ~/.notebooklm/storage_state.json, MCP uses ~/.kyt/notebooklm-auth.enc)
-    try {
-      const { getAuth } = await import('../lib/notebooklm-auth.js');
-      const passphrase = (await import('../lib/notebooklm-client.js')).hasPassphrase()
-        ? undefined : null;
-      const auth = await getAuth(passphrase !== null ? passphrase : process.env.NOTEBOOKLM_PASSPHRASE, true);
-      const cookies = auth.cookieHeader.split('; ').map(pair => {
-        const [name, ...rest] = pair.split('=');
-        return { name, value: rest.join('='), domain: '.google.com', path: '/', expires: -1, httpOnly: false, secure: true, sameSite: 'Lax' };
-      });
-      const nlmDir = join(homedir(), '.notebooklm');
-      if (!existsSync(nlmDir)) mkdirSync(nlmDir, { recursive: true });
-      const { writeFileSync: wf } = await import('fs');
-      wf(join(nlmDir, 'storage_state.json'), JSON.stringify({ cookies, origins: [] }, null, 2));
-    } catch { /* non-critical — CLI may already have valid auth */ }
-
-    // Build CLI command
-    const args = ['download', config.cli, outputPath];
-    if (artifactId) {
-      if (!/^[0-9a-f-]{36}$/i.test(artifactId)) {
-        return { content: [{ type: 'text', text: 'Error: invalid artifact ID format.' }], isError: true };
-      }
-      args.push('-a', artifactId);
-    }
-    args.push('-n', notebookId);
-    if (format) args.push('--format', format);
-
-    // Execute download
-    const output = execFileSync('notebooklm', args, {
-      timeout: 120000, // 2 min for large files
-      encoding: 'utf-8',
-    });
-
-    if (!existsSync(outputPath)) {
-      return {
-        content: [{ type: 'text', text: `Download command ran but file not created at ${outputPath}. CLI output: ${output.substring(0, 200)}` }],
-        isError: true,
-      };
-    }
-
     const lines = [];
+    const typeCode = TYPE_CODE[type];
 
-    if (config.binary) {
-      // Binary artifact — return path + metadata
+    // ── Binary artifacts: native download via proxy relay ──
+    if (config.binary && typeCode) {
+      let downloaded = false;
+
+      try {
+        // Step 1: Get raw artifact data via proxy RPC
+        const rawEntries = await listArtifactsRaw(notebookId);
+
+        // Step 2: Find target artifact
+        let targetEntry = null;
+        for (const entry of rawEntries) {
+          if (!Array.isArray(entry)) continue;
+          const entryId = entry[0];
+          const entryType = entry[2];
+          const entryStatus = typeof entry[4] === 'number' ? entry[4] : entry[3];
+          if (artifactId && entryId === artifactId) { targetEntry = entry; break; }
+          if (!artifactId && entryType === typeCode && entryStatus === 3) {
+            targetEntry = entry;
+            break;
+          }
+        }
+
+        if (targetEntry) {
+          // Step 3: Extract media URL
+          const mediaUrl = extractMediaUrl(targetEntry, typeCode, { format });
+
+          if (mediaUrl) {
+            // Step 4: Download via proxy relay
+            const result = await proxyFetchUrl(mediaUrl);
+
+            if (result && result.data && result.data.length > 0) {
+              // Step 5: Write to disk
+              writeFileSync(outputPath, result.data);
+              downloaded = true;
+            }
+          }
+        }
+      } catch (nativeErr) {
+        process.stderr.write(`Native download failed: ${nativeErr.message}\n`);
+      }
+
+      // Fallback: Python CLI
+      if (!downloaded) {
+        const fallbackResult = tryPythonCliFallback(notebookId, type, artifactId, config, format, outputPath);
+        if (fallbackResult) return fallbackResult;
+
+        // Both paths failed
+        return {
+          content: [{ type: 'text', text: `Could not download ${type} artifact. Proxy relay and CLI fallback both failed.${artifactId ? ` ID: ${artifactId}` : ''}` }],
+          isError: true,
+        };
+      }
+
+      // Binary artifact downloaded — report path + metadata
       const stat = statSync(outputPath);
       const sizeMB = (stat.size / 1024 / 1024).toFixed(1);
       lines.push(`Downloaded ${type} artifact.`);
       lines.push(`File: ${outputPath}`);
       lines.push(`Size: ${sizeMB} MB`);
 
-      // Save metadata to K.Y.T. if requested
       if (saveToKyt) {
         try {
           const userId = getUserId();
@@ -176,7 +222,28 @@ export async function downloadArtifactHandler({
         }
       }
     } else {
-      // Text artifact — return content inline
+      // ── Text artifacts: use Python CLI (GET_INTERACTIVE_HTML via CLI) ──
+      try {
+        const args = ['download', config.cli, outputPath];
+        if (artifactId) args.push('-a', artifactId);
+        args.push('-n', notebookId);
+        if (format) args.push('--format', format);
+
+        execFileSync('notebooklm', args, { timeout: 120000, encoding: 'utf-8' });
+      } catch (cliErr) {
+        return {
+          content: [{ type: 'text', text: `Error downloading text artifact: ${cliErr.message}` }],
+          isError: true,
+        };
+      }
+
+      if (!existsSync(outputPath)) {
+        return {
+          content: [{ type: 'text', text: `Download command ran but file not created at ${outputPath}.` }],
+          isError: true,
+        };
+      }
+
       const rawContent = readFileSync(outputPath, 'utf-8');
       const sanitizedContent = sanitize(rawContent);
 
@@ -184,7 +251,6 @@ export async function downloadArtifactHandler({
       lines.push(`File: ${outputPath}`);
       lines.push('');
 
-      // Truncate for MCP response (full content in file)
       if (sanitizedContent.length > 5000) {
         lines.push(sanitizedContent.substring(0, 5000));
         lines.push(`\n... (truncated, ${sanitizedContent.length} chars total — full content in file)`);
@@ -192,14 +258,12 @@ export async function downloadArtifactHandler({
         lines.push(sanitizedContent);
       }
 
-      // Save full content to K.Y.T. if requested
       if (saveToKyt) {
         try {
           const userId = getUserId();
           const mapping = getNotebookMapping(notebookId);
           const notebookTitle = mapping?.title || notebookId;
 
-          // Cap at 100K chars for K.Y.T. save (M1 mitigation)
           const kytContent = sanitizedContent.length > 100000
             ? sanitizedContent.substring(0, 100000) + '\n\n[Truncated at 100K chars]'
             : sanitizedContent;
