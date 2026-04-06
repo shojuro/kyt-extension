@@ -1,17 +1,22 @@
 /**
  * Background Conversation Poller
  *
- * Fetches new conversations from ChatGPT and Claude APIs in the background
- * using chrome.cookies — no browser tab needed. Phone conversations appear
- * in K.Y.T. within 15-20 minutes automatically.
+ * Fetches new conversations from ChatGPT, Claude, and Gemini APIs in the
+ * background using chrome.cookies — no browser tab needed. Phone/app
+ * conversations appear in K.Y.T. within 15-25 minutes automatically.
  *
- * Gemini: deferred to v2 (requires captured RPC params from page context).
+ * Gemini uses Google's batchexecute protocol (RPC ID: MaZiqc for conversation
+ * list, hNvQHb for detail). Auth tokens (XSRF, build label) extracted from
+ * homepage HTML, cached with 30-min TTL.
+ *
+ * On first run, imports 90 days of history (paginated, 20 conversations/page).
  *
  * IMPORTANT (MV3): All imports must be static. No dynamic import().
  */
 
 import { syncViaEdgeFunction } from './edge-sync.js';
 import { getMemoryMode } from './memory-mode.js';
+import { getGeminiAuth, clearGeminiAuthCache, fetchConversationsSince, callBatchExecute } from './gemini-auth.js';
 
 // ── Storage Keys ─────────────────────────────────────────────
 
@@ -312,11 +317,202 @@ async function pollClaude(platformState) {
   return { newTurns, conversationsChecked, lastUpdateTime: newestUpdateTime };
 }
 
+// ── Gemini Poller ───────────────────────────────────────────
+
+// Conversation detail RPC — fetches full message history for a conversation.
+// Response parsed by extractConversationMessages() pattern from content_test.js.
+const GEMINI_CONV_DETAIL_RPC = 'hNvQHb';
+
+async function pollGemini(ps) {
+  // 1. Get auth (cookies + XSRF + build label)
+  let auth;
+  try {
+    auth = await getGeminiAuth();
+  } catch (e) {
+    throw new Error(`NO_GEMINI_COOKIES`);
+  }
+
+  // 2. Determine cutoff: first run = 90 days ago, subsequent = last checkpoint
+  const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+  const cutoffMs = ps.lastUpdateTime || (Date.now() - NINETY_DAYS_MS);
+  const isInitialImport = !ps.lastUpdateTime;
+
+  if (isInitialImport) {
+    console.log('📥 [Poller] gemini: initial 90-day import starting');
+  }
+
+  // 3. Fetch conversation list (paginated, stops at cutoff)
+  const conversations = await fetchConversationsSince(auth, cutoffMs);
+
+  if (conversations.length === 0) {
+    return { conversationsChecked: 0, newTurns: 0, lastUpdateTime: ps.lastUpdateTime };
+  }
+
+  // 4. For each conversation, fetch messages and sync
+  let totalNewTurns = 0;
+  let newestTimestamp = ps.lastUpdateTime || 0;
+
+  for (const conv of conversations) {
+    try {
+      // Fetch conversation detail via batchexecute
+      const messages = await fetchGeminiConversationDetail(auth, conv.id);
+
+      if (messages.length > 0) {
+        // Sync to Supabase
+        const turns = messages.map(m => ({
+          content: m.content,
+          role: m.role,
+          platform: 'gemini',
+          conversation_id: conv.id,
+          timestamp: m.timestamp || conv.timestamp,
+        }));
+
+        await syncViaEdgeFunction(turns);
+        totalNewTurns += turns.length;
+      }
+
+      // Update checkpoint
+      newestTimestamp = Math.max(newestTimestamp, conv.timestamp);
+
+      // Rate limit: 2s between conversations (Google is strict)
+      await new Promise(r => setTimeout(r, 2000));
+
+    } catch (convErr) {
+      console.warn(`⚠️ [Poller] gemini: failed to fetch conversation ${conv.id}: ${convErr.message}`);
+      // Continue with other conversations
+    }
+  }
+
+  return {
+    conversationsChecked: conversations.length,
+    newTurns: totalNewTurns,
+    lastUpdateTime: newestTimestamp,
+  };
+}
+
+/**
+ * Fetch full message history for a single Gemini conversation.
+ * Uses the hNvQHb RPC to get conversation detail.
+ *
+ * @param {object} auth - Auth context from getGeminiAuth()
+ * @param {string} conversationId - Gemini conversation ID (c_<hex>)
+ * @returns {Promise<Array<{content: string, role: string, timestamp: number}>>}
+ */
+async function fetchGeminiConversationDetail(auth, conversationId) {
+  // The conversation detail RPC takes the conversation ID as a parameter
+  const params = [null, null, conversationId];
+  const data = await callBatchExecute(GEMINI_CONV_DETAIL_RPC, params, auth);
+
+  if (!data) return [];
+
+  // Extract messages from the response structure.
+  // The response format for hNvQHb has turn data at various positions.
+  // Walk the nested arrays to find user/assistant message pairs.
+  const messages = [];
+
+  try {
+    // Conversation turns are typically in data[0][2] or data[4]
+    const turns = findConversationTurns(data);
+
+    for (const turn of turns) {
+      // User message: typically at turn[2][0][0] or turn[0]
+      const userText = extractTurnText(turn, 'user');
+      if (userText) {
+        messages.push({ content: userText, role: 'user', timestamp: null });
+      }
+
+      // Assistant response: typically at turn[3][0][0][1][0] or turn[1]
+      const assistantText = extractTurnText(turn, 'assistant');
+      if (assistantText) {
+        messages.push({ content: assistantText, role: 'assistant', timestamp: null });
+      }
+    }
+  } catch (e) {
+    console.warn(`⚠️ Gemini conversation parse error: ${e.message}`);
+    // Fallback: extract all long strings as potential message content
+    const fallbackMessages = extractStringsHeuristic(data);
+    messages.push(...fallbackMessages);
+  }
+
+  return messages;
+}
+
+/**
+ * Find conversation turns in the nested Gemini response structure.
+ * The exact positions vary by response format.
+ */
+function findConversationTurns(data) {
+  // Try known positions for turn arrays
+  if (Array.isArray(data?.[0]?.[2])) return data[0][2];
+  if (Array.isArray(data?.[4])) return data[4];
+  if (Array.isArray(data?.[0]?.[0]?.[2])) return data[0][0][2];
+  // Walk looking for arrays of arrays (turns are typically arrays of 4+ elements)
+  return walkForTurns(data, 0) || [];
+}
+
+function walkForTurns(obj, depth) {
+  if (depth > 5 || !Array.isArray(obj)) return null;
+  // A turns array is an array of arrays where each inner array has 4+ elements
+  if (obj.length >= 2 && obj.every(item => Array.isArray(item) && item.length >= 3)) {
+    return obj;
+  }
+  for (const item of obj) {
+    const result = walkForTurns(item, depth + 1);
+    if (result) return result;
+  }
+  return null;
+}
+
+/**
+ * Extract text content from a turn for a given role.
+ */
+function extractTurnText(turn, role) {
+  try {
+    if (role === 'user') {
+      // Position [2][0][0] is common for user text
+      if (typeof turn?.[2]?.[0]?.[0] === 'string') return turn[2][0][0];
+      // Position [0] direct
+      if (typeof turn?.[0] === 'string' && turn[0].length > 5) return turn[0];
+    } else {
+      // Position [3][0][0][1][0] is common for assistant text
+      if (typeof turn?.[3]?.[0]?.[0]?.[1]?.[0] === 'string') return turn[3][0][0][1][0];
+      // Position [1] direct
+      if (typeof turn?.[1] === 'string' && turn[1].length > 5) return turn[1];
+    }
+  } catch { /* structure mismatch */ }
+  return null;
+}
+
+/**
+ * Fallback: extract all strings > 20 chars from nested structure.
+ * Assigns alternating user/assistant roles (heuristic).
+ */
+function extractStringsHeuristic(data) {
+  const strings = [];
+  function walk(obj, depth) {
+    if (depth > 8) return;
+    if (typeof obj === 'string' && obj.length > 20 && !obj.match(/^[a-f0-9-]{20,}$/)) {
+      strings.push(obj);
+    }
+    if (Array.isArray(obj)) {
+      for (const item of obj) walk(item, depth + 1);
+    }
+  }
+  walk(data, 0);
+
+  return strings.map((s, i) => ({
+    content: s,
+    role: i % 2 === 0 ? 'user' : 'assistant',
+    timestamp: null,
+  }));
+}
+
 // ── Orchestration ────────────────────────────────────────────
 
 const PLATFORM_MAP = {
   pollChatGPT: { platform: 'chatgpt', fn: pollChatGPT },
   pollClaude:  { platform: 'claude',  fn: pollClaude },
+  pollGemini:  { platform: 'gemini',  fn: pollGemini },
 };
 
 /**

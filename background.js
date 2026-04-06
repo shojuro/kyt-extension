@@ -1051,6 +1051,7 @@ chrome.alarms.create('refreshNLMCookies', { delayInMinutes: 0.1, periodInMinutes
 // Background conversation polling — fetches phone conversations from platform APIs
 chrome.alarms.create('pollChatGPT', { delayInMinutes: 3, periodInMinutes: 15 });
 chrome.alarms.create('pollClaude', { delayInMinutes: 8, periodInMinutes: 20 });
+chrome.alarms.create('pollGemini', { delayInMinutes: 10, periodInMinutes: 25 });
 
 // NotebookLM RPC proxy — routes API calls through browser tab for full cookie access
 startRpcProxy();
@@ -1397,6 +1398,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     case 'pollChatGPT':
     case 'pollClaude':
+    case 'pollGemini':
       try { await handlePollAlarm(alarm.name); }
       catch (e) { console.error(`❌ Poller ${alarm.name} error:`, e.message); }
       break;
