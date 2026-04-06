@@ -45,6 +45,8 @@
     "https://notebooklm.google.com/*",
     "https://google.com/*",
     "https://*.google.com/*",
+    "https://*.googleusercontent.com/*",
+    "https://*.googleapis.com/*",
     "http://127.0.0.1:19418/*",
     "http://localhost:19418/*"
   ],

@@ -124,17 +124,12 @@ async function handleFetchUrl(request) {
     }
   } catch { return { success: false, error: 'Invalid URL' }; }
 
-  // Get fresh cookies from browser for Google domains
-  const [googleCookies, gucCookies] = await Promise.all([
-    chrome.cookies.getAll({ domain: '.google.com' }),
-    chrome.cookies.getAll({ domain: '.googleusercontent.com' }),
-  ]);
-  const allCookies = [...googleCookies, ...gucCookies];
-  const cookieHeader = allCookies.map(c => `${c.name}=${c.value}`).join('; ');
-
+  // Use credentials: 'include' — service worker with host_permissions
+  // for *.google.com and *.googleusercontent.com sends cookies automatically.
+  // Manual Cookie header is forbidden in fetch() — browser silently drops it.
   try {
     const res = await fetch(url, {
-      headers: { 'Cookie': cookieHeader },
+      credentials: 'include',
       redirect: 'follow',
     });
 
