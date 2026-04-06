@@ -246,6 +246,53 @@ async function tryProxyRpc(methodId, params, opts = {}) {
 }
 
 /**
+ * Fetch a URL through the browser proxy relay with full cookie authentication.
+ * Used for downloading binary artifacts (infographic PNG, audio MP3, etc.).
+ * Returns raw binary data as a Buffer, or null if proxy is unavailable.
+ *
+ * @param {string} url - URL to fetch (must be https on trusted Google domain)
+ * @returns {Promise<{ data: Buffer, contentType: string, size: number } | null>}
+ */
+export async function proxyFetchUrl(url) {
+  if (_proxyAvailable === false && Date.now() - _proxyLastCheck > PROXY_RECHECK_MS) {
+    _proxyAvailable = null;
+  }
+  if (_proxyAvailable === false) return null;
+
+  await ensureBridgeRunning();
+
+  try {
+    const proxyRes = await fetch(`${RPC_PROXY_URL}/rpc`, {
+      method: 'POST',
+      headers: bridgeHeaders(),
+      body: JSON.stringify({ type: 'fetch_url', url }),
+      signal: AbortSignal.timeout(95000), // 90s bridge timeout + 5s buffer
+    });
+
+    if (!proxyRes.ok) {
+      _proxyAvailable = false;
+      return null;
+    }
+
+    const result = await proxyRes.json();
+
+    if (!result.success || !result.base64Data) {
+      if (result.error) {
+        process.stderr.write(`proxyFetchUrl error: ${result.error}\n`);
+      }
+      return null;
+    }
+
+    _proxyAvailable = true;
+    const data = Buffer.from(result.base64Data, 'base64');
+    return { data, contentType: result.contentType, size: result.size };
+  } catch {
+    _proxyAvailable = false;
+    return null;
+  }
+}
+
+/**
  * Make an authenticated batchexecute RPC call.
  * Tries proxy first (full browser cookies), falls back to direct (extracted cookies).
  *
