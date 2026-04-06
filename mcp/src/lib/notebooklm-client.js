@@ -1195,7 +1195,7 @@ export async function listArtifacts(notebookId) {
     const id = typeof entry[0] === 'string' ? entry[0] : null;
     const title = typeof entry[1] === 'string' ? entry[1] : 'Untitled';
     const typeCode = typeof entry[2] === 'number' ? entry[2] : null;
-    const status = typeof entry[3] === 'number' ? entry[3] : null;
+    const status = typeof entry[4] === 'number' ? entry[4] : (typeof entry[3] === 'number' ? entry[3] : null);
 
     if (id) {
       artifacts.push({
@@ -1210,6 +1210,20 @@ export async function listArtifacts(notebookId) {
   }
 
   return artifacts;
+}
+
+/**
+ * List artifacts with full raw entry data (for URL extraction).
+ * Returns the unparsed nested arrays from the LIST_ARTIFACTS RPC.
+ */
+export async function listArtifactsRaw(notebookId) {
+  const result = await rpcCall(RPC.LIST_ARTIFACTS,
+    [[2], notebookId, 'NOT artifact.status = "ARTIFACT_STATUS_SUGGESTED"'],
+    { sourcePath: `/notebook/${notebookId}` },
+  );
+
+  if (!result || !Array.isArray(result)) return [];
+  return Array.isArray(result[0]) && Array.isArray(result[0][0]) ? result[0] : result;
 }
 
 /**

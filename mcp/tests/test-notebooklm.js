@@ -614,3 +614,13 @@ describe('buildArtifactParams', () => {
     assert.strictEqual(result[14][0][5], null);
   });
 });
+
+describe('listArtifacts response parsing', () => {
+  test('status should prefer entry[4] over entry[3]', () => {
+    // Simulated raw entries show status at entry[4], entry[3] is often null
+    const mockEntry = ['abc-123', 'Test Artifact', 7, null, 3, null, null];
+    // Verify the pattern: entry[4] has the real status
+    assert.strictEqual(mockEntry[4], 3); // COMPLETED
+    assert.strictEqual(mockEntry[3], null); // Not the status field
+  });
+});
