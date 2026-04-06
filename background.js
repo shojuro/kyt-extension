@@ -34,7 +34,8 @@ import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/emb
 import { updateRecentTopics } from './src/recent-topic-cache.js';
 import { exportNotebookLMCookies, getCookieExportStatus, resetCookieExporter } from './src/cookie-exporter.js';
 import { handlePollAlarm, getPollerStatus, pollPlatformNow } from './src/conversation-poller.js';
-import { startRpcProxy, stopRpcProxy, isRpcProxyRunning, getRpcProxyStatus, handleRpcPollAlarm } from './src/nlm-rpc-proxy.js';
+import { startRpcProxy, stopRpcProxy, isRpcProxyRunning, getRpcProxyStatus, handleRpcPollAlarm, _testFetchUrl } from './src/nlm-rpc-proxy.js';
+self._testFetchUrl = _testFetchUrl; // Debug: test from SW console
 
 // Extracted modules
 import { getApiConfig, clearConfigCache } from './src/auth-config.js';
@@ -1054,6 +1055,12 @@ chrome.alarms.create('pollClaude', { delayInMinutes: 8, periodInMinutes: 20 });
 // NotebookLM RPC proxy — routes API calls through browser tab for full cookie access
 startRpcProxy();
 chrome.alarms.create('kytRpcPoll', { delayInMinutes: 0.5, periodInMinutes: 0.5 });
+
+// Build metadata — detect stale NTFS builds
+fetch(chrome.runtime.getURL('kyt-build-meta.json'))
+  .then(r => r.json())
+  .then(meta => { self._kytBuildMeta = meta; console.log('[KYT] Build:', meta.gitHash, meta.builtAt); })
+  .catch(() => {});
 
 // ===== SYNC-ON-PLATFORM-SWITCH =====
 chrome.tabs.onActivated.addListener(async (activeInfo) => {

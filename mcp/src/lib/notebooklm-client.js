@@ -246,6 +246,29 @@ async function tryProxyRpc(methodId, params, opts = {}) {
 }
 
 /**
+ * Fallback: download using cached disk cookies when SW proxy is unavailable.
+ */
+async function tryDiskCookieDownload(url) {
+  try {
+    const passphrase = requirePassphrase();
+    const auth = await getAuth(passphrase);
+    if (!auth?.cookieHeader) return null;
+    process.stderr.write('proxyFetchUrl: trying disk cookie fallback\n');
+    const dlRes = await fetch(url, {
+      headers: { 'Cookie': auth.cookieHeader },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(90000),
+    });
+    if (!dlRes.ok) return null;
+    const contentType = dlRes.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) return null;
+    const arrayBuf = await dlRes.arrayBuffer();
+    const data = Buffer.from(arrayBuf);
+    return { data, contentType, size: data.length };
+  } catch { return null; }
+}
+
+/**
  * Fetch a URL using fresh browser cookies for authentication.
  * Gets live cookies from the extension via the proxy bridge, then downloads
  * directly from Node.js (no CORS restrictions).
@@ -267,26 +290,36 @@ export async function proxyFetchUrl(url) {
       method: 'POST',
       headers: bridgeHeaders(),
       body: JSON.stringify({ type: 'fetch_url', url }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(45000),
     });
 
     if (!proxyRes.ok) {
       _proxyAvailable = false;
-      return null;
+      return tryDiskCookieDownload(url);
     }
 
     const result = await proxyRes.json();
 
-    if (!result.success || !result.cookieHeader) {
+    if (!result.success) {
       if (result.error) {
-        process.stderr.write(`proxyFetchUrl cookie error: ${result.error}\n`);
+        process.stderr.write(`proxyFetchUrl error: ${result.error}\n`);
       }
-      return null;
+      return tryDiskCookieDownload(url);
     }
 
     _proxyAvailable = true;
 
-    // Step 2: Download directly from Node.js with the fresh cookies
+    // Path A: SW downloaded directly and returned base64 data
+    if (result.base64Data) {
+      const data = Buffer.from(result.base64Data, 'base64');
+      return { data, contentType: result.contentType || '', size: result.size || data.length };
+    }
+
+    // Path B: SW returned cookies for Node.js to download
+    if (!result.cookieHeader) {
+      return tryDiskCookieDownload(url);
+    }
+
     const dlRes = await fetch(url, {
       headers: { 'Cookie': result.cookieHeader },
       redirect: 'follow',
@@ -295,13 +328,13 @@ export async function proxyFetchUrl(url) {
 
     if (!dlRes.ok) {
       process.stderr.write(`proxyFetchUrl download HTTP ${dlRes.status}\n`);
-      return null;
+      return tryDiskCookieDownload(url);
     }
 
     const contentType = dlRes.headers.get('content-type') || '';
     if (contentType.includes('text/html')) {
       process.stderr.write('proxyFetchUrl: received HTML instead of media\n');
-      return null;
+      return tryDiskCookieDownload(url);
     }
 
     const arrayBuf = await dlRes.arrayBuffer();
@@ -310,7 +343,7 @@ export async function proxyFetchUrl(url) {
   } catch (err) {
     process.stderr.write(`proxyFetchUrl error: ${err.message}\n`);
     _proxyAvailable = false;
-    return null;
+    return tryDiskCookieDownload(url);
   }
 }
 

@@ -131,6 +131,9 @@ else
   echo "   ⚠️  No bridge token found at $BRIDGE_TOKEN_FILE — RPC proxy will need manual setup"
 fi
 
+# --- Build metadata for diagnostics ---
+echo "{\"builtAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"gitHash\":\"$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo 'unknown')\"}" > "$TARGET/kyt-build-meta.json"
+
 # --- Summary ---
 echo ""
 FILE_COUNT=$(find "$TARGET" -type f | wc -l)

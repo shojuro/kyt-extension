@@ -124,20 +124,39 @@ async function handleFetchUrl(request) {
     }
   } catch { return { success: false, error: 'Invalid URL' }; }
 
-  // Return fresh cookies so the MCP server (Node.js) can fetch directly.
-  // Node.js doesn't have CORS restrictions and can set Cookie headers.
-  // This avoids the browser's forbidden-header and CORS limitations.
+  // Download directly from the SW. Extension host_permissions bypass CORS,
+  // and the SW's fetch sends browser cookies automatically for permitted domains.
   try {
-    const [googleCookies, gucCookies, gapiCookies] = await Promise.all([
-      chrome.cookies.getAll({ domain: '.google.com' }),
-      chrome.cookies.getAll({ domain: '.googleusercontent.com' }),
-      chrome.cookies.getAll({ domain: '.googleapis.com' }),
-    ]);
-    const allCookies = [...googleCookies, ...gucCookies, ...gapiCookies];
-    const cookieHeader = allCookies.map(c => `${c.name}=${c.value}`).join('; ');
+    console.log('[KYT fetch_url] Downloading in SW (host_permissions bypass CORS)...');
+    const res = await fetch(url, { credentials: 'include', redirect: 'follow' });
+    console.log('[KYT fetch_url] HTTP', res.status, 'Content-Type:', res.headers.get('content-type'));
 
-    return { success: true, cookieHeader, url };
+    if (!res.ok) {
+      return { success: false, error: `HTTP ${res.status}` };
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+      // Auth redirect to sign-in page — fall back to cookie export
+      console.log('[KYT fetch_url] Got HTML (auth redirect), falling back to cookie export');
+      const googleCookies = await chrome.cookies.getAll({ domain: '.google.com' });
+      const cookieHeader = googleCookies.map(c => `${c.name}=${c.value}`).join('; ');
+      return { success: true, cookieHeader, url };
+    }
+
+    // Binary download succeeded — return base64-encoded data
+    const buffer = await res.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64Data = btoa(binary);
+    console.log('[KYT fetch_url] Downloaded', bytes.length, 'bytes');
+
+    return { success: true, base64Data, contentType, size: bytes.length };
   } catch (err) {
+    console.error('[KYT fetch_url] Error:', err);
     return { success: false, error: err.message };
   }
 }
@@ -195,18 +214,23 @@ async function pollForRequests() {
 
     try {
       // Handle fetch_url in service worker (bypasses CORS, has host_permissions)
-      const result = request.type === 'fetch_url'
-        ? await handleFetchUrl(request)
-        : await proxyRpcToTab(request);
+      let result;
+      if (request.type === 'fetch_url') {
+        console.log('[KYT RPC Proxy] Handling fetch_url in SW (not content script)');
+        result = await handleFetchUrl(request);
+      } else {
+        result = await proxyRpcToTab(request);
+      }
 
       // Deliver response back to the bridge
+      // Binary downloads (base64-encoded) can be 8+ MB — allow 60s for localhost transfer
       const respHeaders = await bridgeHeaders();
       respHeaders['Content-Type'] = 'application/json';
       await fetch(`${BRIDGE_URL}/rpc/${id}/response`, {
         method: 'POST',
         headers: respHeaders,
         body: JSON.stringify(result),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(result.base64Data ? 60000 : 5000),
       });
     } catch (proxyErr) {
       // Deliver error response
@@ -276,9 +300,13 @@ export function handleRpcPollAlarm() {
 /**
  * Get proxy status for diagnostics.
  */
+// Debug: expose handleFetchUrl for console testing
+export { handleFetchUrl as _testFetchUrl };
+
 export function getRpcProxyStatus() {
   return {
     polling: _polling,
     proxyTabId: _proxyTabId,
+    buildMeta: self._kytBuildMeta || null,
   };
 }
