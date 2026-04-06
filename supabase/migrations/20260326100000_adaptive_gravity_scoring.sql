@@ -226,6 +226,7 @@ BEGIN
     AND (ct.exclude_from_search IS NULL OR ct.exclude_from_search = FALSE)
     AND (p_platform IS NULL OR ct.platform = p_platform)
     AND (p_project_id IS NULL OR ct.project_id = p_project_id)
+    AND is_vault_excluded(p_project_id, ct.project_id)
   ORDER BY gravity_score DESC
   LIMIT match_count;
 END;
