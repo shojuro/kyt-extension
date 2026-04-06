@@ -108,6 +108,65 @@ function pingTab(tabId) {
 }
 
 /**
+ * Handle fetch_url requests directly in the service worker.
+ * Bypasses CORS restrictions that block content script fetches to CDN domains.
+ * The service worker has host_permissions for *.google.com.
+ */
+async function handleFetchUrl(request) {
+  const { url } = request;
+
+  // Validate URL domain
+  try {
+    const parsed = new URL(url);
+    const trusted = ['.google.com', '.googleusercontent.com', '.googleapis.com'];
+    if (parsed.protocol !== 'https:' || !trusted.some(d => parsed.hostname === d.slice(1) || parsed.hostname.endsWith(d))) {
+      return { success: false, error: `Untrusted domain: ${parsed.hostname}` };
+    }
+  } catch { return { success: false, error: 'Invalid URL' }; }
+
+  // Get fresh cookies from browser for Google domains
+  const [googleCookies, gucCookies] = await Promise.all([
+    chrome.cookies.getAll({ domain: '.google.com' }),
+    chrome.cookies.getAll({ domain: '.googleusercontent.com' }),
+  ]);
+  const allCookies = [...googleCookies, ...gucCookies];
+  const cookieHeader = allCookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+  try {
+    const res = await fetch(url, {
+      headers: { 'Cookie': cookieHeader },
+      redirect: 'follow',
+    });
+
+    if (!res.ok) {
+      return { success: false, error: `HTTP ${res.status}`, status: res.status };
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+      return { success: false, error: 'Received HTML instead of media — auth may have expired' };
+    }
+
+    const buffer = await res.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+
+    // Convert to base64 for text-based bridge transport
+    const chunkSize = 8192;
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const end = Math.min(i + chunkSize, bytes.length);
+      const chunk = bytes.subarray(i, end);
+      for (let j = 0; j < chunk.length; j++) binary += String.fromCharCode(chunk[j]);
+    }
+    const base64 = btoa(binary);
+
+    return { success: true, base64Data: base64, contentType, size: bytes.length };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
  * Send an RPC request to the NLM tab's content script.
  */
 async function proxyRpcToTab(request) {
@@ -159,7 +218,10 @@ async function pollForRequests() {
     console.log(`[KYT RPC Proxy] Processing request ${id}: ${request.methodId || request.type}`);
 
     try {
-      const result = await proxyRpcToTab(request);
+      // Handle fetch_url in service worker (bypasses CORS, has host_permissions)
+      const result = request.type === 'fetch_url'
+        ? await handleFetchUrl(request)
+        : await proxyRpcToTab(request);
 
       // Deliver response back to the bridge
       const respHeaders = await bridgeHeaders();
