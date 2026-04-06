@@ -1084,6 +1084,51 @@
 
         const responseText = await res.text();
         return { success: true, responseText, status: res.status };
+      } else if (type === 'fetch_url') {
+        // Authenticated URL fetch — download binary artifacts using browser cookies
+        const { url } = request;
+
+        // Validate URL domain — only allow trusted Google domains
+        let parsed;
+        try { parsed = new URL(url); } catch { return { success: false, error: 'Invalid URL' }; }
+        const trusted = ['.google.com', '.googleusercontent.com', '.googleapis.com'];
+        if (parsed.protocol !== 'https:' || !trusted.some(d => parsed.hostname === d.slice(1) || parsed.hostname.endsWith(d))) {
+          return { success: false, error: `Untrusted download domain: ${parsed.hostname}` };
+        }
+
+        const fetchHeaders = {};
+        if (authHeader) fetchHeaders['Authorization'] = authHeader;
+
+        const res = await fetch(url, {
+          credentials: 'include',
+          headers: fetchHeaders,
+        });
+
+        if (!res.ok) {
+          return { success: false, error: `HTTP ${res.status}`, status: res.status };
+        }
+
+        // Check for auth redirect (HTML instead of binary)
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('text/html')) {
+          return { success: false, error: 'Received HTML instead of media — auth may have expired' };
+        }
+
+        // Convert binary to base64 for text-based bridge transport
+        const buffer = await res.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+
+        return {
+          success: true,
+          base64Data: base64,
+          contentType,
+          size: bytes.length,
+        };
       } else {
         // Standard batchexecute
         const qsParams = new URLSearchParams({
