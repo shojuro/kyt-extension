@@ -50,6 +50,7 @@ export interface SearchOptions {
     speakerFilter?: string;       // Only return turns containing this speaker (e.g. "user"). Filters on speakers[] array.
     queryType?: string;           // 'technical' for code queries — skips HyDE, increases BM25 weight
     isRecallQuery?: boolean;      // True when user is trying to recall past conversation — tightens echo filtering
+    _diagnostics?: Record<string, any>;  // Mutable output bag for pipeline stage diagnostics
 }
 
 // ========================================================================
@@ -256,8 +257,12 @@ function filterQueryEchoes(query: string, candidates: Candidate[], isRecallQuery
     const queryWords = new Set(queryNorm.split(/\s+/).filter(w => w.length > 2 && !ECHO_STOP.has(w)));
     if (queryWords.size === 0) return candidates;
 
-    // Thresholds tighten when query is a recall attempt
-    const lexicalThreshold = isRecallQuery ? 0.50 : 0.70;
+    // Thresholds tighten when query is a recall attempt.
+    // Short queries (< 4 significant words) skip lexical overlap entirely:
+    // "favorite movie" has 100% overlap with any result about movies,
+    // but that's the desired content, not an echo.
+    const shortQuery = queryWords.size < 4;
+    const lexicalThreshold = shortQuery ? 1.01 : (isRecallQuery ? 0.50 : 0.70);
     const semanticSimilarityGate = isRecallQuery ? 0.60 : 0.72;
     const newInfoThreshold = isRecallQuery ? 0.35 : 0.25;
 
@@ -302,7 +307,9 @@ function filterQueryEchoes(query: string, candidates: Candidate[], isRecallQuery
         }
 
         // ── Layer C: Verbatim containment ───────────────────────────────────
-        if (queryNorm.length >= 10 && contentNorm.includes(queryNorm)) {
+        // Skip for short queries: "favorite movie" appearing in "My favorite movie
+        // is Sound of Music" is the desired answer, not an echo.
+        if (!shortQuery && queryNorm.length >= 10 && contentNorm.includes(queryNorm)) {
             return false;
         }
 
@@ -383,7 +390,7 @@ async function vectorSearch(
     projectId?: string
 ): Promise<Candidate[]> {
     const { data, error } = await supabase
-        .rpc("match_messages_with_gravity_v2", {
+        .rpc("match_messages_with_gravity", {
             query_embedding: embedding,
             match_threshold: 0.5,
             match_count: topK,
@@ -392,7 +399,7 @@ async function vectorSearch(
             boost_entity_ids: boostEntityIds,
             p_profile_id: profileId,
             p_project_id: projectId || null,
-            p_candidate_pool: 50
+            p_candidate_pool: 50,
         });
 
     if (error) {
@@ -1058,6 +1065,21 @@ export async function getRelevantMemories(
         // Apply quality penalties (fast path gets them too)
         const penalized = applyQualityPenalties(gravityBoosted, { query, requestId });
 
+        // ── Pipeline stage diagnostics (helps debug empty result issues) ──
+        const diagThreshold = confidenceThreshold ?? 0.40;
+        const afterThreshold = penalized.filter(c => c.rerank_score >= diagThreshold).length;
+        const stageDiag = {
+            afterVectorSearch: fastCandidates.length,
+            afterEchoFilter: echoFiltered.length,
+            afterScoring: scored.length,
+            afterPenalties: penalized.length,
+            afterThreshold,
+            threshold: diagThreshold,
+            topPenaltyScores: penalized.slice(0, 5).map(c => c.rerank_score?.toFixed(4)),
+        };
+        Logger.info("Fast path stages", { requestId, ...stageDiag });
+        if (options._diagnostics) Object.assign(options._diagnostics, stageDiag);
+
         // ── Gap 4: Structured decision entity lookup for technical queries ──
         // Decision entities have exact values (e.g., "connection pool = 20") that
         // semantic search can't find because the value lives in entity metadata,
@@ -1097,7 +1119,10 @@ export async function getRelevantMemories(
             }
         }
 
-        const threshold = confidenceThreshold ?? 0.40;
+        // Fast path uses gravity_score directly (range ~0.2-0.7), not reranked
+        // scores (0-1). After quality penalties, good results typically score
+        // 0.15-0.35. Use a lower default threshold to avoid filtering everything.
+        const threshold = confidenceThreshold ?? 0.15;
         const filtered = penalized
             .filter(c => c.rerank_score >= threshold)
             .slice(0, topK);
@@ -1259,7 +1284,7 @@ export async function getRelevantMemories(
         if (shortCircuitResults.length === 0 && queryTargetPlatform) {
             Logger.info(`Platform rescue (SC): searching within "${queryTargetPlatform}" only`, { requestId });
             const { data: rescueData, error: rescueError } = await supabase
-                .rpc("match_messages_with_gravity_v2", {
+                .rpc("match_messages_with_gravity", {
                     query_embedding: rawEmbedding,
                     match_threshold: 0.35,
                     match_count: topK,
@@ -1269,7 +1294,7 @@ export async function getRelevantMemories(
                     p_profile_id: resolvedProfileId,
                     p_platform: queryTargetPlatform,
                     p_project_id: projectId || null,
-                    p_candidate_pool: 50
+                    p_candidate_pool: 50,
                 });
             if (!rescueError && rescueData && rescueData.length > 0) {
                 const rescueCandidates = rescueData as Candidate[];
@@ -1552,7 +1577,7 @@ export async function getRelevantMemories(
     if (results.length === 0 && queryTargetPlatform) {
         Logger.info(`Platform rescue: penalty killed all results, searching within "${queryTargetPlatform}" only`, { requestId });
         const { data: rescueData, error: rescueError } = await supabase
-            .rpc("match_messages_with_gravity_v2", {
+            .rpc("match_messages_with_gravity", {
                 query_embedding: rawEmbedding,
                 match_threshold: 0.35,  // Lower threshold for rescue
                 match_count: topK,
@@ -1562,7 +1587,7 @@ export async function getRelevantMemories(
                 p_profile_id: resolvedProfileId,
                 p_platform: queryTargetPlatform,
                 p_project_id: projectId || null,
-                p_candidate_pool: 50
+                p_candidate_pool: 50,
             });
         if (!rescueError && rescueData && rescueData.length > 0) {
             const rescueCandidates = rescueData as Candidate[];

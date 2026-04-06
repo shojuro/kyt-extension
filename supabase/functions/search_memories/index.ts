@@ -154,6 +154,8 @@ serve(async (req) => {
         // 6. Rerank → BM25 → Entity boost → Confidence filter → Top-5
         // MVP: profileId = userId (1:1). Future: pass to RPC calls for multi-profile isolation.
         const profileId = bodyProfileId || userId;
+        const pipelineDiag: Record<string, any> = {};
+        options._diagnostics = pipelineDiag;
         const results = await getRelevantMemories(query, userId, options, requestId, profileId, projectId || undefined);
 
         Logger.info("Search completed", {
@@ -170,6 +172,7 @@ serve(async (req) => {
                 hydeEnabled: fast ? false : useHyde,
                 hydeWeight,
                 fast,
+                ...(Object.keys(pipelineDiag).length > 0 ? { pipeline: pipelineDiag } : {}),
             }
         }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
