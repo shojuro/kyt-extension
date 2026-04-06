@@ -6,7 +6,7 @@
 
 import { listNotebooks, setPassphrase, hasPassphrase } from '../lib/notebooklm-client.js';
 import { getAllMappings } from '../lib/notebooklm-config.js';
-import { isAuthConfigured } from '../lib/notebooklm-auth.js';
+import { isAuthConfigured, getAuthAgeSeconds } from '../lib/notebooklm-auth.js';
 
 export async function listNotebooksHandler({ showMappings = true, passphrase }) {
   if (!isAuthConfigured()) {
@@ -63,8 +63,15 @@ export async function listNotebooksHandler({ showMappings = true, passphrase }) 
       content: [{ type: 'text', text: lines.join('\n') }],
     };
   } catch (err) {
+    const age = getAuthAgeSeconds();
+    const ageHint = age !== null
+      ? ` (cookies are ${Math.round(age / 60)}min old)`
+      : ' (no auth file found)';
     return {
-      content: [{ type: 'text', text: `Error listing notebooks: ${err.message}` }],
+      content: [{
+        type: 'text',
+        text: `Error listing notebooks: ${err.message}${ageHint}\n\nTo fix: re-export cookies from your browser, or run the Playwright login flow.`,
+      }],
       isError: true,
     };
   }

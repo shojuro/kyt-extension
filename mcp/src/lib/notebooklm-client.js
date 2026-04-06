@@ -436,7 +436,9 @@ function sleep(ms) {
 export async function listNotebooks() {
   const result = await rpcCall(RPC.LIST_NOTEBOOKS, [null, 1, null, [2]]);
 
-  if (!result || !Array.isArray(result)) return [];
+  if (!result || !Array.isArray(result)) {
+    throw new Error('NotebookLM returned empty response. Cookies may be expired — re-export from browser or re-run login.');
+  }
 
   // Result structure: result = [ [ notebook1, notebook2, ... ] ]
   // Unwrap: notebooks are at result[0] when single-wrapped

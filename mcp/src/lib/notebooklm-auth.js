@@ -10,7 +10,7 @@
  * - Auto-refresh on 401/403
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'node:crypto';
@@ -474,6 +474,20 @@ export function clearAuthCache() {
  */
 export function isAuthConfigured() {
   return existsSync(AUTH_PATH);
+}
+
+/**
+ * Get auth file age in seconds. Returns null if file doesn't exist.
+ * Useful for detecting stale cookies before making RPC calls.
+ */
+export function getAuthAgeSeconds() {
+  if (!existsSync(AUTH_PATH)) return null;
+  try {
+    const stat = statSync(AUTH_PATH);
+    return Math.round((Date.now() - stat.mtimeMs) / 1000);
+  } catch {
+    return null;
+  }
 }
 
 /**
