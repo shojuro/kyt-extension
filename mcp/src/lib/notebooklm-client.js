@@ -1669,5 +1669,91 @@ export async function generateMindMap(notebookId, sourceIds) {
   return { mindMap: mindMapData, noteId };
 }
 
+/** Check if a value is a valid media URL (HTTP/HTTPS). */
+function isValidMediaUrl(value) {
+  return typeof value === 'string' && (value.startsWith('https://') || value.startsWith('http://'));
+}
+
+/**
+ * Extract media download URL from a raw artifact entry.
+ * Ports logic from notebooklm-py's download_audio, download_infographic,
+ * download_video, download_slide_deck methods.
+ *
+ * @param {Array} entry - Raw artifact entry from listArtifactsRaw()
+ * @param {number} typeCode - ARTIFACT_TYPE value
+ * @param {object} [opts] - Options (e.g. { format: 'pptx' } for slide decks)
+ * @returns {string|null} Media URL or null
+ */
+export function extractMediaUrl(entry, typeCode, opts = {}) {
+  if (!Array.isArray(entry)) return null;
+
+  try {
+    switch (typeCode) {
+      case ARTIFACT_TYPE.AUDIO: {
+        // Python: entry[6][5][...][0] — iterate for audio/mp4 mime type
+        const metadata = entry[6];
+        if (!Array.isArray(metadata) || metadata.length <= 5) return null;
+        const mediaList = metadata[5];
+        if (!Array.isArray(mediaList) || mediaList.length === 0) return null;
+        for (const item of mediaList) {
+          if (Array.isArray(item) && item.length > 2 && item[2] === 'audio/mp4' && isValidMediaUrl(item[0])) {
+            return item[0];
+          }
+        }
+        if (Array.isArray(mediaList[0]) && isValidMediaUrl(mediaList[0][0])) return mediaList[0][0];
+        return null;
+      }
+
+      case ARTIFACT_TYPE.VIDEO: {
+        // Python: walk backwards through entry, look for nested HTTP URLs
+        for (let i = entry.length - 1; i >= 5; i--) {
+          const item = entry[i];
+          if (!Array.isArray(item)) continue;
+          for (const sub of item) {
+            if (Array.isArray(sub) && Array.isArray(sub[0]) && isValidMediaUrl(sub[0][0])) {
+              return sub[0][0];
+            }
+          }
+        }
+        return null;
+      }
+
+      case ARTIFACT_TYPE.INFOGRAPHIC: {
+        // Python: walk backwards, URL at item[2][0][1][0]
+        for (let i = entry.length - 1; i >= 0; i--) {
+          const item = entry[i];
+          if (!Array.isArray(item) || item.length <= 2) continue;
+          const content = item[2];
+          if (!Array.isArray(content) || content.length === 0) continue;
+          const firstContent = content[0];
+          if (!Array.isArray(firstContent) || firstContent.length <= 1) continue;
+          const imgData = firstContent[1];
+          if (Array.isArray(imgData) && imgData.length > 0 && isValidMediaUrl(imgData[0])) {
+            return imgData[0];
+          }
+        }
+        return null;
+      }
+
+      case ARTIFACT_TYPE.SLIDE_DECK: {
+        // Python: metadata[3] (PDF) or metadata[4] (PPTX)
+        for (let i = entry.length - 1; i >= 5; i--) {
+          const metadata = entry[i];
+          if (!Array.isArray(metadata) || metadata.length < 4) continue;
+          if (opts.format === 'pptx' && isValidMediaUrl(metadata[4])) return metadata[4];
+          if (isValidMediaUrl(metadata[3])) return metadata[3];
+          if (isValidMediaUrl(metadata[4])) return metadata[4];
+        }
+        return null;
+      }
+
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
 // --- Exports for testing ---
-export const __testing__ = { buildArtifactParams };
+export const __testing__ = { buildArtifactParams, extractMediaUrl };

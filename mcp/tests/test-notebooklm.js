@@ -30,7 +30,7 @@ const { encryptData, decryptData, buildCookieHeader, REQUIRED_COOKIE_NAMES } = a
 import { hasPassphrase, setPassphrase, clearPassphrase } from '../src/lib/notebooklm-client.js';
 
 import { __testing__ as clientTesting } from '../src/lib/notebooklm-client.js';
-const { buildArtifactParams } = clientTesting;
+const { buildArtifactParams, extractMediaUrl } = clientTesting;
 
 import {
   ARTIFACT_TYPE,
@@ -622,5 +622,87 @@ describe('listArtifacts response parsing', () => {
     // Verify the pattern: entry[4] has the real status
     assert.strictEqual(mockEntry[4], 3); // COMPLETED
     assert.strictEqual(mockEntry[3], null); // Not the status field
+  });
+});
+
+describe('extractMediaUrl', () => {
+  test('extracts infographic URL by walking backwards', () => {
+    const entry = [
+      'art-id', 'Title', 7, null, 3,
+      null, null, null, null, null, null, null,
+      [['config'], ['meta'], [['inner', ['https://lh3.googleusercontent.com/infographic.png']]]],
+    ];
+    const url = extractMediaUrl(entry, ARTIFACT_TYPE.INFOGRAPHIC);
+    assert.strictEqual(url, 'https://lh3.googleusercontent.com/infographic.png');
+  });
+
+  test('extracts audio URL with audio/mp4 mime preference', () => {
+    const entry = [
+      'art-id', 'Title', 1, null, 3,
+      null,
+      [null, null, null, null, null, [
+        ['https://audio.googleapis.com/other.wav', null, 'audio/wav'],
+        ['https://audio.googleapis.com/audio.mp4', null, 'audio/mp4'],
+      ]],
+    ];
+    const url = extractMediaUrl(entry, ARTIFACT_TYPE.AUDIO);
+    assert.strictEqual(url, 'https://audio.googleapis.com/audio.mp4');
+  });
+
+  test('extracts audio URL fallback when no mp4', () => {
+    const entry = [
+      'art-id', 'Title', 1, null, 3,
+      null,
+      [null, null, null, null, null, [
+        ['https://audio.googleapis.com/audio.wav', null, 'audio/wav'],
+      ]],
+    ];
+    const url = extractMediaUrl(entry, ARTIFACT_TYPE.AUDIO);
+    assert.strictEqual(url, 'https://audio.googleapis.com/audio.wav');
+  });
+
+  test('extracts slide_deck PDF URL', () => {
+    const entry = [
+      'art-id', 'Title', 8, null, 3,
+      null, null, null, null, null, null, null, null, null, null, null,
+      [null, null, null, 'https://slides.googleapis.com/deck.pdf', 'https://slides.googleapis.com/deck.pptx'],
+    ];
+    const url = extractMediaUrl(entry, ARTIFACT_TYPE.SLIDE_DECK);
+    assert.strictEqual(url, 'https://slides.googleapis.com/deck.pdf');
+  });
+
+  test('extracts slide_deck PPTX when format=pptx', () => {
+    const entry = [
+      'art-id', 'Title', 8, null, 3,
+      null, null, null, null, null, null, null, null, null, null, null,
+      [null, null, null, 'https://slides.googleapis.com/deck.pdf', 'https://slides.googleapis.com/deck.pptx'],
+    ];
+    const url = extractMediaUrl(entry, ARTIFACT_TYPE.SLIDE_DECK, { format: 'pptx' });
+    assert.strictEqual(url, 'https://slides.googleapis.com/deck.pptx');
+  });
+
+  test('extracts video URL from nested structure', () => {
+    const entry = [
+      'art-id', 'Title', 3, null, 3,
+      null, null, null,
+      [[['https://video.googleapis.com/video.mp4']]],
+    ];
+    const url = extractMediaUrl(entry, ARTIFACT_TYPE.VIDEO);
+    assert.strictEqual(url, 'https://video.googleapis.com/video.mp4');
+  });
+
+  test('returns null for text artifact types', () => {
+    const url = extractMediaUrl(['id', 'Title', 2, null, 3], ARTIFACT_TYPE.REPORT);
+    assert.strictEqual(url, null);
+  });
+
+  test('returns null when no valid URL found', () => {
+    const url = extractMediaUrl(['id', 'Title', 7, null, 3], ARTIFACT_TYPE.INFOGRAPHIC);
+    assert.strictEqual(url, null);
+  });
+
+  test('returns null for non-array input', () => {
+    assert.strictEqual(extractMediaUrl(null, ARTIFACT_TYPE.INFOGRAPHIC), null);
+    assert.strictEqual(extractMediaUrl('string', ARTIFACT_TYPE.INFOGRAPHIC), null);
   });
 });
