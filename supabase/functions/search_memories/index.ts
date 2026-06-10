@@ -16,6 +16,7 @@ import { Logger } from "../_shared/utils.ts";
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
 import { securityHeaders } from "../_shared/headers.ts";
 import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
+import { resolveUserId } from "../_shared/auth-helpers.ts";
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -53,37 +54,25 @@ serve(async (req) => {
             isRecallQuery,        // True when user is recalling past conversation — tightens echo filtering
         } = body;
 
-        // Extract user from JWT — MANDATORY for authenticated operations.
-        // The edge function uses service role key internally (bypasses RLS), so
-        // we MUST verify the caller's identity via JWT. Falling back to bodyUserId
-        // would allow anyone with the anon key to query any user's memories.
-        let userId: string | null = null;
-        const authHeader = req.headers.get("Authorization");
-        if (authHeader?.startsWith("Bearer ") && authHeader.length > 50) {
-            try {
-                const supabaseAdmin = createClient(
-                    Deno.env.get("SUPABASE_URL")!,
-                    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-                );
-                const { data: { user }, error } = await supabaseAdmin.auth.getUser(
-                    authHeader.slice(7),
-                );
-                if (user && !error) {
-                    userId = user.id;
-                    Logger.info("JWT user extracted", { requestId, userId });
-                }
-            } catch (jwtErr) {
-                Logger.warn("JWT extraction failed", { requestId, error: jwtErr.message });
-            }
-        }
-
-        // If JWT didn't yield a user, check if bodyUserId was provided as fallback
-        // ONLY for development (--no-verify-jwt). In production, JWT is mandatory.
-        if (!userId && bodyUserId) {
-            // Only allow body userId when Supabase gateway didn't enforce JWT
-            // (i.e., function deployed with --no-verify-jwt for development)
-            Logger.warn("Using body userId (no JWT) — development mode only", { requestId, bodyUserId });
-            userId = bodyUserId;
+        // Resolve caller identity. The edge function uses the service-role key
+        // internally (bypasses RLS), so we MUST establish who the caller is:
+        //   - Real user JWT  → that user (production clients).
+        //   - Service role   → trusted backend (benchmark harness / admin) may
+        //                       impersonate any user via the body userId.
+        //   - Anon key/other → no impersonation (prevents anon-key IDOR where
+        //                       anyone could query any user's memories).
+        // Requires verify_jwt = true so the decoded role claim is trustworthy.
+        const supabaseAdmin = createClient(
+            Deno.env.get("SUPABASE_URL")!,
+            Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+        );
+        const { userId, isServiceRole } = await resolveUserId(
+            req.headers.get("Authorization"),
+            supabaseAdmin,
+            bodyUserId,
+        );
+        if (isServiceRole) {
+            Logger.info("Service-role caller — body userId honored", { requestId, userId });
         }
 
         if (!query || !userId) {
@@ -94,12 +83,16 @@ serve(async (req) => {
             });
         }
 
-        // Rate limit per userId (tier-aware)
-        const tier = await getUserTier(userId);
-        const limits = getTierLimits(tier);
-        if (!checkRateLimit('search_memories', userId, limits.searchesPerMin)) {
-            Logger.warn("Rate limited", { requestId, userId, tier });
-            return rateLimitResponse(corsHeaders);
+        // Rate limit per userId (tier-aware). Service-role callers (benchmark
+        // harness / admin tooling) bypass limits so bulk eval runs stay
+        // deterministic and aren't throttled by the in-memory limiter.
+        if (!isServiceRole) {
+            const tier = await getUserTier(userId);
+            const limits = getTierLimits(tier);
+            if (!checkRateLimit('search_memories', userId, limits.searchesPerMin)) {
+                Logger.warn("Rate limited", { requestId, userId, tier });
+                return rateLimitResponse(corsHeaders);
+            }
         }
 
         // Temporal + platform recency fallback: simple ORDER BY created_at DESC

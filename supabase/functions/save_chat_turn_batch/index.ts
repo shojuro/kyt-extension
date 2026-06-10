@@ -8,6 +8,7 @@ import type { ClientContext } from '../_shared/anthropic-client.ts';
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
 import { getUserTier, getTierLimits, RESURFACE_LIMITS } from '../_shared/tier-check.ts';
+import { resolveUserId } from '../_shared/auth-helpers.ts';
 
 const MAX_BATCH_SIZE = 50;
 
@@ -56,24 +57,33 @@ serve(async (req) => {
             Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
         );
 
-        // Extract user from JWT if present (authenticated mode)
-        // Override user_id on all turns with the authenticated user's ID
-        const authHeader = req.headers.get('Authorization');
-        if (authHeader?.startsWith('Bearer ') && authHeader.length > 50) {
-            try {
-                const { data: { user }, error } = await supabase.auth.getUser(
-                    authHeader.slice(7),
-                );
-                if (user && !error) {
-                    console.log(`JWT user extracted: ${user.id}, applying to ${turns.length} turns`);
-                    for (const turn of turns) {
-                        turn.user_id = user.id;
-                    }
-                }
-            } catch (jwtErr) {
-                console.warn('JWT extraction failed, using body user_id:', (jwtErr as Error).message);
+        // Resolve caller identity & apply the trust model to turn.user_id.
+        // The function uses the service-role key (bypasses RLS), so body-supplied
+        // user_ids must only be trusted from a trusted backend:
+        //   - Real user JWT  → force every turn to that user (production clients).
+        //   - Service role   → trust body-supplied user_id (benchmark/admin ingest
+        //                       on behalf of arbitrary synthetic users).
+        //   - Anon key/other → reject; a public client must not write arbitrary
+        //                       user_ids. Requires verify_jwt = true.
+        const { userId: authUserId, isServiceRole } = await resolveUserId(
+            req.headers.get('Authorization'),
+            supabase,
+            turns[0]?.user_id,
+        );
+        if (authUserId && !isServiceRole) {
+            // Real end user — pin all turns to them, ignore any body user_id.
+            console.log(`JWT user extracted: ${authUserId}, applying to ${turns.length} turns`);
+            for (const turn of turns) {
+                turn.user_id = authUserId;
             }
+        } else if (!isServiceRole) {
+            // No user JWT and not service role → body user_id is untrusted.
+            return new Response(JSON.stringify({ error: 'Authentication required' }), {
+                status: 401,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
         }
+        // Service-role caller: leave each turn.user_id as supplied (impersonation).
 
         // Validate project_id ownership for all distinct project_ids in batch
         const distinctProjectIds = [...new Set(
@@ -95,11 +105,14 @@ serve(async (req) => {
             }
         }
 
-        // Rate limit by user_id from first turn
+        // Rate limit by user_id from first turn. `tier` is also used below for
+        // resurface limits, so keep it function-scoped. Service-role callers
+        // (benchmark harness / admin ingest) bypass the limit check so bulk eval
+        // runs stay deterministic and aren't throttled by the in-memory limiter.
         const rateLimitKey = turns[0]?.user_id || req.headers.get('x-forwarded-for') || 'anonymous';
         const tier = await getUserTier(rateLimitKey);
         const limits = getTierLimits(tier);
-        if (!checkRateLimit('save_chat_turn_batch', rateLimitKey, limits.savesPerMin)) {
+        if (!isServiceRole && !checkRateLimit('save_chat_turn_batch', rateLimitKey, limits.savesPerMin)) {
             return rateLimitResponse(corsHeaders);
         }
 
