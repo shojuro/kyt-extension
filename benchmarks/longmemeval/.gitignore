@@ -1,0 +1,7 @@
+# Benchmark secrets + run artifacts — never commit
+.env
+state/
+out/
+*.eval-results-*
+__pycache__/
+*.pyc

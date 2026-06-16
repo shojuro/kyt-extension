@@ -461,14 +461,24 @@ function applyRecursionGuard(items: ScoredCandidate[], requestId?: string): Scor
 }
 
 /**
- * 7. Recency multiplier
- * Mild time-based boost (15% weight) with 30-day half-life.
- * Helps newer memories compete with semantically richer older ones.
+ * 7. Recency boost (additive)
+ * Adds an independent, time-decayed term to the score (30-day half-life,
+ * RECENCY_WEIGHT magnitude). The old MULTIPLICATIVE form scaled the score by a
+ * factor in [0.85, 1.0], so its boost was *proportional to the score* — it
+ * shrank for low-scoring items and could only reorder pairs already within
+ * ~15% of each other. The additive term applies a *fixed* boost (up to
+ * RECENCY_WEIGHT) independent of magnitude, so a newer *correcting* memory
+ * competes with an older, higher-scoring but superseded one (knowledge-update),
+ * and a recent correct item can be lifted across the confidence gate — while a
+ * genuine relevance gap > RECENCY_WEIGHT still wins. Mirror any change here into
+ * tests/unit/recency-resolution.test.js (JS port).
  */
 function applyRecencyMultiplier(items: ScoredCandidate[], requestId?: string): void {
     if (items.length <= 1) return;
 
     const HALF_LIFE_DAYS = 30;
+    const RECENCY_WEIGHT = 0.15;       // max absolute boost a brand-new item gets
+    const RELEVANCE_WEIGHT = 1 - RECENCY_WEIGHT; // 0.85
     const now = Date.now();
 
     for (const item of items) {
@@ -477,12 +487,12 @@ function applyRecencyMultiplier(items: ScoredCandidate[], requestId?: string): v
         const itemTime = new Date(ts).getTime();
         if (isNaN(itemTime)) continue;
         const daysSince = Math.max(0, (now - itemTime) / 86400000);
-        const recencyMultiplier = Math.exp(-daysSince / HALF_LIFE_DAYS);
-        // Blend: 85% original score + 15% recency-adjusted score
-        item.rerank_score = item.rerank_score * 0.85 + item.rerank_score * recencyMultiplier * 0.15;
+        const recency = Math.exp(-daysSince / HALF_LIFE_DAYS); // 1.0 today → ~0 when old
+        // Additive blend: keep 85% of the relevance score, add up to 0.15 for recency.
+        item.rerank_score = item.rerank_score * RELEVANCE_WEIGHT + recency * RECENCY_WEIGHT;
     }
 
-    Logger.info(`Recency multiplier applied to ${items.length} results (half-life: ${HALF_LIFE_DAYS}d)`, { requestId });
+    Logger.info(`Recency boost (additive) applied to ${items.length} results (half-life: ${HALF_LIFE_DAYS}d)`, { requestId });
 }
 
 /**

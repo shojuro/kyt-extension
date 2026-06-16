@@ -8,7 +8,7 @@
  * + saveEntitiesWithMentions per row, then marks entities_extracted = true.
  *
  * Configuration:
- * - BATCH_SIZE: 5 (GPT-4o-mini per row)
+ * - BATCH_SIZE: 5 (Claude Haiku 4.5 per row, via AnthropicClient)
  * - MAX_ROWS: 100 per invocation
  * - BATCH_DELAY_MS: 2000ms between batches
  */
@@ -147,7 +147,7 @@ serve(async (req) => {
             continue;
           }
 
-          // Extract entities + preferences using GPT-4o-mini
+          // Extract entities + preferences using Claude Haiku 4.5 (AnthropicClient)
           const costContext: ClientContext = { userId: row.user_id, edgeFunction: 'backfill_entities' };
           const { entities, preferences, decisions, contentCategory } = await extractEntities(
             {
