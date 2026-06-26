@@ -34,12 +34,12 @@ class KytClient:
             h.update(extra)
         return h
 
-    def _post_fn(self, fn, body, retries=4):
+    def _post_fn(self, fn, body, retries=4, timeout=None):
         last = None
         for attempt in range(retries):
             try:
                 r = requests.post(f"{self.url}/functions/v1/{fn}", json=body,
-                                  headers=self._fn_headers(), timeout=self.timeout)
+                                  headers=self._fn_headers(), timeout=timeout or self.timeout)
                 if r.status_code < 500:
                     return r.status_code, _safe_json(r)
                 last = (r.status_code, r.text)
@@ -55,8 +55,10 @@ class KytClient:
 
     # ---- embeddings backfill ---------------------------------------------
     def backfill_embeddings_once(self):
-        """Drive one backfill_embeddings invocation (~500 rows). Returns parsed body."""
-        return self._post_fn("backfill_embeddings", {})
+        """Drive one backfill_embeddings invocation (~500 rows). Slow (internal
+        ~1s/batch delays → ~150s), so allow a long timeout and don't retry
+        (a retry would re-run the work)."""
+        return self._post_fn("backfill_embeddings", {}, retries=1, timeout=240)
 
     def count_null_embeddings(self):
         """Global count of chat_turns with embedding IS NULL (dedicated project)."""
@@ -85,6 +87,19 @@ class KytClient:
 
     def count_turns_for_user(self, user_id):
         return self._rest_count("chat_turns", {"user_id": f"eq.{user_id}"})
+
+    def clear_retrieval_filters(self, user_id):
+        """Set is_question=false, deflection=0 for a user's turns so fact-bearing
+        turns that ALSO contain a question aren't excluded by the gravity RPC's
+        is_question filter (LongMemEval messages routinely mix a fact with a
+        trailing question — this filter otherwise drops ~63% of user turns)."""
+        r = requests.patch(
+            f"{self.url}/rest/v1/chat_turns?user_id=eq.{user_id}",
+            headers=self._rest_headers({"Prefer": "return=minimal"}),
+            json={"is_question": False, "deflection": 0},
+            timeout=self.timeout,
+        )
+        return r.status_code
 
     def delete_user(self, user_id):
         """Cleanup: remove all chat_turns for a synthetic benchmark user."""

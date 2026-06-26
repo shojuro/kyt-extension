@@ -1266,7 +1266,7 @@ export async function getRelevantMemories(
         }
 
         const scFiltered = filterQueryEchoes(query, candidates, fullPathIsRecall);
-        let shortCircuitResults = await rerankAndFilter(query, scFiltered, hfClient, requestId, topK, confidenceThreshold ?? 0.4);
+        let shortCircuitResults = await rerankAndFilter(query, scFiltered, hfClient, requestId, topK, confidenceThreshold ?? 0.4, isTechnical);
 
         // Apply quality penalties AFTER reranking, BEFORE MMR
         shortCircuitResults = applyQualityPenalties(shortCircuitResults, { query, requestId });
@@ -1299,7 +1299,7 @@ export async function getRelevantMemories(
             if (!rescueError && rescueData && rescueData.length > 0) {
                 const rescueCandidates = rescueData as Candidate[];
                 const rescueFiltered = filterQueryEchoes(query, rescueCandidates, fullPathIsRecall);
-                const rescueResults = await rerankAndFilter(query, rescueFiltered, hfClient, requestId, topK);
+                const rescueResults = await rerankAndFilter(query, rescueFiltered, hfClient, requestId, topK, confidenceThreshold ?? 0.4, isTechnical);
                 shortCircuitResults.push(...rescueResults);
                 Logger.info(`Platform rescue (SC): recovered ${rescueResults.length} items`, { requestId });
             }
@@ -1546,7 +1546,7 @@ export async function getRelevantMemories(
     // ========================================================================
     // STEP 6: Rerank, BM25 Boost, Confidence Filter
     // ========================================================================
-    let results = await rerankAndFilter(query, echoFiltered, hfClient, requestId, topK, confidenceThreshold ?? 0.4);
+    let results = await rerankAndFilter(query, echoFiltered, hfClient, requestId, topK, confidenceThreshold ?? 0.4, isTechnical);
 
     // ========================================================================
     // STEP 6b: Quality penalties — AFTER reranking, BEFORE platform penalty
@@ -1592,7 +1592,7 @@ export async function getRelevantMemories(
         if (!rescueError && rescueData && rescueData.length > 0) {
             const rescueCandidates = rescueData as Candidate[];
             const rescueFiltered = filterQueryEchoes(query, rescueCandidates, fullPathIsRecall);
-            const rescueResults = await rerankAndFilter(query, rescueFiltered, hfClient, requestId, topK);
+            const rescueResults = await rerankAndFilter(query, rescueFiltered, hfClient, requestId, topK, confidenceThreshold ?? 0.4, isTechnical);
             results.push(...rescueResults);
             Logger.info(`Platform rescue: recovered ${rescueResults.length} items from "${queryTargetPlatform}"`, { requestId });
         }
@@ -1689,7 +1689,8 @@ async function rerankAndFilter(
     hfClient: HuggingFaceClient,
     requestId?: string,
     returnCount: number = 5,
-    confidenceThreshold: number = 0.4
+    confidenceThreshold: number = 0.4,
+    isTechnical: boolean = false
 ): Promise<CandidateWithScore[]> {
     if (candidates.length === 0) {
         return [];

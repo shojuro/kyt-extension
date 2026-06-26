@@ -13,9 +13,11 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const hfClient = new HuggingFaceClient(hfApiKey, { edgeFunction: 'backfill_embeddings' });
 
 // Configuration
-const BATCH_SIZE = 10;
-const MAX_BATCHES = 50; // Process up to 500 rows per run
-const BATCH_DELAY_MS = 1000;
+// Batched embeddings: one API call per BATCH_SIZE texts (was one call per row),
+// so a run embeds thousands of rows within the gateway timeout.
+const BATCH_SIZE = 50;
+const MAX_BATCHES = 50; // Process up to 2500 rows per run
+const BATCH_DELAY_MS = 100;
 
 serve(async (req) => {
     try {
@@ -56,34 +58,26 @@ serve(async (req) => {
 
             console.log(`Processing batch ${i + 1}: ${rows.length} rows`);
 
-            // Generate embeddings
+            // Generate embeddings in ONE batched API call (was per-row sequential).
+            // Same embedding method (truncate+normalize), so vectors are identical
+            // to the query-time path. ASYMMETRIC EMBEDDING: stored chunks use
+            // contextual_content when present; query embeddings stay raw — don't "fix".
+            const toEmbed = rows.filter(r => r.content);
+            const texts = toEmbed.map(r => r.contextual_content || r.content);
+            let embeddings: number[][] = [];
+            try {
+                embeddings = await hfClient.generateEmbeddingsBatch(texts);
+            } catch (e) {
+                console.error(`Batch embedding failed for ${texts.length} rows:`, e);
+                embeddings = [];
+            }
             const updates = [];
-            for (const row of rows) {
-                if (!row.content) continue;
-                try {
-                    // Use contextual_content if available (from backfill_contextual),
-                    // otherwise fall back to raw content.
-                    // ASYMMETRIC EMBEDDING: stored chunks get context prefix,
-                    // query embeddings stay raw. DO NOT "fix" this.
-                    const contentToEmbed = row.contextual_content || row.content;
-                    const embedding = await hfClient.generateEmbeddings(contentToEmbed);
-                    updates.push({
-                        id: row.id,
-                        embedding: embedding[0]
-                    });
-                } catch (e) {
-                    console.error(`Failed to generate embedding for row ${row.id}:`, e);
-                    // Continue to next row, but maybe log error?
-                }
+            for (let j = 0; j < toEmbed.length && j < embeddings.length; j++) {
+                updates.push({ id: toEmbed[j].id, embedding: embeddings[j] });
             }
 
-            // Update database
+            // Update database (parallel single-column updates).
             if (updates.length > 0) {
-                // We have to update one by one because Supabase bulk update requires all columns or upsert
-                // Upsert is fine if we have all columns, but we only have id and embedding.
-                // Actually, upsert works with partial data if we don't violate constraints.
-                // But chat_turns has other non-null columns.
-                // So we loop updates. Parallelize for speed.
                 await Promise.all(updates.map(u =>
                     supabase.from("chat_turns").update({ embedding: u.embedding }).eq("id", u.id)
                 ));

@@ -79,6 +79,9 @@ def phase_ingest(client, dataset, now_ms, limit):
                 ok = False
                 break
         if ok:
+            # Neutralize is_question/deflection so fact-bearing turns that also
+            # contain a question aren't excluded by the gravity RPC (see README).
+            client.clear_retrieval_filters(p["user_id"])
             _mark_done("ingest", qid, done)
             print(f"  ingested {qid}  ({p['meta']['n_turns']} turns)")
     print(f"ingest: {len(done)} instances complete")
@@ -92,11 +95,13 @@ def phase_backfill(client, max_loops=2000):
             print("backfill: 0 null embeddings remaining — done")
             return
         status, body = client.backfill_embeddings_once()
-        processed = (body or {}).get("processed") or (body or {}).get("backfilled") or 0
+        info = body if isinstance(body, dict) else {}
+        processed = info.get("processed") or info.get("backfilled") or info.get("updated") or 0
         print(f"  backfill loop {loops}: ~{remaining} null remaining, processed {processed} (status {status})")
-        if status != 200 and processed == 0:
-            print("  backfill stalled (provider error?) — retrying after pause")
-            time.sleep(15)
+        # A client-side timeout still makes progress server-side; the next loop's
+        # count reflects it. Only pause on a genuine non-2xx with no progress.
+        if status is not None and status >= 500 and processed == 0:
+            time.sleep(10)
         loops += 1
     print("backfill: hit max_loops cap")
 
