@@ -54,15 +54,38 @@ class KytClient:
         return self._post_fn("save_chat_turn_batch", batch)
 
     # ---- embeddings backfill ---------------------------------------------
-    def backfill_embeddings_once(self):
-        """Drive one backfill_embeddings invocation (~500 rows). Slow (internal
-        ~1s/batch delays → ~150s), so allow a long timeout and don't retry
-        (a retry would re-run the work)."""
-        return self._post_fn("backfill_embeddings", {}, retries=1, timeout=240)
+    def backfill_embeddings_once(self, user_id=None):
+        """Drive one backfill_embeddings invocation. With user_id it processes
+        only that user's null rows (enables parallel, non-overlapping fan-out).
+        Long timeout, no retry (a retry would re-run the work)."""
+        body = {"user_id": user_id} if user_id else {}
+        return self._post_fn("backfill_embeddings", body, retries=1, timeout=240)
 
-    def count_null_embeddings(self):
-        """Global count of chat_turns with embedding IS NULL (dedicated project)."""
-        return self._rest_count("chat_turns", {"embedding": "is.null"})
+    def count_null_embeddings(self, user_id=None):
+        """Count chat_turns with embedding IS NULL (optionally for one user)."""
+        filters = {"embedding": "is.null"}
+        if user_id:
+            filters["user_id"] = f"eq.{user_id}"
+        return self._rest_count("chat_turns", filters)
+
+    # ---- entity backfill --------------------------------------------------
+    def backfill_entities_once(self, user_id, max_rows=200, fast_mode=True):
+        """Drive one backfill_entities invocation for a single user (Haiku entity
+        extraction). Requires a real auth.users row for user_id (entities FK).
+        Long timeout, no retry (a retry would re-extract already-done rows)."""
+        body = {"user_id": user_id, "max_rows": max_rows, "fast_mode": fast_mode}
+        return self._post_fn("backfill_entities", body, retries=1, timeout=300)
+
+    def count_unextracted_turns(self, user_id):
+        """Count a user's chat_turns not yet run through entity extraction."""
+        return self._rest_count(
+            "chat_turns",
+            {"user_id": f"eq.{user_id}", "entities_extracted": "eq.false"},
+        )
+
+    def count_entities(self, user_id):
+        """Count entities rows for a user (verifies extraction populated them)."""
+        return self._rest_count("entities", {"user_id": f"eq.{user_id}"})
 
     # ---- query ------------------------------------------------------------
     def search(self, body):

@@ -22,6 +22,10 @@ const BATCH_DELAY_MS = 100;
 serve(async (req) => {
     try {
         console.log("Starting backfill_embeddings...");
+        // Optional: restrict to one user's null embeddings, enabling parallel,
+        // non-overlapping backfill (e.g. benchmark per-user fan-out).
+        const _reqBody = await req.json().catch(() => ({}));
+        const filterUserId: string | null = _reqBody?.user_id ?? null;
 
         // 1. Get current progress
         const { data: progress, error: progressError } = await supabase
@@ -42,10 +46,12 @@ serve(async (req) => {
             // Fetch batch of rows with NULL embedding
             // We don't use a cursor (gt id) because we are consuming the queue of NULLs.
             // As we update them, they leave the queue.
-            const { data: rows, error: fetchError } = await supabase
+            let _q = supabase
                 .from("chat_turns")
                 .select("id, content, contextual_content")
-                .is("embedding", null)
+                .is("embedding", null);
+            if (filterUserId) _q = _q.eq("user_id", filterUserId);
+            const { data: rows, error: fetchError } = await _q
                 .order("id") // Deterministic order
                 .limit(BATCH_SIZE);
 

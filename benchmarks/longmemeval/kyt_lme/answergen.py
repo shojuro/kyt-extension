@@ -5,6 +5,8 @@ retrieved memories and answers the question; LongMemEval's judge then grades tha
 answer vs gold. We keep this model swappable (default gpt-4o) for parity with the
 LongMemEval reference setup. (Model API — runs Saturday.)
 """
+import time
+
 import requests
 
 SYSTEM = (
@@ -29,8 +31,9 @@ def build_user_prompt(question, retrieved_items):
     return f"Retrieved memories:\n{memories}\n\nQuestion: {question}\nAnswer:"
 
 
-def generate(question, retrieved_items, model, openai_key, timeout=60):
-    """Return a hypothesis string. Uses OpenAI chat completions."""
+def generate(question, retrieved_items, model, openai_key, timeout=60, retries=6):
+    """Return a hypothesis string. Uses OpenAI chat completions with backoff on
+    429/5xx (parallel query runs routinely hit the rate limit)."""
     body = {
         "model": model,
         "messages": [
@@ -39,10 +42,19 @@ def generate(question, retrieved_items, model, openai_key, timeout=60):
         ],
         "temperature": 0,
     }
-    r = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
-        json=body, timeout=timeout,
-    )
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"].strip()
+    for attempt in range(retries):
+        try:
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                json=body, timeout=timeout,
+            )
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"].strip()
+            if r.status_code in (429, 500, 502, 503):
+                time.sleep(min(2 ** attempt, 30))
+                continue
+            r.raise_for_status()
+        except requests.RequestException:
+            time.sleep(min(2 ** attempt, 30))
+    return "I don't know."

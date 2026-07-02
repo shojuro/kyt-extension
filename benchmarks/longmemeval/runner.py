@@ -60,79 +60,110 @@ def _mark_done(phase, qid, done):
 
 
 # ---- phases ---------------------------------------------------------------
-def phase_ingest(client, dataset, now_ms, limit):
+def phase_ingest(client, dataset, now_ms, limit, workers=8):
+    """Ingest instances in parallel (distinct user_ids → no upsert conflicts).
+    Each instance: bulk-upsert its batches, then clear is_question/deflection so
+    fact-bearing turns that also contain a question aren't excluded by the gravity
+    RPC (see README)."""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading, itertools
     done = _done_set("ingest")
-    n = 0
-    for inst in iter_instances(dataset):
-        if limit and n >= limit:
-            break
-        n += 1
+    src = itertools.islice(iter_instances(dataset), limit) if limit else iter_instances(dataset)
+    pending = [inst for inst in src if inst["question_id"] not in done]
+    lock = threading.Lock()
+
+    def ingest_one(inst):
         qid = inst["question_id"]
-        if qid in done:
-            continue
         p = instance_to_payloads(inst, now_ms)
-        ok = True
         for b in p["ingest_batches"]:
             status, body = client.save_batch(b)
             if status != 200:
-                print(f"  ingest FAIL {qid}: {status} {str(body)[:160]}")
-                ok = False
-                break
-        if ok:
-            # Neutralize is_question/deflection so fact-bearing turns that also
-            # contain a question aren't excluded by the gravity RPC (see README).
-            client.clear_retrieval_filters(p["user_id"])
-            _mark_done("ingest", qid, done)
-            print(f"  ingested {qid}  ({p['meta']['n_turns']} turns)")
+                return qid, False, f"{status} {str(body)[:120]}"
+        client.clear_retrieval_filters(p["user_id"])
+        return qid, True, p["meta"]["n_turns"]
+
+    ok = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for i, (qid, success, info) in enumerate(ex.map(ingest_one, pending), 1):
+            if success:
+                with lock:
+                    _mark_done("ingest", qid, done)
+                ok += 1
+            else:
+                print(f"  ingest FAIL {qid}: {info}")
+            if i % 25 == 0 or i == len(pending):
+                print(f"  ingest: {i}/{len(pending)} done ({ok} ok)")
     print(f"ingest: {len(done)} instances complete")
 
 
-def phase_backfill(client, max_loops=2000):
-    loops = 0
-    while loops < max_loops:
-        remaining = client.count_null_embeddings()
-        if remaining == 0:
-            print("backfill: 0 null embeddings remaining — done")
-            return
-        status, body = client.backfill_embeddings_once()
-        info = body if isinstance(body, dict) else {}
-        processed = info.get("processed") or info.get("backfilled") or info.get("updated") or 0
-        print(f"  backfill loop {loops}: ~{remaining} null remaining, processed {processed} (status {status})")
-        # A client-side timeout still makes progress server-side; the next loop's
-        # count reflects it. Only pause on a genuine non-2xx with no progress.
-        if status is not None and status >= 500 and processed == 0:
-            time.sleep(10)
-        loops += 1
-    print("backfill: hit max_loops cap")
+def phase_backfill(client, dataset, now_ms, limit, workers=8):
+    """Embed each instance's user in parallel. The per-user filter means concurrent
+    calls don't overlap on the global null-queue, turning a multi-hour serial
+    backfill into minutes. Each user (~500 turns) is one quick, sub-timeout call."""
+    from concurrent.futures import ThreadPoolExecutor
+    from kyt_lme.adapter import make_user_id
+    import itertools
+    src = itertools.islice(iter_instances(dataset), limit) if limit else iter_instances(dataset)
+    uids = [make_user_id(inst["question_id"]) for inst in src]
+
+    def backfill_user(uid):
+        for _ in range(30):
+            if client.count_null_embeddings(uid) == 0:
+                return True
+            client.backfill_embeddings_once(uid)
+        return client.count_null_embeddings(uid) == 0
+
+    ok = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for i, done_ok in enumerate(ex.map(backfill_user, uids), 1):
+            ok += 1 if done_ok else 0
+            if i % 25 == 0 or i == len(uids):
+                print(f"  backfill: {i}/{len(uids)} users ({ok} fully embedded)")
+    print(f"backfill: {ok}/{len(uids)} users fully embedded")
 
 
-def phase_query(client, dataset, now_ms, answer_model, openai_key, limit, topk):
+def phase_query(client, dataset, now_ms, answer_model, openai_key, limit, topk, workers=6):
+    """Retrieve + answer-gen in parallel; append hypotheses + checkpoint per result."""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
     from kyt_lme import answergen
     done = _done_set("query")
     OUT.mkdir(parents=True, exist_ok=True)
     hyp_path = OUT / "hypotheses.jsonl"
-    n = 0
-    with hyp_path.open("a", encoding="utf-8") as fout:
-        for inst in iter_instances(dataset):
-            if limit and n >= limit:
-                break
-            n += 1
-            qid = inst["question_id"]
-            if qid in done:
+
+    pending, n = [], 0
+    for inst in iter_instances(dataset):
+        if limit and n >= limit:
+            break
+        n += 1
+        if inst["question_id"] not in done:
+            pending.append(inst)
+
+    lock = threading.Lock()
+
+    def do_query(inst):
+        qid = inst["question_id"]
+        body = dict(instance_to_payloads(inst, now_ms)["query"]); body["topK"] = topk
+        status, res = client.search(body)
+        if status != 200:
+            return qid, None, 0
+        items = (res or {}).get("results", [])
+        return qid, answergen.generate(inst["question"], items, answer_model, openai_key), len(items)
+
+    cnt, fails = 0, 0
+    with hyp_path.open("a", encoding="utf-8") as fout, ThreadPoolExecutor(max_workers=workers) as ex:
+        for qid, hyp, nmem in ex.map(do_query, pending):
+            cnt += 1
+            if hyp is None:
+                fails += 1
                 continue
-            p = instance_to_payloads(inst, now_ms)
-            body = dict(p["query"]); body["topK"] = topk
-            status, res = client.search(body)
-            items = (res or {}).get("results", []) if status == 200 else []
-            if status != 200:
-                print(f"  query FAIL {qid}: {status} {str(res)[:160]}")
-                continue
-            hyp = answergen.generate(inst["question"], items, answer_model, openai_key)
-            fout.write(json.dumps({"question_id": qid, "hypothesis": hyp}) + "\n")
-            fout.flush()
-            _mark_done("query", qid, done)
-            print(f"  answered {qid}  ({len(items)} memories -> {hyp[:60]!r})")
-    print(f"query: {len(done)} hypotheses in {hyp_path}")
+            with lock:
+                fout.write(json.dumps({"question_id": qid, "hypothesis": hyp}) + "\n")
+                fout.flush()
+                _mark_done("query", qid, done)
+            if cnt % 25 == 0 or cnt == len(pending):
+                print(f"  query: {cnt}/{len(pending)} processed ({fails} failed)")
+    print(f"query: {len(done)} hypotheses total in {hyp_path}")
 
 
 def phase_status(client):
@@ -197,7 +228,7 @@ def main():
     if args.phase in ("ingest", "all"):
         phase_ingest(client, args.dataset, now_ms, args.limit)
     if args.phase in ("backfill", "all"):
-        phase_backfill(client)
+        phase_backfill(client, args.dataset, now_ms, args.limit)
     if args.phase in ("query", "all"):
         phase_query(client, args.dataset, now_ms, config.answer_model(),
                     config.openai_key(), args.limit, args.topk)
