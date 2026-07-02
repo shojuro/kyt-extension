@@ -143,16 +143,23 @@ def phase_query(client, dataset, now_ms, answer_model, openai_key, limit, topk, 
             pending.append(inst)
 
     lock = threading.Lock()
+    # Reference 'today' for the date-aware temporal reader: the adapter anchors each
+    # instance's latest turn to now-7d, so 'ago' must be measured from there.
+    import datetime
+    _ref_iso = datetime.datetime.utcfromtimestamp((now_ms - 7 * 86400_000) / 1000).strftime("%Y-%m-%d (%a)")
 
     def do_query(inst):
         qid = inst["question_id"]
+        q = inst["question"]
         body = dict(instance_to_payloads(inst, now_ms)["query"]); body["topK"] = topk
         status, res = client.search(body)
         if status != 200:
             return qid, None, "search"
         items = (res or {}).get("results", [])
         try:
-            return qid, answergen.generate(inst["question"], items, answer_model, openai_key), None
+            if answergen.is_temporal(q):   # date-aware reader for temporal questions
+                return qid, answergen.generate_temporal(q, items, answer_model, openai_key, _ref_iso), None
+            return qid, answergen.generate(q, items, answer_model, openai_key), None
         except Exception as e:   # answergen exhausted retries — skip, retry next run
             return qid, None, f"answergen:{str(e)[:60]}"
 
