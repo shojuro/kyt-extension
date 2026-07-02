@@ -589,6 +589,90 @@ async function searchByEmotionKeywords(
     }
 }
 
+// ── Keyword candidate pool (PRECISION variant) ──────────────────────────────
+// Surfaces buried-clause evidence (an event stated as an incidental clause in an
+// off-topic turn) that embeds far from the query and never enters the vector pool,
+// but is the only USER turn matching the query's distinctive terms. Precision-gated
+// to the single-session-user win without the preference/assistant regressions:
+//   - user-speaker turns only (RPC filter)
+//   - strong co-occurrence: a turn must contain >= threshold distinct query keywords
+//     (synthesis queries like "what kind of response would I prefer" have no single
+//     turn matching enough terms → nothing injects → preference untouched).
+const KEYWORD_STOPWORDS = new Set([
+    "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with",
+    "my", "me", "i", "you", "your", "we", "our", "it", "its", "is", "are", "was", "were",
+    "do", "did", "does", "have", "has", "had", "am", "be", "been", "being", "that", "this",
+    "these", "those", "what", "which", "who", "whom", "when", "where", "why", "how", "whose",
+    "many", "much", "long", "ago", "since", "first", "last", "latest", "earliest", "recent",
+    "recently", "order", "happened", "happen", "before", "after", "day", "days", "week",
+    "weeks", "month", "months", "year", "years", "time", "times", "date", "total", "get",
+    "got", "make", "made", "take", "took", "use", "used", "go", "went", "about", "from",
+    "into", "over", "some", "any", "most", "more", "than", "then", "there", "here", "between",
+    "passed", "spend", "spent", "events", "event", "three", "two", "one", "count", "would",
+    "kind", "type", "prefer", "like", "want", "regarding",
+]);
+
+function extractQueryKeywords(query: string): string[] {
+    const words = query.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/);
+    const seen = new Set<string>();
+    const kws: string[] = [];
+    for (const w of words) {
+        if (w.length >= 3 && !KEYWORD_STOPWORDS.has(w) && !seen.has(w)) {
+            seen.add(w);
+            kws.push(w);
+        }
+    }
+    return kws.slice(0, 8);
+}
+
+async function searchByKeywords(
+    supabase: any,
+    query: string,
+    userId: string,
+    requestId?: string,
+    profileId?: string
+): Promise<Candidate[]> {
+    const keywords = extractQueryKeywords(query);
+    if (keywords.length === 0) return [];
+    const ftsQuery = keywords.join(" or ");   // websearch OR; ts_rank rewards co-occurrence
+    // Strong co-occurrence threshold: for <=2 keywords require all; else >=60%.
+    const threshold = keywords.length <= 2 ? keywords.length : Math.max(2, Math.ceil(keywords.length * 0.6));
+    try {
+        const { data, error } = await supabase.rpc("search_turns_by_keywords", {
+            p_user_id: userId,
+            p_query: ftsQuery,
+            p_limit: 30,
+            p_profile_id: profileId || null,
+        });
+        if (error || !data) {
+            Logger.warn(`Keyword search failed: ${error?.message}`, { requestId });
+            return [];
+        }
+        // Precision filter: keep only turns containing >= threshold distinct keywords.
+        const strong = (data as any[]).filter((row) => {
+            const c = (row.content || "").toLowerCase();
+            const hits = keywords.reduce((n, k) => n + (c.includes(k) ? 1 : 0), 0);
+            return hits >= threshold;
+        });
+        Logger.info(`Keyword search: [${keywords.join(", ")}] thr=${threshold} -> ${data.length} raw, ${strong.length} strong`, { requestId });
+        return strong.map((row: any) => ({
+            id: row.id,
+            content: row.content,
+            contextual_content: row.contextual_content || undefined,
+            conversation_id: row.conversation_id,
+            speakers: row.speakers,
+            created_at: row.created_at,
+            gravity_score: row.gravity_score ?? 0,
+            platform: row.platform,
+            entity_boost: true,
+            keyword_match: true,
+        } as any));
+    } catch (e) {
+        Logger.warn(`Keyword search error: ${(e as Error).message}`, { requestId });
+        return [];
+    }
+}
+
 async function searchEntities(
     supabase: any,
     embedding: number[],
@@ -1159,13 +1243,14 @@ export async function getRelevantMemories(
     // Load dynamic synonyms from entity co-occurrences (parallel with other init)
     const dynamicSynonyms = await loadDynamicSynonyms(supabase, userId, requestId);
 
-    const [entityResult, hydeResult, conceptEntityIds, emotionKeywordResults] = await Promise.all([
+    const [entityResult, hydeResult, conceptEntityIds, emotionKeywordResults, keywordResults] = await Promise.all([
         searchEntities(supabase, rawEmbedding, userId, entitySearchQuery, requestId, resolvedProfileId, dynamicSynonyms, projectId),
         useHyde && anthropicApiKey
             ? generateHyDEWithFallback(query, anthropicApiKey, requestId, costContext)
             : Promise.resolve({ hydeDoc: null, usedHyde: false }),
         detectConceptEntities(supabase, query, userId, requestId, resolvedProfileId, projectId),
-        searchByEmotionKeywords(supabase, query, userId, requestId, resolvedProfileId, projectId)
+        searchByEmotionKeywords(supabase, query, userId, requestId, resolvedProfileId, projectId),
+        searchByKeywords(supabase, query, userId, requestId, resolvedProfileId)
     ]);
 
     const { ids: embeddingEntityIds, entities } = entityResult;
@@ -1595,6 +1680,34 @@ export async function getRelevantMemories(
             const rescueResults = await rerankAndFilter(query, rescueFiltered, hfClient, requestId, topK, confidenceThreshold ?? 0.4, isTechnical);
             results.push(...rescueResults);
             Logger.info(`Platform rescue: recovered ${rescueResults.length} items from "${queryTargetPlatform}"`, { requestId });
+        }
+    }
+
+    // ========================================================================
+    // STEP 6e: Keyword-match fill-only guarantee (precision-gated)
+    // Strong co-occurrence user-turn keyword matches (from searchByKeywords) fill
+    // EMPTY result slots when the pipeline is starved (returned < topK) — exactly the
+    // buried-evidence case. Fill-only: a full healthy result set injects nothing, so
+    // already-good categories are untouched. Precision (user-turn + co-occurrence)
+    // means synthesis/preference queries produce no strong matches → no injection.
+    // ========================================================================
+    if (keywordResults.length > 0) {
+        const budget = Math.max(0, topK - results.length);
+        if (budget > 0) {
+            const present = new Set(results.map(r => r.id));
+            const kwToAdd = keywordResults
+                .filter(k => k.id && !present.has(k.id))
+                .slice(0, budget);
+            for (const k of kwToAdd) {
+                (k as CandidateWithScore).rerank_score = (k as any).rerank_score ?? 0.5;
+            }
+            if (kwToAdd.length > 0) {
+                results = [...results, ...kwToAdd];
+                if ((options as any)._diagnostics) {
+                    (options as any)._diagnostics.keywordGuarantee = kwToAdd.length;
+                }
+                Logger.info(`Keyword guarantee: filled ${kwToAdd.length} strong user-turn matches`, { requestId });
+            }
         }
     }
 

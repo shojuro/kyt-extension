@@ -31,9 +31,11 @@ def build_user_prompt(question, retrieved_items):
     return f"Retrieved memories:\n{memories}\n\nQuestion: {question}\nAnswer:"
 
 
-def generate(question, retrieved_items, model, openai_key, timeout=60, retries=6):
-    """Return a hypothesis string. Uses OpenAI chat completions with backoff on
-    429/5xx (parallel query runs routinely hit the rate limit)."""
+def generate(question, retrieved_items, model, openai_key, timeout=60, retries=10):
+    """Return a hypothesis string. Uses OpenAI chat completions with patient backoff
+    on 429/5xx (parallel query runs saturate the OpenAI rate limit; giving up here
+    would corrupt results as false 'I don't know'). Raises after exhausting retries
+    so callers can distinguish a real failure from a genuine abstention."""
     body = {
         "model": model,
         "messages": [
@@ -42,6 +44,7 @@ def generate(question, retrieved_items, model, openai_key, timeout=60, retries=6
         ],
         "temperature": 0,
     }
+    last = None
     for attempt in range(retries):
         try:
             r = requests.post(
@@ -51,10 +54,14 @@ def generate(question, retrieved_items, model, openai_key, timeout=60, retries=6
             )
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"].strip()
+            last = f"{r.status_code} {r.text[:120]}"
             if r.status_code in (429, 500, 502, 503):
-                time.sleep(min(2 ** attempt, 30))
+                time.sleep(min(2 ** attempt, 60))
                 continue
             r.raise_for_status()
-        except requests.RequestException:
-            time.sleep(min(2 ** attempt, 30))
-    return "I don't know."
+        except requests.RequestException as e:
+            last = str(e)
+            time.sleep(min(2 ** attempt, 60))
+    # Do NOT silently return "I don't know" — that would corrupt the eval as a false
+    # abstention. Surface the failure so the run fails loudly instead of scoring 0.
+    raise RuntimeError(f"answergen exhausted retries (last: {last})")

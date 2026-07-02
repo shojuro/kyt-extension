@@ -122,8 +122,11 @@ def phase_backfill(client, dataset, now_ms, limit, workers=8):
     print(f"backfill: {ok}/{len(uids)} users fully embedded")
 
 
-def phase_query(client, dataset, now_ms, answer_model, openai_key, limit, topk, workers=6):
-    """Retrieve + answer-gen in parallel; append hypotheses + checkpoint per result."""
+def phase_query(client, dataset, now_ms, answer_model, openai_key, limit, topk, workers=3):
+    """Retrieve + answer-gen in parallel; append hypotheses + checkpoint per result.
+    Lower default concurrency (3) + patient answergen backoff so the OpenAI answer-gen
+    doesn't get rate-limited into false 'I don't know'. An answergen failure leaves the
+    instance UNMARKED (retried on the next run), never writes a corrupt abstention."""
     from concurrent.futures import ThreadPoolExecutor
     import threading
     from kyt_lme import answergen
@@ -146,24 +149,29 @@ def phase_query(client, dataset, now_ms, answer_model, openai_key, limit, topk, 
         body = dict(instance_to_payloads(inst, now_ms)["query"]); body["topK"] = topk
         status, res = client.search(body)
         if status != 200:
-            return qid, None, 0
+            return qid, None, "search"
         items = (res or {}).get("results", [])
-        return qid, answergen.generate(inst["question"], items, answer_model, openai_key), len(items)
+        try:
+            return qid, answergen.generate(inst["question"], items, answer_model, openai_key), None
+        except Exception as e:   # answergen exhausted retries — skip, retry next run
+            return qid, None, f"answergen:{str(e)[:60]}"
 
     cnt, fails = 0, 0
     with hyp_path.open("a", encoding="utf-8") as fout, ThreadPoolExecutor(max_workers=workers) as ex:
-        for qid, hyp, nmem in ex.map(do_query, pending):
+        for qid, hyp, err in ex.map(do_query, pending):
             cnt += 1
             if hyp is None:
                 fails += 1
+                if cnt % 25 == 0:
+                    print(f"  query: {cnt}/{len(pending)} ({fails} skipped, last err: {err})")
                 continue
             with lock:
                 fout.write(json.dumps({"question_id": qid, "hypothesis": hyp}) + "\n")
                 fout.flush()
                 _mark_done("query", qid, done)
             if cnt % 25 == 0 or cnt == len(pending):
-                print(f"  query: {cnt}/{len(pending)} processed ({fails} failed)")
-    print(f"query: {len(done)} hypotheses total in {hyp_path}")
+                print(f"  query: {cnt}/{len(pending)} processed ({fails} skipped)")
+    print(f"query: {len(done)} hypotheses total in {hyp_path}  ({fails} skipped this run — rerun to fill)")
 
 
 def phase_status(client):
