@@ -35,6 +35,7 @@ SYSTEM = open(os.path.join(os.path.dirname(__file__), "entity_prompt.txt")).read
 SCALEWAY = "https://router.huggingface.co/scaleway/v1/embeddings"
 DIMS = 1024
 EXTRACT_WORKERS = 8
+SAVE_WORKERS = 8
 VALID_TYPES = {"PERSON", "ORG", "LOCATION", "PROJECT", "TECH", "MISC", "CONCEPT", "ANALOGY", "THEME", "TOPIC"}
 
 _REST = {"Authorization": f"Bearer {SVC}", "apikey": SVC, "Content-Type": "application/json"}
@@ -45,19 +46,27 @@ def _norm(name):
     return re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")
 
 
-def embed(text):
+def _to_vec(e):
+    e = e[:DIMS]
+    n = sum(v * v for v in e) ** 0.5
+    e = e if n == 0 else [v / n for v in e]
+    return "[" + ",".join(repr(round(v, 7)) for v in e) + "]"
+
+
+def embed_batch(texts):
+    """One Scaleway call for a whole turn's entity embed-texts."""
+    if not texts:
+        return []
     for attempt in range(5):
         try:
-            r = requests.post(SCALEWAY, headers=_HF, json={"input": [text], "model": "qwen3-embedding-8b"}, timeout=40)
+            r = requests.post(SCALEWAY, headers=_HF, json={"input": texts, "model": "qwen3-embedding-8b"}, timeout=60)
             if r.status_code == 200:
-                e = r.json()["data"][0]["embedding"][:DIMS]
-                n = sum(v * v for v in e) ** 0.5
-                e = e if n == 0 else [v / n for v in e]
-                return "[" + ",".join(repr(round(v, 7)) for v in e) + "]"
+                data = sorted(r.json()["data"], key=lambda x: x["index"])
+                return [_to_vec(d["embedding"]) for d in data]
             time.sleep(2 ** attempt)
         except requests.RequestException:
             time.sleep(2 ** attempt)
-    return None
+    return [None] * len(texts)
 
 
 def extract(content, speakers):
@@ -84,67 +93,83 @@ def extract(content, speakers):
     return None
 
 
-def get_entity_id(user_id, canonical, etype):
-    r = requests.get(f"{URL}/rest/v1/entities?user_id=eq.{user_id}&canonical_name=eq.{canonical}"
-                     f"&entity_type=eq.{etype}&select=id&limit=1", headers=_REST, timeout=30)
-    rows = r.json() if r.status_code == 200 else []
-    return rows[0]["id"] if rows else None
-
-
-def upsert_entity(user_id, ent):
-    """Return entity id, creating (with embedding) or bumping mention_count."""
-    etype = ent.get("entity_type", "MISC")
-    if etype not in VALID_TYPES:
-        etype = "MISC"
-    rel = ent.get("relationship") or "unknown"
-    norm = ent.get("normalized_name") or _norm(ent.get("entity_text"))
-    if not norm:
-        return None
-    canonical = f"{norm}_{rel}"
-    eid = get_entity_id(user_id, canonical, etype)
-    if eid:
-        return eid   # already exists (mention_count bump skipped — not needed for retrieval)
-    emb = embed(f"{ent.get('entity_text')} ({etype}, {rel})")
-    body = {"user_id": user_id, "entity_text": ent.get("entity_text"), "normalized_name": norm,
-            "entity_type": etype, "relationship": rel,
-            "context_category": ent.get("context_category") or "general",
-            "canonical_name": canonical, "mention_count": 1}
-    if emb:
-        body["embedding"] = emb
-    r = requests.post(f"{URL}/rest/v1/entities", headers={**_REST, "Prefer": "return=representation"},
-                      json=body, timeout=30)
-    if r.status_code in (200, 201):
-        return r.json()[0]["id"]
-    # race/conflict -> fetch existing
-    return get_entity_id(user_id, canonical, etype)
+def _mark(turn_id):
+    requests.patch(f"{URL}/rest/v1/chat_turns?id=eq.{turn_id}",
+                   headers={**_REST, "Prefer": "return=minimal"},
+                   json={"entities_extracted": True, "preferences_extracted": True}, timeout=30)
 
 
 def save_turn(user_id, turn, parsed):
-    """Serial save: entities + mentions + co-occurrence relationships."""
-    ents = parsed.get("entities") or []
-    ids = []
-    for ent in ents[:15]:
-        if not ent.get("entity_text"):
+    """Batched save: 1 Scaleway embed + bulk entity upsert + bulk mentions +
+    bulk relationships + 1 mark. Race-safe via ON CONFLICT so turns can save in
+    parallel. Atomic per turn; ~5 round-trips instead of dozens."""
+    # 1. Build deduped entity rows for this turn.
+    rows, seen = [], set()
+    for ent in (parsed.get("entities") or [])[:15]:
+        et = ent.get("entity_text")
+        if not et:
             continue
-        eid = upsert_entity(user_id, ent)
-        if eid:
-            ids.append(eid)
-            requests.post(f"{URL}/rest/v1/entity_mentions", headers={**_REST, "Prefer": "return=minimal"},
-                          json={"entity_id": eid, "chat_turn_id": turn["id"],
-                                "conversation_id": turn.get("conversation_id") or turn["id"],
-                                "mention_text": ent.get("entity_text")}, timeout=30)
-    # co-occurrence relationships (ordered pairs, CHECK a<b)
+        etype = ent.get("entity_type") if ent.get("entity_type") in VALID_TYPES else "MISC"
+        rel = ent.get("relationship") or "unknown"
+        norm = ent.get("normalized_name") or _norm(et)
+        if not norm:
+            continue
+        canon = f"{norm}_{rel}"
+        key = (canon, etype)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"user_id": user_id, "entity_text": et, "normalized_name": norm,
+                     "entity_type": etype, "relationship": rel,
+                     "context_category": ent.get("context_category") or "general",
+                     "canonical_name": canon, "mention_count": 1,
+                     "_embed_text": f"{et} ({etype}, {rel})"})
+    if not rows:
+        _mark(turn["id"])
+        return
+    # 2. One embed call for the whole turn.
+    vecs = embed_batch([r.pop("_embed_text") for r in rows])
+    for r, v in zip(rows, vecs):
+        if v:
+            r["embedding"] = v
+    # 3. Bulk entity upsert (atomic, race-safe), return rows to map canonical->id.
+    try:
+        resp = requests.post(
+            f"{URL}/rest/v1/entities?on_conflict=user_id,canonical_name,entity_type",
+            headers={**_REST, "Prefer": "resolution=merge-duplicates,return=representation"},
+            json=rows, timeout=60)
+        got = resp.json() if resp.status_code in (200, 201) else []
+    except requests.RequestException:
+        got = []
+    id_by = {(g["canonical_name"], g["entity_type"]): g["id"] for g in got if "id" in g}
+    ids = [id_by.get((r["canonical_name"], r["entity_type"])) for r in rows]
+    ids = [i for i in ids if i]
+    if not ids:
+        _mark(turn["id"])
+        return
+    # 4. Bulk mentions.
+    mentions = [{"entity_id": eid, "chat_turn_id": turn["id"],
+                 "conversation_id": turn.get("conversation_id") or turn["id"],
+                 "mention_text": r["entity_text"]}
+                for eid, r in zip(ids, rows) if eid]
+    if mentions:
+        requests.post(f"{URL}/rest/v1/entity_mentions",
+                      headers={**_REST, "Prefer": "return=minimal"}, json=mentions, timeout=60)
+    # 5. Bulk co-occurrence relationships (ordered pairs a<b; ignore dup pairs).
     uniq = list(dict.fromkeys(ids))
+    pairs = []
     for i in range(len(uniq)):
         for j in range(i + 1, len(uniq)):
             a, b = sorted([uniq[i], uniq[j]])
-            requests.post(f"{URL}/rest/v1/rpc/upsert_entity_relationship", headers=_REST,
-                          json={"p_user_id": user_id, "p_entity_a": a, "p_entity_b": b,
-                                "p_relationship_type": "co_occurrence"}, timeout=30)
-    # mark extracted
-    requests.patch(f"{URL}/rest/v1/chat_turns?id=eq.{turn['id']}",
-                   headers={**_REST, "Prefer": "return=minimal"},
-                   json={"entities_extracted": True, "preferences_extracted": True}, timeout=30)
+            pairs.append({"user_id": user_id, "entity_a_id": a, "entity_b_id": b,
+                          "co_occurrence_count": 1, "relationship_strength": 0.29,
+                          "relationship_type": "co_occurrence"})
+    if pairs:
+        requests.post(
+            f"{URL}/rest/v1/entity_relationships?on_conflict=user_id,entity_a_id,entity_b_id",
+            headers={**_REST, "Prefer": "resolution=ignore-duplicates,return=minimal"},
+            json=pairs, timeout=60)
+    _mark(turn["id"])
 
 
 def fetch_unextracted(user_id, limit):
@@ -171,10 +196,10 @@ def process_user(user_id, max_turns):
                     results[t["id"]] = (t, p)
         with ThreadPoolExecutor(max_workers=EXTRACT_WORKERS) as ex:
             list(ex.map(do, turns))
-        # Phase 2: serial save
-        for tid, (t, p) in results.items():
-            save_turn(user_id, t, p)
-            total += 1
+        # Phase 2: parallel save (race-safe via ON CONFLICT upserts)
+        with ThreadPoolExecutor(max_workers=SAVE_WORKERS) as ex:
+            list(ex.map(lambda kv: save_turn(user_id, kv[1][0], kv[1][1]), list(results.items())))
+        total += len(results)
         print(f"  {user_id[:8]}: +{len(results)} saved ({total} total)", flush=True)
         if max_turns and total >= max_turns:
             break
