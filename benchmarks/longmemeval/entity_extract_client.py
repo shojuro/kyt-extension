@@ -196,11 +196,25 @@ def process_user(user_id, max_turns):
                     results[t["id"]] = (t, p)
         with ThreadPoolExecutor(max_workers=EXTRACT_WORKERS) as ex:
             list(ex.map(do, turns))
-        # Phase 2: parallel save (race-safe via ON CONFLICT upserts)
+        # Phase 2: parallel save (race-safe via ON CONFLICT upserts).
+        # A transient error on one turn must not crash the run — skip it (stays
+        # unmarked -> refetched next iteration).
+        def _safe_save(kv):
+            try:
+                save_turn(user_id, kv[1][0], kv[1][1])
+                return True
+            except Exception as e:
+                print(f"    save skip {kv[0][:8]} ({str(e)[:50]})", flush=True)
+                return False
         with ThreadPoolExecutor(max_workers=SAVE_WORKERS) as ex:
-            list(ex.map(lambda kv: save_turn(user_id, kv[1][0], kv[1][1]), list(results.items())))
-        total += len(results)
-        print(f"  {user_id[:8]}: +{len(results)} saved ({total} total)", flush=True)
+            saved = sum(1 for ok in ex.map(_safe_save, list(results.items())) if ok)
+        total += saved
+        print(f"  {user_id[:8]}: +{saved}/{len(results)} saved ({total} total)", flush=True)
+        # No-progress guard: extraction or save produced nothing this pass -> stop
+        # (avoids an infinite refetch loop on persistently-failing turns).
+        if saved == 0:
+            print(f"    {user_id[:8]}: no progress this pass — stopping user", flush=True)
+            break
         if max_turns and total >= max_turns:
             break
     return total
@@ -217,7 +231,11 @@ def main():
     t0 = time.time()
     grand = 0
     for i, uid in enumerate(users, 1):
-        n = process_user(uid, max_turns)
+        try:
+            n = process_user(uid, max_turns)
+        except Exception as e:   # isolate per-user failures — don't kill the whole run
+            print(f"[{i}/{len(users)}] {uid[:8]} FAILED: {str(e)[:60]} — continuing", flush=True)
+            continue
         grand += n
         print(f"[{i}/{len(users)}] {uid[:8]} done: {n} turns ({time.time()-t0:.0f}s, {grand} total)", flush=True)
     print(f"DONE: {grand} turns extracted across {len(users)} users in {time.time()-t0:.0f}s", flush=True)
