@@ -28,11 +28,28 @@ const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY")!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const hfClient = new HuggingFaceClient(hfApiKey, { edgeFunction: 'backfill_entities' });
 
-const BATCH_SIZE = 5;
-const MAX_ROWS = 100;
-const MAX_ROWS_CAP = 200; // Absolute cap for max_rows param
+// Haiku extraction is the slow part (~15-30s/row) and read-only, so we pre-extract
+// EXTRACT_CONCURRENCY rows in parallel per batch, then save serially (avoids same-user
+// entity-upsert races). This clears the 150s edge wall: ~6 rows/call sequential ->
+// ~40+/call. Batch size raised accordingly.
+const BATCH_SIZE = 25;
+const EXTRACT_CONCURRENCY = 5;  // higher (12) inflated Haiku latency -> timeouts; 5 is stable
+const MAX_ROWS = 200;
+const MAX_ROWS_CAP = 400; // Absolute cap for max_rows param
 const BATCH_DELAY_MS = 2000;
 const FAST_BATCH_DELAY_MS = 200;
+
+// Run fn over items with a bounded number of concurrent workers.
+async function mapLimit<T>(items: T[], limit: number, fn: (x: T) => Promise<void>): Promise<void> {
+  let i = 0;
+  const worker = async () => {
+    while (i < items.length) {
+      const idx = i++;
+      await fn(items[idx]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -123,7 +140,24 @@ serve(async (req) => {
 
       console.log(`Batch ${batch + 1}: processing ${rows.length} chat_turns`);
 
-      // Process each row
+      // Phase 1: parallel Haiku extraction (read-only) for eligible rows.
+      const extractable = rows.filter((r: any) => r.content && r.user_id
+        && r.is_question !== true && !(r.deflection != null && r.deflection >= 0.70));
+      const extractionMap = new Map<string, any>();
+      await mapLimit(extractable, EXTRACT_CONCURRENCY, async (r: any) => {
+        try {
+          const res = await extractEntities(
+            { content: r.content, speakers: r.speakers || ["User", "Assistant"] },
+            anthropicApiKey,
+            { userId: r.user_id, edgeFunction: 'backfill_entities' }
+          );
+          extractionMap.set(r.id, res);
+        } catch (e) {
+          console.error(`  Pre-extract ${r.id} failed: ${(e as Error).message}`);
+        }
+      });
+
+      // Phase 2: serial save (avoids same-user entity-upsert races).
       for (const row of rows) {
         try {
           if (!row.content || !row.user_id) {
@@ -147,16 +181,13 @@ serve(async (req) => {
             continue;
           }
 
-          // Extract entities + preferences using Claude Haiku 4.5 (AnthropicClient)
-          const costContext: ClientContext = { userId: row.user_id, edgeFunction: 'backfill_entities' };
-          const { entities, preferences, decisions, contentCategory } = await extractEntities(
-            {
-              content: row.content,
-              speakers: row.speakers || ["User", "Assistant"],
-            },
-            anthropicApiKey,
-            costContext
-          );
+          // Use the pre-extracted result (Phase 1, parallel). Missing => extraction
+          // failed this run; leave unmarked so it retries next invocation.
+          const preExtracted = extractionMap.get(row.id);
+          if (!preExtracted) {
+            throw new Error("extraction missing (will retry)");
+          }
+          const { entities, preferences, decisions, contentCategory } = preExtracted;
 
           // Save entities + mentions + relationships
           if (entities.length > 0) {
