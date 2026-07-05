@@ -1,6 +1,23 @@
 // Token bucket rate limiter - prevents hitting platform rate limits
 
 /**
+ * Parse an HTTP Retry-After header (integer seconds form) into milliseconds.
+ * Missing/garbage/negative values fall back to defaultMs; results are capped
+ * at maxMs so a hostile/buggy header can't stall an import for hours.
+ *
+ * @param {string|null} headerValue
+ * @param {{defaultMs?: number, maxMs?: number}} [options]
+ * @returns {number}
+ */
+export function parseRetryAfterMs(headerValue, { defaultMs = 30000, maxMs = 120000 } = {}) {
+    const seconds = Number(headerValue);
+    if (headerValue == null || headerValue === '' || !Number.isFinite(seconds) || seconds < 0) {
+        return Math.min(defaultMs, maxMs);
+    }
+    return Math.min(seconds * 1000, maxMs);
+}
+
+/**
  * @typedef {Object} RateLimiterConfig
  * @property {number} requestsPerMinute
  * @property {number} [burstSize]

@@ -1,10 +1,12 @@
 import { parseZipExport } from '../src/history-import/zip-parser.js';
 import { validateExportFile } from '../src/history-import/validation.js';
+import { hasValidSession, decideEntryState, AUTH_SESSION_STORAGE_KEY } from '../src/history-import/onboarding-gate.js';
 
 // State machine
 const STATES = {
     WELCOME: 'welcome',
     MODE_SELECT: 'mode_select',
+    AUTH_REQUIRED: 'auth_required',
     PERMISSION: 'permission',
     PLATFORM_SELECT: 'platform_select',
     IMPORTING: 'importing',
@@ -102,6 +104,8 @@ document.addEventListener('DOMContentLoaded', () => {
 function cacheElements() {
     elements.welcomeView = document.getElementById('welcome-view');
     elements.modeView = document.getElementById('mode-view');
+    elements.authView = document.getElementById('auth-view');
+    elements.btnAuthSignin = document.getElementById('btn-auth-signin');
     elements.permissionView = document.getElementById('permission-view');
     elements.mainView = document.getElementById('main-view');
     elements.fallbackView = document.getElementById('fallback-view');
@@ -170,10 +174,24 @@ function setupListeners() {
         setState(STATES.PERMISSION);
     });
 
-    // Permission view buttons
+    // Permission view buttons — importing requires a signed-in session
     elements.btnAcceptImport?.addEventListener('click', () => {
-        setState(STATES.PLATFORM_SELECT);
         markOnboardingSeen();
+        proceedToPlatformSelect();
+    });
+
+    // Auth view: open the options page to sign in; storage listener below
+    // advances automatically once the session lands.
+    elements.btnAuthSignin?.addEventListener('click', () => {
+        chrome.runtime.openOptionsPage();
+    });
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || !changes[AUTH_SESSION_STORAGE_KEY]) return;
+        if (currentState !== STATES.AUTH_REQUIRED) return;
+        if (hasValidSession(changes[AUTH_SESSION_STORAGE_KEY].newValue)) {
+            proceedToPlatformSelect();
+        }
     });
 
     elements.btnSkipImport?.addEventListener('click', () => {
@@ -337,17 +355,43 @@ async function checkFirstInstall() {
     const urlParams = new URLSearchParams(window.location.search);
     const isFirstInstall = urlParams.get('mode') === 'first-install';
 
-    if (isFirstInstall) {
-        const { show_import_onboarding } = await chrome.storage.local.get('show_import_onboarding');
+    const stored = await chrome.storage.local.get(['show_import_onboarding', AUTH_SESSION_STORAGE_KEY]);
+    const entry = decideEntryState({
+        isFirstInstall,
+        showOnboarding: stored.show_import_onboarding !== false,
+        session: stored[AUTH_SESSION_STORAGE_KEY]
+    });
 
-        if (show_import_onboarding !== false) {
-            setState(STATES.WELCOME);
-            return;
-        }
+    if (entry === 'welcome') {
+        setState(STATES.WELCOME);
+        return;
+    }
+    if (entry === 'auth_required') {
+        setState(STATES.AUTH_REQUIRED);
+        return;
     }
 
     await loadCompletedPlatforms();
-    setState(STATES.PLATFORM_SELECT);
+    if (currentState !== STATES.IMPORTING) {
+        setState(STATES.PLATFORM_SELECT);
+    }
+}
+
+async function sessionIsValid() {
+    const stored = await chrome.storage.local.get(AUTH_SESSION_STORAGE_KEY);
+    return hasValidSession(stored[AUTH_SESSION_STORAGE_KEY]);
+}
+
+/** Gate every path into platform select: no session → auth view. */
+async function proceedToPlatformSelect() {
+    if (!(await sessionIsValid())) {
+        setState(STATES.AUTH_REQUIRED);
+        return;
+    }
+    await loadCompletedPlatforms();
+    if (currentState !== STATES.IMPORTING) {
+        setState(STATES.PLATFORM_SELECT);
+    }
 }
 
 async function loadCompletedPlatforms() {
@@ -385,6 +429,7 @@ function setState(newState) {
     // Hide all views
     elements.welcomeView?.classList.add('hidden');
     elements.modeView?.classList.add('hidden');
+    elements.authView?.classList.add('hidden');
     elements.permissionView?.classList.add('hidden');
     elements.mainView?.classList.add('hidden');
     elements.fallbackView?.classList.add('hidden');
@@ -406,6 +451,10 @@ function setState(newState) {
     switch (newState) {
         case STATES.WELCOME:
             elements.welcomeView?.classList.remove('hidden');
+            break;
+
+        case STATES.AUTH_REQUIRED:
+            elements.authView?.classList.remove('hidden');
             break;
 
         case STATES.MODE_SELECT:
@@ -588,6 +637,12 @@ async function checkStatus(platform) {
 async function startImport() {
     if (!selectedPlatform) return;
 
+    // Belt & braces: imports write through JWT-gated edge functions
+    if (!(await sessionIsValid())) {
+        setState(STATES.AUTH_REQUIRED);
+        return;
+    }
+
     // Gemini uses Takeout upload, not live fetching
     if (selectedPlatform === 'gemini') {
         showGeminiUploadUI();
@@ -611,6 +666,11 @@ async function startImport() {
         });
 
         if (!response.success) {
+            if (response.code === 'AUTH_REQUIRED') {
+                resetUI();
+                setState(STATES.AUTH_REQUIRED);
+                return;
+            }
             if (response.fallbackRequired) {
                 showFallbackUI(selectedPlatform, response.error);
             } else {

@@ -269,6 +269,17 @@
     <button class="btn btn-primary" id="btn-mode-continue" style="margin-top: 4px;">Continue</button>
   </div>
 
+  <!-- Auth Required View (shown before any import when signed out) -->
+  <div class="container hidden" id="auth-view">
+    <h1>Sign In to Continue</h1>
+    <div class="card">
+      <p style="color: var(--silver);"><strong>Importing history needs your K.Y.T. account.</strong></p>
+      <p style="margin-top: 8px;">Your conversations are stored encrypted in your personal database — sign in (or create an account) so we know where to put them.</p>
+    </div>
+    <button class="btn btn-primary" id="btn-auth-signin" style="margin-top: 12px;">Sign In</button>
+    <p style="font-size: 12px; color: var(--silver-dim); margin-top: 8px;">This page continues automatically once you're signed in.</p>
+  </div>
+
   <!-- Permission View (first-install, step 3) -->
   <div class="container hidden" id="permission-view">
     <h1>Import Your History</h1>

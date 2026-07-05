@@ -21,8 +21,30 @@ import { getActiveProject, setActiveProject, clearActiveProject } from './projec
 import { getSyncStatus as getNLMSyncStatus, enableSync as enableNLMSync, disableSync as disableNLMSync, checkGoogleSignIn as checkNLMSignIn } from './notebooklm-sync.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 import { buildMemoryInjection, buildNaturalLanguageInjection } from '../kyt-memory-injection-builder.js';
-import { AUTH_SESSION_KEY } from './auth/auth-service.js';
+import { AUTH_SESSION_KEY, getSession } from './auth/auth-service.js';
 import { withStorageMutex } from './utils/storage-mutex.js';
+
+// ===== HISTORY IMPORT AUTH =====
+
+/**
+ * Auth options for HistoryImporter. save_chat_turn_batch rejects anon-key
+ * Bearers (service-role gate, 2026-06-11), so imports must carry the user JWT
+ * and be able to refresh it mid-import (long imports outlive token expiry).
+ */
+function buildImporterAuth(config) {
+  return {
+    accessToken: config.accessToken || null,
+    refreshAccessToken: async () => {
+      try {
+        const session = await getSession();
+        return session?.access_token || null;
+      } catch (e) {
+        console.warn('Import token refresh failed:', e.message);
+        return null;
+      }
+    },
+  };
+}
 
 // ===== LAYER 2 INTENT CLASSIFICATION (LLM Judge) =====
 
@@ -832,7 +854,7 @@ export function registerMessageHandler(deps) {
         (async () => {
           try {
             const config = await getApiConfig();
-            const importer = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId);
+            const importer = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId, buildImporterAuth(config));
             const status = await importer.checkImportStatus(message.platform);
             sendResponse({ success: true, status });
           } catch (error) {
@@ -847,12 +869,17 @@ export function registerMessageHandler(deps) {
           try {
             const config = await getApiConfig();
 
+            if (!config.accessToken) {
+              sendResponse({ success: false, code: 'AUTH_REQUIRED', error: 'Sign in to K.Y.T. before importing history.' });
+              return;
+            }
+
             if (activeImporterRef.current) {
               sendResponse({ success: false, error: 'Import already in progress' });
               return;
             }
 
-            activeImporterRef.current = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId);
+            activeImporterRef.current = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId, buildImporterAuth(config));
 
             let fallbackTriggered = false;
 
@@ -920,7 +947,11 @@ export function registerMessageHandler(deps) {
             console.log(`📥 Processing ${messages.length} imported messages from ${platform} (${source})`);
 
             const config = await getApiConfig();
-            const importer = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId);
+            if (!config.accessToken) {
+              sendResponse({ success: false, code: 'AUTH_REQUIRED', error: 'Sign in to K.Y.T. before importing history.' });
+              return;
+            }
+            const importer = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId, buildImporterAuth(config));
 
             let savedCount = 0;
             let skippedCount = 0;

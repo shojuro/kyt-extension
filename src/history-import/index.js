@@ -2,7 +2,7 @@ import { ChatGPTFetcher } from './chatgpt-fetcher.js';
 import { ClaudeFetcher } from './claude-fetcher.js';
 import { GeminiFetcher } from './gemini-fetcher.js';
 import { parseZipExport } from './zip-parser.js';
-import { RateLimiter } from './rate-limiter.js';
+import { RateLimiter, parseRetryAfterMs } from './rate-limiter.js';
 import { ProgressTracker } from './progress-tracker.js';
 import { deduplicateMessages } from './deduplication.js';
 import { validateExportFile, sanitizeContent } from './validation.js';
@@ -23,19 +23,45 @@ import { validateExportFile, sanitizeContent } from './validation.js';
  * @property {ImportProgress} [progress]
  */
 
+/** Matches save_chat_turn_batch MAX_BATCH_SIZE — one edge fn call per chunk. */
+export const IMPORT_SAVE_CHUNK_SIZE = 50;
+
 export class HistoryImporter {
     /**
      * @param {string} supabaseUrl
-     * @param {string} supabaseKey
+     * @param {string} supabaseKey Anon key (sent as `apikey` header)
      * @param {string} userId
+     * @param {Object} [options]
+     * @param {string} [options.accessToken] User JWT. save_chat_turn_batch rejects
+     *   anon-key Bearers with 401 (service-role gate), so imports need this.
+     * @param {function(): Promise<string|null>} [options.refreshAccessToken]
+     *   Called once on 401 to obtain a fresh JWT before retrying.
+     * @param {number} [options.retryBaseDelayMs] Base delay for transient-error
+     *   backoff (default 1000; tests pass 1).
      */
-    constructor(supabaseUrl, supabaseKey, userId) {
+    constructor(supabaseUrl, supabaseKey, userId, options = {}) {
         this.supabaseUrl = supabaseUrl;
         this.supabaseKey = supabaseKey;
         this.userId = userId;
+        this.accessToken = options.accessToken || null;
+        this.refreshAccessToken = options.refreshAccessToken || null;
+        this.retryBaseDelayMs = options.retryBaseDelayMs ?? 1000;
         this.progressTracker = null;
         this.abortController = null;
-        console.log('[HistoryImporter] Initialized with URL:', this.supabaseUrl, 'User:', this.userId);
+        console.log('[HistoryImporter] Initialized with URL:', this.supabaseUrl, 'User:', this.userId, 'Auth:', this.accessToken ? 'jwt' : 'anon');
+    }
+
+    /**
+     * Headers for Supabase REST + edge function calls.
+     * JWT as Bearer when available (required by the service-role gate and by
+     * RLS on user_history_imports); anon key stays as `apikey`.
+     */
+    authHeaders() {
+        return {
+            'apikey': this.supabaseKey,
+            'Authorization': `Bearer ${this.accessToken || this.supabaseKey}`,
+            'Content-Type': 'application/json'
+        };
     }
 
     /**
@@ -51,13 +77,7 @@ export class HistoryImporter {
 
             const completedResponse = await fetch(
                 url,
-                {
-                    headers: {
-                        'apikey': this.supabaseKey,
-                        'Authorization': `Bearer ${this.supabaseKey}`,
-                        'Content-Type': 'application/json'
-                    }
-                }
+                { headers: this.authHeaders() }
             );
 
             if (completedResponse.ok) {
@@ -75,13 +95,7 @@ export class HistoryImporter {
             // Check for in-progress imports (resume)
             const inProgressResponse = await fetch(
                 `${this.supabaseUrl}/rest/v1/user_history_imports?user_id=eq.${this.userId}&platform=eq.${platform}&status=eq.in_progress&limit=1`,
-                {
-                    headers: {
-                        'apikey': this.supabaseKey,
-                        'Authorization': `Bearer ${this.supabaseKey}`,
-                        'Content-Type': 'application/json'
-                    }
-                }
+                { headers: this.authHeaders() }
             );
 
             if (inProgressResponse.ok) {
@@ -124,7 +138,10 @@ export class HistoryImporter {
      */
     async startImport(platform, onProgress, onFallbackRequired) {
         this.abortController = new AbortController();
-        this.progressTracker = new ProgressTracker(this.supabaseUrl, this.supabaseKey, this.userId, platform);
+        this.progressTracker = new ProgressTracker(
+            this.supabaseUrl, this.supabaseKey, this.userId, platform,
+            () => this.authHeaders()
+        );
         await this.progressTracker.initialize();
 
         const resumePoint = this.progressTracker.getResumePoint();
@@ -176,12 +193,7 @@ export class HistoryImporter {
                 totalSkipped += (batchMessages.length - recentMessages.length + duplicateCount);
 
                 if (newMessages.length > 0) {
-                    // Save to DB in chunks of 10 to prevent timeouts
-                    const CHUNK_SIZE = 10;
-                    for (let i = 0; i < newMessages.length; i += CHUNK_SIZE) {
-                        const chunk = newMessages.slice(i, i + CHUNK_SIZE);
-                        await this.processBatch(chunk);
-                    }
+                    await this.saveMessagesInChunks(newMessages);
 
                     const cost = newMessages.length * 0.0002;
                     totalCost += cost;
@@ -286,11 +298,7 @@ export class HistoryImporter {
         try {
             const response = await fetch(url, {
                 method: 'POST',
-                headers: {
-                    'apikey': this.supabaseKey,
-                    'Authorization': `Bearer ${this.supabaseKey}`,
-                    'Content-Type': 'application/json'
-                },
+                headers: this.authHeaders(),
                 body: JSON.stringify({
                     messages: messages.map(m => ({
                         id: m.id,
@@ -407,64 +415,115 @@ export class HistoryImporter {
     }
 
     /**
+     * Save messages via save_chat_turn_batch in chunks of IMPORT_SAVE_CHUNK_SIZE.
      * @param {Message[]} messages
-     * @param {number} [retryCount=0]
      */
-    async processBatch(messages, retryCount = 0) {
-        // Invoke Edge Function via REST
+    async saveMessagesInChunks(messages) {
+        for (let i = 0; i < messages.length; i += IMPORT_SAVE_CHUNK_SIZE) {
+            await this.processBatch(messages.slice(i, i + IMPORT_SAVE_CHUNK_SIZE));
+        }
+    }
+
+    /**
+     * Save one batch via the save_chat_turn_batch Edge Function.
+     *
+     * Retry model (each failure class has its own budget):
+     * - 401: refresh the JWT once and retry immediately; auth doesn't heal
+     *   via blind retries, so without a refresh it throws right away.
+     * - 429: wait per Retry-After (default 30s, cap 120s), up to 5 times —
+     *   free tier allows 20 saves/min, so long imports WILL hit this.
+     * - Network/5xx: exponential backoff, 3 retries.
+     *
+     * @param {Message[]} messages
+     */
+    async processBatch(messages) {
         const url = `${this.supabaseUrl}/functions/v1/save_chat_turn_batch`;
-        console.log(`[HistoryImporter] Saving batch of ${messages.length} messages to ${url} (Attempt ${retryCount + 1})`);
+        const MAX_TRANSIENT_RETRIES = 3;
+        const MAX_RATE_LIMIT_RETRIES = 5;
+        let transientAttempts = 0;
+        let rateLimitAttempts = 0;
+        let didRefresh = false;
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+        const body = JSON.stringify({
+            turns: messages.map(m => ({
+                user_id: this.userId,
+                conversation_id: m.conversationId,
+                platform: m.platform,
+                content: sanitizeContent(m.content),
+                role: m.role,
+                timestamp: new Date(m.timestamp).toISOString(),
+                source: 'import',
+                metadata: {
+                    originalId: m.id,
+                    conversationTitle: m.conversationTitle,
+                    model: m.model
+                }
+            })),
+            // Skip AI processing during import for speed - embeddings/classification
+            // will be backfilled later via deferred processing queue
+            skip_ai_processing: true
+        });
 
-        try {
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'apikey': this.supabaseKey,
-                    'Authorization': `Bearer ${this.supabaseKey}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    turns: messages.map(m => ({
-                        user_id: this.userId,
-                        conversation_id: m.conversationId,
-                        platform: m.platform,
-                        content: sanitizeContent(m.content),
-                        role: m.role,
-                        timestamp: new Date(m.timestamp).toISOString(),
-                        source: 'import',
-                        metadata: {
-                            originalId: m.id,
-                            conversationTitle: m.conversationTitle,
-                            model: m.model
-                        }
-                    })),
-                    // Skip AI processing during import for speed - embeddings/classification
-                    // will be backfilled later via deferred processing queue
-                    skip_ai_processing: true
-                }),
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
+        for (;;) {
+            console.log(`[HistoryImporter] Saving batch of ${messages.length} messages to ${url}`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
 
-            if (!response.ok) {
-                const error = await response.text();
-                throw new Error(`Batch save failed: ${error}`);
-            }
-        } catch (error) {
-            clearTimeout(timeoutId);
-            console.error('[HistoryImporter] Batch save error:', error);
-
-            if (retryCount < 3) {
-                const delay = 1000 * Math.pow(2, retryCount); // Exponential backoff: 1s, 2s, 4s
-                console.log(`[HistoryImporter] Retrying batch in ${delay}ms...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                return this.processBatch(messages, retryCount + 1);
+            let response = null;
+            let networkError = null;
+            try {
+                response = await fetch(url, {
+                    method: 'POST',
+                    headers: this.authHeaders(),
+                    body,
+                    signal: controller.signal
+                });
+            } catch (error) {
+                networkError = error;
+            } finally {
+                clearTimeout(timeoutId);
             }
 
-            throw error;
+            if (response?.ok) return;
+
+            if (response?.status === 401) {
+                if (!didRefresh && this.refreshAccessToken) {
+                    didRefresh = true;
+                    const freshToken = await this.refreshAccessToken();
+                    if (freshToken) {
+                        this.accessToken = freshToken;
+                        console.log('[HistoryImporter] 401 — refreshed token, retrying batch');
+                        continue;
+                    }
+                }
+                throw new Error('Batch save failed: authentication required (401). Sign in to K.Y.T. and restart the import.');
+            }
+
+            if (response?.status === 429) {
+                if (rateLimitAttempts >= MAX_RATE_LIMIT_RETRIES) {
+                    throw new Error(`Batch save failed: rate limit persisted after ${MAX_RATE_LIMIT_RETRIES} retries (429)`);
+                }
+                rateLimitAttempts++;
+                const waitMs = parseRetryAfterMs(response.headers?.get?.('Retry-After'));
+                console.warn(`[HistoryImporter] Rate limited (429) — waiting ${waitMs}ms (retry ${rateLimitAttempts}/${MAX_RATE_LIMIT_RETRIES})`);
+                if (waitMs > 0) {
+                    await new Promise(resolve => setTimeout(resolve, waitMs));
+                }
+                continue;
+            }
+
+            const detail = networkError
+                ? networkError.message
+                : `${response.status} ${await response.text().catch(() => '')}`;
+            console.error('[HistoryImporter] Batch save error:', detail);
+
+            if (transientAttempts >= MAX_TRANSIENT_RETRIES) {
+                throw new Error(`Batch save failed: ${detail}`);
+            }
+            const delay = this.retryBaseDelayMs * Math.pow(2, transientAttempts);
+            transientAttempts++;
+            console.log(`[HistoryImporter] Retrying batch in ${delay}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
         }
     }
 }

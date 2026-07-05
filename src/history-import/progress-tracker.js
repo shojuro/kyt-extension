@@ -7,12 +7,16 @@ export class ProgressTracker {
     /**
      * @param {string} supabaseUrl
      * @param {string} supabaseKey
-     * @param {string} userId 
-     * @param {Platform} platform 
+     * @param {string} userId
+     * @param {Platform} platform
+     * @param {function(): Object} [getAuthHeaders] Fresh auth headers per call
+     *   (JWT Bearer). RLS on user_history_imports returns [] for anon reads,
+     *   so resume detection needs the user JWT.
      */
-    constructor(supabaseUrl, supabaseKey, userId, platform) {
+    constructor(supabaseUrl, supabaseKey, userId, platform, getAuthHeaders = null) {
         this.supabaseUrl = supabaseUrl;
         this.supabaseKey = supabaseKey;
+        this.getAuthHeaders = getAuthHeaders;
         this.progress = {
             importId: crypto.randomUUID(),
             userId,
@@ -30,18 +34,23 @@ export class ProgressTracker {
         this.syncInterval = null;
     }
 
+    _headers() {
+        if (this.getAuthHeaders) {
+            return this.getAuthHeaders();
+        }
+        return {
+            'apikey': this.supabaseKey,
+            'Authorization': `Bearer ${this.supabaseKey}`,
+            'Content-Type': 'application/json'
+        };
+    }
+
     async initialize() {
         // Check for existing in-progress import (resume scenario)
         try {
             const response = await fetch(
                 `${this.supabaseUrl}/rest/v1/user_history_imports?user_id=eq.${this.progress.userId}&platform=eq.${this.progress.platform}&status=eq.in_progress&limit=1`,
-                {
-                    headers: {
-                        'apikey': this.supabaseKey,
-                        'Authorization': `Bearer ${this.supabaseKey}`,
-                        'Content-Type': 'application/json'
-                    }
-                }
+                { headers: this._headers() }
             );
 
             if (response.ok) {
@@ -97,11 +106,7 @@ export class ProgressTracker {
                 `${this.supabaseUrl}/functions/v1/update_import_progress`,
                 {
                     method: 'POST',
-                    headers: {
-                        'apikey': this.supabaseKey,
-                        'Authorization': `Bearer ${this.supabaseKey}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: this._headers(),
                     body: JSON.stringify({
                         id: this.progress.importId,
                         user_id: this.progress.userId,
