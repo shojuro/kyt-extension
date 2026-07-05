@@ -19,6 +19,7 @@ import type { ClientContext } from '../_shared/anthropic-client.ts';
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
 import { getUserTier, getTierLimits } from '../_shared/tier-check.ts';
+import { resolveUserId } from '../_shared/auth-helpers.ts';
 
 // =============================================================================
 // Constants
@@ -677,6 +678,30 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
+
+    // ==========================================================================
+    // Service-role gate (applies to BOTH streaming and non-streaming paths):
+    // JWT callers import as themselves (body user_id is pinned); service-role
+    // callers may impersonate; anon-key callers are rejected.
+    // ==========================================================================
+    const authClient = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
+    const { userId: authUserId, isServiceRole } = await resolveUserId(
+      req.headers.get('Authorization'),
+      authClient,
+      body?.user_id,
+    );
+    if (authUserId && !isServiceRole) {
+      body.user_id = authUserId; // pin: JWT callers import as themselves
+    } else if (!isServiceRole) {
+      return new Response(JSON.stringify({ error: 'Authentication required' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     const { messages, user_id, platform = 'chatgpt', resume_token, skip_ai = false, stream_progress = false, project_id } = body;
 
     // ==========================================================================

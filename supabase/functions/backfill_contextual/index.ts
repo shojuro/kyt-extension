@@ -22,6 +22,7 @@ import { generateChunkContext } from "../_shared/context-generator.ts";
 import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
 import type { ClientContext } from "../_shared/anthropic-client.ts";
 import { securityHeaders } from "../_shared/headers.ts";
+import { resolveUserId } from "../_shared/auth-helpers.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -118,6 +119,28 @@ serve(async (req) => {
     // Diagnostic mode: test_api=true → make a single Anthropic call and return the result/error
     let bodyParsed: any = {};
     try { bodyParsed = await req.clone().json(); } catch {}
+
+    // Service-role gate (before diagnostics — they expose key previews and
+    // burn LLM spend): JWT callers are pinned to their own rows; the
+    // service-role key may pass any user_id or run globally; anon-key
+    // callers are rejected.
+    let filterUserId: string | null =
+      typeof bodyParsed?.user_id === "string" ? bodyParsed.user_id : null;
+    const { userId: authUserId, isServiceRole } = await resolveUserId(
+      req.headers.get("Authorization"),
+      supabase,
+      filterUserId,
+    );
+    if (!authUserId && !isServiceRole) {
+      return new Response(JSON.stringify({ error: "Authentication required" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (!isServiceRole) {
+      filterUserId = authUserId;
+    }
+
     if (bodyParsed?.test_api) {
       console.log("test_api mode: testing Anthropic API key...");
       const keyPreview = anthropicApiKey ? `${anthropicApiKey.substring(0, 15)}...${anthropicApiKey.slice(-4)}` : "MISSING";
@@ -161,15 +184,18 @@ serve(async (req) => {
     // Pre-pass: mark questions and deflections as already contextualized so they
     // don't clog future backfill batches (context enrichment would make questions
     // MORE findable — opposite of intent).
-    const { data: markedRows, error: markError } = await supabase
+    let prePassQuery = supabase
       .from("chat_turns")
       .update({
         context_generated: true,
         context_generated_at: new Date().toISOString(),
       })
       .or("is_question.eq.true,deflection.gte.0.70")
-      .or("context_generated.is.null,context_generated.eq.false")
-      .select("id");
+      .or("context_generated.is.null,context_generated.eq.false");
+    if (filterUserId) {
+      prePassQuery = prePassQuery.eq("user_id", filterUserId);
+    }
+    const { data: markedRows, error: markError } = await prePassQuery.select("id");
 
     if (markError) {
       console.warn("Pre-pass mark error (non-fatal):", markError.message);
@@ -200,7 +226,7 @@ serve(async (req) => {
 
     for (let batch = 0; batch < maxBatches; batch++) {
       // Query chat_turns needing context generation
-      const { data: rows, error: fetchError } = await supabase
+      let rowQuery = supabase
         .from("chat_turns")
         .select(
           "id, content, conversation_id, user_id, platform, start_timestamp"
@@ -212,6 +238,10 @@ serve(async (req) => {
         .or("deflection.is.null,deflection.lt.0.70")
         .order("created_at", { ascending: false }) // Newest first
         .limit(BATCH_SIZE);
+      if (filterUserId) {
+        rowQuery = rowQuery.eq("user_id", filterUserId);
+      }
+      const { data: rows, error: fetchError } = await rowQuery;
 
       if (fetchError) {
         console.error("Fetch error:", fetchError.message);
@@ -353,12 +383,16 @@ serve(async (req) => {
     }
 
     // Count remaining (excluding questions/deflections which are intentionally skipped)
-    const { count: remaining } = await supabase
+    let remainingQuery = supabase
       .from("chat_turns")
       .select("id", { count: "exact", head: true })
       .or("context_generated.is.null,context_generated.eq.false")
       .or("is_question.is.null,is_question.eq.false")
       .or("deflection.is.null,deflection.lt.0.70");
+    if (filterUserId) {
+      remainingQuery = remainingQuery.eq("user_id", filterUserId);
+    }
+    const { count: remaining } = await remainingQuery;
 
     const result = {
       success: true,

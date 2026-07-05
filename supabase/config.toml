@@ -51,3 +51,32 @@ verify_jwt = true
 [functions.import_conversation_batch]
 # Service role key required for import operations
 verify_jwt = true
+
+# Import progress upsert — in-function resolveUserId gate needs the gateway
+# to verify token signatures (decodeJwtRole is forge-proof only then)
+[functions.update_import_progress]
+verify_jwt = true
+
+# Backfill functions — all carry the resolveUserId service-role gate, which
+# REQUIRES verify_jwt = true (deployed state was false for several of these;
+# never deploy them with --no-verify-jwt)
+[functions.backfill_embeddings]
+verify_jwt = true
+
+[functions.backfill_entities]
+verify_jwt = true
+
+[functions.backfill_contextual]
+verify_jwt = true
+
+[functions.backfill_gravity]
+verify_jwt = true
+
+[functions.backfill_emotions]
+verify_jwt = true
+
+[functions.backfill_preferences]
+verify_jwt = true
+
+[functions.backfill_token_counts]
+verify_jwt = true

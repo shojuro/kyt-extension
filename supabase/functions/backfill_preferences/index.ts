@@ -18,6 +18,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { extractEntities, savePreferences } from "../_shared/entity-extractor.ts";
 import { securityHeaders } from "../_shared/headers.ts";
+import { resolveUserId } from "../_shared/auth-helpers.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -43,25 +44,44 @@ serve(async (req) => {
   try {
     console.log("Starting backfill_preferences...");
 
-    // Resolve auth user_id consistently with live save_chat_turn path.
-    // Priority: user_id already used by existing preferences > auth.admin.listUsers().
-    // This prevents the listUsers() ordering bug where Supabase returns the
-    // newest user first, which may differ from the extension's authenticated user.
-    let authUserId: string | undefined;
+    // Service-role gate: a JWT caller IS the user — no heuristics needed.
+    // Service-role callers may pass user_id in the body, falling back to the
+    // legacy single-user heuristic (existing prefs > listUsers). Anon-key
+    // callers are rejected (LLM cost-amplification vector).
+    const body = await req.json().catch(() => ({}));
+    const bodyUserId: string | null =
+      typeof body?.user_id === "string" ? body.user_id : null;
+    const { userId: resolvedUserId, isServiceRole } = await resolveUserId(
+      req.headers.get("Authorization"),
+      supabase,
+      bodyUserId,
+    );
+    if (!resolvedUserId && !isServiceRole) {
+      return new Response(JSON.stringify({ error: "Authentication required" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-    const { data: existingPref } = await supabase
-      .from("user_preferences")
-      .select("user_id")
-      .limit(1)
-      .single();
+    let authUserId: string | undefined = resolvedUserId ?? undefined;
 
-    if (existingPref?.user_id) {
-      authUserId = existingPref.user_id;
-      console.log(`Resolved auth user from existing preferences: ${authUserId}`);
-    } else {
-      const { data: authUsers } = await supabase.auth.admin.listUsers({ perPage: 1 });
-      authUserId = authUsers?.users?.[0]?.id;
-      console.log(`Resolved auth user from auth.admin: ${authUserId}`);
+    if (!authUserId) {
+      // Service-role caller without an explicit user_id — legacy heuristic:
+      // user_id already used by existing preferences > auth.admin.listUsers().
+      const { data: existingPref } = await supabase
+        .from("user_preferences")
+        .select("user_id")
+        .limit(1)
+        .single();
+
+      if (existingPref?.user_id) {
+        authUserId = existingPref.user_id;
+        console.log(`Resolved auth user from existing preferences: ${authUserId}`);
+      } else {
+        const { data: authUsers } = await supabase.auth.admin.listUsers({ perPage: 1 });
+        authUserId = authUsers?.users?.[0]?.id;
+        console.log(`Resolved auth user from auth.admin: ${authUserId}`);
+      }
     }
 
     if (!authUserId) {
@@ -75,10 +95,12 @@ serve(async (req) => {
     const maxBatches = Math.ceil(MAX_ROWS / BATCH_SIZE);
 
     for (let batch = 0; batch < maxBatches; batch++) {
-      // Query chat_turns needing preference extraction
+      // Query chat_turns needing preference extraction (scoped to the
+      // resolved user — preferences are saved under authUserId)
       const { data: rows, error: fetchError } = await supabase
         .from("chat_turns")
         .select("id, content, speakers, user_id")
+        .eq("user_id", authUserId)
         .or("preferences_extracted.is.null,preferences_extracted.eq.false")
         .or("is_injection.is.null,is_injection.eq.false")
         .not("speakers", "eq", "{assistant}")

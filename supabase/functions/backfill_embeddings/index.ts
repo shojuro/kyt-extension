@@ -4,6 +4,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
 import type { ClientContext } from "../_shared/anthropic-client.ts";
 import { securityHeaders } from "../_shared/headers.ts";
+import { resolveUserId } from "../_shared/auth-helpers.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -25,7 +26,25 @@ serve(async (req) => {
         // Optional: restrict to one user's null embeddings, enabling parallel,
         // non-overlapping backfill (e.g. benchmark per-user fan-out).
         const _reqBody = await req.json().catch(() => ({}));
-        const filterUserId: string | null = _reqBody?.user_id ?? null;
+        let filterUserId: string | null = _reqBody?.user_id ?? null;
+
+        // Service-role gate: JWT callers are pinned to their own rows; the
+        // service-role key may pass any user_id or run globally; anon-key
+        // callers are rejected (embedding cost-amplification vector).
+        const { userId: authUserId, isServiceRole } = await resolveUserId(
+            req.headers.get("Authorization"),
+            supabase,
+            filterUserId,
+        );
+        if (!authUserId && !isServiceRole) {
+            return new Response(JSON.stringify({ error: "Authentication required" }), {
+                status: 401,
+                headers: { "Content-Type": "application/json", ...securityHeaders() },
+            });
+        }
+        if (!isServiceRole) {
+            filterUserId = authUserId;
+        }
 
         // 1. Get current progress
         const { data: progress, error: progressError } = await supabase
@@ -116,12 +135,16 @@ serve(async (req) => {
         console.log("Checking entities for null embeddings...");
 
         for (let i = 0; i < MAX_BATCHES; i++) {
-            const { data: entityRows, error: entityFetchError } = await supabase
+            let entityQuery = supabase
                 .from("entities")
                 .select("id, entity_text, entity_type, relationship")
                 .is("embedding", null)
                 .order("id")
                 .limit(BATCH_SIZE);
+            if (filterUserId) {
+                entityQuery = entityQuery.eq("user_id", filterUserId);
+            }
+            const { data: entityRows, error: entityFetchError } = await entityQuery;
 
             if (entityFetchError) {
                 console.error("Entity fetch error:", entityFetchError);

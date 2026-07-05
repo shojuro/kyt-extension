@@ -18,6 +18,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { classifyMemory } from "../_shared/memory-classifier.ts";
 import type { ClientContext } from "../_shared/anthropic-client.ts";
 import { securityHeaders } from "../_shared/headers.ts";
+import { resolveUserId } from "../_shared/auth-helpers.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -60,6 +61,24 @@ serve(async (req) => {
       }
     } catch {
       // No body or invalid JSON — use defaults
+    }
+
+    // Service-role gate: JWT callers are pinned to their own rows; the
+    // service-role key (benchmark/admin) may pass any user_id or run
+    // globally; anon-key callers are rejected (LLM cost-amplification vector).
+    const { userId: authUserId, isServiceRole } = await resolveUserId(
+      req.headers.get("Authorization"),
+      supabase,
+      filterUserId,
+    );
+    if (!authUserId && !isServiceRole) {
+      return new Response(JSON.stringify({ error: "Authentication required" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (!isServiceRole) {
+      filterUserId = authUserId;
     }
 
     const effectiveMaxRows = requestedLimit;

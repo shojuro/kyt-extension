@@ -16,6 +16,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { AnthropicClient } from "../_shared/anthropic-client.ts";
 import { securityHeaders } from "../_shared/headers.ts";
+import { resolveUserId } from "../_shared/auth-helpers.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -46,6 +47,26 @@ serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const maxRows = Math.min(body.max_rows || DEFAULT_MAX_ROWS, MAX_ROWS_CAP);
 
+    // Service-role gate: JWT callers are pinned to their own rows; the
+    // service-role key may pass any user_id or run globally; anon-key
+    // callers are rejected.
+    let filterUserId: string | null =
+      typeof body?.user_id === "string" ? body.user_id : null;
+    const { userId: authUserId, isServiceRole } = await resolveUserId(
+      req.headers.get("Authorization"),
+      supabase,
+      filterUserId,
+    );
+    if (!authUserId && !isServiceRole) {
+      return new Response(JSON.stringify({ error: "Authentication required" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    if (!isServiceRole) {
+      filterUserId = authUserId;
+    }
+
     let totalProcessed = 0;
     let totalErrors = 0;
     let remaining = 0;
@@ -55,12 +76,16 @@ serve(async (req) => {
       const batchLimit = Math.min(BATCH_SIZE, maxRows - totalProcessed - totalErrors);
 
       // Fetch uncounted rows (newest first — LIFBG pattern)
-      const { data: rows, error: fetchErr } = await supabase
+      let rowQuery = supabase
         .from("chat_turns")
         .select("id, content")
         .is("token_count", null)
         .order("created_at", { ascending: false })
         .limit(batchLimit);
+      if (filterUserId) {
+        rowQuery = rowQuery.eq("user_id", filterUserId);
+      }
+      const { data: rows, error: fetchErr } = await rowQuery;
 
       if (fetchErr) {
         throw new Error(`Failed to fetch rows: ${fetchErr.message}`);
@@ -99,10 +124,14 @@ serve(async (req) => {
     }
 
     // Count remaining
-    const { count: remainingCount } = await supabase
+    let remainingQuery = supabase
       .from("chat_turns")
       .select("*", { count: "exact", head: true })
       .is("token_count", null);
+    if (filterUserId) {
+      remainingQuery = remainingQuery.eq("user_id", filterUserId);
+    }
+    const { count: remainingCount } = await remainingQuery;
 
     remaining = remainingCount || 0;
 
