@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
     hasValidSession,
     decideEntryState,
+    decideImportResume,
     AUTH_SESSION_STORAGE_KEY,
 } from '../../src/history-import/onboarding-gate.js';
 
@@ -86,6 +87,21 @@ describe('decideEntryState', () => {
             session: null,
             nowSec: NOW_SEC,
         })).toBe('auth_required');
+    });
+});
+
+describe('decideImportResume', () => {
+    it('shows live progress when an import is in progress AND actively running', () => {
+        expect(decideImportResume({ hasInProgressImport: true, running: true })).toBe('show_progress');
+    });
+
+    it('auto-resumes when the DB says in progress but nothing is running (SW died)', () => {
+        expect(decideImportResume({ hasInProgressImport: true, running: false })).toBe('auto_resume');
+    });
+
+    it('does nothing when no import is in progress', () => {
+        expect(decideImportResume({ hasInProgressImport: false, running: false })).toBe('none');
+        expect(decideImportResume({ hasInProgressImport: false, running: true })).toBe('none');
     });
 });
 

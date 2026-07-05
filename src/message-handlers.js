@@ -856,6 +856,9 @@ export function registerMessageHandler(deps) {
             const config = await getApiConfig();
             const importer = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId, buildImporterAuth(config));
             const status = await importer.checkImportStatus(message.platform);
+            // Live truth: a DB 'in_progress' row with no active importer means
+            // the SW died mid-import — the modal offers resume in that case.
+            status.running = !!activeImporterRef.current && activeImporterRef.platform === message.platform;
             sendResponse({ success: true, status });
           } catch (error) {
             console.error('Check import status failed:', error);
@@ -880,6 +883,7 @@ export function registerMessageHandler(deps) {
             }
 
             activeImporterRef.current = new HistoryImporter(config.supabaseUrl, config.supabaseKey, config.userId, buildImporterAuth(config));
+            activeImporterRef.platform = message.platform;
 
             let fallbackTriggered = false;
 
@@ -904,6 +908,7 @@ export function registerMessageHandler(deps) {
             ).then(result => {
               sendResponse({ success: true, result });
               activeImporterRef.current = null;
+              activeImporterRef.platform = null;
               // Trigger post-import backfill chain
               chrome.alarms.create('backfillContextual', { delayInMinutes: 1 });
               chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 1.5 });
@@ -913,10 +918,12 @@ export function registerMessageHandler(deps) {
               if (fallbackTriggered) {
                 // Don't send error — modal is showing fallback ZIP upload UI
                 activeImporterRef.current = null;
+                activeImporterRef.platform = null;
                 return;
               }
               sendResponse({ success: false, error: error.message });
               activeImporterRef.current = null;
+              activeImporterRef.platform = null;
             });
 
           } catch (error) {
@@ -930,6 +937,7 @@ export function registerMessageHandler(deps) {
         if (activeImporterRef.current) {
           activeImporterRef.current.cancelImport();
           activeImporterRef.current = null;
+          activeImporterRef.platform = null;
         }
         sendResponse({ success: true });
         return true;

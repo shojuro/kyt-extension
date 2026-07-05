@@ -1,6 +1,6 @@
 import { parseZipExport } from '../src/history-import/zip-parser.js';
 import { validateExportFile } from '../src/history-import/validation.js';
-import { hasValidSession, decideEntryState, AUTH_SESSION_STORAGE_KEY } from '../src/history-import/onboarding-gate.js';
+import { hasValidSession, decideEntryState, decideImportResume, AUTH_SESSION_STORAGE_KEY } from '../src/history-import/onboarding-gate.js';
 
 // State machine
 const STATES = {
@@ -405,12 +405,23 @@ async function loadCompletedPlatforms() {
             if (response.success && response.status?.hasCompletedImport) {
                 completedPlatforms.add(platform);
             } else if (response.success && response.status?.hasInProgressImport) {
-                // Resume showing import progress for the in-progress platform
+                const action = decideImportResume({
+                    hasInProgressImport: true,
+                    running: !!response.status.running
+                });
                 selectedPlatform = platform;
-                isImporting = true;
-                setState(STATES.IMPORTING);
-                updateProgress(response.status.progress);
-                return; // Skip PLATFORM_SELECT — show active import
+                if (action === 'show_progress') {
+                    // Import is actively running in the SW — show live progress
+                    isImporting = true;
+                    setState(STATES.IMPORTING);
+                    updateProgress(response.status.progress);
+                } else {
+                    // SW died mid-import — restart; ProgressTracker resumes
+                    // from the DB checkpoint (lastConversationId)
+                    console.log(`[Import] Resuming interrupted ${platform} import`);
+                    startImport();
+                }
+                return; // Skip PLATFORM_SELECT
             }
         }
         updatePlatformButtons();

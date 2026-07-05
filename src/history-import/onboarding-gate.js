@@ -45,3 +45,20 @@ export function decideEntryState({ isFirstInstall, showOnboarding, session, nowS
     }
     return 'platform_select';
 }
+
+/**
+ * Decide what to do with a DB-reported in-progress import.
+ *
+ * MV3 service workers die on browser restart/crash; the DB row stays
+ * 'in_progress' but no import loop is running. `running` is the
+ * background's live truth (activeImporterRef) — when it's false the
+ * import was interrupted and should be resumed, not displayed as if
+ * it were still progressing.
+ *
+ * @param {{hasInProgressImport: boolean, running: boolean}} params
+ * @returns {'show_progress'|'auto_resume'|'none'}
+ */
+export function decideImportResume({ hasInProgressImport, running }) {
+    if (!hasInProgressImport) return 'none';
+    return running ? 'show_progress' : 'auto_resume';
+}
