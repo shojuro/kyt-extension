@@ -17,6 +17,7 @@
 import { syncViaEdgeFunction } from './edge-sync.js';
 import { getMemoryMode } from './memory-mode.js';
 import { getGeminiAuth, clearGeminiAuthCache, fetchConversationsSince, callBatchExecute } from './gemini-auth.js';
+import { POLL_WINDOW_MS, pollCutoffMs, filterMessagesToWindow } from './history-import/poll-window.js';
 
 // ── Storage Keys ─────────────────────────────────────────────
 
@@ -173,13 +174,17 @@ async function pollChatGPT(platformState) {
   let conversationsChecked = 0;
   let newestUpdateTime = platformState.lastUpdateTime;
 
+  // Checkpoint when set, else 90 days — first run must not walk all history
+  const convCutoffMs = pollCutoffMs(platformState.lastUpdateTime);
+  const msgCutoffMs = Date.now() - POLL_WINDOW_MS;
+
   for (const conv of conversations) {
     // Normalize update_time to ms
     let updateTime = conv.update_time;
     if (typeof updateTime === 'number' && updateTime < 10000000000) updateTime *= 1000;
 
-    // Stop when we reach conversations older than our checkpoint
-    if (platformState.lastUpdateTime && updateTime <= platformState.lastUpdateTime) {
+    // Stop when we reach conversations older than checkpoint/90d window
+    if (updateTime <= convCutoffMs) {
       break;
     }
 
@@ -199,7 +204,11 @@ async function pollChatGPT(platformState) {
         continue;
       }
       const convData = await convRes.json();
-      const messages = parseChatGPTConversation(convData, conv.title);
+      // A recently-updated conversation can hold years-old messages —
+      // enforce the 90-day window per message, like the manual importer.
+      const messages = filterMessagesToWindow(
+        parseChatGPTConversation(convData, conv.title), msgCutoffMs
+      );
 
       if (messages.length > 0) {
         await syncViaEdgeFunction(messages);
@@ -261,11 +270,15 @@ async function pollClaude(platformState) {
   let conversationsChecked = 0;
   let newestUpdateTime = platformState.lastUpdateTime;
 
+  // Checkpoint when set, else 90 days — first run must not walk all history
+  const convCutoffMs = pollCutoffMs(platformState.lastUpdateTime);
+  const msgCutoffMs = Date.now() - POLL_WINDOW_MS;
+
   for (const conv of conversations) {
     const updatedAt = new Date(conv.updated_at).getTime();
 
-    // Skip if older than checkpoint
-    if (platformState.lastUpdateTime && updatedAt <= platformState.lastUpdateTime) {
+    // Skip if older than checkpoint/90d window
+    if (updatedAt <= convCutoffMs) {
       continue;
     }
 
@@ -286,17 +299,20 @@ async function pollClaude(platformState) {
       const convData = await convRes.json();
       const chatMessages = convData.chat_messages || [];
 
-      const messages = chatMessages
-        .filter(m => m.text && m.text.trim().length > 0)
-        .map(m => ({
-          id: m.uuid,
-          conversationId: conv.uuid,
-          conversationTitle: conv.name || 'Untitled',
-          content: m.text.trim(),
-          role: m.sender === 'human' ? 'user' : 'assistant',
-          timestamp: new Date(m.created_at).getTime(),
-          platform: 'claude',
-        }));
+      const messages = filterMessagesToWindow(
+        chatMessages
+          .filter(m => m.text && m.text.trim().length > 0)
+          .map(m => ({
+            id: m.uuid,
+            conversationId: conv.uuid,
+            conversationTitle: conv.name || 'Untitled',
+            content: m.text.trim(),
+            role: m.sender === 'human' ? 'user' : 'assistant',
+            timestamp: new Date(m.created_at).getTime(),
+            platform: 'claude',
+          })),
+        msgCutoffMs
+      );
 
       if (messages.length > 0) {
         await syncViaEdgeFunction(messages);
@@ -358,14 +374,19 @@ async function pollGemini(ps) {
       const messages = await fetchGeminiConversationDetail(auth, conv.id);
 
       if (messages.length > 0) {
-        // Sync to Supabase
-        const turns = messages.map(m => ({
-          content: m.content,
-          role: m.role,
-          platform: 'gemini',
-          conversation_id: conv.id,
-          timestamp: m.timestamp || conv.timestamp,
-        }));
+        // Sync to Supabase — 90-day window enforced per message (Gemini
+        // detail responses often lack per-message timestamps; those fall
+        // back to the conversation timestamp before filtering)
+        const turns = filterMessagesToWindow(
+          messages.map(m => ({
+            content: m.content,
+            role: m.role,
+            platform: 'gemini',
+            conversation_id: conv.id,
+            timestamp: m.timestamp || conv.timestamp,
+          })),
+          Date.now() - NINETY_DAYS_MS
+        );
 
         await syncViaEdgeFunction(turns);
         totalNewTurns += turns.length;
