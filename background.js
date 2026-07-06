@@ -25,6 +25,7 @@ import { syncToSupabase, backfillNullEmbeddings, backfillNullChatTurnEmbeddings 
 import { prewarmEmbeddingModel } from './src/browser-search.js';
 import { queueProcessor } from './src/background/queue-processor.js';
 import { callEdgeFunction } from './src/api-client.js';
+import { backfillAuthReady } from './src/backfill-guard.js';
 import { HistoryImporter } from './src/history-import/index.js';
 import { refreshSession, refreshSessionWithLock, proactiveRefreshCheck, isAuthenticated, AUTH_SESSION_KEY, AUTH_EXPIRED_KEY } from './src/auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
@@ -999,6 +1000,9 @@ chrome.runtime.onInstalled.addListener((details) => {
     // the service worker hammers storage I/O + network while Chrome is still
     // loading tabs and painting UI.
     setTimeout(async () => {
+      // Signed out (or no legacy keys): the guard snoozes the alarm chain
+      // instead of throwing "Not authenticated" on every unpacked reload.
+      if (!(await backfillAuthReady('backfillEmbeddings', { allowLegacy: true }))) return;
       console.log('🔄 Extension update: starting embedding backfill (deferred 5min)...');
       try {
         const result = await backfillNullEmbeddings();
@@ -1190,6 +1194,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     case 'backfillEmbeddings':
       try {
+        if (!(await backfillAuthReady('backfillEmbeddings', { allowLegacy: true }))) break;
         console.log('⏰ Backfill retry alarm fired');
         const backfillResult = await backfillNullEmbeddings();
         console.log(`✅ Messages backfill: ${backfillResult.backfilled || 0} patched`);
@@ -1222,6 +1227,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
           console.log('⏸️ Contextual backfill PAUSED (kyt_backfill_paused=true).');
           break;
         }
+        if (!(await backfillAuthReady('backfillContextual'))) break;
         console.log('⏰ Contextual backfill alarm fired');
         const ctxResult = await callEdgeFunction('backfill_contextual', { limit: 20 }, { timeoutMs: 120000 });
         if (ctxResult.context_generated > 0) {
@@ -1241,14 +1247,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
       break;
 
-    case 'backfillEntities':
+    case 'backfillEntities': {
+      // Pause flag read OUTSIDE try — the catch references it, and a
+      // try-scoped const would ReferenceError there (killing the reschedule).
+      const { kyt_backfill_paused } = await chrome.storage.local.get('kyt_backfill_paused');
       try {
-        // Check pause flag — set via KYT_DEBUG.pauseBackfill() / resumeBackfill()
-        const { kyt_backfill_paused } = await chrome.storage.local.get('kyt_backfill_paused');
         if (kyt_backfill_paused) {
           console.log('⏸️ Entity backfill PAUSED (kyt_backfill_paused=true). Use KYT_DEBUG.resumeBackfill() to resume.');
           break;
         }
+        if (!(await backfillAuthReady('backfillEntities'))) break;
         console.log('⏰ Entity backfill alarm fired');
         const entResult = await callEdgeFunction('backfill_entities', { fast_mode: true, max_rows: 50 }, { timeoutMs: 120000 });
         console.log(`✅ Entity backfill: ${entResult.processed} processed, ${entResult.entities_created} entities, ${entResult.remaining} remaining`);
@@ -1262,9 +1270,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         }
       }
       break;
+    }
 
     case 'backfillGravity':
       try {
+        if (!(await backfillAuthReady('backfillGravity'))) break;
         console.log('⏰ Gravity backfill alarm fired');
         const gravResult = await callEdgeFunction('backfill_gravity', { fast_mode: true, max_rows: 50 }, { timeoutMs: 120000 });
         console.log(`✅ Gravity backfill: ${gravResult.classified} classified, ${gravResult.topics_set} topics set, ${gravResult.remaining} remaining`);
@@ -1279,6 +1289,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     case 'backfillEmotions':
       try {
+        if (!(await backfillAuthReady('backfillEmotions'))) break;
         console.log('⏰ Emotion backfill alarm fired');
         const emoResult = await callEdgeFunction('backfill_emotions', { fast_mode: true, max_rows: 50 }, { timeoutMs: 120000 });
         console.log(`✅ Emotion backfill: ${emoResult.classified} classified, ${emoResult.remaining} remaining`);
@@ -1293,6 +1304,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     case 'postImportBackfill':
       try {
+        if (!(await backfillAuthReady('postImportBackfill'))) break;
         console.log('⏰ Post-import backfill orchestrator fired');
         // Check if contextual backfill still has work
         const ctxCheck = await callEdgeFunction('backfill_contextual', { limit: 1 }, { timeoutMs: 120000 });
@@ -1330,6 +1342,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       try {
         const { kyt_backfill_paused: tcPaused } = await chrome.storage.local.get('kyt_backfill_paused');
         if (tcPaused) { console.log('⏸️ Token count backfill PAUSED'); break; }
+        if (!(await backfillAuthReady('backfillTokenCounts'))) break;
         console.log('⏰ Token count backfill alarm fired');
         const tcResult = await callEdgeFunction('backfill_token_counts', { max_rows: 50 }, { timeoutMs: 60000 });
         console.log(`✅ Token count backfill: ${tcResult.processed} processed, ${tcResult.remaining} remaining`);
