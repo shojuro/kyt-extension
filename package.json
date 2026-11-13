@@ -24,7 +24,6 @@
     "test:all": "vitest run && playwright test",
     "test:phase1": "playwright test validation/test_phase1_extension.spec.js",
     "test:phase2.5": "playwright test validation/test_phase2_5_diagnostic.spec.js",
-    "test:mobile-voice": "node tests/run_mobile_voice_tests.cjs",
     "validate": "node validation/verify_context_injection.js",
     "validate:all": "npm test && node validation/verify_context_injection.js",
     "search:interactive": "node validation/test_search_interactive.js",
