@@ -1,4 +1,5 @@
 import { test, describe } from 'node:test';
+import { getEffectivePassphrase } from '../src/lib/notebooklm-auth.js';
 import assert from 'node:assert/strict';
 
 import {
@@ -472,21 +473,25 @@ describe('notebooklm-auth: cookie header', () => {
 // ============================================================================
 
 describe('notebooklm-client: passphrase', () => {
-  test('hasPassphrase returns false initially or after clear', () => {
+  // With no explicit passphrase the client falls back to the machine's auto-key file or the
+  // NOTEBOOKLM_PASSPHRASE env var, so "cleared" means "whatever that fallback gives here".
+  const fallbackAvailable = getEffectivePassphrase(null) !== null;
+
+  test('after clear, hasPassphrase reflects only the auto-key / env fallback', () => {
     clearPassphrase();
-    assert.equal(hasPassphrase(), false);
+    assert.equal(hasPassphrase(), fallbackAvailable);
   });
 
   test('setPassphrase + hasPassphrase roundtrip', () => {
     setPassphrase('test-pass');
     assert.equal(hasPassphrase(), true);
     clearPassphrase();
-    assert.equal(hasPassphrase(), false);
+    assert.equal(hasPassphrase(), fallbackAvailable);
   });
 
-  test('setPassphrase with empty string = no passphrase', () => {
+  test('setPassphrase with empty string = no explicit passphrase', () => {
     setPassphrase('');
-    assert.equal(hasPassphrase(), false);
+    assert.equal(hasPassphrase(), fallbackAvailable);
     clearPassphrase();
   });
 });

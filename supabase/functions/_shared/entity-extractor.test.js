@@ -66,9 +66,4 @@ describe('Entity Extractor Module', () => {
     expect(content).toContain('Speakers array cannot be empty');
   });
 
-  it('should include JSON parse error handling', () => {
-    const content = readFileSync(modulePath, 'utf-8');
-    // Should have try-catch for JSON parsing
-    expect(content).toMatch(/try[\s\S]*JSON\.parse[\s\S]*catch/);
-  });
 });

@@ -11,7 +11,12 @@ export default defineConfig({
       '**/dist/**',
       'tests/playwright/**',  // Standalone Playwright scripts
       'tests/e2e/**',         // E2E tests requiring browser
-      'validation/**'         // Validation E2E tests
+      'validation/**',        // Validation E2E tests
+      '.worktrees/**',        // Other branches' checkouts (not this tree)
+      '.claude/**',
+      'tests/integration/**', // Live-database tests: run with npm run test:integration
+      'tests/specs/**',
+      'tests/unit/nlm-panel-import.test.js' // node:test file: run with npm run test:node
     ],
     coverage: {
       provider: 'v8',

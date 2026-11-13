@@ -17,6 +17,10 @@ export default [
   {
     ignores: [
       'node_modules/**',
+      '.worktrees/**',            // other branches' checkouts
+      '.claude/**',
+      'docs/codebase-sources/**', // generated NotebookLM upload bundle
+      'mcp/node_modules/**',
       'dist/**',
       'build/**',
       'coverage/**',
@@ -128,6 +132,8 @@ export default [
       'cli/**/*.js',
       'scripts/**/*.js',
       'migrations/**/*.js',
+      'mcp/**/*.js',              // MCP server, hooks and node:test files
+      '*.config.js',
     ],
     languageOptions: {
       globals: {

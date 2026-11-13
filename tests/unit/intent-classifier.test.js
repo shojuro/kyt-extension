@@ -377,9 +377,17 @@ describe('Classification Logic', () => {
   });
 
   it('generic question with no personal signal → PASSIVE 0.60', () => {
-    const r = classify('What are the best practices for API design?');
+    const r = classify('What are the best ways to cook rice?');
     expect(r.intent).toBe('PASSIVE');
     expect(r.confidenceThreshold).toBe(0.60);
+    expect(r.reason).toBe('generic_question');
+  });
+
+  it('generic technical question → QUERY 0.45 (technical recall, since f20c23c)', () => {
+    const r = classify('What are the best practices for API design?');
+    expect(r.intent).toBe('QUERY');
+    expect(r.confidenceThreshold).toBe(0.45);
+    expect(r.reason).toBe('technical_recall');
   });
 
   it('substantive statement with no signals → PASSIVE 0.60', () => {
