@@ -861,7 +861,7 @@ async function reInjectContentScripts() {
         });
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          files: ['platforms/claude/content_test.js'],
+          files: ['platforms/claude/proto-edit.js', 'platforms/claude/content_test.js'],
           world: 'MAIN'
         });
         await chrome.scripting.executeScript({

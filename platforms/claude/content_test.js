@@ -685,6 +685,70 @@ window.fetch = async function(...args) {
     return response;
   }
 
+  // Send-message request, protobuf format (claude.ai since late 2026).
+  // Layout and editing rules live in proto-edit.js (KYT_ClaudeProto).
+  if (window.KYT_ClaudeProto && window.KYT_ClaudeProto.isSendUrl(urlString) && options && options.body) {
+    try {
+      const send = window.KYT_ClaudeProto.readSend(options.body);
+      if (!send) {
+        // Other actions share this endpoint and carry no prompt. An unreadable
+        // body type (not bytes) also lands here: say which, once per request.
+        const bodyType = options.body?.constructor?.name || typeof options.body;
+        if (!(options.body instanceof Uint8Array) && !(options.body instanceof ArrayBuffer) && !ArrayBuffer.isView(options.body)) {
+          console.warn('⚠️ KYT Claude: Send body is not binary, cannot read prompt (type: ' + bodyType + ')');
+        }
+      } else {
+        console.log('🟢 KYT Claude: Intercepted send (protobuf), prompt length:', send.prompt.length);
+
+        // PHASE 1: Context injection. getAndInjectContext speaks the old JSON
+        // shape ({ prompt }), so wrap the prompt for it and unwrap the result.
+        try {
+          const injectedJson = await getAndInjectContext(JSON.stringify({ prompt: send.prompt }));
+          const injectedPrompt = JSON.parse(injectedJson).prompt;
+          if (typeof injectedPrompt === 'string' && injectedPrompt !== send.prompt) {
+            const rebuilt = window.KYT_ClaudeProto.replacePrompt(options.body, injectedPrompt);
+            if (rebuilt) {
+              options.body = rebuilt;
+              console.log('✅ KYT Claude: Context injected into send (protobuf), new prompt length:', injectedPrompt.length);
+            } else {
+              console.warn('⚠️ KYT Claude: Could not rebuild send body, sending the original');
+            }
+          } else {
+            console.log('ℹ️ KYT Claude: No context to inject for this send');
+          }
+        } catch (error) {
+          console.error('❌ KYT Claude: Pre-send context injection failed (protobuf):', error);
+        }
+
+        // PHASE 2: Capture the user's own message (never the injected text).
+        const messageData = {
+          content: stripInjectionBlock(send.prompt),
+          role: 'user',
+          conversationId: send.conversationId,
+          model: send.model || 'claude-unknown',
+          timestamp: Date.now(),
+          messageId: `msg_${send.conversationId}_${Date.now()}`,
+          platform: 'claude',
+          url: urlString
+        };
+        let shouldCapture = true; // fail-open
+        try {
+          shouldCapture = window.KYT_Deduplicator.shouldCapture(messageData.content, 'fetch', messageData.messageId);
+        } catch (dedupeError) {
+          console.error('❌ KYT Claude: Deduplication error, capturing anyway:', dedupeError);
+        }
+        if (shouldCapture) {
+          window.dispatchEvent(new CustomEvent('KYT_MESSAGE_CAPTURED', { detail: messageData }));
+          console.log('🟢 KYT Claude: Message captured (protobuf send)');
+        } else {
+          console.log('⏭️ KYT Claude: Duplicate message skipped by deduplicator');
+        }
+      }
+    } catch (error) {
+      console.error('🟢 KYT Claude: Error processing protobuf send:', error);
+    }
+  }
+
   // Check if this is a Claude message completion request
   if (typeof url === 'string' && url.includes('/chat_conversations/') && url.includes('/completion') && !url.includes('/completion_status')) {
     console.log('🟢 KYT Claude: Intercepted completion request:', url);

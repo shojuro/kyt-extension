@@ -68,6 +68,7 @@
         "https://claude.ai/*"
       ],
       "js": [
+        "platforms/claude/proto-edit.js",
         "platforms/claude/content_test.js"
       ],
       "run_at": "document_start",
