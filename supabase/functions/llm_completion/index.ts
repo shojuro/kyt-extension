@@ -7,7 +7,7 @@
 // and receive generated text or parsed JSON.
 //
 // Providers:
-//   - "anthropic" (default): Claude Haiku 4.5 — used by server-side modules
+//   - "anthropic" (default): Claude Haiku (ANTHROPIC_MODEL in _shared/anthropic-model.ts) — used by server-side modules
 //   - "openai": GPT-4.1-mini — used by client-side HyDE/gravity (cost optimization)
 //
 // Used by: hyde-search-generator.js, hyde-preprocessor.js, gravity-scorer.js
@@ -17,9 +17,9 @@
 //   - user (required): User prompt
 //   - provider (optional): "anthropic" | "openai", default "anthropic"
 //   - model (optional): Model override (e.g. "gpt-4.1-mini"). If omitted, uses provider default.
-//   - temperature (optional): 0.0-1.0, default 0.0
+//   - temperature (optional): 0.0-1.0, default 0.0 (OpenAI only: Claude Haiku 5.5 rejects sampling parameters, so it is not sent)
 //   - max_tokens (optional): default 300
-//   - json_mode (optional): if true, returns JSON (Anthropic: prefill trick, OpenAI: response_format)
+//   - json_mode (optional): if true, returns JSON (Anthropic: instruction + first JSON object in the reply, OpenAI: response_format)
 //   - operation (optional): cost tracking label (e.g. 'hyde_search', 'hyde_index', 'gravity_scoring')
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";

@@ -23,6 +23,7 @@ import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
 import type { ClientContext } from "../_shared/anthropic-client.ts";
 import { securityHeaders } from "../_shared/headers.ts";
 import { resolveUserId } from "../_shared/auth-helpers.ts";
+import { ANTHROPIC_EFFORT, ANTHROPIC_MESSAGES_URL, ANTHROPIC_MODEL, ANTHROPIC_VERSION, effectiveMaxTokens } from "../_shared/anthropic-model.ts";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -147,19 +148,20 @@ serve(async (req) => {
       console.log(`ANTHROPIC_API_KEY preview: ${keyPreview}`);
       // Direct raw Anthropic API call (bypasses error swallowing)
       try {
-        const rawResponse = await fetch("https://api.anthropic.com/v1/messages", {
+        const rawResponse = await fetch(ANTHROPIC_MESSAGES_URL, {
           method: "POST",
           headers: {
             "x-api-key": anthropicApiKey,
-            "anthropic-version": "2023-06-01",
+            "anthropic-version": ANTHROPIC_VERSION,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            model: "claude-haiku-4-5-20251001",
-            // Also try: "claude-3-5-haiku-20241022"
+            model: ANTHROPIC_MODEL,
             system: "You are a test. Reply with exactly: OK",
             messages: [{ role: "user", content: "test" }],
-            max_tokens: 10,
+            // Thinking shares max_tokens on Haiku 5.5: 10 could end before any text.
+            max_tokens: effectiveMaxTokens(ANTHROPIC_MODEL, 10),
+            output_config: { effort: ANTHROPIC_EFFORT },
           }),
         });
         const rawBody = await rawResponse.text();

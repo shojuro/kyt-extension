@@ -1,17 +1,33 @@
 /**
  * Anthropic Client for K.Y.T. LLM Operations
  *
- * Unified client for Claude Haiku 4.5 chat completions.
- * Used across all server-side LLM call sites: intent classification,
- * HyDE generation, context generation, memory classification, entity extraction.
+ * Unified client for Claude Haiku chat completions (model id: ANTHROPIC_MODEL in
+ * anthropic-model.ts). Used across all server-side LLM call sites: intent
+ * classification, HyDE generation, context generation, memory classification,
+ * entity extraction.
  *
- * Supports both text and JSON completions (via prefill trick).
+ * The request body, reply reading and prices live in anthropic-model.ts, which
+ * is pure and unit-tested (tests/unit/anthropic-model.test.js).
  */
 
 import { retryWrapper, CostMonitor, Logger } from "./utils.ts";
+import {
+    ANTHROPIC_MODEL,
+    ANTHROPIC_MESSAGES_URL,
+    ANTHROPIC_VERSION,
+    AnthropicReplyError,
+    type AnthropicUsage,
+    assertNotRefused,
+    buildMessagesBody,
+    estimateCostUsd,
+    firstText,
+    readJsonReply,
+} from "./anthropic-model.ts";
 
 export interface CompletionOptions {
+    /** Ignored by models that reject sampling parameters (Haiku 5.5). */
     temperature?: number;
+    /** Size of the answer wanted. The request adds room for thinking on top. */
     maxTokens?: number;
     maxRetries?: number;
     timeoutMs?: number;
@@ -24,11 +40,17 @@ export interface ClientContext {
     edgeFunction?: string;
 }
 
+interface MessagesResponse {
+    content?: unknown;
+    stop_reason?: string;
+    usage?: AnthropicUsage;
+}
+
 export class AnthropicClient {
     private apiKey: string;
     private context: ClientContext;
-    private static readonly MODEL = "claude-haiku-4-5-20251001";
-    private static readonly API_URL = "https://api.anthropic.com/v1/messages";
+    private static readonly MODEL = ANTHROPIC_MODEL;
+    private static readonly API_URL = ANTHROPIC_MESSAGES_URL;
 
     constructor(apiKey: string, context: ClientContext = {}) {
         this.apiKey = apiKey;
@@ -36,13 +58,55 @@ export class AnthropicClient {
     }
 
     /**
+     * One Messages API call, retried on API and network errors only. What the
+     * caller does with the reply (parsing) happens outside the retry, so an
+     * unusable reply is not paid for again.
+     */
+    private callMessages(
+        body: Record<string, unknown>,
+        retry: { maxRetries: number; timeoutMs: number },
+        operation: string,
+        requestId?: string
+    ): Promise<MessagesResponse> {
+        return retryWrapper(async () => {
+            const response = await fetch(AnthropicClient.API_URL, {
+                method: "POST",
+                headers: {
+                    "x-api-key": this.apiKey,
+                    "anthropic-version": ANTHROPIC_VERSION,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(body),
+                // Cancel the request when the retry wrapper gives up on it, so an
+                // abandoned attempt does not keep generating.
+                signal: AbortSignal.timeout(retry.timeoutMs)
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Anthropic API Error: ${response.status} - ${errorText}`);
+            }
+
+            const data = await response.json() as MessagesResponse;
+
+            // Fire-and-forget: cost logging must never block the completion
+            this.logCost(data, operation, requestId).catch(err =>
+                Logger.warn(`Cost logging failed (non-fatal): ${err.message}`, { requestId })
+            );
+
+            return data;
+        }, { maxRetries: retry.maxRetries, baseDelayMs: 300, timeoutMs: retry.timeoutMs });
+    }
+
+    /**
      * Generate a text completion via the Anthropic Messages API.
      *
      * @param systemPrompt - System message for the model
      * @param userPrompt - User message
-     * @param options - Generation options (temperature, maxTokens, retries, timeout, operation)
+     * @param options - Generation options (maxTokens, retries, timeout, operation)
      * @param requestId - Request ID for tracing
      * @returns Generated text content
+     * @throws AnthropicReplyError (kind "refusal") when the model declines
      */
     async generateCompletion(
         systemPrompt: string,
@@ -58,56 +122,34 @@ export class AnthropicClient {
             operation = "completion",
         } = options;
 
-        return retryWrapper(async () => {
-            const response = await fetch(AnthropicClient.API_URL, {
-                method: "POST",
-                headers: {
-                    "x-api-key": this.apiKey,
-                    "anthropic-version": "2023-06-01",
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    model: AnthropicClient.MODEL,
-                    system: options.enableCache
-                        ? [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }]
-                        : systemPrompt,
-                    messages: [
-                        { role: "user", content: userPrompt }
-                    ],
-                    temperature,
-                    max_tokens: maxTokens
-                })
-            });
+        const data = await this.callMessages(
+            buildMessagesBody({ systemPrompt, userPrompt, maxTokens, temperature, enableCache: options.enableCache }),
+            { maxRetries, timeoutMs },
+            operation,
+            requestId
+        );
 
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Anthropic API Error: ${response.status} - ${errorText}`);
-            }
-
-            const data = await response.json();
-            const content = data.content?.[0]?.text?.trim() || "";
-
-            // Fire-and-forget: cost logging must never block the completion
-            this.logCost(data, operation, requestId).catch(err =>
-                Logger.warn(`Cost logging failed (non-fatal): ${err.message}`, { requestId })
-            );
-
-            return content;
-        }, { maxRetries, baseDelayMs: 300, timeoutMs });
+        assertNotRefused(data);
+        const content = firstText(data.content).trim();
+        if (!content && data.stop_reason === "max_tokens") {
+            Logger.warn("Anthropic reply hit max_tokens before any text", { requestId, operation });
+        }
+        return content;
     }
 
     /**
-     * Generate a JSON completion using the Anthropic prefill trick.
+     * Generate a JSON completion.
      *
-     * Sends an assistant prefill message starting with '{', then prepends '{'
-     * to the response and parses as JSON. This forces structured JSON output
-     * without needing a response_format parameter.
+     * The system prompt asks for a single JSON object (no assistant prefill:
+     * Haiku 5.5 rejects it), and the first complete object in the reply is
+     * parsed, so prose or a code fence around it does not fail the call.
      *
      * @param systemPrompt - System message for the model
      * @param userPrompt - User message
      * @param options - Generation options
      * @param requestId - Request ID for tracing
      * @returns Parsed JSON object
+     * @throws AnthropicReplyError when the reply is a refusal, cut off, empty or not JSON
      */
     async generateJsonCompletion<T = Record<string, unknown>>(
         systemPrompt: string,
@@ -123,60 +165,27 @@ export class AnthropicClient {
             operation = "json_completion",
         } = options;
 
-        return retryWrapper(async () => {
-            const response = await fetch(AnthropicClient.API_URL, {
-                method: "POST",
-                headers: {
-                    "x-api-key": this.apiKey,
-                    "anthropic-version": "2023-06-01",
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    model: AnthropicClient.MODEL,
-                    system: options.enableCache
-                        ? [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }]
-                        : systemPrompt,
-                    messages: [
-                        { role: "user", content: userPrompt },
-                        { role: "assistant", content: "{" }
-                    ],
-                    temperature,
-                    max_tokens: maxTokens
-                })
+        const data = await this.callMessages(
+            buildMessagesBody({ systemPrompt, userPrompt, maxTokens, temperature, enableCache: options.enableCache, json: true }),
+            { maxRetries, timeoutMs },
+            operation,
+            requestId
+        );
+
+        try {
+            return readJsonReply<T>(data);
+        } catch (e) {
+            Logger.warn("JSON parse failed from Anthropic response", {
+                requestId,
+                operation,
+                kind: e instanceof AnthropicReplyError ? e.kind : "unknown",
+                stopReason: data.stop_reason,
+                outputTokens: data.usage?.output_tokens,
+                preview: firstText(data.content).substring(0, 200),
+                error: (e as Error).message,
             });
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Anthropic API Error: ${response.status} - ${errorText}`);
-            }
-
-            const data = await response.json();
-            const rawContent = data.content?.[0]?.text || "";
-
-            // Prepend the '{' we used as prefill
-            const jsonString = "{" + rawContent;
-
-            // Diagnostic: log raw response for classifier debugging
-            if (operation === 'memory_classification') {
-                console.log(`[anthropic] ${operation}: status=${response.status}, stop=${data.stop_reason}, rawLen=${rawContent.length}, preview=${jsonString.substring(0, 150)}`);
-            }
-
-            // Fire-and-forget: cost logging must never block the completion
-            this.logCost(data, operation, requestId).catch(err =>
-                Logger.warn(`Cost logging failed (non-fatal): ${err.message}`, { requestId })
-            );
-
-            try {
-                return JSON.parse(jsonString) as T;
-            } catch (e) {
-                Logger.warn("JSON parse failed from Anthropic response", {
-                    requestId,
-                    preview: jsonString.substring(0, 200),
-                    error: (e as Error).message,
-                });
-                throw new Error(`Failed to parse JSON from Anthropic response: ${(e as Error).message}`);
-            }
-        }, { maxRetries, baseDelayMs: 300, timeoutMs });
+            throw e;
+        }
     }
 
     /**
@@ -188,7 +197,7 @@ export class AnthropicClient {
             method: "POST",
             headers: {
                 "x-api-key": this.apiKey,
-                "anthropic-version": "2023-06-01",
+                "anthropic-version": ANTHROPIC_VERSION,
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
@@ -206,9 +215,10 @@ export class AnthropicClient {
 
     /**
      * Log API usage cost to the cost_tracking table.
+     * Thinking tokens are part of usage.output_tokens and are priced as output.
      */
     private async logCost(
-        data: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
+        data: { usage?: AnthropicUsage },
         operation: string,
         requestId?: string
     ): Promise<void> {
@@ -217,12 +227,7 @@ export class AnthropicClient {
         const cacheCreationTokens = data.usage?.cache_creation_input_tokens || 0;
         const cacheReadTokens = data.usage?.cache_read_input_tokens || 0;
 
-        // Haiku 4.5 pricing: $1.00/MTok input, $5.00/MTok output, $1.25/MTok cache write, $0.10/MTok cache read
-        const estimatedCost =
-            (inputTokens * 0.000001) +
-            (outputTokens * 0.000005) +
-            (cacheCreationTokens * 0.00000125) +
-            (cacheReadTokens * 0.0000001);
+        const estimatedCost = estimateCostUsd(AnthropicClient.MODEL, data.usage);
 
         await CostMonitor.logUsage({
             service: "anthropic",
