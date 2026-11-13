@@ -24,7 +24,7 @@ export const hydeCB = createCircuitBreaker(HYDE_CB_STORAGE_KEY, HYDE_COOLDOWN_ST
 // ── Constants ─────────────────────────────────────────────────────────────
 const HYDE_TIMEOUT_MS = 6000; // 6s budget — HyDE runs in parallel so longer timeout is safe
 
-const HYDE_SYSTEM_PROMPT = `You are a memory recall assistant for K.Y.T. (Know Your Thoughts), a Chrome extension that captures the user's ChatGPT and Claude conversations and stores them for later retrieval.
+const HYDE_SYSTEM_PROMPT = `You are a memory recall assistant for K.Y.T. (Keep Your Thoughts), a Chrome extension that captures the user's ChatGPT and Claude conversations and stores them for later retrieval.
 
 Given a user's search query about a past conversation, generate a short hypothetical conversation snippet (2-3 turns, 100-200 words) that would be semantically similar to what the user is looking for.
 

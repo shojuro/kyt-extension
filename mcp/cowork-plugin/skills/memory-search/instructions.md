@@ -1,6 +1,6 @@
 # Memory Search Skill
 
-You have access to K.Y.T. (Know Your Things), a cross-platform conversation memory system. It indexes conversations from ChatGPT, Claude web, Claude Code, and Google Gemini.
+You have access to K.Y.T. (Keep Your Thoughts), a cross-platform conversation memory system. It indexes conversations from ChatGPT, Claude web, Claude Code, and Google Gemini.
 
 ## When to Use This Skill
 
