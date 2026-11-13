@@ -112,6 +112,14 @@ const MEMORY_STRONG = [
   /\b(my\s+favorite|my\s+preference|I\s+(like|love|hate|prefer|dislike))\b/i,
   /\b(we\s+(talked|discussed|decided|agreed|mentioned))\b/i,
   /\b(from\s+(our|my)\s+(conversation|chat|discussion|session))\b/i,
+  // "based on our past conversations", "according to our previous chats"
+  /\b((from|based\s+on|according\s+to)\s+(our|my)\s+(past|previous|earlier|prior|last)\s+(conversation|chat|discussion|session)s?)\b/i,
+  // "what have I told you about...", "what have we said about..."
+  /\b(what\s+(have|had)\s+(I|we)\s+(said|told|discussed|decided|talked\s+about|agreed|mentioned|shared|covered))\b/i,
+  // "of the things that we have discussed...", "out of everything we talked about..."
+  /\b((of|from|among|out\s+of)\s+(all\s+)?(the\s+)?(things|stuff|topics|everything)\s+(that\s+)?(we|I)('ve|\s+have|\s+had)?\s+(discussed|talked\s+about|covered|mentioned|said|told\s+you))\b/i,
+  // "what are the two projects I said I want to combine", "what was the name of the place I mentioned"
+  /^(what|which|who|where|when)\s+(is|are|was|were)\s+(the|that|those|these)\b[^.?!]*\b(I|we)\s+(said|told\s+you|mentioned|talked\s+about|discussed|decided|agreed)\b/i,
   /\b(what\s+(do|did)\s+you\s+know\s+about\s+me)\b/i,
   /\b(based\s+on\s+what\s+(you\s+know|we'?ve\s+discussed))\b/i,
   /\b(where\s+do\s+I\s+(live|work|study))\b/i,
