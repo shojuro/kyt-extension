@@ -1100,6 +1100,47 @@
   };
 
   XMLHttpRequest.prototype.send = function (body) {
+    // Session-channel send (gemini since late 2026): the prompt travels as a
+    // base64 protobuf form parameter to another host. Layout and editing
+    // rules live in session-edit.js (KYT_GeminiSession).
+    const sessionApi = window.KYT_GeminiSession;
+    if (this.__kytMethod === 'POST' && sessionApi && sessionApi.isSessionUrl(this.__kytUrl)) {
+      let sessionSend = null;
+      try {
+        sessionSend = typeof body === 'string' ? sessionApi.readSend(body) : null;
+      } catch (_) {
+        sessionSend = null;
+      }
+      if (!sessionSend) {
+        // Setup, acknowledgement and close messages carry no prompt.
+        return originalXHRSend.apply(this, arguments);
+      }
+
+      console.log('🟢 KYT Gemini: Intercepted send (session channel), prompt length: ' + sessionSend.prompt.length);
+      scrapeAllUncaptured(lastSeenConversationId, true);
+      dispatchCapture(sessionSend.prompt, 'user', 'xhr', lastSeenConversationId);
+
+      // Context injection: defer this one send until context resolves (fail-open).
+      const sessionXhr = this;
+      requestContext(sessionSend.prompt).then(function (formattedContext) {
+        if (formattedContext) {
+          const modified = sessionApi.replacePrompt(body, formattedContext + '\n\n' + sessionSend.prompt);
+          if (modified) {
+            console.log('💉 KYT Gemini: Context injected into send (session channel)');
+            originalXHRSend.call(sessionXhr, modified);
+            return;
+          }
+          console.warn('⚠️ KYT Gemini: Could not rebuild send body, sending the original');
+        } else {
+          console.log('ℹ️ KYT Gemini: No context to inject for this send');
+        }
+        originalXHRSend.call(sessionXhr, body);
+      }).catch(function () {
+        originalXHRSend.call(sessionXhr, body);
+      });
+      return;
+    }
+
     // Only intercept POST to gemini.google.com
     if (this.__kytMethod !== 'POST' || !isGeminiDomain(this.__kytUrl)) {
       return originalXHRSend.apply(this, arguments);

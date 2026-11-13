@@ -50,7 +50,18 @@
   // MAIN WORLD SCRIPT INJECTION
   // ═══════════════════════════════════════════════════════════════════════
 
+  // Send-request reader/editor used by inject.js (looked up at send time).
+  const sessionEditScript = document.createElement('script');
+  sessionEditScript.src = chrome.runtime.getURL('platforms/gemini/session-edit.js');
+  sessionEditScript.async = false;
+  sessionEditScript.onload = function () { this.remove(); };
+  sessionEditScript.onerror = function () {
+    console.error('❌ KYT Gemini Content: Failed to load session-edit.js');
+  };
+  (document.head || document.documentElement).appendChild(sessionEditScript);
+
   const injectScript = document.createElement('script');
+  injectScript.async = false;
   injectScript.src = chrome.runtime.getURL('platforms/gemini/inject.js');
   injectScript.onload = function () {
     console.log('✅ KYT Gemini Content: inject.js loaded into page context');

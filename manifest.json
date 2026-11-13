@@ -132,7 +132,8 @@
     },
     {
       "resources": [
-        "platforms/gemini/inject.js"
+        "platforms/gemini/inject.js",
+        "platforms/gemini/session-edit.js"
       ],
       "matches": [
         "https://gemini.google.com/*"
