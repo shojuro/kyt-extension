@@ -291,7 +291,7 @@ export class GeminiFetcher {
                     if (target) target.scrollTo({ top: 0, behavior: 'auto' });
                 }
 
-                return { scrolled: true, finalCount: finalEntries.length };
+                return { scrolled: true, finalCount: Math.max(finalButtons.length, finalLinks.length) };
             },
             args: [],
         });

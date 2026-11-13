@@ -63,8 +63,8 @@ export async function executeScript(options) {
 export async function launchAuthFlow(options) {
   if (isFirefox) {
     // Firefox 120+ supports browser.identity.launchWebAuthFlow
-    if (typeof browser !== 'undefined' && browser.identity?.launchWebAuthFlow) {
-      return browser.identity.launchWebAuthFlow(options);
+    if (typeof browser !== 'undefined' && globalThis.browser.identity?.launchWebAuthFlow) {
+      return globalThis.browser.identity.launchWebAuthFlow(options);
     }
     // Fallback: open auth URL in a new tab, listen for redirect
     return new Promise((resolve, reject) => {

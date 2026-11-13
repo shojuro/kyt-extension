@@ -524,6 +524,8 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
     } catch (_) {}
 
     let contextItems = [];
+    // Declared here (not inside the try) because the platform fallbacks below also scope by project.
+    let activeProjectId = null;
 
     try {
       // Use transformed query if available, otherwise original
@@ -532,7 +534,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
       console.log(`🔍 Context Retrieval: Using query "${queryToUse}"`);
 
       // Get active project for scoped search
-      const { id: activeProjectId } = await getActiveProject();
+      ({ id: activeProjectId } = await getActiveProject());
 
       // ─── Test mode path: use SECURITY DEFINER RPC (bypasses RLS) ───
       if (apiConfig._testMode) {

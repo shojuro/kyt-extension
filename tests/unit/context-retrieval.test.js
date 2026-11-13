@@ -349,6 +349,38 @@ describe('getContextForInjection pipeline', () => {
     expect(searchViaEdgeFunction).toHaveBeenCalled();
   });
 
+  it('test 19b: temporal+platform fallback fetches recent items from the named platform', async () => {
+    const { scoreTemporalReference } = await import('../../src/intent-classifier.js');
+    vi.mocked(scoreTemporalReference).mockReturnValue(0.9);
+    vi.mocked(getRoutingMode).mockResolvedValue('edge');
+    vi.mocked(getApiConfig).mockResolvedValue({
+      userId: 'test-user-id',
+      accessToken: 'test-token',
+      disableQueryTransformation: true,
+    });
+    // Main search finds only a Claude item; the fallback should then ask for Gemini items.
+    vi.mocked(searchViaEdgeFunction).mockImplementation(async (_q, opts = {}) =>
+      opts.recentByPlatform
+        ? [{ id: 'gem-1', content: 'gemini memory', similarity: 0.7, platform: 'gemini', source: 'gemini' }]
+        : [{ id: 'cl-1', content: 'claude memory', similarity: 0.8, platform: 'claude', source: 'claude', rerank_score: 0.8 }]
+    );
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => [], text: async () => '[]' });
+
+    try {
+      await getContextForInjection(
+        'what did I discuss on Gemini yesterday about distributed systems',
+        { disableQueryTransformation: true },
+        {}
+      );
+    } finally {
+      vi.mocked(scoreTemporalReference).mockReturnValue({ score: 0 });
+    }
+
+    const fallbackCall = vi.mocked(searchViaEdgeFunction).mock.calls.find(([, o]) => o?.recentByPlatform);
+    expect(fallbackCall).toBeDefined();
+    expect(fallbackCall[1].recentByPlatform).toBe('gemini');
+  });
+
   it('test 20: successful pipeline result contains a diagnostics object', async () => {
     vi.mocked(getApiConfig).mockResolvedValue({
       userId: 'test-user-id',
