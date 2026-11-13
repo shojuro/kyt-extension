@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import { detectIsQuestionText } from "../_shared/question-detector.ts";
 import { HuggingFaceClient } from '../_shared/huggingface-client.ts';
 import { extractEntities, saveEntitiesWithMentions, savePreferences } from '../_shared/entity-extractor.ts';
 import { classifyMemory } from '../_shared/memory-classifier.ts';
@@ -116,18 +117,10 @@ serve(async (req) => {
             return rateLimitResponse(corsHeaders);
         }
 
-        // Question detection heuristic — duplicated from background.js INTERROGATIVE_RE
-        // (edge functions can't import from extension code)
-        // Expanded: imperative request patterns (list/show/find/etc.) + short-content heuristic
-        const INTERROGATIVE_RE = /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember|list|name|give|show|find|get|provide|suggest|recommend|describe|explain|identify|compare|summarize|rank|top (?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))\b/i;
+        // Question detection: rule lives in _shared/question-detector.ts
         function detectIsQuestion(turn: any): boolean {
             if (turn.role !== 'user') return false;
-            const text = (turn.content || '').trim();
-            if (text.endsWith('?')) return true;
-            if (INTERROGATIVE_RE.test(text)) return true;
-            // Short user prompts without assertions are likely requests/questions
-            if (text.length < 60 && !text.includes('.') && !text.includes('!')) return true;
-            return false;
+            return detectIsQuestionText(turn.content);
         }
 
         // Deflection detection — assistant responses that dodge/deflect rather than answer

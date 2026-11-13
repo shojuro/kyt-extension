@@ -10,6 +10,7 @@
  * @see CLAUDE.md - Anti-Theater Rules (this is REAL implementation)
  */
 
+import { detectIsQuestionText } from "../_shared/question-detector.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { messagesToTurnChunks, type RawMessage, type TurnChunk } from '../_shared/conversation-chunker.ts';
 import { generateHypotheticalDocument } from '../_shared/hyde-generator.ts';
@@ -80,7 +81,6 @@ function filterTo90Days(messages: RawMessage[]): RawMessage[] {
 // Question / Deflection Detection (copied from save_chat_turn_batch)
 // =============================================================================
 
-const INTERROGATIVE_RE = /^(what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|would|will|shall|should|have|has|had|tell me|remind me|do you know|do you remember|list|name|give|show|find|get|provide|suggest|recommend|describe|explain|identify|compare|summarize|rank|top (?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))\b/i;
 
 const DEFLECTION_RE = /(?:I don'?t (?:have|think|recall|remember|see|know)|I'?m not (?:really |entirely |exactly )?sure (?:really |entirely |exactly )?(?:what|how|if|about|which|when|where|why)|I can'?t (?:find|recall|remember|see)|no (?:specific|particular|clear).{0,30}(?:record|memory|data|information)|not (?:aware|certain) (?:of|about|whether)|could you (?:give|provide|share)|can you (?:give|provide|share))/i;
 
@@ -89,12 +89,7 @@ const DEFLECTION_RE = /(?:I don'?t (?:have|think|recall|remember|see|know)|I'?m 
  * Returns true if the content looks like a question/request.
  */
 function detectIsQuestion(content: string): boolean {
-  const text = (content || '').trim();
-  if (text.endsWith('?')) return true;
-  if (INTERROGATIVE_RE.test(text)) return true;
-  // Short content without assertions → likely a request/question
-  if (text.length < 60 && !text.includes('.') && !text.includes('!')) return true;
-  return false;
+  return detectIsQuestionText(content);
 }
 
 /**
