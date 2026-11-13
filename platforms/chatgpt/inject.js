@@ -238,6 +238,9 @@
       // Matches both Claude format ("talked about things like this before") and Gemini format ("mentioned some of these topics before")
       const naturalLangPattern = /\(For context: I've (?:talked about things like this before|mentioned some of these topics before)[\s\S]*?(?:I'm sharing these so you have the full picture[^)]*|Do not add specific dates[^)]*)\)\s*(?:---\s*)?/g;
 
+      // Pattern 6: "nothing found" note (buildNoMemoryNote)
+      const noMemoryNotePattern = /\(K\.Y\.T\. memory check:[^)]*\)\s*(?:---\s*)?/g;
+
       let cleaned = content;
 
       // Apply all patterns
@@ -246,6 +249,7 @@
       cleaned = cleaned.replace(standaloneMarkers, '');
       cleaned = cleaned.replace(separatorPattern, '');
       cleaned = cleaned.replace(naturalLangPattern, '');
+      cleaned = cleaned.replace(noMemoryNotePattern, '');
 
       // Clean up excessive whitespace/newlines left by removals
       cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
@@ -309,7 +313,8 @@
             // Look for the start of injection block
             const idx = text.indexOf('(For context:');
             const idx2 = text.indexOf('[SESSION_CONTEXT]');
-            const injStart = idx >= 0 ? idx : idx2;
+            const idx3 = text.indexOf('(K.Y.T. memory check:');
+            const injStart = idx >= 0 ? idx : (idx2 >= 0 ? idx2 : idx3);
 
             if (injStart >= 0) {
               found = true;

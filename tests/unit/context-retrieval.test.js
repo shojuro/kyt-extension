@@ -403,4 +403,55 @@ describe('getContextForInjection pipeline', () => {
     expect(result).toHaveProperty('diagnostics');
     expect(typeof result.diagnostics).toBe('object');
   });
+
+  it('test 21: a clean empty search reports searchFailed=false', async () => {
+    vi.mocked(getRoutingMode).mockResolvedValue('edge');
+    vi.mocked(searchViaEdgeFunction).mockResolvedValue([]);
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => [], text: async () => '[]' });
+
+    const result = await getContextForInjection(
+      'tell me about the Atlas project timeline',
+      { disableQueryTransformation: true },
+      {}
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.items).toEqual([]);
+    expect(result.diagnostics.searchFailed).toBe(false);
+  });
+
+  it('test 22: an edge search error that is swallowed is flagged as searchFailed', async () => {
+    vi.mocked(getRoutingMode).mockResolvedValue('edge');
+    vi.mocked(searchViaEdgeFunction).mockRejectedValue(new Error('Search edge function failed'));
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => [], text: async () => '[]' });
+
+    const result = await getContextForInjection(
+      'tell me about the Atlas project timeline',
+      { disableQueryTransformation: true },
+      {}
+    );
+
+    // The pipeline still "succeeds" with zero items (legacy fallback) —
+    // the flag is what tells callers the emptiness is not trustworthy.
+    expect(result.success).toBe(true);
+    expect(result.items).toEqual([]);
+    expect(result.diagnostics.searchFailed).toBe(true);
+  });
+
+  it('test 23: a legacy search error that is swallowed is flagged as searchFailed', async () => {
+    const { searchHybrid } = await import('../../src/browser-search.js');
+    vi.mocked(getRoutingMode).mockResolvedValue('legacy');
+    vi.mocked(searchHybrid).mockRejectedValueOnce(new Error('index unavailable'));
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => [], text: async () => '[]' });
+
+    const result = await getContextForInjection(
+      'tell me about the Atlas project timeline',
+      { disableQueryTransformation: true },
+      {}
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.items).toEqual([]);
+    expect(result.diagnostics.searchFailed).toBe(true);
+  });
 });

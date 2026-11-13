@@ -449,6 +449,12 @@ function stripInjectionBlock(content) {
     content = content.replace(naturalLangPattern, '').trim();
   }
 
+  // Pattern 6: "nothing found" note (buildNoMemoryNote)
+  const noMemoryNotePattern = /\(K\.Y\.T\. memory check:[^)]*\)\s*(?:---\s*)?/g;
+  if (noMemoryNotePattern.test(content)) {
+    content = content.replace(noMemoryNotePattern, '').trim();
+  }
+
   // SAFER: Only strip structured formats if K.Y.T. markers are actually present
   const hasKYTMarkers = content.includes('[SESSION_CONTEXT]') ||
                         content.includes('[RETRIEVAL_CONTEXT]') ||

@@ -69,6 +69,14 @@ export function stripInjectionPrefix(content) {
     hadInjection = true;
   }
 
+  // Format 1b: "nothing found" note (buildNoMemoryNote)
+  const notePattern = /\(K\.Y\.T\. memory check:[^)]*\)\s*(?:---\s*)?/g;
+  if (notePattern.test(content)) {
+    notePattern.lastIndex = 0; // reset after .test()
+    content = content.replace(notePattern, '').trim();
+    hadInjection = true;
+  }
+
   // Format 2: Structured K.Y.T. header blocks (legacy)
   if (content.includes('K.Y.T.') && content.includes('===')) {
     const kytPattern = /={3,}[\s\S]*?K\.Y\.T\.[\s\S]*?(?:={3,}|$)/g;
@@ -353,6 +361,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
       hydeCBOpen: false,
       queryTransformed: false,
       preferenceRouted: false,
+      searchFailed: false,    // a search call threw and was swallowed — an empty result is not trustworthy
     };
 
     // ========================================================================
@@ -607,11 +616,13 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
               console.log(`🔄 Retry (edge) result: ${contextItems.length} items`);
             } catch (retryErr) {
               console.warn(`⚠️ Edge retry failed: ${retryErr.message}`);
+              diagnostics.searchFailed = true;
               contextItems = [];
             }
           }
         } catch (edgeError) {
           console.warn(`⚠️ Edge function search failed, falling back to legacy: ${edgeError.message}`);
+          diagnostics.searchFailed = true;
           contextItems = [];
         }
       }
@@ -673,6 +684,7 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
 
     } catch (searchError) {
       console.error('❌ Context Retrieval failed:', searchError);
+      diagnostics.searchFailed = true;
       contextItems = [];
     }
 

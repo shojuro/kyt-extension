@@ -831,6 +831,11 @@
 
   function stripInjectionBlock(content) {
     if (!content) return content;
+    // "nothing found" note (buildNoMemoryNote)
+    const noMemoryNotePattern = /\(K\.Y\.T\. memory check:[^)]*\)\s*(?:---\s*)?/g;
+    if (content.includes('(K.Y.T. memory check:')) {
+      content = content.replace(noMemoryNotePattern, '').trim();
+    }
     const hasMarkers = content.includes('[SESSION_CONTEXT]') ||
                        content.includes('[RETRIEVAL_CONTEXT]') ||
                        content.includes('[DATA_PROVENANCE]') ||

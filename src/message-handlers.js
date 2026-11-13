@@ -20,7 +20,7 @@ import { getActiveProfileId } from './profile-manager.js';
 import { getActiveProject, setActiveProject, clearActiveProject } from './project-manager.js';
 import { getSyncStatus as getNLMSyncStatus, enableSync as enableNLMSync, disableSync as disableNLMSync, checkGoogleSignIn as checkNLMSignIn } from './notebooklm-sync.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
-import { buildMemoryInjection, buildNaturalLanguageInjection } from '../kyt-memory-injection-builder.js';
+import { buildMemoryInjection, buildNaturalLanguageInjection, buildNoMemoryNote, shouldEmitNoMemoryNote } from '../kyt-memory-injection-builder.js';
 import { AUTH_SESSION_KEY, getSession } from './auth/auth-service.js';
 import { withStorageMutex } from './utils/storage-mutex.js';
 
@@ -466,6 +466,15 @@ async function handleGetContextAsync(message, getContextForInjection) {
     diag.steps.push('done:' + itemCount + 'items:' + latencyMs + 'ms');
     diag.hasContext = !!(contextData.formattedContext);
     diag.diagnostics = contextData.diagnostics || null;
+
+    // Explicit memory question + clean search + nothing found: tell the
+    // assistant so, instead of sending nothing and letting it guess.
+    // Stats below still record this turn as `empty`, not as a successful injection.
+    const emitNoMemoryNote = shouldEmitNoMemoryNote({ classification, contextData });
+    if (emitNoMemoryNote) {
+      diag.steps.push('no_memory_note');
+      diag.noMemoryNote = true;
+    }
     diag.endMs = Date.now();
     await diagSave();
 
@@ -486,7 +495,8 @@ async function handleGetContextAsync(message, getContextForInjection) {
         similarity: typeof item.similarity === 'number' ? item.similarity : 0,
         source_type: item.source_type || null,
       })),
-      formattedContext: contextData.formattedContext || null,
+      formattedContext: emitNoMemoryNote ? buildNoMemoryNote() : (contextData.formattedContext || null),
+      ...(emitNoMemoryNote ? { noMemoryNote: true } : {}),
       elapsedMs: latencyMs,
     };
   } catch (error) {

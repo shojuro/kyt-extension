@@ -416,6 +416,56 @@ export function buildNaturalLanguageInjection(result, configOverrides = {}) {
 }
 
 /**
+ * Marker that opens the "nothing found" note. The capture-side strippers
+ * (stripInjectionPrefix and each platform's stripInjectionBlock) match on it,
+ * so it must stay in sync with their note pattern.
+ */
+export const NO_MEMORY_NOTE_PREFIX = '(K.Y.T. memory check:';
+
+/**
+ * Short note sent in place of memory context when an explicit memory question
+ * was searched cleanly and nothing relevant came back. Same first-person
+ * parenthetical framing as buildNaturalLanguageInjection. Must not contain a
+ * closing parenthesis before the final one: the strippers stop at the first.
+ */
+export function buildNoMemoryNote() {
+    return NO_MEMORY_NOTE_PREFIX +
+        ' I searched my saved conversations for this and found nothing relevant. ' +
+        'If answering would depend on something from our past conversations, ' +
+        'tell me you don\'t have it on record instead of guessing.)';
+}
+
+/**
+ * Decide whether the "nothing found" note may be sent. Pure.
+ *
+ * True only when the final intent is an explicit memory query AND the search
+ * demonstrably ran clean AND returned nothing. Any failure, timeout, degraded
+ * search (circuit breaker open, swallowed search error) or block returns
+ * false, so a failure is never reported as "nothing found".
+ *
+ * @param {Object} input
+ * @param {{intent:string, reason:string}} input.classification - final classification (after layer 2)
+ * @param {Object} input.contextData - result of getContextForInjection
+ * @returns {boolean}
+ */
+export function shouldEmitNoMemoryNote({ classification, contextData } = {}) {
+    if (!classification || classification.intent !== 'QUERY') return false;
+    if (classification.reason !== 'explicit_memory_query') return false;
+
+    if (!contextData || contextData.success !== true || contextData.error) return false;
+    if (contextData.modeBlocked || contextData.turnLimitReached || contextData.intentSkipped) return false;
+    if (!Array.isArray(contextData.items) || contextData.items.length > 0) return false;
+    if (contextData.formattedContext) return false;
+
+    const d = contextData.diagnostics;
+    if (!d || typeof d !== 'object') return false; // no proof the search ran
+    if (d.pipelineTimeout || d.searchFailed) return false;
+    if (d.apiCircuitBreakerOpen || d.embeddingCircuitBreakerOpen || d.hydeCBOpen) return false;
+
+    return true;
+}
+
+/**
  * Build injection for empty/no-match state
  */
 export function buildEmptyInjection(queryOriginal, queryTransformed, latencyMs = 0) {
