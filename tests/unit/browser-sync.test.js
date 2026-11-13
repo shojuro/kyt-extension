@@ -24,7 +24,12 @@ vi.mock('../../src/hyde-preprocessor.js', () => ({
 vi.mock('../../src/embedding-circuit-breaker.js', () => ({
   isEmbeddingCircuitOpen: vi.fn(() => Promise.resolve({ open: false })),
   recordEmbeddingSuccess: vi.fn(() => Promise.resolve()),
-  recordEmbeddingFailure: vi.fn(() => Promise.resolve())
+  recordEmbeddingFailure: vi.fn(() => Promise.resolve()),
+  createCircuitBreaker: vi.fn(() => ({
+    isOpen: vi.fn(() => Promise.resolve({ open: false })),
+    recordSuccess: vi.fn(() => Promise.resolve()),
+    recordFailure: vi.fn(() => Promise.resolve())
+  }))
 }));
 
 vi.mock('../../src/utils/fetch.js', () => ({
@@ -116,7 +121,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Default: fetchWithTimeout always succeeds (used for DB existence checks and backfill)
   fetchWithTimeout.mockResolvedValue(makeOkResponse([]));
-  // Default: global fetch always succeeds (used by fetchWithAuthRetry for messages/chat_turns POST)
+  // global fetch should not be used by sync any more; kept as a spy to prove it
   global.fetch = vi.fn().mockResolvedValue(makeOkResponse([]));
   // Default: callEdgeFunction returns embeddings for generate_embeddings calls
   callEdgeFunction.mockImplementation((fnName) => {
@@ -346,8 +351,8 @@ describe('syncMessages — core logic', () => {
     return promise.catch(() => {});
   });
 
-  // 15. Dual-write: messages table is called via global fetch (fetchWithAuthRetry)
-  it('15. posts to messages REST endpoint via fetch (dual-write messages table)', async () => {
+  // 15. Dual-write: messages table POST goes through fetchWithTimeout (fetchWithAuthRetry)
+  it('15. posts to messages REST endpoint with the 30s sync timeout (dual-write messages table)', async () => {
     await chrome.storage.local.set(VALID_STORAGE);
     callEdgeFunction.mockImplementation((fn) => {
       if (fn === 'generate_embeddings') return Promise.resolve({ embeddings: [[0.1]] });
@@ -356,44 +361,65 @@ describe('syncMessages — core logic', () => {
 
     await syncMessages([makeMessage()]);
 
-    // fetchWithAuthRetry calls global fetch for the messages table POST
-    const fetchCalls = global.fetch.mock.calls;
-    const messagesCall = fetchCalls.find(([url]) =>
-      typeof url === 'string' && url.includes('/rest/v1/messages')
+    const messagesCall = fetchWithTimeout.mock.calls.find(([url, opts]) =>
+      typeof url === 'string' && url.includes('/rest/v1/messages') && opts?.method === 'POST'
     );
     expect(messagesCall).toBeDefined();
+    expect(messagesCall[2]).toBe(30000);
+    // The un-timed global fetch must no longer be used for sync writes
+    expect(global.fetch).not.toHaveBeenCalled();
   });
+
+  const isMessagesPost = (url, opts) =>
+    typeof url === 'string' && url.includes('/rest/v1/messages') && opts?.method === 'POST';
 
   // 16. Error in batch response doesn't kill entire sync (continue on failure)
   it('16. continues sync when a batch REST call fails (non-fatal batch error)', async () => {
     await chrome.storage.local.set(VALID_STORAGE);
     callEdgeFunction.mockImplementation((fn) => {
-      if (fn === 'generate_embeddings') {
-        // Return enough embeddings for all messages
-        return Promise.resolve({ embeddings: [[0.1], [0.2], [0.3], [0.4], [0.5], [0.6]] });
-      }
+      if (fn === 'generate_embeddings') return Promise.resolve({ embeddings: [[0.1]] });
       return Promise.resolve({ success: true });
     });
 
-    // First batch POST fails, second succeeds — via global.fetch (fetchWithAuthRetry)
     const failResponse = {
       ok: false,
       status: 500,
       json: () => Promise.resolve({ message: 'Internal server error' }),
       text: () => Promise.resolve('Internal server error')
     };
-    global.fetch
-      .mockResolvedValueOnce(failResponse)    // first batch POST fails
-      .mockResolvedValue(makeOkResponse([])); // second batch succeeds
+    let messagePosts = 0;
+    fetchWithTimeout.mockImplementation((url, opts) => {
+      if (isMessagesPost(url, opts)) { messagePosts++; return Promise.resolve(failResponse); }
+      return Promise.resolve(makeOkResponse([]));
+    });
 
-    // Use just 2 messages (2 batches of 1 each would need BATCH_SIZE=1, but BATCH_SIZE=5 so use 6)
-    // Actually, use a single message to avoid the 1s inter-batch delay.
-    // The test is about continue-on-failure, so we can trigger it with 1 message (1 batch fails).
-    const msgs = [makeMessage()];
-    const result = await syncMessages(msgs);
+    const result = await syncMessages([makeMessage()]);
 
-    // Sync should still return success=true — catches per-batch errors and continues
+    expect(messagePosts).toBe(1);
     expect(result.success).toBe(true);
+  }, 15000);
+
+  // 16b. A network error (timeout / offline) on a batch is caught, not thrown
+  it('16b. survives a network error on the messages POST', async () => {
+    await chrome.storage.local.set(VALID_STORAGE);
+    callEdgeFunction.mockImplementation((fn) => {
+      if (fn === 'generate_embeddings') return Promise.resolve({ embeddings: [[0.1]] });
+      return Promise.resolve({ success: true });
+    });
+
+    let messagePosts = 0;
+    fetchWithTimeout.mockImplementation((url, opts) => {
+      if (isMessagesPost(url, opts)) { messagePosts++; return Promise.reject(new Error('Request timeout')); }
+      return Promise.resolve(makeOkResponse([]));
+    });
+
+    const result = await syncMessages([makeMessage()]);
+
+    expect(messagePosts).toBe(1);
+    expect(result.success).toBe(true);
+    // The failed batch must be reported, not counted as synced
+    expect(result.failed).toBe(1);
+    expect(result.synced).toBe(0);
   }, 15000);
 
 });

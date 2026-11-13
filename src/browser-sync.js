@@ -617,7 +617,7 @@ export async function syncMessages(messagesToSync) {
       successCount += batch.length;
     }
 
-    console.log(`✅ Messages synced to 'messages' table: ${deflectionFiltered.length}`);
+    console.log(`✅ Messages synced to 'messages' table: ${successCount} (failed: ${failCount})`);
 
     // PHASE 5: Sync to chat_turns table (conversation-turn chunks)
     // Use userId from config or default to temp ID
@@ -819,11 +819,11 @@ export async function syncMessages(messagesToSync) {
 
     return {
       success: true,
-      synced: deflectionFiltered.length,
+      synced: successCount,
       failed: failCount,
       chunks: chunkCount,
       embeddingsGenerated: embeddingsAvailable,
-      message: `Successfully synced ${deflectionFiltered.length} messages + ${chunkCount} turn chunks`
+      message: `Synced ${successCount} messages (${failCount} failed) + ${chunkCount} turn chunks`
     };
 
   } catch (error) {

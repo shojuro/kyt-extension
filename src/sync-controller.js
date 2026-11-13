@@ -67,8 +67,9 @@ export async function executeDebouncedSync() {
     if (syncResult.success) {
       console.log(`✅ Debounced sync: ${syncResult.synced} messages synced (embeddings: ${syncResult.embeddingsGenerated ?? 'n/a'})`);
       chrome.storage.local.remove('kyt_sync_auth_failed');
-      // Only clear pending flag on SUCCESS — failed sync leaves flag for periodicSync retry
-      chrome.storage.local.set({ kyt_sync_pending: false });
+      // Only clear pending flag on a FULL success — any failed batch leaves the flag
+      // set so the periodicSync alarm retries it.
+      chrome.storage.local.set({ kyt_sync_pending: (syncResult.failed || 0) > 0 });
     } else {
       console.warn('⚠️ Debounced sync failed:', syncResult.error || syncResult.message);
       // Leave kyt_sync_pending = true so periodicSync alarm retries

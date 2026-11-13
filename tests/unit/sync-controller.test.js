@@ -99,6 +99,17 @@ describe('executeDebouncedSync — success path', () => {
     expect(storage.kyt_sync_pending).toBe(false);
   });
 
+  it('keeps kyt_sync_pending true when some batches failed (partial sync retries)', async () => {
+    const { executeDebouncedSync } = await import('../../src/sync-controller.js');
+
+    syncToSupabase.mockResolvedValue({ success: true, synced: 5, failed: 5 });
+    chrome.storage.local.set({ kyt_sync_pending: true });
+    await executeDebouncedSync();
+
+    const storage = chrome.storage._getInternalStorage();
+    expect(storage.kyt_sync_pending).toBe(true);
+  });
+
   it('sets and then removes kyt_sync_running around the sync call', async () => {
     const { executeDebouncedSync } = await import('../../src/sync-controller.js');
 
