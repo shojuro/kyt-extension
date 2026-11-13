@@ -522,12 +522,29 @@ export interface ExtractionResult {
   contentCategory: ContentCategory;
 }
 
+/**
+ * Extract entities, preferences and decisions from one turn. Never throws for
+ * an API or reply failure: it returns empty arrays, so a live save is not
+ * blocked. Callers that must tell "nothing found" from "the call failed"
+ * (backfill_entities) use extractEntitiesOrThrow.
+ */
 export async function extractEntities(
   data: EntityExtractionData,
   anthropicApiKey: string,
   context?: ClientContext
 ): Promise<ExtractionResult> {
-  // Input validation
+  // Input validation (throws, as before)
+  validateExtractionInput(data, anthropicApiKey);
+  try {
+    return await extractEntitiesOrThrow(data, anthropicApiKey, context);
+  } catch (error) {
+    // Parse/API error - return empty arrays instead of failing
+    console.warn('Entity extraction failed:', (error as Error).message);
+    return { entities: [], preferences: [], decisions: [], contentCategory: 'emotional' };
+  }
+}
+
+function validateExtractionInput(data: EntityExtractionData, anthropicApiKey: string): void {
   if (!data.content || data.content.trim().length === 0) {
     throw new Error('Content cannot be empty');
   }
@@ -539,11 +556,24 @@ export async function extractEntities(
   if (!anthropicApiKey || anthropicApiKey.trim().length === 0) {
     throw new Error('Anthropic API key is required');
   }
+}
+
+/**
+ * Same as extractEntities, but API errors and unusable replies are thrown
+ * (AnthropicReplyError for a refusal, a cut-off reply or a reply with no JSON).
+ */
+export async function extractEntitiesOrThrow(
+  data: EntityExtractionData,
+  anthropicApiKey: string,
+  context?: ClientContext,
+  callOptions: { maxRetries?: number; timeoutMs?: number } = {}
+): Promise<ExtractionResult> {
+  validateExtractionInput(data, anthropicApiKey);
 
   // Build extraction prompt
   const prompt = buildExtractionPrompt(data);
 
-  try {
+  {
     const client = new AnthropicClient(anthropicApiKey, context);
 
     const parsed = await client.generateJsonCompletion<{
@@ -572,10 +602,10 @@ export async function extractEntities(
       ENTITY_EXTRACTION_SYSTEM_PROMPT,
       prompt,
       {
-        temperature: 0.2,
-        maxTokens: 1200,  // Increased for decisions array output
-        maxRetries: 2,
-        timeoutMs: 8000,
+        temperature: 0.2,  // only sent to models that accept sampling parameters
+        maxTokens: 1200,  // answer budget (decisions array); the client adds room for thinking
+        maxRetries: callOptions.maxRetries ?? 2,
+        timeoutMs: callOptions.timeoutMs ?? 8000,
         operation: 'entity_extraction',
         enableCache: true,
       }
@@ -623,11 +653,6 @@ export async function extractEntities(
       }));
 
     return { entities, preferences, decisions, contentCategory };
-
-  } catch (error) {
-    // Parse/API error - return empty arrays instead of failing
-    console.warn('Entity extraction failed:', (error as Error).message);
-    return { entities: [], preferences: [], decisions: [], contentCategory: 'emotional' };
   }
 }
 
