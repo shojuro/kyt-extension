@@ -128,19 +128,19 @@ jobs:
 
       - name: Check for known malicious packages
         run: |
-          # Check against known malicious package patterns
-          MALICIOUS_PATTERNS=(
-            "event-stream"  # Famous supply chain attack
-            "flatmap-stream"
-            "eslint-scope"  # Compromised version
-          )
-
-          for pkg in "${MALICIOUS_PATTERNS[@]}"; do
-            if grep -q "\"$pkg\"" package-lock.json 2>/dev/null; then
-              echo "❌ Known malicious package detected: $pkg"
-              exit 1
-            fi
-          done
+          # Match the compromised VERSIONS, not the package names: eslint-scope is a
+          # normal dependency of eslint, and only 3.7.2 was malicious.
+          node -e '
+            const bad = { "event-stream": ["3.3.6"], "eslint-scope": ["3.7.2"], "flatmap-stream": null };
+            const pkgs = require("./package-lock.json").packages || {};
+            const hits = [];
+            for (const [path, info] of Object.entries(pkgs)) {
+              const name = path.split("node_modules/").pop();
+              if (!(name in bad)) continue;
+              if (bad[name] === null || bad[name].includes(info.version)) hits.push(name + "@" + info.version);
+            }
+            if (hits.length) { console.error("❌ Known malicious package detected: " + hits.join(", ")); process.exit(1); }
+          '
 
           echo "✅ No known malicious packages"
 
