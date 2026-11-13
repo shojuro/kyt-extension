@@ -118,18 +118,18 @@ async function refreshConfigToken(config) {
  * @returns {Promise<Response>}
  */
 async function fetchWithAuthRetry(url, config, fetchOptions) {
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     ...fetchOptions,
     headers: { ...getAuthHeaders(config), ...fetchOptions.headers },
-  });
+  }, SYNC_API_TIMEOUT_MS);
 
   if (res.status === 401) {
     const refreshed = await refreshConfigToken(config);
     if (refreshed) {
-      return fetch(url, {
+      return fetchWithTimeout(url, {
         ...fetchOptions,
         headers: { ...getAuthHeaders(config), ...fetchOptions.headers },
-      });
+      }, SYNC_API_TIMEOUT_MS);
     }
   }
 
@@ -581,15 +581,22 @@ export async function syncMessages(messagesToSync) {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
 
-      const response = await fetchWithAuthRetry(
-        `${config.supabaseUrl}/rest/v1/messages?on_conflict=message_id`,
-        config,
-        {
-          method: 'POST',
-          headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' },
-          body: JSON.stringify(batch)
-        }
-      );
+      let response;
+      try {
+        response = await fetchWithAuthRetry(
+          `${config.supabaseUrl}/rest/v1/messages?on_conflict=message_id`,
+          config,
+          {
+            method: 'POST',
+            headers: { 'Prefer': 'resolution=merge-duplicates,return=representation' },
+            body: JSON.stringify(batch)
+          }
+        );
+      } catch (fetchError) {
+        console.error(`❌ Batch ${i + 1}/${batches.length} network error: ${fetchError.message}`);
+        failCount += batch.length;
+        continue;
+      }
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -703,18 +710,25 @@ export async function syncMessages(messagesToSync) {
       });
 
       // Insert to chat_turns table
-      let turnsResponse = await fetchWithAuthRetry(
-        `${config.supabaseUrl}/rest/v1/chat_turns?on_conflict=user_id,conversation_id,platform,start_timestamp`,
-        config,
-        {
-          method: 'POST',
-          headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-          body: JSON.stringify(chunksWithEmbeddings)
-        }
-      );
+      let turnsResponse;
+      try {
+        turnsResponse = await fetchWithAuthRetry(
+          `${config.supabaseUrl}/rest/v1/chat_turns?on_conflict=user_id,conversation_id,platform,start_timestamp`,
+          config,
+          {
+            method: 'POST',
+            headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify(chunksWithEmbeddings)
+          }
+        );
+      } catch (turnsNetErr) {
+        console.warn(`⚠️ Chat turns sync network error: ${turnsNetErr.message}`);
+        console.warn('Continuing with message-level sync only...');
+        turnsResponse = null;
+      }
 
       // Retry without profile_id if column doesn't exist (migration pending)
-      if (!turnsResponse.ok && includeProfileId) {
+      if (turnsResponse && !turnsResponse.ok && includeProfileId) {
         const turnError = await turnsResponse.json();
         if (turnError.message?.includes('profile_id')) {
           console.warn('⚠️ chat_turns missing profile_id column — retrying without (migration pending)');
@@ -723,15 +737,20 @@ export async function syncMessages(messagesToSync) {
             const { profile_id: _drop, ...rest } = c;
             return rest;
           });
-          turnsResponse = await fetchWithAuthRetry(
-            `${config.supabaseUrl}/rest/v1/chat_turns?on_conflict=user_id,conversation_id,platform,start_timestamp`,
-            config,
-            {
-              method: 'POST',
-              headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-              body: JSON.stringify(fallbackChunks)
-            }
-          );
+          try {
+            turnsResponse = await fetchWithAuthRetry(
+              `${config.supabaseUrl}/rest/v1/chat_turns?on_conflict=user_id,conversation_id,platform,start_timestamp`,
+              config,
+              {
+                method: 'POST',
+                headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+                body: JSON.stringify(fallbackChunks)
+              }
+            );
+          } catch (retryNetErr) {
+            console.warn(`⚠️ Chat turns retry network error: ${retryNetErr.message}`);
+            turnsResponse = null;
+          }
         } else {
           console.warn(`⚠️ Chat turns sync failed: ${turnError.message || turnsResponse.statusText}`);
           console.warn('Continuing with message-level sync only...');
