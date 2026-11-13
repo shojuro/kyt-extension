@@ -79,10 +79,13 @@ def build_user_prompt(question, retrieved_items):
 def _chat(system, user, model, openai_key, timeout=60, retries=10):
     """OpenAI chat completion with patient backoff on 429/5xx. Raises after exhausting
     retries (never silently returns 'I don't know' — that would corrupt the eval as a
-    false abstention; a real failure should surface loudly)."""
-    body = {"model": model, "temperature": 0,
+    false abstention; a real failure should surface loudly). GPT-5 reasoning models
+    reject a custom temperature, so it is omitted for gpt-5*."""
+    body = {"model": model,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}]}
+    if not model.startswith("gpt-5"):
+        body["temperature"] = 0
     last = None
     for attempt in range(retries):
         try:
