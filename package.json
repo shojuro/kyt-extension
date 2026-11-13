@@ -43,13 +43,13 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
-    "@vitest/ui": "^4.0.13",
-    "eslint": "^10.0.0",
+    "@vitest/ui": "^4.1.12",
+    "eslint": "^10.14.0",
     "globals": "^17.3.0",
     "jszip": "^3.10.1",
     "playwright": "^1.56.1",
-    "puppeteer": "^24.31.0",
-    "vitest": "^4.0.13",
+    "puppeteer": "^25.17.0",
+    "vitest": "^4.1.12",
     "webextension-polyfill": "^0.12.0"
   }
 }
