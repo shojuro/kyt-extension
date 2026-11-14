@@ -33,6 +33,7 @@ import {
   filterNewChunks, rememberChunks, withProjectDefaults, chunkSyncPaused, nextChunkSyncRetry,
 } from './chunk-sync-cache.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
+import { POLLER_STATE_KEY, chunksToStoreLocally } from './local-chunk-policy.js';
 
 // Defensive flag: set after first error indicating profile_id column doesn't exist on chat_turns.
 // Once set, all subsequent syncs skip profile_id for this SW lifecycle.
@@ -667,14 +668,20 @@ export async function syncMessages(messagesToSync) {
     const allTurnChunks = messagesToTurnChunks(cleanedForChunking, userId);
     // Re-chunking the whole conversation yields mostly chunks that were synced
     // before. Only new or changed ones get questions, an embedding and a write.
-    const chunkState = await chrome.storage.local.get([SYNCED_CHUNKS_KEY, CHUNK_SYNC_RETRY_KEY]);
+    const chunkState = await chrome.storage.local.get([SYNCED_CHUNKS_KEY, CHUNK_SYNC_RETRY_KEY, POLLER_STATE_KEY]);
     let syncedChunks = chunkState[SYNCED_CHUNKS_KEY] || [];
     // After a failed write, wait before paying for questions and embeddings again.
     const chunkSyncIsPaused = chunkSyncPaused(chunkState[CHUNK_SYNC_RETRY_KEY]);
     if (chunkSyncIsPaused) {
       console.warn(`⏸️ Chunk sync paused after a failed write until ${new Date(chunkState[CHUNK_SYNC_RETRY_KEY]).toISOString()}`);
     }
-    const pendingChunks = chunkSyncIsPaused ? [] : filterNewChunks(allTurnChunks, syncedChunks);
+    // ChatGPT turns come from the conversation poller while it is working;
+    // the page copy is fragmented and mislabelled (see local-chunk-policy.js).
+    const storableChunks = chunksToStoreLocally(allTurnChunks, chunkState[POLLER_STATE_KEY]);
+    if (storableChunks.length < allTurnChunks.length) {
+      console.log(`📦 ${allTurnChunks.length - storableChunks.length} ChatGPT page chunks left to the conversation poller`);
+    }
+    const pendingChunks = chunkSyncIsPaused ? [] : filterNewChunks(storableChunks, syncedChunks);
     console.log(`📦 Chunking with full context: ${contextMessages.length} messages (batch had ${deflectionFiltered.length} new); ${pendingChunks.length} of ${allTurnChunks.length} chunks are new or changed`);
 
     // Small groups, each written and remembered before the next starts. With
