@@ -27,6 +27,7 @@ import { queueProcessor } from './src/background/queue-processor.js';
 import { callEdgeFunction } from './src/api-client.js';
 import { backfillAuthReady } from './src/backfill-guard.js';
 import { buildMemoryCards } from './src/memory-cards-runner.js';
+import { backfillSections } from './src/sections-runner.js';
 import { HistoryImporter } from './src/history-import/index.js';
 import { refreshSession, refreshSessionWithLock, proactiveRefreshCheck, isAuthenticated, AUTH_SESSION_KEY, AUTH_EXPIRED_KEY } from './src/auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
@@ -40,7 +41,7 @@ import { startRpcProxy, stopRpcProxy, isRpcProxyRunning, getRpcProxyStatus, hand
 self._testFetchUrl = _testFetchUrl; // Debug: test from SW console
 
 // Extracted modules
-import { getApiConfig, clearConfigCache } from './src/auth-config.js';
+import { getApiConfig, clearConfigCache, getRoutingMode } from './src/auth-config.js';
 import { scheduleDebouncedSync, executeDebouncedSync, cancelTimersAndFlush } from './src/sync-controller.js';
 import {
   getContextForInjection as _getContextForInjection,
@@ -1055,6 +1056,9 @@ chrome.alarms.create('tokenRefresh', { periodInMinutes: 2 }); // Proactive: chec
 chrome.alarms.create('syncTier', { delayInMinutes: 1, periodInMinutes: 5 });
 // Created only when missing: this file runs on every service-worker start, and
 // re-creating a daily alarm each time would push its first run back forever.
+chrome.alarms.get('backfillSections').then((existing) => {
+  if (!existing) chrome.alarms.create('backfillSections', { delayInMinutes: 5, periodInMinutes: 10 });
+}).catch(() => {});
 chrome.alarms.get('buildMemoryCards').then((existing) => {
   if (!existing) chrome.alarms.create('buildMemoryCards', { delayInMinutes: 30, periodInMinutes: 1440 });
 }).catch(() => {});
@@ -1252,6 +1256,24 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         }
       }
       break;
+
+    case 'backfillSections': {
+      // Every 10 minutes: split newly saved long turns into sections (and chip
+      // away at the backlog). A few calls at most per firing; the full backlog
+      // is run by hand with KYT_DEBUG.backfillSections().
+      try {
+        const { kyt_backfill_paused: sectionsPaused } = await chrome.storage.local.get('kyt_backfill_paused');
+        if (sectionsPaused) break;
+        if ((await getRoutingMode()) !== 'edge') break; // signed out: nothing to do
+        const sectionTotals = await backfillSections(callEdgeFunction, { limit: 20 }, { maxRuns: 2, log: () => {} });
+        if (sectionTotals.processed > 0 || !sectionTotals.success) {
+          console.log('✂️ Sections (timer):', JSON.stringify(sectionTotals));
+        }
+      } catch (sectionErr) {
+        console.warn('⚠️ Sections (timer) failed:', sectionErr.message);
+      }
+      break;
+    }
 
     case 'buildMemoryCards': {
       // Daily: write or refresh memory cards (short records of what my
@@ -1556,6 +1578,11 @@ globalThis.KYT_DEBUG = {
   },
   backfillEmbeddings: () => backfillNullEmbeddings().then(console.log),
   backfillChatTurnEmbeddings: (platform) => backfillNullChatTurnEmbeddings({ platform }).then(console.log),
+  // Sections of long turns: KYT_DEBUG.backfillSections() runs until the backlog is done
+  // { maxRuns: 3 } tries a few batches first; without it the loop runs to the end.
+  backfillSections: (options = {}) => backfillSections(callEdgeFunction, options, { maxRuns: options.maxRuns })
+    .then(result => { console.log('✂️ Sections result:', result); return result; })
+    .catch(err => { console.error('❌ Sections failed:', err.message); return { success: false, error: err.message }; }),
   // Memory cards: KYT_DEBUG.buildCards({ pins: [{ name, aliases, note }], force, dryRun })
   buildCards: (options = {}) => buildMemoryCards(callEdgeFunction, options)
     .then(result => { console.log('🗂️ Memory cards result:', result); return result; })
@@ -1795,6 +1822,7 @@ console.log('   - KYT_DEBUG.diagnoseEmbeddings() - Check circuit breaker, HF key
 console.log('   - KYT_DEBUG.resetEmbeddingCircuit() - Reset embedding circuit breaker');
 console.log('   - KYT_DEBUG.backfillEmbeddings() - Backfill null embeddings in messages table');
 console.log('   - KYT_DEBUG.backfillChatTurnEmbeddings(platform?) - Backfill null embeddings in chat_turns (e.g. "gemini")');
+console.log('   - KYT_DEBUG.backfillSections() - Split long turns into searchable sections (embeddings only)');
 console.log('   - KYT_DEBUG.buildCards({pins, force, dryRun}) - Write memory cards (what my projects, people and tools are)');
 console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
 console.log('   - KYT_DEBUG.backfillContextual() - Generate context summaries + re-embed');

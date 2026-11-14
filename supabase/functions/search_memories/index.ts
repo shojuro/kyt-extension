@@ -18,9 +18,76 @@ import { securityHeaders } from "../_shared/headers.ts";
 import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 import { resolveUserId } from "../_shared/auth-helpers.ts";
 import { cleanResults } from "../_shared/result-cleanup.ts";
+import {
+    mergeSectionResults,
+    SECTION_MIN_SIMILARITY,
+    type SectionHit,
+    selectSections,
+    turnsWantingOutline,
+} from "../_shared/turn-sections.ts";
 import { cardToResult, type CardRow, pickCards, queryAliasKeys, queryAsksAbout } from "../_shared/memory-cards.ts";
 
 const MAX_CARDS_PER_SEARCH = 2;
+
+/**
+ * Sections of long turns that match the query (see _shared/turn-sections.ts),
+ * merged ahead of the whole-turn results. Never fails the search: a missing
+ * table or a database error leaves the turn results as they were.
+ */
+async function withSections(
+    admin: any,
+    userId: string,
+    queryEmbedding: number[] | undefined,
+    turnResults: any[],
+    projectId: string | undefined,
+    requestId: string,
+): Promise<any[]> {
+    if (!Array.isArray(queryEmbedding) || queryEmbedding.length === 0) return turnResults;
+    try {
+        const { data, error } = await admin.rpc("match_turn_sections", {
+            p_user_id: userId,
+            query_embedding: queryEmbedding,
+            match_threshold: SECTION_MIN_SIMILARITY,
+            match_count: 8,
+            p_project_id: projectId || null,
+        });
+        if (error) {
+            Logger.warn("Section search failed (search continues)", { requestId, error: error.message });
+            return turnResults;
+        }
+        const hits = (data ?? []) as SectionHit[];
+        const selected = selectSections(hits);
+        if (selected.length === 0) return turnResults;
+
+        // A turn with two matching sections is being asked about as a whole:
+        // fetch its outline as well.
+        let outlines: SectionHit[] = [];
+        const wantOutline = turnsWantingOutline(selected);
+        if (wantOutline.length > 0) {
+            const { data: outlineRows } = await admin
+                .from("turn_sections")
+                .select("id, turn_id, kind, section_index, heading, content")
+                .eq("user_id", userId)
+                .eq("kind", "outline")
+                .in("turn_id", wantOutline);
+            outlines = (outlineRows ?? []).map((row: any) => {
+                const source = selected.find((s) => s.turn_id === row.turn_id)!;
+                return { ...row, similarity: 0, platform: source.platform, speakers: source.speakers, created_at: source.created_at };
+            });
+        }
+        Logger.info("Sections matched", {
+            requestId,
+            hits: hits.length,
+            returned: selected.length,
+            outlines: outlines.length,
+            topSimilarity: hits.slice(0, 5).map((h) => Number(h.similarity).toFixed(3)),
+        });
+        return mergeSectionResults(turnResults, selected, outlines);
+    } catch (e) {
+        Logger.warn("Section search threw (search continues)", { requestId, error: (e as Error).message });
+        return turnResults;
+    }
+}
 
 /**
  * Memory cards for the names in the query (see _shared/memory-cards.ts).
@@ -179,13 +246,16 @@ serve(async (req) => {
         const profileId = bodyProfileId || userId;
         const pipelineDiag: Record<string, any> = {};
         options._diagnostics = pipelineDiag;
+        const capture: { queryEmbedding?: number[] } = {};
+        options._capture = capture;
         const [turnResults, cards] = await Promise.all([
             getRelevantMemories(query, userId, options, requestId, profileId, projectId || undefined),
             findMemoryCards(supabaseAdmin, userId, query, requestId),
         ]);
         // Cards first: a question that names a thing gets the short record of
         // what that thing is ahead of the supporting turns.
-        const results = [...cards, ...cleanResults(turnResults)];
+        const withParts = await withSections(supabaseAdmin, userId, capture.queryEmbedding, turnResults, projectId || undefined, requestId);
+        const results = [...cards, ...cleanResults(withParts)];
 
         Logger.info("Search completed", {
             requestId,

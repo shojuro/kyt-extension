@@ -390,6 +390,9 @@ export function excerptCharLimit(excerptCount) {
 /** source_type of a memory card (set by search_memories; see _shared/memory-cards.ts). */
 export const MEMORY_CARD_SOURCE = 'memory_card';
 const MEMORY_CARD_MAX_CHARS = 700;
+// A section of a long message (search_memories; _shared/turn-sections.ts).
+const SECTION_MAX_CHARS = 2500;
+const SECTION_TOTAL_CHARS = 8000;
 
 export function buildNaturalLanguageInjection(result, configOverrides = {}) {
     const items = result.items || [];
@@ -415,14 +418,31 @@ export function buildNaturalLanguageInjection(result, configOverrides = {}) {
             .substring(0, MEMORY_CARD_MAX_CHARS)).join('\n\n') +
         '\n\n';
 
-    const excerptChars = excerptCharLimit(excerpts.length);
-    const quotes = excerpts.map(item => {
+    // Sections of long messages are shown whole (they were cut to size when
+    // stored); other excerpts are cut to a length that depends on how many there are.
+    const sectionCount = excerpts.filter(item => item.section === true).length;
+    const sectionChars = sectionCount === 0 ? 0 : Math.min(SECTION_MAX_CHARS, Math.floor(SECTION_TOTAL_CHARS / sectionCount));
+    const excerptChars = excerptCharLimit(excerpts.length - sectionCount);
+    const quote = (item) => {
+        if (item.section === true) {
+            const full = sanitizeForInjection(item.content || '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+            return `- "${full.substring(0, sectionChars)}${full.length > sectionChars ? '...' : ''}"`;
+        }
         const content = sanitizeForInjection(item.content || '')
             .replace(/[\n\r]+/g, ' ')
             .trim()
             .substring(0, excerptChars);
         return `- "${content}..."`;
-    }).join('\n\n');
+    };
+    // What an assistant said is kept apart from what I said: its guesses must
+    // not come back as my own statements (2026-11-14: an assistant's wrong
+    // guess about a project was replayed as "things I've previously shared").
+    const mine = excerpts.filter(item => item.role !== 'assistant');
+    const theirs = excerpts.filter(item => item.role === 'assistant');
+    const quotes = mine.map(quote).join('\n\n');
+    const assistantBlock = theirs.length === 0 ? '' :
+        'Here is what an AI assistant told me in those conversations (its words, not mine, and it may have been wrong):\n\n' +
+        theirs.map(quote).join('\n\n') + '\n\n';
 
     // Gemini-specific: anti-hallucination guardrails.
     // Gemini fabricates dates, expands truncated quotes, and infers unstated details
@@ -430,9 +450,10 @@ export function buildNaturalLanguageInjection(result, configOverrides = {}) {
     if (platform === 'gemini') {
         return '(For context: I\'ve mentioned some of these topics before. ' +
             cardBlock +
-            (excerpts.length === 0 ? '' :
+            (mine.length === 0 ? '' :
                 'Here are brief, truncated excerpts from past conversations — they may be cut off mid-sentence:\n\n' +
                 quotes + '\n\n') +
+            assistantBlock +
             'These excerpts are the complete extent of what I\'ve shared on this topic. ' +
             'Only reference what is directly written above. Do not add specific dates, ' +
             'expand truncated quotes, or infer details I have not explicitly stated. ' +
@@ -442,9 +463,10 @@ export function buildNaturalLanguageInjection(result, configOverrides = {}) {
     // Claude / ChatGPT: lighter format (they don't hallucinate from injected context)
     return '(For context: I\'ve talked about things like this before in past conversations. ' +
         cardBlock +
-        (excerpts.length === 0 ? '' :
+        (mine.length === 0 ? '' :
             'Here are some things I\'ve previously shared that might be relevant to what I\'m about to say:\n\n' +
             quotes + '\n\n') +
+        assistantBlock +
         'I\'m sharing these so you have the full picture of where I\'m coming from.)';
 }
 

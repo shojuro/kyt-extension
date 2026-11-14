@@ -79,3 +79,51 @@ describe('excerpt length', () => {
     expect(out.match(/- "([^"]*)\.\.\."/)[1].length).toBe(900);
   });
 });
+
+describe('what an assistant said is kept apart from what I said', () => {
+  const mineItem = { id: 'u', content: 'I want to marry Cleophis and K.Y.T.', role: 'user', timestamp: '2026-11-13T00:00:00Z', source_type: 'claude' };
+  const theirItem = { id: 'a', content: 'Cleophis is your Cleopatra-inspired assistant.', role: 'assistant', timestamp: '2026-11-13T01:00:00Z', source_type: 'chatgpt' };
+
+  it('labels assistant text as the assistant\'s words, after my own', () => {
+    const out = buildNaturalLanguageInjection({ items: [theirItem, mineItem] });
+    const label = out.indexOf('what an AI assistant told me');
+    expect(label).toBeGreaterThan(out.indexOf('I want to marry Cleophis'));
+    expect(out.indexOf('Cleopatra-inspired')).toBeGreaterThan(label);
+    expect(out).toContain('its words, not mine');
+  });
+
+  it('does not claim I shared anything when only assistant text was found', () => {
+    const out = buildNaturalLanguageInjection({ items: [theirItem] });
+    expect(out).not.toContain("things I've previously shared");
+    expect(out).toContain('what an AI assistant told me');
+  });
+
+  it.each([[undefined], ['gemini']])('is still removed whole by the capture stripper (platform %s)', (platform) => {
+    const out = buildNaturalLanguageInjection({ items: [theirItem, mineItem, card] }, { platform });
+    expect((out + '\n\nquestion?').replace(STRIP, '').trim()).toBe('question?');
+  });
+});
+
+describe('sections of long messages', () => {
+  const outline = '[Outline of the whole message]\n- 6. The blind spots\n  - Blind spot 1: Memory is not intelligence\n  - Blind spot 2: Student privacy';
+  const section = { id: 's', content: outline, role: 'assistant', section: true, timestamp: '2026-11-14T06:38:58Z', source_type: 'chatgpt' };
+
+  it('shows a section whole, with its line breaks', () => {
+    const out = buildNaturalLanguageInjection({ items: [section] });
+    expect(out).toContain('- 6. The blind spots\n  - Blind spot 1: Memory is not intelligence\n  - Blind spot 2: Student privacy"');
+    expect(out).not.toContain('Student privacy..."');
+  });
+
+  it('shares a total budget between several sections', () => {
+    const big = (id) => ({ ...section, id, content: 'x'.repeat(4000) });
+    const out = buildNaturalLanguageInjection({ items: ['a', 'b', 'c', 'd', 'e'].map(big) });
+    const lengths = [...out.matchAll(/- "(x+)\.\.\."/g)].map((m) => m[1].length);
+    expect(lengths).toEqual([1600, 1600, 1600, 1600, 1600]);
+  });
+
+  it('does not let sections shorten ordinary excerpts', () => {
+    const plain = { id: 'p', content: 'y'.repeat(2000), role: 'user', timestamp: '2026-11-13T00:00:00Z', source_type: 'claude' };
+    const out = buildNaturalLanguageInjection({ items: [plain, section, { ...section, id: 's2' }, { ...section, id: 's3' }] });
+    expect(out.match(/- "(y+)\.\.\."/)[1].length).toBe(900);
+  });
+});

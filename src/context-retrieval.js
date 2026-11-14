@@ -876,7 +876,8 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
             : (item.distance != null && !isNaN(item.distance))
               ? Math.max(0, 1 - item.distance)
               : (item.weighted_score ?? item.rrf_score ?? 0.5),
-          source_type: item.source || 'conversation'
+          source_type: item.source || 'conversation',
+          section: item.section === true
         })),
         latencyMs: elapsedTime,
         queryType: synthesisScore >= 0.5 ? 'SYNTHESIS' : (transformationMetadata.transformed ? 'HYBRID' : 'SEMANTIC'),

@@ -63,6 +63,9 @@ verify_jwt = true
 [functions.backfill_embeddings]
 verify_jwt = true
 
+[functions.backfill_sections]
+verify_jwt = true
+
 [functions.build_memory_cards]
 verify_jwt = true
 

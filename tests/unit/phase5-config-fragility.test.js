@@ -76,12 +76,12 @@ describe('F2: EDGE_FN registry integrity', () => {
     expect(Object.isFrozen(EDGE_FN)).toBe(true);
   });
 
-  it('contains exactly 10 function names', async () => {
+  it('contains exactly 11 function names', async () => {
     const { EDGE_FN } = await import('../../src/edge-functions.js');
-    expect(Object.keys(EDGE_FN)).toHaveLength(10);
+    expect(Object.keys(EDGE_FN)).toHaveLength(11);
   });
 
-  it('all 10 expected keys are present', async () => {
+  it('all 11 expected keys are present', async () => {
     const { EDGE_FN } = await import('../../src/edge-functions.js');
     const expectedKeys = [
       'SEARCH_MEMORIES',
@@ -94,6 +94,7 @@ describe('F2: EDGE_FN registry integrity', () => {
       'CLASSIFY_INTENT',
       'CLAIM_USER_DATA',
       'BUILD_MEMORY_CARDS',
+      'BACKFILL_SECTIONS',
     ];
     expect(Object.keys(EDGE_FN).sort()).toEqual(expectedKeys.sort());
   });

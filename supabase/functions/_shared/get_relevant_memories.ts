@@ -52,6 +52,7 @@ export interface SearchOptions {
     queryType?: string;           // 'technical' for code queries — skips HyDE, increases BM25 weight
     isRecallQuery?: boolean;      // True when user is trying to recall past conversation — tightens echo filtering
     _diagnostics?: Record<string, any>;  // Mutable output bag for pipeline stage diagnostics
+    _capture?: { queryEmbedding?: number[] };  // Receives the query embedding, so the caller can reuse it
 }
 
 // ========================================================================
@@ -1067,6 +1068,7 @@ export async function getRelevantMemories(
     // STEP 1: Generate raw query embedding (always needed)
     // ========================================================================
     const rawEmbedding = (await hfClient.generateEmbeddings(query, requestId))[0];
+    if (options._capture) options._capture.queryEmbedding = rawEmbedding;
 
     // ========================================================================
     // FAST PATH: embed → single vector search → BM25 → confidence filter

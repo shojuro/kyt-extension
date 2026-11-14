@@ -14,4 +14,5 @@ export const EDGE_FN = Object.freeze({
   CLASSIFY_INTENT:       'classify_intent',
   CLAIM_USER_DATA:       'claim_user_data',
   BUILD_MEMORY_CARDS:    'build_memory_cards',
+  BACKFILL_SECTIONS:     'backfill_sections',
 });

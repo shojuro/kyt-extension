@@ -112,6 +112,8 @@ export async function searchViaEdgeFunction(query, options = {}) {
     // Contextual retrieval: LLM-generated context prefix + raw content
     // Used by client-side BM25 for richer keyword matching
     contextual_content: item.contextual_content || null,
+    // A section of a long turn (search_memories; _shared/turn-sections.ts)
+    section: item.section === true,
   }));
 
   // Attach metadata so callers can determine Jina availability
