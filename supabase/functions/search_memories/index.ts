@@ -19,15 +19,22 @@ import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 import { resolveUserId } from "../_shared/auth-helpers.ts";
 import { cleanResults } from "../_shared/result-cleanup.ts";
 import { isEchoOfQuery } from "../_shared/injected-context.ts";
-import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
+import { AnthropicClient } from "../_shared/anthropic-client.ts";
+import {
+    applyJudgement,
+    buildJudgePrompt,
+    JUDGE_MAX_PASSAGES,
+    JUDGE_MAX_TOKENS,
+    JUDGE_RULE,
+    JUDGE_SYSTEM_PROMPT,
+    JUDGE_TIMEOUT_MS,
+    parseJudgeReply,
+} from "../_shared/section-judge.ts";
 import {
     mergeSectionResults,
     SECTION_CANDIDATES,
     SECTION_CANDIDATE_SIMILARITY,
     SIMILARITY_RULE,
-    RERANK_RULE,
-    applyRerankScores,
-    sectionRerankText,
     type SectionHit,
     selectSections,
     turnsWantingOutline,
@@ -49,6 +56,7 @@ async function withSections(
     turnResults: any[],
     projectId: string | undefined,
     requestId: string,
+    judge: boolean,
 ): Promise<any[]> {
     if (!Array.isArray(queryEmbedding) || queryEmbedding.length === 0) return turnResults;
     try {
@@ -68,27 +76,31 @@ async function withSections(
         const candidates = ((data ?? []) as SectionHit[]).filter((h) => !isEchoOfQuery(h.content, query));
         if (candidates.length === 0) return turnResults;
 
-        // The cross-encoder reads the question with each section; similarity
-        // alone cannot tell a matching reply from text that merely sounds alike.
+        // A model reads the message with the candidate sections and keeps the
+        // ones that help (see _shared/section-judge.ts). Without it, or when
+        // it fails, sections are chosen by similarity as before.
         let hits = candidates;
         let rule = SIMILARITY_RULE;
         let scoredBy = "similarity";
         let rerankMs: number | null = null;
-        const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY");
-        if (hfApiKey) {
+        const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+        if (judge && anthropicKey) {
+            const judged = candidates.slice(0, JUDGE_MAX_PASSAGES);
             try {
-                const hf = new HuggingFaceClient(hfApiKey, { userId, edgeFunction: "search_memories" });
-                const rerankStarted = Date.now();
-                const scores = await hf.rerank(query, candidates.map(sectionRerankText), requestId);
-                rerankMs = Date.now() - rerankStarted;
-                const reranked = applyRerankScores(candidates, scores);
-                if (reranked.length > 0) {
-                    hits = reranked;
-                    rule = RERANK_RULE;
-                    scoredBy = "rerank";
-                }
+                const anthropic = new AnthropicClient(anthropicKey, { userId, edgeFunction: "search_memories" });
+                const judgeStarted = Date.now();
+                const reply = await anthropic.generateJsonCompletion(
+                    JUDGE_SYSTEM_PROMPT,
+                    buildJudgePrompt(query, judged),
+                    { maxTokens: JUDGE_MAX_TOKENS, maxRetries: 0, timeoutMs: JUDGE_TIMEOUT_MS, operation: "section_judge" },
+                    requestId,
+                );
+                rerankMs = Date.now() - judgeStarted;
+                hits = applyJudgement(judged, parseJudgeReply(reply, judged.length));
+                rule = JUDGE_RULE;
+                scoredBy = "judge";
             } catch (e) {
-                Logger.warn("Section rerank failed (using similarity)", { requestId, error: (e as Error).message });
+                Logger.warn("Section judge failed (using similarity)", { requestId, error: (e as Error).message });
             }
         }
         const selected = selectSections(hits, undefined, rule);
@@ -297,7 +309,7 @@ serve(async (req) => {
         ]);
         // Cards first: a question that names a thing gets the short record of
         // what that thing is ahead of the supporting turns.
-        const withParts = await withSections(supabaseAdmin, userId, capture.queryEmbedding, query, turnResults, projectId || undefined, requestId);
+        const withParts = await withSections(supabaseAdmin, userId, capture.queryEmbedding, query, turnResults, projectId || undefined, requestId, body?.judgeSections !== false);
         const results = [...cards, ...cleanResults(withParts, query)];
 
         Logger.info("Search completed", {

@@ -267,6 +267,8 @@ async function main() {
       useHyde: false,
       topK: 3,
       fast: true,
+      // The hook has a short time limit; skip the model that judges sections.
+      judgeSections: false,
       confidenceThreshold: classification.confidenceThreshold || 0.40,
     };
     if (activeProjectId) searchBody.projectId = activeProjectId;
