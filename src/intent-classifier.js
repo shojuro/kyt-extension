@@ -19,6 +19,11 @@
 // ── Minimum length for retrieval intent ────────────────────
 const MIN_QUERY_LENGTH = 8;
 
+// "What is X?", "Who's X", "Tell me about X", "What do you know about X?" with a
+// subject of up to five words.
+const DEFINITION_QUESTION_RE =
+  /^(?:(?:what|who)(?:['’]s|\s+(?:is|are|was|were))|tell\s+me\s+about|what\s+do\s+you\s+know\s+about)\s+\S+(?:\s+\S+){0,4}\s*\??$/i;
+
 // ===== SIGNAL SCORING FUNCTIONS =====
 
 // S1: Directive Strength (0.0 – 1.0)
@@ -261,6 +266,12 @@ export function scorePersonalReference(message) {
     score = Math.max(score, 0.5);
   }
 
+  // The user's own wants, plans and views: "...that I want to...", "why do I think..."
+  if (/\bI\s+(want|wanted|think|thought|plan|planned|said|told|believe|believed|prefer|preferred|decided|mentioned|meant)\b/i.test(lower) ||
+      /\b(do|did)\s+I\s+(think|want|say|plan|believe|prefer|mean|like)\b/i.test(lower)) {
+    score = Math.max(score, 0.4);
+  }
+
   // Demonstrative + personal pronoun: "that book I...", "that thing we..."
   if (/\bthat\s+\w+\s+I\b/i.test(lower)) {
     score = Math.max(score, 0.4);
@@ -427,6 +438,11 @@ export function classifyIntent(message) {
 
   // SKIP: Very low density (pasted code, document analysis) without memory signal
   if (scores.density <= 0.15 && scores.memory < 0.5) {
+    // ...unless it is a short question naming a thing ("What is K.Y.T.?"):
+    // too short to score on density, but the plainest memory question there is.
+    if (DEFINITION_QUESTION_RE.test(trimmed)) {
+      return result('PASSIVE', 0.45, 'definition_question', scores);
+    }
     return result('SKIP', null, 'low_density', scores);
   }
 
@@ -475,6 +491,12 @@ export function classifyIntent(message) {
   // "The auth middleware keeps failing" — might benefit from context
   if (scores.codeSignal >= 0.5 && scores.density >= 0.4) {
     return result('PASSIVE', 0.55, 'technical_passive', scores);
+  }
+
+  // PASSIVE: question naming a thing ("Tell me about Cleophis"). Lower bar than
+  // a generic question; results under the bar are dropped as usual.
+  if (DEFINITION_QUESTION_RE.test(trimmed)) {
+    return result('PASSIVE', 0.45, 'definition_question', scores);
   }
 
   // PASSIVE: Has question structure + sufficient density

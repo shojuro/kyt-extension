@@ -42,7 +42,7 @@ describe('statements and task requests keep their classification', () => {
     ['What are the two numbers I should add?', 'PASSIVE', 'generic_question'],
     ['Things we have discussed are confidential, write a disclaimer', 'PASSIVE', 'default_substantive'],
     ['Summarize what we have discussed so far', 'SKIP', 'no_signal'],
-    ['Tell me about our solar system', 'PASSIVE', 'generic_question'],
+    ['Tell me about our solar system', 'PASSIVE', 'definition_question'],
     ['In our past, people used horses', 'SKIP', 'no_signal'],
     ['What have you got for me today?', 'PASSIVE', 'generic_question'],
     ['How do I keep state in my session handler?', 'PASSIVE', 'generic_question'],
@@ -50,5 +50,46 @@ describe('statements and task requests keep their classification', () => {
     const r = classifyIntent(msg);
     expect(r.intent).toBe(intent);
     expect(r.reason).toBe(reason);
+  });
+});
+
+/**
+ * 2026-11-14: "What is K.Y.T.?" was skipped as "low_density" (15 characters),
+ * so no search ran at all and the assistant answered from nothing. A short
+ * question naming a thing is exactly what a memory system is asked.
+ */
+describe('short definition questions are searched, not skipped', () => {
+  it.each([
+    'What is K.Y.T.?',
+    'What is cleophis?',
+    "what's KYT",
+    'Who is Jenn?',
+    'Tell me about Cleophis',
+  ])('%s', (q) => {
+    const r = classifyIntent(q);
+    expect(r.intent).toBe('PASSIVE');
+    expect(r.reason).toBe('definition_question');
+    expect(r.confidenceThreshold).toBeLessThanOrEqual(0.45);
+  });
+
+  it('"what do you know about X" is searched one way or another', () => {
+    expect(classifyIntent('What do you know about K.Y.T.?').intent).not.toBe('SKIP');
+  });
+
+  it('still skips greetings and acknowledgements', () => {
+    expect(classifyIntent('thanks, got it!').intent).toBe('SKIP');
+    expect(classifyIntent('ok sounds good').intent).toBe('SKIP');
+  });
+});
+
+describe('questions about what I want or think are memory queries', () => {
+  it('the "marry two projects" question', () => {
+    const r = classifyIntent('What are the two systems/projects that I want to marry together? and why do I think it will be an advantage to do so?');
+    expect(r.intent).toBe('QUERY');
+    expect(r.confidenceThreshold).toBeLessThanOrEqual(0.45);
+  });
+
+  it('does not treat "can I / should I" how-to questions as memory queries', () => {
+    expect(classifyIntent('Can I use a generator function inside this reducer?').intent).not.toBe('QUERY');
   });
 });
