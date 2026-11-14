@@ -17,6 +17,7 @@ import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
 import { securityHeaders } from "../_shared/headers.ts";
 import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 import { resolveUserId } from "../_shared/auth-helpers.ts";
+import { cleanResults } from "../_shared/result-cleanup.ts";
 import { cardToResult, type CardRow, pickCards, queryAliasKeys, queryAsksAbout } from "../_shared/memory-cards.ts";
 
 const MAX_CARDS_PER_SEARCH = 2;
@@ -184,7 +185,7 @@ serve(async (req) => {
         ]);
         // Cards first: a question that names a thing gets the short record of
         // what that thing is ahead of the supporting turns.
-        const results = [...cards, ...turnResults];
+        const results = [...cards, ...cleanResults(turnResults)];
 
         Logger.info("Search completed", {
             requestId,

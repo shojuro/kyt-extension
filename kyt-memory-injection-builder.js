@@ -375,6 +375,18 @@ export function buildMemoryInjection(result, configOverrides = {}) {
  *
  * Validated: 56/56 PASS across ChatGPT, Claude, Gemini (2026-03-26).
  */
+/**
+ * How much of each quoted excerpt to show. With many excerpts each stays
+ * brief; with one or two there is room for the whole statement. At a flat 250
+ * characters the answer to "why do I want to marry these two projects?" was
+ * cut off before the reasons (2026-11-14).
+ */
+export function excerptCharLimit(excerptCount) {
+    if (excerptCount <= 2) return 900;
+    if (excerptCount <= 4) return 450;
+    return 250;
+}
+
 /** source_type of a memory card (set by search_memories; see _shared/memory-cards.ts). */
 export const MEMORY_CARD_SOURCE = 'memory_card';
 const MEMORY_CARD_MAX_CHARS = 700;
@@ -403,11 +415,12 @@ export function buildNaturalLanguageInjection(result, configOverrides = {}) {
             .substring(0, MEMORY_CARD_MAX_CHARS)).join('\n\n') +
         '\n\n';
 
+    const excerptChars = excerptCharLimit(excerpts.length);
     const quotes = excerpts.map(item => {
         const content = sanitizeForInjection(item.content || '')
             .replace(/[\n\r]+/g, ' ')
             .trim()
-            .substring(0, 250);
+            .substring(0, excerptChars);
         return `- "${content}..."`;
     }).join('\n\n');
 
