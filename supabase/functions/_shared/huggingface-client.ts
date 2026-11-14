@@ -3,6 +3,7 @@ import { retryWrapper, CostMonitor } from "./utils.ts";
 import type { ClientContext } from "./anthropic-client.ts";
 import { embedWithFallback, PROVIDER_TIMEOUT_MS } from "./embedding-provider.ts";
 import type { EmbeddingProvider } from "./embedding-provider.ts";
+import { RERANK_MODEL, RERANK_TIMEOUT_MS, rerankWithFallback } from "./rerank-provider.ts";
 
 // Each attempt tries every provider once, so few attempts are needed. The
 // attempt timeout leaves room for both providers to time out in turn.
@@ -13,9 +14,6 @@ export class HuggingFaceClient {
     private context: ClientContext;
     // Label used in cost logs; kept stable so cost rows group across provider changes.
     private static readonly EMBEDDING_COST_LABEL = "qwen3-embedding-8b";
-    private static readonly RERANK_MODEL = "BAAI/bge-reranker-v2-m3";
-    // Reranking still goes through the Scaleway route; callers fall back when it fails.
-    private static readonly HF_ROUTER_URL = "https://router.huggingface.co/scaleway";
 
     constructor(apiKey: string, context: ClientContext = {}) {
         this.apiKey = apiKey;
@@ -104,49 +102,38 @@ export class HuggingFaceClient {
     }
 
     async rerank(query: string, documents: string[], requestId?: string): Promise<HFRerankResponse[]> {
-        const url = `${HuggingFaceClient.HF_ROUTER_URL}/v1/rerank`;
-
-        return retryWrapper(async () => {
-            const response = await fetch(url, {
+        if (!Array.isArray(documents) || documents.length === 0) return [];
+        const result = await rerankWithFallback(query, documents, async (provider, body) => {
+            const response = await fetch(provider.url, {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${this.apiKey}`,
                     "Content-Type": "application/json"
                 },
-                body: JSON.stringify({
-                    query,
-                    documents,
-                    model: HuggingFaceClient.RERANK_MODEL,
-                    return_documents: false
-                })
+                body: JSON.stringify(body),
+                signal: AbortSignal.timeout(RERANK_TIMEOUT_MS),
             });
-
             if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`HF Rerank API Error: ${response.status} - ${errorText}`);
+                throw new Error(`${response.status} - ${(await response.text()).slice(0, 160)}`);
             }
-
-            const data = await response.json();
-
-            // Log cost (approx $0.00005 per request)
-            await CostMonitor.logUsage({
-                service: "huggingface",
-                model: HuggingFaceClient.RERANK_MODEL,
-                operation: "rerank",
-                cost: 0.00005,
-                requestId,
-                userId: this.context.userId,
-                inputTokens: Math.ceil((query.length + documents.join('').length) / 4),
-                edgeFunction: this.context.edgeFunction,
-            });
-
-            const results = data.results ?? data;
-            if (!Array.isArray(results)) {
-                console.warn(`Rerank returned non-array: ${typeof results}`, { requestId });
-                return [];
-            }
-            return results;
+            return await response.json();
         });
+        if (result.failures.length > 0) {
+            console.warn(`Rerank served by ${result.provider} after: ${result.failures.join(" | ")}`, { requestId });
+        }
+
+        // Log cost (approx $0.00005 per request)
+        await CostMonitor.logUsage({
+            service: "huggingface",
+            model: RERANK_MODEL,
+            operation: "rerank",
+            cost: 0.00005,
+            requestId,
+            userId: this.context.userId,
+            inputTokens: Math.ceil((query.length + documents.join('').length) / 4),
+            edgeFunction: this.context.edgeFunction,
+        });
+        return result.scores;
     }
 }
 
