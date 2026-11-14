@@ -17,7 +17,7 @@ import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
 import { securityHeaders } from "../_shared/headers.ts";
 import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 import { resolveUserId } from "../_shared/auth-helpers.ts";
-import { cardToResult, type CardRow, pickCards, queryAliasKeys } from "../_shared/memory-cards.ts";
+import { cardToResult, type CardRow, pickCards, queryAliasKeys, queryAsksAbout } from "../_shared/memory-cards.ts";
 
 const MAX_CARDS_PER_SEARCH = 2;
 
@@ -31,7 +31,7 @@ async function findMemoryCards(admin: any, userId: string, query: string, reques
         if (keys.length === 0) return [];
         const { data, error } = await admin
             .from("memory_cards")
-            .select("id, card_key, name, aliases, description, key_facts, user_note, mention_count, latest_evidence_at, built_at")
+            .select("id, card_key, name, aliases, description, key_facts, user_note, mention_count, latest_evidence_at, built_at, pinned")
             .eq("user_id", userId)
             .eq("status", "ready")
             .overlaps("aliases", keys)
@@ -40,7 +40,7 @@ async function findMemoryCards(admin: any, userId: string, query: string, reques
             Logger.warn("Memory card lookup failed (search continues)", { requestId, error: error.message });
             return [];
         }
-        return pickCards((data ?? []) as CardRow[], keys, MAX_CARDS_PER_SEARCH).map(cardToResult);
+        return pickCards((data ?? []) as CardRow[], keys, MAX_CARDS_PER_SEARCH, queryAsksAbout(query)).map(cardToResult);
     } catch (e) {
         Logger.warn("Memory card lookup threw (search continues)", { requestId, error: (e as Error).message });
         return [];

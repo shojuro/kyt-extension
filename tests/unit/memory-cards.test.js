@@ -19,6 +19,7 @@ import {
     parseCardReply,
     queryAliasKeys,
     pickCards,
+    queryAsksAbout,
     cardContent,
     cardToResult,
     isCardStale,
@@ -207,6 +208,17 @@ describe('search-time lookup', () => {
         expect(pickCards(rows, queryAliasKeys('marry Cleopas with KYT and Gemini')).map((r) => r.id)).toEqual(['2', '3']);
         expect(pickCards(rows, queryAliasKeys('what is the weather'))).toEqual([]);
         expect(pickCards(rows, ['empty'])).toEqual([]);
+    });
+
+    it('gives automatic cards only to questions about the thing or my own past; pinned cards always', () => {
+        expect(queryAsksAbout('What is K.Y.T.?')).toBe(true);
+        expect(queryAsksAbout('tell me about Gemini')).toBe(true);
+        expect(queryAsksAbout('why do we use Supabase?')).toBe(true);
+        expect(queryAsksAbout('write a Gemini prompt for a poem')).toBe(false);
+        const pinnedRows = rows.map((r) => ({ ...r, pinned: r.id === '1' }));
+        const keys = queryAliasKeys('write a Gemini prompt mentioning KYT');
+        expect(pickCards(pinnedRows, keys, 2, false).map((r) => r.id)).toEqual(['1']);
+        expect(pickCards(pinnedRows, keys, 2, true).map((r) => r.id)).toEqual(['3', '1']);
     });
 
     it('formats a card with the user note first', () => {

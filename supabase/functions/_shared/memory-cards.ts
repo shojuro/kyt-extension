@@ -352,12 +352,31 @@ export interface CardRow {
     mention_count: number | null;
     latest_evidence_at: string | null;
     built_at: string | null;
+    pinned?: boolean | null;
 }
 
-/** Cards whose name is in the query, best first: longest matched name, then most mentioned. */
-export function pickCards(rows: CardRow[], keys: string[], max = 2): CardRow[] {
+// A question about the thing itself, or about the user's own past with it.
+const ASKS_ABOUT_RE =
+    /\b(?:what|who)(?:['’]s|\s+(?:is|are|was|were))\b|\b(?:tell|remind)\s+me\s+about\b|\bwhat\s+do\s+(?:you|i|we)\s+know\b|\bexplain\b|\b(?:stands?|short)\s+for\b|\b(?:i|we|my|our)\b/i;
+
+/**
+ * True when the query asks what something is or refers to the user's own past.
+ * "How do I write a Python loop?" does not need the card that says what Python
+ * is to me; "What is K.Y.T.?" and "why do I use Supabase?" do.
+ */
+export function queryAsksAbout(query: unknown): boolean {
+    return typeof query === "string" && ASKS_ABOUT_RE.test(query);
+}
+
+/**
+ * Cards whose name is in the query, best first: longest matched name, then
+ * most mentioned. Cards the user pinned always qualify; the automatic ones
+ * only when `asksAbout` is true (see queryAsksAbout).
+ */
+export function pickCards(rows: CardRow[], keys: string[], max = 2, asksAbout = true): CardRow[] {
     const wanted = new Set(keys);
     const scored = rows
+        .filter((row) => asksAbout || row.pinned === true)
         .map((row) => {
             const matched = (row.aliases ?? []).filter((a) => wanted.has(a));
             const longest = matched.reduce((m, a) => Math.max(m, a.length), 0);
