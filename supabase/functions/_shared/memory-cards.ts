@@ -252,6 +252,8 @@ export const CARD_SYSTEM_PROMPT = [
     "Rules:",
     "- Use only what the excerpts and the user note state. Never add outside knowledge or guesses.",
     "- Write in the first person, as that person: \"K.Y.T. is my ...\", \"I want ...\".",
+    "- Never write \"the user\" or \"they\" for that person; it is always \"I\" or \"my\".",
+    "- Do not repeat the description in key_facts; each fact must add something new.",
     "- Excerpts are dated. When they disagree, the most recent one wins; leave the older claim out.",
     "- A user note, when present, is authoritative and overrides every excerpt.",
     "- If the name is an abbreviation and its expansion is stated, give the expansion.",
@@ -390,17 +392,45 @@ export function pickCards(rows: CardRow[], keys: string[], max = 2, asksAbout = 
 export const CARD_SOURCE = "memory_card";
 export const CARD_MAX_CHARS = 700;
 
-/** Text of a card as it is injected: the user's note first, then the description and facts. */
+function contentWords(text: string): string[] {
+    return (text.toLowerCase().match(/[a-z0-9]{4,}/g) ?? []);
+}
+
+/** True when at least 70% of the longer words of `text` already appear in `prior`. */
+function alreadySaid(text: string, prior: string): boolean {
+    const words = contentWords(text);
+    if (words.length === 0) return true;
+    const seen = new Set(contentWords(prior));
+    return words.filter((w) => seen.has(w)).length / words.length >= 0.7;
+}
+
+/** Cut at the last sentence end that fits, so a card never stops mid-sentence. */
+function cutAtSentence(text: string, maxChars: number): string {
+    if (text.length <= maxChars) return text;
+    const head = text.slice(0, maxChars);
+    const end = Math.max(head.lastIndexOf(". "), head.lastIndexOf("! "), head.lastIndexOf("? "));
+    return end > maxChars * 0.4 ? head.slice(0, end + 1) : head;
+}
+
+/**
+ * Text of a card as it is injected: the description, the user's note when the
+ * description does not already say it, then each fact that adds something.
+ * (The first K.Y.T. card said what the letters stand for three times and was
+ * cut off mid-sentence.)
+ */
 export function cardContent(row: Pick<CardRow, "name" | "description" | "key_facts" | "user_note">): string {
     const facts = Array.isArray(row.key_facts)
         ? (row.key_facts as unknown[]).filter((f): f is string => typeof f === "string")
         : [];
-    const note = row.user_note?.trim();
+    const note = row.user_note?.trim() ?? "";
     const description = row.description?.trim() ?? "";
-    const body = [note && !description.includes(note) ? note : null, description, ...facts]
-        .filter((p): p is string => typeof p === "string" && p.length > 0)
-        .join(" ");
-    return `${row.name}: ${body}`.slice(0, CARD_MAX_CHARS);
+    const parts: string[] = [];
+    if (note && !alreadySaid(note, description)) parts.push(note);
+    if (description) parts.push(description);
+    for (const fact of facts) {
+        if (!alreadySaid(fact, parts.join(" "))) parts.push(fact.trim());
+    }
+    return cutAtSentence(`${row.name}: ${parts.join(" ")}`, CARD_MAX_CHARS);
 }
 
 /** A card shaped like a search result, scored above every ordinary result. */

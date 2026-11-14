@@ -226,6 +226,23 @@ describe('search-time lookup', () => {
         expect(cardContent({ ...rows[0], description: 'x'.repeat(2000) }).length).toBe(700);
     });
 
+    it('does not repeat itself and never stops mid-sentence', () => {
+        const text = cardContent({
+            name: 'K.Y.T.',
+            user_note: 'K.Y.T. stands for Keep Your Thoughts.',
+            description: 'K.Y.T. (Keep Your Thoughts) is a personal memory extension I built.',
+            key_facts: [
+                'K.Y.T. stands for Keep Your Thoughts, and I built it as a memory extension.',
+                'It runs as a Chrome extension backed by Supabase.',
+                ...Array.from({ length: 12 }, (_, i) => `Separate point number${i} concerns topic${i} alone here.`),
+            ],
+        });
+        expect(text.match(/Keep Your Thoughts/g)).toHaveLength(1);
+        expect(text).toContain('Chrome extension backed by Supabase.');
+        expect(text.length).toBeLessThanOrEqual(700);
+        expect(text.endsWith('.')).toBe(true);
+    });
+
     it('returns a card as a top-scored search result', () => {
         const r = cardToResult(rows[0]);
         expect(r).toMatchObject({ id: '1', source: CARD_SOURCE, memory_card: true, speakers: ['user'], created_at: '2026-11-13T16:35:00Z' });
