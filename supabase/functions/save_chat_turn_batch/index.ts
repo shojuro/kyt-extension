@@ -10,6 +10,7 @@ import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
 import { getUserTier, getTierLimits, resurfaceLimitFor } from '../_shared/tier-check.ts';
 import { resolveUserId } from '../_shared/auth-helpers.ts';
+import { stripInjectedContext } from '../_shared/injected-context.ts';
 
 const MAX_BATCH_SIZE = 50;
 
@@ -36,7 +37,22 @@ serve(async (req) => {
     }
 
     try {
-        const { turns, skip_ai_processing } = await req.json();
+        const { turns: receivedTurns, skip_ai_processing } = await req.json();
+
+        // The re-import reads the platform's copy of each message, which still
+        // carries the context K.Y.T. injected. Strip it before anything is stored,
+        // and skip a turn that was nothing but injected context.
+        const turns = Array.isArray(receivedTurns)
+            ? receivedTurns
+                .map((t: any) => (t && typeof t.content === 'string' ? { ...t, content: stripInjectedContext(t.content) } : t))
+                .filter((t: any) => !(t && typeof t.content === 'string' && t.content.length === 0))
+            : receivedTurns;
+        if (Array.isArray(receivedTurns) && receivedTurns.length > 0 && turns.length === 0) {
+            return new Response(JSON.stringify({ success: true, saved: 0, skipped: receivedTurns.length }), {
+                status: 200,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            });
+        }
 
         // Validate batch size
         if (!turns || turns.length === 0) {

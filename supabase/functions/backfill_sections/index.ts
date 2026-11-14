@@ -17,6 +17,7 @@
  * Body params: limit (turns per run, default 20, cap 60), user_id (service role only).
  */
 
+import { stripInjectedContext } from "../_shared/injected-context.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
@@ -71,7 +72,8 @@ async function mark(userId: string, turnId: string, info: Record<string, unknown
 
 /** Split, embed and store one turn. Returns the number of sections written. */
 async function sectionOne(userId: string, turn: PendingTurn, hf: HuggingFaceClient): Promise<number> {
-  const sections = splitIntoSections(turn.content);
+  // Injected context saved with a turn is not the user's text: never section it.
+  const sections = splitIntoSections(stripInjectedContext(turn.content));
   if (sections.length === 0) {
     await supabase.from("turn_sections").delete().eq("turn_id", turn.id);
     await mark(userId, turn.id, { v: SECTIONS_VERSION, len: turn.content_len, n: 0 });

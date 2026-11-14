@@ -18,6 +18,7 @@ import { securityHeaders } from "../_shared/headers.ts";
 import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 import { resolveUserId } from "../_shared/auth-helpers.ts";
 import { cleanResults } from "../_shared/result-cleanup.ts";
+import { isEchoOfQuery } from "../_shared/injected-context.ts";
 import {
     mergeSectionResults,
     SECTION_MIN_SIMILARITY,
@@ -38,6 +39,7 @@ async function withSections(
     admin: any,
     userId: string,
     queryEmbedding: number[] | undefined,
+    query: string,
     turnResults: any[],
     projectId: string | undefined,
     requestId: string,
@@ -55,7 +57,9 @@ async function withSections(
             Logger.warn("Section search failed (search continues)", { requestId, error: error.message });
             return turnResults;
         }
-        const hits = (data ?? []) as SectionHit[];
+        // An earlier asking of this same question matches it word for word and
+        // would set the bar that every real section is measured against.
+        const hits = ((data ?? []) as SectionHit[]).filter((h) => !isEchoOfQuery(h.content, query));
         const selected = selectSections(hits);
         if (selected.length === 0) return turnResults;
 
@@ -254,8 +258,8 @@ serve(async (req) => {
         ]);
         // Cards first: a question that names a thing gets the short record of
         // what that thing is ahead of the supporting turns.
-        const withParts = await withSections(supabaseAdmin, userId, capture.queryEmbedding, turnResults, projectId || undefined, requestId);
-        const results = [...cards, ...cleanResults(withParts)];
+        const withParts = await withSections(supabaseAdmin, userId, capture.queryEmbedding, query, turnResults, projectId || undefined, requestId);
+        const results = [...cards, ...cleanResults(withParts, query)];
 
         Logger.info("Search completed", {
             requestId,
