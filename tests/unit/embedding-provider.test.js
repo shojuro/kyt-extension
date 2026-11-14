@@ -13,6 +13,8 @@ import {
     EMBEDDING_MODEL,
     TARGET_DIMS,
     buildEmbeddingRequest,
+    EMBEDDING_PROVIDERS,
+    embedWithFallback,
     parseEmbeddingResponse,
 } from '../../supabase/functions/_shared/embedding-provider.ts';
 
@@ -70,5 +72,66 @@ describe('parseEmbeddingResponse', () => {
         const short = new Array(768).fill(0.1);
         expect(() => parseEmbeddingResponse({ data: [{ index: 0, embedding: short }] }))
             .toThrow(/768/);
+    });
+});
+
+/**
+ * 2026-11-13 17:21 UTC: DeepInfra answered 429 "Model busy" and the Hugging
+ * Face router then paused it (503), so every search and save lost its
+ * embedding. Scaleway serves the same model and is the second leg.
+ */
+describe('embedWithFallback', () => {
+    const ok = (first) => ({ data: [{ index: 0, embedding: fullVector(first) }] });
+
+    it('lists DeepInfra first and Scaleway second, same model family', () => {
+        expect(EMBEDDING_PROVIDERS.map((p) => p.name)).toEqual(['deepinfra', 'scaleway']);
+        expect(EMBEDDING_PROVIDERS[1].url).toBe('https://router.huggingface.co/scaleway/v1/embeddings');
+        expect(EMBEDDING_PROVIDERS[1].model).toBe('qwen3-embedding-8b');
+    });
+
+    it('uses only the first provider when it answers', async () => {
+        const calls = [];
+        const out = await embedWithFallback('hi', async (provider, body) => {
+            calls.push([provider.name, body]);
+            return ok(0.5);
+        });
+        expect(calls).toEqual([['deepinfra', { input: 'hi', model: 'Qwen/Qwen3-Embedding-8B' }]]);
+        expect(out).toHaveLength(1);
+        expect(out[0]).toHaveLength(1024);
+    });
+
+    it('falls back to Scaleway with its own model id when DeepInfra is busy', async () => {
+        const calls = [];
+        const out = await embedWithFallback(['a'], async (provider, body) => {
+            calls.push([provider.name, body.model]);
+            if (provider.name === 'deepinfra') throw new Error('HF Embedding API Error: 429 - Model busy, retry later');
+            return ok(-0.5);
+        });
+        expect(calls).toEqual([['deepinfra', 'Qwen/Qwen3-Embedding-8B'], ['scaleway', 'qwen3-embedding-8b']]);
+        expect(out[0][0]).toBeLessThan(0);
+    });
+
+    it('falls back when the first provider returns an unusable body', async () => {
+        const out = await embedWithFallback('hi', async (provider) =>
+            provider.name === 'deepinfra' ? { error: 'paused' } : ok(0.5));
+        expect(out[0]).toHaveLength(1024);
+    });
+
+    it('reports both failures, with a retryable one first so the retry policy retries', async () => {
+        const err = await embedWithFallback('hi', async (provider) => {
+            if (provider.name === 'deepinfra') throw new Error('HF Embedding API Error: 402 - billing');
+            throw new Error('HF Embedding API Error: 503 - paused');
+        }).catch((e) => e);
+        expect(err.message).toMatch(/402/);
+        expect(err.message).toMatch(/503/);
+        expect(err.message.indexOf('503')).toBeLessThan(err.message.indexOf('402'));
+    });
+
+    it('is not retryable when every provider refuses for good', async () => {
+        const { isNonRetryableError } = await import('../../supabase/functions/_shared/retry-policy.ts');
+        const err = await embedWithFallback('hi', async () => {
+            throw new Error('HF Embedding API Error: 402 - billing');
+        }).catch((e) => e);
+        expect(isNonRetryableError(err.message)).toBe(true);
     });
 });
