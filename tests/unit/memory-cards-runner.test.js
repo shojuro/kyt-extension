@@ -69,6 +69,21 @@ describe('buildMemoryCards', () => {
     expect(calls[0].body).not.toHaveProperty('force');
   });
 
+  it('does not start a second build while one is running', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const calls = [];
+    const call = async (name, body) => { calls.push(body); await gate; return run({ built: 2, remaining: 0 }); };
+    const first = buildMemoryCards(call, {}, quiet);
+    const second = buildMemoryCards(call, {}, quiet);
+    release();
+    expect(await second).toEqual(await first);
+    expect(calls).toHaveLength(1);
+    // and a new build can start once the first is done
+    await buildMemoryCards(call, {}, quiet);
+    expect(calls).toHaveLength(2);
+  });
+
   it('a dry run makes one call and writes nothing', async () => {
     const { call, calls } = fakeCall([{ success: true, dry_run: true, planned: 12, stale: 12, names: [] }]);
     const out = await buildMemoryCards(call, { dryRun: true, maxAuto: 10 }, quiet);

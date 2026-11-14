@@ -11,7 +11,24 @@
  * @param {{maxRuns?: number, log?: Function, now?: () => Date}} [control]
  * @returns {Promise<object>} totals across runs
  */
-export async function buildMemoryCards(call, options = {}, control = {}) {
+let inFlight = null;
+
+/**
+ * One build at a time. On 2026-11-14 a second loop started while the first
+ * was running and about 95 cards were written (and paid for) twice. A dry run
+ * writes nothing and is not held back.
+ */
+export function buildMemoryCards(call, options = {}, control = {}) {
+  if (options.dryRun) return runBuild(call, options, control);
+  if (inFlight) {
+    (control.log || console.log)('🗂️ Memory cards: a build is already running; not starting a second one.');
+    return inFlight;
+  }
+  inFlight = runBuild(call, options, control).finally(() => { inFlight = null; });
+  return inFlight;
+}
+
+async function runBuild(call, options = {}, control = {}) {
   const { maxRuns = 40, log = console.log, now = () => new Date() } = control;
   const body = {};
   if (Array.isArray(options.pins) && options.pins.length > 0) body.pins = options.pins;
