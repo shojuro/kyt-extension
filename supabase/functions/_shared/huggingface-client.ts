@@ -3,7 +3,7 @@ import { retryWrapper, CostMonitor } from "./utils.ts";
 import type { ClientContext } from "./anthropic-client.ts";
 import { embedWithFallback, PROVIDER_TIMEOUT_MS } from "./embedding-provider.ts";
 import type { EmbeddingProvider } from "./embedding-provider.ts";
-import { RERANK_MODEL, RERANK_TIMEOUT_MS, rerankWithFallback } from "./rerank-provider.ts";
+import { RERANK_MODEL, RERANK_TIMEOUT_MS, rerankProviders, rerankWithFallback } from "./rerank-provider.ts";
 
 // Each attempt tries every provider once, so few attempts are needed. The
 // attempt timeout leaves room for both providers to time out in turn.
@@ -117,7 +117,7 @@ export class HuggingFaceClient {
                 throw new Error(`${response.status} - ${(await response.text()).slice(0, 160)}`);
             }
             return await response.json();
-        });
+        }, rerankProviders(Deno.env.get("RERANK_ENDPOINT_URL")));
         if (result.failures.length > 0) {
             console.warn(`Rerank served by ${result.provider} after: ${result.failures.join(" | ")}`, { requestId });
         }

@@ -10,7 +10,9 @@
 export const RERANK_MODEL = "BAAI/bge-reranker-v2-m3";
 /** Characters of each document sent to the reranker. */
 export const RERANK_DOC_CHARS = 4000;
-export const RERANK_TIMEOUT_MS = 10000;
+// The shared provider answered in 4.8 s and 8.3 s and timed out twice at 10 s
+// (2026-11-14). A search should not wait longer than this for it.
+export const RERANK_TIMEOUT_MS = 5000;
 
 export interface RerankScore {
     index: number;
@@ -78,6 +80,24 @@ export const RERANK_PROVIDERS: RerankProvider[] = [
         parse: parseRerankResults,
     },
 ];
+
+/**
+ * Providers in the order they are tried. A dedicated endpoint (the address of
+ * a Hugging Face Inference Endpoint running the model, set in the
+ * RERANK_ENDPOINT_URL secret) goes first when there is one: it answers fast,
+ * and while it is asleep it refuses at once, so the shared providers follow.
+ */
+export function rerankProviders(endpointUrl?: string | null): RerankProvider[] {
+    const base = (endpointUrl ?? "").trim().replace(/\/+$/, "");
+    if (!/^https:\/\/[^\s/]+/.test(base)) return RERANK_PROVIDERS;
+    const dedicated: RerankProvider = {
+        name: "dedicated",
+        url: /\/rerank$/.test(base) ? base : `${base}/rerank`,
+        body: (query, documents) => ({ query, texts: documents }),
+        parse: parseRerankResults,
+    };
+    return [dedicated, ...RERANK_PROVIDERS];
+}
 
 /**
  * Ask each provider in turn; the first usable reply wins. `send` posts one

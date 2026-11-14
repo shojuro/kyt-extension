@@ -11,6 +11,8 @@ import {
     parsePairScores,
     parseRerankResults,
     rerankWithFallback,
+    rerankProviders,
+    RERANK_TIMEOUT_MS,
 } from '../../supabase/functions/_shared/rerank-provider.ts';
 
 describe('parsePairScores', () => {
@@ -71,5 +73,41 @@ describe('rerankWithFallback', () => {
         await rerankWithFallback('q', ['x'.repeat(RERANK_DOC_CHARS + 500)], async (_p, body) => { sent = body; return [{ score: 0.5 }]; });
         expect(sent.inputs[0].text_pair).toHaveLength(RERANK_DOC_CHARS);
         expect(RERANK_PROVIDERS.map((p) => p.name)).toEqual(['hf-inference', 'scaleway']);
+    });
+});
+
+describe('rerankProviders', () => {
+    it('uses only the shared providers when no endpoint is set or the value is not an https address', () => {
+        expect(rerankProviders(undefined)).toBe(RERANK_PROVIDERS);
+        expect(rerankProviders('')).toBe(RERANK_PROVIDERS);
+        expect(rerankProviders('not a url')).toBe(RERANK_PROVIDERS);
+        expect(rerankProviders('http://insecure.example')).toBe(RERANK_PROVIDERS);
+    });
+
+    it('puts a dedicated endpoint first and asks it in the /rerank form', async () => {
+        const providers = rerankProviders(' https://abc123.endpoints.example.cloud/ ');
+        expect(providers.map((p) => p.name)).toEqual(['dedicated', 'hf-inference', 'scaleway']);
+        expect(providers[0].url).toBe('https://abc123.endpoints.example.cloud/rerank');
+        expect(rerankProviders('https://abc123.endpoints.example.cloud/rerank')[0].url).toBe('https://abc123.endpoints.example.cloud/rerank');
+        const calls = [];
+        const out = await rerankWithFallback('q', ['a', 'b'], async (provider, body) => {
+            calls.push([provider.name, body]);
+            return [{ index: 1, score: 0.9 }, { index: 0, score: 0.1 }];
+        }, providers);
+        expect(calls).toEqual([['dedicated', { query: 'q', texts: ['a', 'b'] }]]);
+        expect(out.scores[0]).toEqual({ index: 1, score: 0.9 });
+    });
+
+    it('falls to the shared provider while the dedicated endpoint is asleep', async () => {
+        const out = await rerankWithFallback('q', ['a'], async (provider) => {
+            if (provider.name === 'dedicated') throw new Error('502 - Bad Gateway');
+            return [{ label: 'LABEL_0', score: 0.4 }];
+        }, rerankProviders('https://abc123.endpoints.example.cloud'));
+        expect(out.provider).toBe('hf-inference');
+        expect(out.failures).toEqual(['dedicated: 502 - Bad Gateway']);
+    });
+
+    it('does not wait longer than 5 seconds per provider', () => {
+        expect(RERANK_TIMEOUT_MS).toBeLessThanOrEqual(5000);
     });
 });
