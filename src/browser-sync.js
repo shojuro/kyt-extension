@@ -28,7 +28,7 @@ import { TIMEOUT_SYNC_API_MS } from './constants.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { refreshSession } from './auth/auth-service.js';
 import { stripInjectionPrefix } from './context-retrieval.js';
-import { SYNCED_CHUNKS_KEY, filterNewChunks, rememberChunks } from './chunk-sync-cache.js';
+import { SYNCED_CHUNKS_KEY, CHUNK_SYNC_GROUP_SIZE, filterNewChunks, rememberChunks } from './chunk-sync-cache.js';
 
 // Defensive flag: set after first error indicating profile_id column doesn't exist on chat_turns.
 // Once set, all subsequent syncs skip profile_id for this SW lifecycle.
@@ -660,11 +660,16 @@ export async function syncMessages(messagesToSync) {
     const allTurnChunks = messagesToTurnChunks(cleanedForChunking, userId);
     // Re-chunking the whole conversation yields mostly chunks that were synced
     // before. Only new or changed ones get questions, an embedding and a write.
-    const syncedChunks = (await chrome.storage.local.get([SYNCED_CHUNKS_KEY]))[SYNCED_CHUNKS_KEY] || [];
-    const turnChunks = filterNewChunks(allTurnChunks, syncedChunks);
-    console.log(`📦 Chunking with full context: ${contextMessages.length} messages (batch had ${deflectionFiltered.length} new); ${turnChunks.length} of ${allTurnChunks.length} chunks are new or changed`);
+    let syncedChunks = (await chrome.storage.local.get([SYNCED_CHUNKS_KEY]))[SYNCED_CHUNKS_KEY] || [];
+    const pendingChunks = filterNewChunks(allTurnChunks, syncedChunks);
+    console.log(`📦 Chunking with full context: ${contextMessages.length} messages (batch had ${deflectionFiltered.length} new); ${pendingChunks.length} of ${allTurnChunks.length} chunks are new or changed`);
 
-    if (turnChunks.length > 0) {
+    // Small groups, each written and remembered before the next starts. With
+    // one big pass, the browser stopped the worker before the write and the
+    // next sync began again from the first chunk, without end.
+    for (let groupStart = 0; groupStart < pendingChunks.length; groupStart += CHUNK_SYNC_GROUP_SIZE) {
+      const turnChunks = pendingChunks.slice(groupStart, groupStart + CHUNK_SYNC_GROUP_SIZE);
+      console.log(`📦 Chunk group ${Math.floor(groupStart / CHUNK_SYNC_GROUP_SIZE) + 1} of ${Math.ceil(pendingChunks.length / CHUNK_SYNC_GROUP_SIZE)}`);
       // PHASE 8: HyDE Preprocessing - Generate hypothetical questions
       // This improves retrieval by indexing what users MIGHT ask about the content
       console.log('🔮 Generating hypothetical questions for chunks...');
@@ -789,7 +794,8 @@ export async function syncMessages(messagesToSync) {
         console.warn('Continuing with message-level sync only...');
       } else if (turnsResponse) {
         console.log(`✅ Chat turns synced to 'chat_turns' table: ${turnChunks.length} chunks`);
-        await chrome.storage.local.set({ [SYNCED_CHUNKS_KEY]: rememberChunks(syncedChunks, turnChunks) });
+        syncedChunks = rememberChunks(syncedChunks, turnChunks);
+        await chrome.storage.local.set({ [SYNCED_CHUNKS_KEY]: syncedChunks });
 
         // Schedule backfill alarm if any chat_turns were synced with null embeddings
         // (circuit breaker tripped, rate limit, missing HF key, etc.)
@@ -799,8 +805,9 @@ export async function syncMessages(messagesToSync) {
           chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 5 });
         }
       }
-    } else {
-      console.log('📊 No conversation turns created (insufficient messages for chunking)');
+    }
+    if (pendingChunks.length === 0) {
+      console.log('📊 No new or changed conversation chunks to sync');
     }
 
     // Update sync status - advance cursor to MAX capturedAt of synced batch (not Date.now()).
@@ -825,7 +832,7 @@ export async function syncMessages(messagesToSync) {
       }
     });
 
-    const chunkCount = turnChunks.length;
+    const chunkCount = pendingChunks.length;
     console.log(`✅ Sync complete: ${deflectionFiltered.length} messages + ${chunkCount} turn chunks (embeddings: ${embeddingsAvailable})`);
 
     // Entity backfill: trigger server-side entity extraction for synced turn IDs.

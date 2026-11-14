@@ -12,6 +12,8 @@
 
 export const SYNCED_CHUNKS_KEY = 'kyt_synced_chunks';
 export const MAX_REMEMBERED_CHUNKS = 5000;
+/** Chunks processed and written together before the next group starts. */
+export const CHUNK_SYNC_GROUP_SIZE = 6;
 
 /** FNV-1a, enough to tell one chunk's text from another's. */
 function hashText(text) {
