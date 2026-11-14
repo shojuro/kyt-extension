@@ -11,6 +11,7 @@
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { fastPathThreshold } from "./fast-threshold.ts";
 import { HuggingFaceClient, HFRerankResponse } from "./huggingface-client.ts";
 import { AnthropicClient, type ClientContext } from "./anthropic-client.ts";
 import { Logger } from "./utils.ts";
@@ -1150,7 +1151,7 @@ export async function getRelevantMemories(
         const penalized = applyQualityPenalties(gravityBoosted, { query, requestId });
 
         // ── Pipeline stage diagnostics (helps debug empty result issues) ──
-        const diagThreshold = confidenceThreshold ?? 0.40;
+        const diagThreshold = fastPathThreshold(confidenceThreshold);
         const afterThreshold = penalized.filter(c => c.rerank_score >= diagThreshold).length;
         const stageDiag = {
             afterVectorSearch: fastCandidates.length,
@@ -1206,7 +1207,8 @@ export async function getRelevantMemories(
         // Fast path uses gravity_score directly (range ~0.2-0.7), not reranked
         // scores (0-1). After quality penalties, good results typically score
         // 0.15-0.35. Use a lower default threshold to avoid filtering everything.
-        const threshold = confidenceThreshold ?? 0.15;
+        // The caller's bar is on the reranked scale; fast-threshold.ts converts it.
+        const threshold = fastPathThreshold(confidenceThreshold);
         const filtered = penalized
             .filter(c => c.rerank_score >= threshold)
             .slice(0, topK);
