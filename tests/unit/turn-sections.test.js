@@ -123,20 +123,34 @@ describe('search-time selection', () => {
         similarity, platform: 'chatgpt', speakers: ['assistant'], created_at: '2026-11-14T06:38:58Z',
     });
 
-    it('drops weak hits and keeps at most two sections per turn, best turn first', () => {
-        const picked = selectSections([hit('a', 't1', 0.62), hit('b', 't1', 0.58), hit('c', 't1', 0.55), hit('d', 't2', 0.71), hit('e', 't3', 0.41)]);
+    it('keeps at most two sections per turn, best turn first, and drops hits under the floor', () => {
+        const picked = selectSections([hit('a', 't1', 0.66), hit('b', 't1', 0.65), hit('c', 't1', 0.64), hit('d', 't2', 0.71), hit('e', 't3', 0.41)]);
         expect(picked.map((h) => h.id)).toEqual(['d', 'a', 'b']);
+        expect(selectSections([hit('x', 't1', 0.54)])).toEqual([]);
+    });
+
+    it('drops sections that are not close to the best one (the 2026-11-14 search)', () => {
+        const picked = selectSections([
+            hit('right', 'reply', 0.727),
+            hit('n1', 'pasted-doc', 0.620), hit('n2', 'pasted-doc', 0.615), hit('n3', 'pasted-doc', 0.600), hit('n4', 'other', 0.581),
+        ]);
+        expect(picked.map((h) => h.id)).toEqual(['right']);
+    });
+
+    it('asks for the outline of a turn whose single section matched strongly', () => {
+        expect(turnsWantingOutline(selectSections([hit('right', 'reply', 0.727)]))).toEqual(['reply']);
+        expect(turnsWantingOutline(selectSections([hit('weak', 'reply', 0.60)]))).toEqual([]);
     });
 
     it('puts a matching outline ahead of its turn\'s sections', () => {
-        const picked = selectSections([hit('a', 't1', 0.62), hit('o', 't1', 0.55, 'outline')]);
+        const picked = selectSections([hit('a', 't1', 0.62), hit('o', 't1', 0.58, 'outline')]);
         expect(picked.map((h) => h.id)).toEqual(['o', 'a']);
     });
 
     it('asks for the outline of a turn with two matching sections', () => {
-        const picked = selectSections([hit('a', 't1', 0.62), hit('b', 't1', 0.58), hit('d', 't2', 0.71)]);
+        const picked = selectSections([hit('a', 't1', 0.62), hit('b', 't1', 0.60), hit('d', 't2', 0.64)]);
         expect(turnsWantingOutline(picked)).toEqual(['t1']);
-        expect(turnsWantingOutline(selectSections([hit('a', 't1', 0.62), hit('b', 't1', 0.6), hit('o', 't1', 0.55, 'outline')]))).toEqual([]);
+        expect(turnsWantingOutline(selectSections([hit('a', 't1', 0.62), hit('b', 't1', 0.6), hit('o', 't1', 0.58, 'outline')]))).toEqual([]);
     });
 
     it('shapes a section as a search result that keeps the speaker', () => {

@@ -233,21 +233,32 @@ export interface SectionHit {
     created_at: string;
 }
 
-/** Cosine similarity a section needs to be returned (same bar as the turn search uses for raw vectors). */
-export const SECTION_MIN_SIMILARITY = 0.5;
+// How close a section must be to the query. First live search, 2026-11-14,
+// "the list you gave me about the two projects I want to marry together": the
+// right reply's section scored 0.727; sections of an unrelated pasted document
+// scored 0.620, 0.615, 0.600 and 0.581 and filled three of the four slots.
+// So besides a floor, a section must be close to the best one. These numbers
+// rest on that one search; re-check them as test questions are added.
+/** Floor: no section below this is returned. */
+export const SECTION_MIN_SIMILARITY = 0.55;
+/** A section must be within this much of the best section. */
+export const SECTION_TOP_GAP = 0.08;
+/** A section this close to the query brings its turn's outline with it. */
+export const OUTLINE_SIMILARITY = 0.65;
 export const MAX_SECTION_RESULTS = 4;
 const MAX_SECTIONS_PER_TURN_RESULT = 2;
 
 /**
- * Choose which section hits to return, best turn first. A turn contributes
- * its two best sections; when two or more of its sections match, the question
- * is about the reply as a whole, so its outline is wanted too (see
- * turnsWantingOutline).
+ * Choose which section hits to return, best turn first: those above the
+ * floor and close to the best hit. A turn contributes its two best sections;
+ * see turnsWantingOutline for when its outline is added.
  */
 export function selectSections(hits: SectionHit[], max = MAX_SECTION_RESULTS): SectionHit[] {
     const byTurn = new Map<string, SectionHit[]>();
-    for (const hit of [...hits].sort((a, b) => b.similarity - a.similarity)) {
-        if (!(hit.similarity >= SECTION_MIN_SIMILARITY)) continue;
+    const sortedHits = [...hits].sort((a, b) => b.similarity - a.similarity);
+    const bar = Math.max(SECTION_MIN_SIMILARITY, (sortedHits[0]?.similarity ?? 0) - SECTION_TOP_GAP);
+    for (const hit of sortedHits) {
+        if (!(hit.similarity >= bar)) continue;
         if (!byTurn.has(hit.turn_id)) byTurn.set(hit.turn_id, []);
         byTurn.get(hit.turn_id)!.push(hit);
     }
@@ -262,15 +273,27 @@ export function selectSections(hits: SectionHit[], max = MAX_SECTION_RESULTS): S
     return out;
 }
 
-/** Turns with two or more matching sections whose outline was not itself among the hits. */
+/**
+ * Turns whose outline should be fetched: two or more of their sections
+ * matched, or one matched strongly, and the outline is not already among the
+ * hits. The outline is the map of the whole message, which is what "the list
+ * you gave me" asks for.
+ */
 export function turnsWantingOutline(selected: SectionHit[]): string[] {
     const count = new Map<string, number>();
+    const best = new Map<string, number>();
     const hasOutline = new Set<string>();
     for (const hit of selected) {
-        if (hit.kind === "outline") hasOutline.add(hit.turn_id);
-        else count.set(hit.turn_id, (count.get(hit.turn_id) ?? 0) + 1);
+        if (hit.kind === "outline") {
+            hasOutline.add(hit.turn_id);
+            continue;
+        }
+        count.set(hit.turn_id, (count.get(hit.turn_id) ?? 0) + 1);
+        best.set(hit.turn_id, Math.max(best.get(hit.turn_id) ?? 0, hit.similarity));
     }
-    return [...count.entries()].filter(([id, n]) => n >= 2 && !hasOutline.has(id)).map(([id]) => id);
+    return [...count.entries()]
+        .filter(([id, n]) => !hasOutline.has(id) && (n >= 2 || (best.get(id) ?? 0) >= OUTLINE_SIMILARITY))
+        .map(([id]) => id);
 }
 
 /** A section shaped like a search result. */
