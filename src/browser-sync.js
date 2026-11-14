@@ -28,6 +28,7 @@ import { TIMEOUT_SYNC_API_MS } from './constants.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { refreshSession } from './auth/auth-service.js';
 import { stripInjectionPrefix } from './context-retrieval.js';
+import { SYNCED_CHUNKS_KEY, filterNewChunks, rememberChunks } from './chunk-sync-cache.js';
 
 // Defensive flag: set after first error indicating profile_id column doesn't exist on chat_turns.
 // Once set, all subsequent syncs skip profile_id for this SW lifecycle.
@@ -656,8 +657,12 @@ export async function syncMessages(messagesToSync) {
       ...msg,
       content: stripInjectionPrefix(msg.content).content,
     }));
-    const turnChunks = messagesToTurnChunks(cleanedForChunking, userId);
-    console.log(`📦 Chunking with full context: ${contextMessages.length} messages (batch had ${deflectionFiltered.length} new)`);
+    const allTurnChunks = messagesToTurnChunks(cleanedForChunking, userId);
+    // Re-chunking the whole conversation yields mostly chunks that were synced
+    // before. Only new or changed ones get questions, an embedding and a write.
+    const syncedChunks = (await chrome.storage.local.get([SYNCED_CHUNKS_KEY]))[SYNCED_CHUNKS_KEY] || [];
+    const turnChunks = filterNewChunks(allTurnChunks, syncedChunks);
+    console.log(`📦 Chunking with full context: ${contextMessages.length} messages (batch had ${deflectionFiltered.length} new); ${turnChunks.length} of ${allTurnChunks.length} chunks are new or changed`);
 
     if (turnChunks.length > 0) {
       // PHASE 8: HyDE Preprocessing - Generate hypothetical questions
@@ -784,6 +789,7 @@ export async function syncMessages(messagesToSync) {
         console.warn('Continuing with message-level sync only...');
       } else if (turnsResponse) {
         console.log(`✅ Chat turns synced to 'chat_turns' table: ${turnChunks.length} chunks`);
+        await chrome.storage.local.set({ [SYNCED_CHUNKS_KEY]: rememberChunks(syncedChunks, turnChunks) });
 
         // Schedule backfill alarm if any chat_turns were synced with null embeddings
         // (circuit breaker tripped, rate limit, missing HF key, etc.)
