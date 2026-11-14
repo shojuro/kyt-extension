@@ -850,16 +850,23 @@ export async function saveEntitiesWithMentions(
 
   // Track co-occurrence relationships between all entity pairs in this turn
   if (savedEntityIds.length >= 2) {
+    let relationshipErrorLogged = false;
     for (let i = 0; i < savedEntityIds.length; i++) {
       for (let j = i + 1; j < savedEntityIds.length; j++) {
         try {
           const relType = classifyRelationshipType(entities[i], entities[j]);
-          await supabase.rpc('upsert_entity_relationship', {
+          // rpc() reports failure in its result, it does not throw. Unchecked, every
+          // relationship write failed without a trace from March to November 2026.
+          const { error: relError } = await supabase.rpc('upsert_entity_relationship', {
             p_user_id: userId,
             p_entity_a: savedEntityIds[i],
             p_entity_b: savedEntityIds[j],
             p_relationship_type: relType
           });
+          if (relError) {
+            if (!relationshipErrorLogged) console.warn(`Failed to upsert entity relationship: ${relError.message}`);
+            relationshipErrorLogged = true;
+          }
         } catch (err) {
           console.warn(`Failed to upsert entity relationship:`, err);
         }
