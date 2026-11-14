@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   chunkFingerprint, filterNewChunks, rememberChunks,
-  chunkSyncPaused, nextChunkSyncRetry, withProjectDefaults, CHUNK_SYNC_RETRY_MS,
+  chunkSyncPaused, nextChunkSyncRetry, withProjectDefaults, CHUNK_SYNC_RETRY_MS, SYNC_QUESTIONS_ENABLED,
 } from '../../src/chunk-sync-cache.js';
 
 const chunk = (start, content, conv = 'c1') => ({ platform: 'chatgpt', conversation_id: conv, start_timestamp: start, content });
@@ -62,5 +62,24 @@ describe('withProjectDefaults', () => {
     expect(withProjectDefaults({ supabaseUrl: 'https://stored.example', supabaseKey: '' }, defaults))
       .toEqual({ supabaseUrl: 'https://stored.example', supabaseKey: 'built-in' });
     expect(withProjectDefaults(undefined, defaults)).toEqual(defaults);
+  });
+});
+
+describe('question generation during sync', () => {
+  it('stays off while no search function reads the questions', async () => {
+    expect(SYNC_QUESTIONS_ENABLED).toBe(false);
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const dir = 'supabase/functions';
+    const readers = [];
+    const walk = (d) => {
+      for (const entry of readdirSync(d, { withFileTypes: true })) {
+        const path = `${d}/${entry.name}`;
+        if (entry.isDirectory()) walk(path);
+        else if (/search|relevant_memories|rerank/.test(path) && readFileSync(path, 'utf8').includes('hypothetical_questions')) readers.push(path);
+      }
+    };
+    walk(dir);
+    // If a search function starts reading the questions, revisit the switch.
+    expect(readers).toEqual([]);
   });
 });

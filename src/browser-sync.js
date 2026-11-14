@@ -29,7 +29,7 @@ import { getActiveProfileId } from './profile-manager.js';
 import { refreshSession } from './auth/auth-service.js';
 import { stripInjectionPrefix } from './context-retrieval.js';
 import {
-  SYNCED_CHUNKS_KEY, CHUNK_SYNC_GROUP_SIZE, CHUNK_SYNC_RETRY_KEY,
+  SYNCED_CHUNKS_KEY, CHUNK_SYNC_GROUP_SIZE, CHUNK_SYNC_RETRY_KEY, SYNC_QUESTIONS_ENABLED,
   filterNewChunks, rememberChunks, withProjectDefaults, chunkSyncPaused, nextChunkSyncRetry,
 } from './chunk-sync-cache.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
@@ -683,12 +683,18 @@ export async function syncMessages(messagesToSync) {
     for (let groupStart = 0; groupStart < pendingChunks.length; groupStart += CHUNK_SYNC_GROUP_SIZE) {
       const turnChunks = pendingChunks.slice(groupStart, groupStart + CHUNK_SYNC_GROUP_SIZE);
       console.log(`📦 Chunk group ${Math.floor(groupStart / CHUNK_SYNC_GROUP_SIZE) + 1} of ${Math.ceil(pendingChunks.length / CHUNK_SYNC_GROUP_SIZE)}`);
-      // PHASE 8: HyDE Preprocessing - Generate hypothetical questions
-      // This improves retrieval by indexing what users MIGHT ask about the content
-      console.log('🔮 Generating hypothetical questions for chunks...');
+      // Hypothetical questions per chunk: one model call each. Off, because no
+      // search function reads chat_turns.hypothetical_questions (checked
+      // 2026-11-14); the calls were cost with no effect on recall. With it off
+      // the field is not sent, so questions stored earlier are left as they are.
+      if (SYNC_QUESTIONS_ENABLED) console.log('🔮 Generating hypothetical questions for chunks...');
 
       const chunksWithHyDE = [];
       for (const chunk of turnChunks) {
+        if (!SYNC_QUESTIONS_ENABLED) {
+          chunksWithHyDE.push(chunk);
+          continue;
+        }
         let questions = [];
         try {
           const hydeResult = await generateHypotheticalQuestions(chunk, null, 5);
@@ -706,7 +712,7 @@ export async function syncMessages(messagesToSync) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
 
-      console.log(`✅ HyDE preprocessing complete for ${chunksWithHyDE.length} chunks`);
+      if (SYNC_QUESTIONS_ENABLED) console.log(`✅ HyDE preprocessing complete for ${chunksWithHyDE.length} chunks`);
 
       // Skip embedding for content-poor chunks (short user-only prompts)
       // These are preserved for history but won't pollute vector search

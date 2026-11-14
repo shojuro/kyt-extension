@@ -72,3 +72,10 @@ export function withProjectDefaults(config, defaults) {
   }
   return out;
 }
+
+/**
+ * Whether the sync asks a model for hypothetical questions about each chunk.
+ * Off: nothing in search reads them. Turn on only together with a search
+ * change that uses chat_turns.hypothetical_questions.
+ */
+export const SYNC_QUESTIONS_ENABLED = false;
