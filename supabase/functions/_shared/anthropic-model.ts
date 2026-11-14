@@ -103,7 +103,10 @@ export function buildMessagesBody(input: MessagesBodyInput): Record<string, unkn
         max_tokens: effectiveMaxTokens(model, input.maxTokens),
     };
     if (profile.adaptiveThinking) {
-        // `thinking` is left unset: adaptive, and at low effort the model can skip it.
+        // Thinking off: left adaptive, these short extraction and classification
+        // calls spent about two thirds of their output tokens on it (2026-11-13:
+        // ~1,090 output tokens per entity extraction against ~380 of answer).
+        body.thinking = { type: "disabled" };
         body.output_config = { effort: ANTHROPIC_EFFORT };
     }
     if (profile.sampling && typeof input.temperature === "number") {

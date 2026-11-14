@@ -34,11 +34,11 @@ describe('buildMessagesBody (Haiku 5.5)', () => {
     expect(body).not.toHaveProperty('top_k');
   });
 
-  it('sets effort low inside output_config and no manual thinking budget', () => {
+  it('sets effort low and turns thinking off (it tripled the output bill on extraction calls)', () => {
     const body = buildMessagesBody(base);
     expect(body.output_config).toEqual({ effort: 'low' });
     expect(body).not.toHaveProperty('effort');
-    expect(body).not.toHaveProperty('thinking');
+    expect(body.thinking).toEqual({ type: 'disabled' });
   });
 
   it('never ends with an assistant prefill, also for JSON requests', () => {
@@ -76,6 +76,7 @@ describe('buildMessagesBody (Haiku 4.5, kept for rollback)', () => {
     expect(body.temperature).toBe(0.2);
     expect(body.max_tokens).toBe(300);
     expect(body).not.toHaveProperty('output_config');
+    expect(body).not.toHaveProperty('thinking');
   });
   it('does not use a prefill either', () => {
     expect(buildMessagesBody({ ...legacy, json: true }).messages).toHaveLength(1);
