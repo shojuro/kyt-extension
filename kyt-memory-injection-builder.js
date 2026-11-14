@@ -375,6 +375,10 @@ export function buildMemoryInjection(result, configOverrides = {}) {
  *
  * Validated: 56/56 PASS across ChatGPT, Claude, Gemini (2026-03-26).
  */
+/** source_type of a memory card (set by search_memories; see _shared/memory-cards.ts). */
+export const MEMORY_CARD_SOURCE = 'memory_card';
+const MEMORY_CARD_MAX_CHARS = 700;
+
 export function buildNaturalLanguageInjection(result, configOverrides = {}) {
     const items = result.items || [];
     if (items.length === 0) return null;
@@ -387,7 +391,19 @@ export function buildNaturalLanguageInjection(result, configOverrides = {}) {
         return tB - tA;
     });
 
-    const quotes = sorted.map(item => {
+    // Memory cards (the short record of what a named thing is) lead the block,
+    // in full; quoted excerpts follow, cut to 250 characters each.
+    const cards = sorted.filter(item => item.source_type === MEMORY_CARD_SOURCE);
+    const excerpts = sorted.filter(item => item.source_type !== MEMORY_CARD_SOURCE);
+    const cardBlock = cards.length === 0 ? '' :
+        'Here is my own summary of what I\'ve said before about what I\'m asking:\n\n' +
+        cards.map(item => '- ' + sanitizeForInjection(item.content || '')
+            .replace(/[\n\r]+/g, ' ')
+            .trim()
+            .substring(0, MEMORY_CARD_MAX_CHARS)).join('\n\n') +
+        '\n\n';
+
+    const quotes = excerpts.map(item => {
         const content = sanitizeForInjection(item.content || '')
             .replace(/[\n\r]+/g, ' ')
             .trim()
@@ -400,8 +416,10 @@ export function buildNaturalLanguageInjection(result, configOverrides = {}) {
     // from injected context. These constraints are empirically validated to prevent this.
     if (platform === 'gemini') {
         return '(For context: I\'ve mentioned some of these topics before. ' +
-            'Here are brief, truncated excerpts from past conversations — they may be cut off mid-sentence:\n\n' +
-            quotes + '\n\n' +
+            cardBlock +
+            (excerpts.length === 0 ? '' :
+                'Here are brief, truncated excerpts from past conversations — they may be cut off mid-sentence:\n\n' +
+                quotes + '\n\n') +
             'These excerpts are the complete extent of what I\'ve shared on this topic. ' +
             'Only reference what is directly written above. Do not add specific dates, ' +
             'expand truncated quotes, or infer details I have not explicitly stated. ' +
@@ -410,8 +428,10 @@ export function buildNaturalLanguageInjection(result, configOverrides = {}) {
 
     // Claude / ChatGPT: lighter format (they don't hallucinate from injected context)
     return '(For context: I\'ve talked about things like this before in past conversations. ' +
-        'Here are some things I\'ve previously shared that might be relevant to what I\'m about to say:\n\n' +
-        quotes + '\n\n' +
+        cardBlock +
+        (excerpts.length === 0 ? '' :
+            'Here are some things I\'ve previously shared that might be relevant to what I\'m about to say:\n\n' +
+            quotes + '\n\n') +
         'I\'m sharing these so you have the full picture of where I\'m coming from.)';
 }
 

@@ -17,6 +17,35 @@ import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.ts";
 import { securityHeaders } from "../_shared/headers.ts";
 import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 import { resolveUserId } from "../_shared/auth-helpers.ts";
+import { cardToResult, type CardRow, pickCards, queryAliasKeys } from "../_shared/memory-cards.ts";
+
+const MAX_CARDS_PER_SEARCH = 2;
+
+/**
+ * Memory cards for the names in the query (see _shared/memory-cards.ts).
+ * Never fails the search: a missing table or a database error means no cards.
+ */
+async function findMemoryCards(admin: any, userId: string, query: string, requestId: string): Promise<Record<string, unknown>[]> {
+    try {
+        const keys = queryAliasKeys(query);
+        if (keys.length === 0) return [];
+        const { data, error } = await admin
+            .from("memory_cards")
+            .select("id, card_key, name, aliases, description, key_facts, user_note, mention_count, latest_evidence_at, built_at")
+            .eq("user_id", userId)
+            .eq("status", "ready")
+            .overlaps("aliases", keys)
+            .limit(20);
+        if (error) {
+            Logger.warn("Memory card lookup failed (search continues)", { requestId, error: error.message });
+            return [];
+        }
+        return pickCards((data ?? []) as CardRow[], keys, MAX_CARDS_PER_SEARCH).map(cardToResult);
+    } catch (e) {
+        Logger.warn("Memory card lookup threw (search continues)", { requestId, error: (e as Error).message });
+        return [];
+    }
+}
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -149,11 +178,18 @@ serve(async (req) => {
         const profileId = bodyProfileId || userId;
         const pipelineDiag: Record<string, any> = {};
         options._diagnostics = pipelineDiag;
-        const results = await getRelevantMemories(query, userId, options, requestId, profileId, projectId || undefined);
+        const [turnResults, cards] = await Promise.all([
+            getRelevantMemories(query, userId, options, requestId, profileId, projectId || undefined),
+            findMemoryCards(supabaseAdmin, userId, query, requestId),
+        ]);
+        // Cards first: a question that names a thing gets the short record of
+        // what that thing is ahead of the supporting turns.
+        const results = [...cards, ...turnResults];
 
         Logger.info("Search completed", {
             requestId,
             resultCount: results.length,
+            memoryCards: cards.length,
             hydeUsed: useHyde
         });
 

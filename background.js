@@ -26,6 +26,7 @@ import { prewarmEmbeddingModel } from './src/browser-search.js';
 import { queueProcessor } from './src/background/queue-processor.js';
 import { callEdgeFunction } from './src/api-client.js';
 import { backfillAuthReady } from './src/backfill-guard.js';
+import { buildMemoryCards } from './src/memory-cards-runner.js';
 import { HistoryImporter } from './src/history-import/index.js';
 import { refreshSession, refreshSessionWithLock, proactiveRefreshCheck, isAuthenticated, AUTH_SESSION_KEY, AUTH_EXPIRED_KEY } from './src/auth/auth-service.js';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './src/supabase-config.js';
@@ -1052,6 +1053,11 @@ chrome.alarms.create('health_check', { periodInMinutes: 5 });
 chrome.alarms.create('prewarmEmbedding', { delayInMinutes: 1, periodInMinutes: 30 });
 chrome.alarms.create('tokenRefresh', { periodInMinutes: 2 }); // Proactive: check every 2min, refresh when <5min remaining
 chrome.alarms.create('syncTier', { delayInMinutes: 1, periodInMinutes: 5 });
+// Created only when missing: this file runs on every service-worker start, and
+// re-creating a daily alarm each time would push its first run back forever.
+chrome.alarms.get('buildMemoryCards').then((existing) => {
+  if (!existing) chrome.alarms.create('buildMemoryCards', { delayInMinutes: 30, periodInMinutes: 1440 });
+}).catch(() => {});
 
 // NotebookLM sync alarm — only if enabled
 isNLMEnabled().then(enabled => {
@@ -1246,6 +1252,26 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         }
       }
       break;
+
+    case 'buildMemoryCards': {
+      // Daily: write or refresh memory cards (short records of what my
+      // projects, people and tools are). A few calls at most per day; the
+      // first full build is run by hand with KYT_DEBUG.buildCards().
+      try {
+        const { kyt_backfill_paused: cardsPaused } = await chrome.storage.local.get('kyt_backfill_paused');
+        if (cardsPaused) break;
+        // At most one daily pass per 20 hours, however often the alarm is re-armed.
+        const { kyt_cards_last_run: lastCardRun = 0 } = await chrome.storage.local.get('kyt_cards_last_run');
+        if (Date.now() - lastCardRun < 20 * 60 * 60 * 1000) break;
+        if (!(await backfillAuthReady('buildMemoryCards'))) break;
+        await chrome.storage.local.set({ kyt_cards_last_run: Date.now() });
+        const cardTotals = await buildMemoryCards(callEdgeFunction, {}, { maxRuns: 5 });
+        console.log('🗂️ Memory cards (daily):', JSON.stringify(cardTotals));
+      } catch (cardErr) {
+        console.warn('⚠️ Memory cards (daily) failed:', cardErr.message);
+      }
+      break;
+    }
 
     case 'backfillEntities': {
       // Pause flag read OUTSIDE try — the catch references it, and a
@@ -1530,6 +1556,10 @@ globalThis.KYT_DEBUG = {
   },
   backfillEmbeddings: () => backfillNullEmbeddings().then(console.log),
   backfillChatTurnEmbeddings: (platform) => backfillNullChatTurnEmbeddings({ platform }).then(console.log),
+  // Memory cards: KYT_DEBUG.buildCards({ pins: [{ name, aliases, note }], force, dryRun })
+  buildCards: (options = {}) => buildMemoryCards(callEdgeFunction, options)
+    .then(result => { console.log('🗂️ Memory cards result:', result); return result; })
+    .catch(err => { console.error('❌ Memory cards failed:', err.message); return { success: false, error: err.message }; }),
   backfillEntities: (force = false) => callEdgeFunction('backfill_entities', { force_reextract: force }, { timeoutMs: 120000 })
     .then(result => { console.log('🔗 Entity backfill result:', result); return result; })
     .catch(err => { console.error('❌ Entity backfill failed:', err.message); return { success: false, error: err.message }; }),
@@ -1765,6 +1795,7 @@ console.log('   - KYT_DEBUG.diagnoseEmbeddings() - Check circuit breaker, HF key
 console.log('   - KYT_DEBUG.resetEmbeddingCircuit() - Reset embedding circuit breaker');
 console.log('   - KYT_DEBUG.backfillEmbeddings() - Backfill null embeddings in messages table');
 console.log('   - KYT_DEBUG.backfillChatTurnEmbeddings(platform?) - Backfill null embeddings in chat_turns (e.g. "gemini")');
+console.log('   - KYT_DEBUG.buildCards({pins, force, dryRun}) - Write memory cards (what my projects, people and tools are)');
 console.log('   - KYT_DEBUG.backfillEntities() - Re-extract entities with CONCEPT/ANALOGY/THEME support');
 console.log('   - KYT_DEBUG.backfillContextual() - Generate context summaries + re-embed');
 console.log('   - KYT_DEBUG.backfillGravity(maxRows?) - Backfill impact_score + intimacy_level + topics');
