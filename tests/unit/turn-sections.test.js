@@ -223,7 +223,7 @@ describe('reranked selection (2026-11-14: unrelated document at 0.615, right rep
     });
 
     it('gives the reranker the heading with the text, capped', () => {
-        expect(sectionRerankText({ kind: 'section', heading: 'A > B', content: 'x'.repeat(5000) })).toHaveLength(2000);
+        expect(sectionRerankText({ kind: 'section', heading: 'A > B', content: 'x'.repeat(5000) })).toHaveLength(1200);
         expect(sectionRerankText({ kind: 'section', heading: 'A > B', content: 'body' })).toBe('A > B\nbody');
     });
 });

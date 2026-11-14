@@ -73,11 +73,14 @@ async function withSections(
         let hits = candidates;
         let rule = SIMILARITY_RULE;
         let scoredBy = "similarity";
+        let rerankMs: number | null = null;
         const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY");
         if (hfApiKey) {
             try {
                 const hf = new HuggingFaceClient(hfApiKey, { userId, edgeFunction: "search_memories" });
+                const rerankStarted = Date.now();
                 const scores = await hf.rerank(query, candidates.map(sectionRerankText), requestId);
+                rerankMs = Date.now() - rerankStarted;
                 const reranked = applyRerankScores(candidates, scores);
                 if (reranked.length > 0) {
                     hits = reranked;
@@ -91,7 +94,7 @@ async function withSections(
         const selected = selectSections(hits, undefined, rule);
         if (selected.length === 0) {
             Logger.info("Sections matched", {
-                requestId, scoredBy, hits: hits.length, returned: 0, outlines: 0,
+                requestId, scoredBy, rerankMs, hits: hits.length, returned: 0, outlines: 0,
                 topScores: hits.slice(0, 5).map((h) => Number(h.similarity).toFixed(3)),
             });
             return turnResults;
@@ -115,6 +118,7 @@ async function withSections(
         Logger.info("Sections matched", {
             requestId,
             scoredBy,
+            rerankMs,
             hits: hits.length,
             returned: selected.length,
             outlines: outlines.length,

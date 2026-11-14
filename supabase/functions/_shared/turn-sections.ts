@@ -299,7 +299,9 @@ export const SIMILARITY_RULE: SelectionRule = {
 };
 
 /** Candidates fetched by similarity and handed to the reranker. */
-export const SECTION_CANDIDATES = 16;
+// Fewer, shorter texts: 16 texts of 2,000 characters timed out at 10 s on the
+// Hugging Face inference provider (2026-11-14).
+export const SECTION_CANDIDATES = 8;
 export const SECTION_CANDIDATE_SIMILARITY = 0.5;
 /**
  * Scores are the cross-encoder's (0 to 1), which reads the question and the
@@ -323,9 +325,11 @@ export function applyRerankScores(hits: SectionHit[], scores: { index: number; s
     return out.sort((a, b) => b.similarity - a.similarity);
 }
 
+export const SECTION_RERANK_CHARS = 1200;
+
 /** Text of a section as the reranker reads it. */
 export function sectionRerankText(hit: Pick<SectionHit, "kind" | "heading" | "content">): string {
-    return sectionEmbedText(hit as Pick<Section, "kind" | "heading" | "content">).slice(0, 2000);
+    return sectionEmbedText(hit as Pick<Section, "kind" | "heading" | "content">).slice(0, SECTION_RERANK_CHARS);
 }
 
 export function selectSections(hits: SectionHit[], max = MAX_SECTION_RESULTS, rule: SelectionRule = SIMILARITY_RULE): SectionHit[] {
