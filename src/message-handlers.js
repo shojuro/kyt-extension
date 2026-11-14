@@ -12,6 +12,7 @@ import { syncViaEdgeFunction } from './edge-sync.js';
 import { getApiConfig, getRoutingMode } from './auth-config.js';
 import { HistoryImporter } from './history-import/index.js';
 import { classifyIntent } from './intent-classifier.js';
+import { upgradeUiEnabled } from './tier-policy.js';
 import { classifyWithHaiku, isHaikuEnabled } from './haiku-tiebreaker.js';
 import { getMemoryMode, setMemoryMode } from './memory-mode.js';
 import { checkTurnLimit, incrementTurnCount, getTurnUsage } from './turn-limiter.js';
@@ -398,7 +399,8 @@ async function handleGetContextAsync(message, getContextForInjection) {
             type: 'KYT_TURN_LIMIT_REACHED',
             used: turnCheck.used,
             limit: turnCheck.limit,
-            tier: turnCheck.tier
+            tier: turnCheck.tier,
+            showUpgrade: upgradeUiEnabled()
           }).catch(() => {});
         }
       });
@@ -1094,6 +1096,10 @@ export function registerMessageHandler(deps) {
       case 'KYT_START_CHECKOUT':
         (async () => {
           try {
+            if (!upgradeUiEnabled()) {
+              sendResponse({ success: false, error: 'Upgrades are not available during the beta' });
+              return;
+            }
             const auth = await getAuthConfig();
             if (!auth.userId) {
               sendResponse({ success: false, error: 'Not authenticated' });

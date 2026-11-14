@@ -22,7 +22,7 @@
     try { sessionStorage.setItem(DISMISS_KEY, '1'); } catch { /* ok */ }
   }
 
-  function createBanner(used, limit, tier) {
+  function createBanner(used, limit, tier, showUpgrade) {
     if (bannerShown || isDismissed()) return;
     if (document.getElementById(bannerId)) return;
     bannerShown = true;
@@ -77,12 +77,14 @@
     banner.innerHTML = [
       '<div class="msg">',
       '  <span class="dot"></span>',
-      '  <span>K.Y.T. memory paused \u2014 ' + used + '/' + limit + ' turns used today</span>',
+      '  <span>K.Y.T. memory paused \u2014 ' + used + '/' + limit + ' turns used today' +
+        (showUpgrade ? '' : '. It resumes at midnight UTC; capture continues.') + '</span>',
       '</div>',
       '<div class="actions">',
-      '  <button class="upgrade-btn">',
-      '    Upgrade to ' + tierLabel + ' \u2014 ' + tierPrice,
-      '  </button>',
+      // No upgrade button while billing is off (beta): there is nothing to buy.
+      (showUpgrade
+        ? '  <button class="upgrade-btn">Upgrade to ' + tierLabel + ' \u2014 ' + tierPrice + '</button>'
+        : ''),
       '  <button class="dismiss" aria-label="Dismiss">\u00D7</button>',
       '</div>',
     ].join('');
@@ -91,7 +93,8 @@
     shadow.appendChild(banner);
 
     var upgradeBtn = banner.querySelector('.upgrade-btn');
-    upgradeBtn.addEventListener('click', function () {
+    // Absent while billing is off; the dismiss button below must still work.
+    if (upgradeBtn) upgradeBtn.addEventListener('click', function () {
       upgradeBtn.textContent = 'Loading\u2026';
       upgradeBtn.disabled = true;
       chrome.runtime.sendMessage({
@@ -123,7 +126,7 @@
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener(function (msg) {
       if (msg && msg.type === 'KYT_TURN_LIMIT_REACHED') {
-        createBanner(msg.used, msg.limit, msg.tier);
+        createBanner(msg.used, msg.limit, msg.tier, msg.showUpgrade !== false);
       }
     });
   }

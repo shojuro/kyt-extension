@@ -8,7 +8,7 @@ import { generateChunkContext } from '../_shared/context-generator.ts';
 import type { ClientContext } from '../_shared/anthropic-client.ts';
 import { checkRateLimit, rateLimitResponse } from '../_shared/rate-limit.ts';
 import { securityHeaders } from '../_shared/headers.ts';
-import { getUserTier, getTierLimits, RESURFACE_LIMITS } from '../_shared/tier-check.ts';
+import { getUserTier, getTierLimits, resurfaceLimitFor } from '../_shared/tier-check.ts';
 import { resolveUserId } from '../_shared/auth-helpers.ts';
 
 const MAX_BATCH_SIZE = 50;
@@ -155,7 +155,7 @@ serve(async (req) => {
         const RESURFACE_DETECTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 
         async function checkResurfaceLimit(userId: string): Promise<{ limited: boolean; count: number; limit: number }> {
-            const limit = RESURFACE_LIMITS[tier] || RESURFACE_LIMITS.free;
+            const limit = resurfaceLimitFor(tier);
             try {
                 const { data, error } = await supabase.rpc('count_resurfaced_conversations', {
                     p_user_id: userId,

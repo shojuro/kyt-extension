@@ -7,14 +7,9 @@
  * No midnight alarm — MV3 service workers can't rely on alarms firing exactly.
  */
 
-// Tier limits — mirrors TIER_LIMITS in tier-check.ts
-// -1 = unlimited
-const TURNS_PER_DAY = {
-  free: 20,
-  pro: 75,
-  founder: 75,
-  max: -1,
-};
+import { turnsPerDay } from './tier-policy.js';
+
+// Allowances per tier live in tier-policy.js. -1 = unlimited.
 
 function getTodayDate() {
   return new Date().toISOString().slice(0, 10); // "2026-03-17"
@@ -51,7 +46,7 @@ async function getCachedTier() {
  */
 export async function checkTurnLimit() {
   const [data, tier] = await Promise.all([readTurnData(), getCachedTier()]);
-  const limit = TURNS_PER_DAY[tier] ?? TURNS_PER_DAY.free;
+  const limit = turnsPerDay(tier);
   const allowed = limit === -1 || data.count < limit;
   return { allowed, used: data.count, limit, tier };
 }
@@ -73,6 +68,6 @@ export async function incrementTurnCount() {
  */
 export async function getTurnUsage() {
   const [data, tier] = await Promise.all([readTurnData(), getCachedTier()]);
-  const limit = TURNS_PER_DAY[tier] ?? TURNS_PER_DAY.free;
+  const limit = turnsPerDay(tier);
   return { used: data.count, limit, tier, date: data.date };
 }

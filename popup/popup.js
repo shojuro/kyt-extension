@@ -46,10 +46,21 @@ const newProjectBtn = document.getElementById('newProjectBtn');
 const projectVaultBadge = document.getElementById('projectVaultBadge');
 
 // Tier descriptions for display
-const TIER_INFO = {
+// Billing is off during the beta: one allowance for everyone, no upgrade or
+// billing buttons. Keep equal to BETA_MODE in src/tier-policy.js (this script
+// is not a module and cannot import it; tests/unit/tier-policy.test.js checks).
+const BETA_MODE = true;
+const TIER_INFO = BETA_MODE ? {
+  free: { label: 'BETA', description: '75 turns/day' },
+  pro: { label: 'BETA', description: '75 turns/day' },
+  founder: { label: 'FOUNDER', description: 'Unlimited turns' },
+  dev: { label: 'DEV', description: 'Unlimited turns' },
+  max: { label: 'MAX', description: 'Unlimited turns' }
+} : {
   free: { label: 'FREE', description: '20 turns/day' },
   pro: { label: 'PRO', description: '75 turns/day, priority support' },
-  founder: { label: 'FOUNDER', description: '75 turns/day, lifetime Pro' },
+  founder: { label: 'FOUNDER', description: 'Unlimited turns, lifetime' },
+  dev: { label: 'DEV', description: 'Unlimited turns' },
   max: { label: 'MAX', description: 'Unlimited turns, API access' }
 };
 
@@ -479,7 +490,10 @@ async function loadSubscription() {
     tierBadge.className = `tier-badge tier-${tier}`;
     tierDescription.textContent = info.description;
 
-    if (tier === 'free') {
+    if (BETA_MODE) {
+      upgradeBtn.classList.add('hidden');
+      manageBillingBtn.classList.add('hidden');
+    } else if (tier === 'free') {
       upgradeBtn.classList.remove('hidden');
       manageBillingBtn.classList.add('hidden');
     } else if (tier === 'founder') {

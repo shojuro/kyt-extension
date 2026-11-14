@@ -13,9 +13,10 @@
  */
 
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
+import { VALID_TIERS } from './tier-policy.js';
 import { AUTH_SESSION_KEY } from './auth/auth-service.js';
 
-const VALID_TIERS = new Set(['free', 'pro', 'founder', 'max']);
+// Tier names come from tier-policy.js (they must cover what the database can hold).
 
 /**
  * Fetch the user's current tier from Supabase and sync to chrome.storage.local.
