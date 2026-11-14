@@ -28,7 +28,11 @@ import { TIMEOUT_SYNC_API_MS } from './constants.js';
 import { getActiveProfileId } from './profile-manager.js';
 import { refreshSession } from './auth/auth-service.js';
 import { stripInjectionPrefix } from './context-retrieval.js';
-import { SYNCED_CHUNKS_KEY, CHUNK_SYNC_GROUP_SIZE, filterNewChunks, rememberChunks } from './chunk-sync-cache.js';
+import {
+  SYNCED_CHUNKS_KEY, CHUNK_SYNC_GROUP_SIZE, CHUNK_SYNC_RETRY_KEY,
+  filterNewChunks, rememberChunks, withProjectDefaults, chunkSyncPaused, nextChunkSyncRetry,
+} from './chunk-sync-cache.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-config.js';
 
 // Defensive flag: set after first error indicating profile_id column doesn't exist on chat_turns.
 // Once set, all subsequent syncs skip profile_id for this SW lifecycle.
@@ -67,7 +71,10 @@ async function getConfig() {
   if (!result.api_config) {
     throw new Error('API configuration not found. Please set up API keys first.');
   }
-  const config = result.api_config;
+  // The project address and public key ship with the extension. A stored
+  // config without them made every table write and both embedding backfills
+  // fail with "Supabase not configured" (seen 2026-11-14).
+  const config = withProjectDefaults(result.api_config, { supabaseUrl: SUPABASE_URL, supabaseKey: SUPABASE_ANON_KEY });
   const session = result.auth_session;
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -660,8 +667,14 @@ export async function syncMessages(messagesToSync) {
     const allTurnChunks = messagesToTurnChunks(cleanedForChunking, userId);
     // Re-chunking the whole conversation yields mostly chunks that were synced
     // before. Only new or changed ones get questions, an embedding and a write.
-    let syncedChunks = (await chrome.storage.local.get([SYNCED_CHUNKS_KEY]))[SYNCED_CHUNKS_KEY] || [];
-    const pendingChunks = filterNewChunks(allTurnChunks, syncedChunks);
+    const chunkState = await chrome.storage.local.get([SYNCED_CHUNKS_KEY, CHUNK_SYNC_RETRY_KEY]);
+    let syncedChunks = chunkState[SYNCED_CHUNKS_KEY] || [];
+    // After a failed write, wait before paying for questions and embeddings again.
+    const chunkSyncIsPaused = chunkSyncPaused(chunkState[CHUNK_SYNC_RETRY_KEY]);
+    if (chunkSyncIsPaused) {
+      console.warn(`⏸️ Chunk sync paused after a failed write until ${new Date(chunkState[CHUNK_SYNC_RETRY_KEY]).toISOString()}`);
+    }
+    const pendingChunks = chunkSyncIsPaused ? [] : filterNewChunks(allTurnChunks, syncedChunks);
     console.log(`📦 Chunking with full context: ${contextMessages.length} messages (batch had ${deflectionFiltered.length} new); ${pendingChunks.length} of ${allTurnChunks.length} chunks are new or changed`);
 
     // Small groups, each written and remembered before the next starts. With
@@ -796,6 +809,7 @@ export async function syncMessages(messagesToSync) {
         console.log(`✅ Chat turns synced to 'chat_turns' table: ${turnChunks.length} chunks`);
         syncedChunks = rememberChunks(syncedChunks, turnChunks);
         await chrome.storage.local.set({ [SYNCED_CHUNKS_KEY]: syncedChunks });
+        await chrome.storage.local.remove(CHUNK_SYNC_RETRY_KEY);
 
         // Schedule backfill alarm if any chat_turns were synced with null embeddings
         // (circuit breaker tripped, rate limit, missing HF key, etc.)
@@ -804,6 +818,12 @@ export async function syncMessages(messagesToSync) {
           console.log('⏰ Scheduling backfillEmbeddings alarm (chat_turns have null embeddings)');
           chrome.alarms.create('backfillEmbeddings', { delayInMinutes: 5 });
         }
+      }
+      if (!turnsResponse || !turnsResponse.ok) {
+        const retryAt = nextChunkSyncRetry();
+        await chrome.storage.local.set({ [CHUNK_SYNC_RETRY_KEY]: retryAt });
+        console.warn(`⏸️ Chunk write failed; no more chunk work until ${new Date(retryAt).toISOString()}`);
+        break;
       }
     }
     if (pendingChunks.length === 0) {

@@ -50,3 +50,25 @@ export function rememberChunks(known, chunks, max = MAX_REMEMBERED_CHUNKS) {
   const kept = (Array.isArray(known) ? known : []).filter((fp) => !addedSet.has(fp));
   return [...kept, ...addedSet].slice(-max);
 }
+
+export const CHUNK_SYNC_RETRY_KEY = 'kyt_chunk_sync_retry_at';
+/** Wait after a failed chunk write before generating anything again. */
+export const CHUNK_SYNC_RETRY_MS = 30 * 60 * 1000;
+
+/** True while the wait after a failed write is still running. */
+export function chunkSyncPaused(retryAt, now = Date.now()) {
+  return typeof retryAt === 'number' && retryAt > now;
+}
+
+export function nextChunkSyncRetry(now = Date.now()) {
+  return now + CHUNK_SYNC_RETRY_MS;
+}
+
+/** Stored config with the built-in project address and key where it has none. */
+export function withProjectDefaults(config, defaults) {
+  const out = { ...(config || {}) };
+  for (const [key, value] of Object.entries(defaults || {})) {
+    if (!out[key]) out[key] = value;
+  }
+  return out;
+}
