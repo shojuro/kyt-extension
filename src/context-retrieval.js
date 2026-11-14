@@ -10,6 +10,7 @@
  */
 
 import { searchHybrid } from './browser-search.js';
+import { shouldUseLegacySearch } from './legacy-search-policy.js';
 import { transformQuery, fetchRecentTopicsFromSupabase } from './query-transformer.js';
 import { buildMemoryInjection, buildNaturalLanguageInjection, buildErrorInjection } from '../kyt-memory-injection-builder.js';
 import { filterByConfidence } from './confidence-filter.js';
@@ -627,10 +628,15 @@ async function _runContextPipeline(userMessage, config, deps, startTime) {
         }
       }
 
-      if (!apiConfig._testMode && (routingMode !== 'edge' || contextItems.length === 0)) {
+      if (shouldUseLegacySearch({
+        routingMode,
+        itemCount: contextItems.length,
+        searchFailed: diagnostics.searchFailed === true,
+        testMode: Boolean(apiConfig._testMode),
+      })) {
         // ─── Legacy client-side path ───
         if (routingMode === 'edge') {
-          console.warn('⚠️ Edge path returned 0 results or failed — legacy fallback.');
+          console.warn('⚠️ Edge search failed — legacy fallback.');
         }
 
         const maxTimestamp = Date.now() - (contextConfig.excludeRecentSeconds * 1000);
