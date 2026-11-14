@@ -39,3 +39,13 @@ describe('cleanResults', () => {
     expect(cleanResults([])).toEqual([]);
   });
 });
+
+describe('tool boilerplate', () => {
+  it('drops a skill body that a coding tool loaded and keeps ordinary text', async () => {
+    const { isToolBoilerplate } = await import('../../supabase/functions/_shared/result-cleanup.ts');
+    const skill = 'Base directory for this skill: /home/someone/.claude/plugins/cache/x\n\n# Brainstorming Ideas Into Designs\nHelp turn ideas into designs.';
+    expect(isToolBoilerplate(skill)).toBe(true);
+    expect(isToolBoilerplate('The base directory for this project is src/.')).toBe(false);
+    expect(cleanResults([{ id: 's', content: skill }, { id: 'k', content: 'K.Y.T. is my memory layer.' }]).map((r) => r.id)).toEqual(['k']);
+  });
+});

@@ -19,9 +19,15 @@ import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 import { resolveUserId } from "../_shared/auth-helpers.ts";
 import { cleanResults } from "../_shared/result-cleanup.ts";
 import { isEchoOfQuery } from "../_shared/injected-context.ts";
+import { HuggingFaceClient } from "../_shared/huggingface-client.ts";
 import {
     mergeSectionResults,
-    SECTION_MIN_SIMILARITY,
+    SECTION_CANDIDATES,
+    SECTION_CANDIDATE_SIMILARITY,
+    SIMILARITY_RULE,
+    RERANK_RULE,
+    applyRerankScores,
+    sectionRerankText,
     type SectionHit,
     selectSections,
     turnsWantingOutline,
@@ -49,8 +55,8 @@ async function withSections(
         const { data, error } = await admin.rpc("match_turn_sections", {
             p_user_id: userId,
             query_embedding: queryEmbedding,
-            match_threshold: SECTION_MIN_SIMILARITY,
-            match_count: 8,
+            match_threshold: SECTION_CANDIDATE_SIMILARITY,
+            match_count: SECTION_CANDIDATES,
             p_project_id: projectId || null,
         });
         if (error) {
@@ -59,14 +65,41 @@ async function withSections(
         }
         // An earlier asking of this same question matches it word for word and
         // would set the bar that every real section is measured against.
-        const hits = ((data ?? []) as SectionHit[]).filter((h) => !isEchoOfQuery(h.content, query));
-        const selected = selectSections(hits);
-        if (selected.length === 0) return turnResults;
+        const candidates = ((data ?? []) as SectionHit[]).filter((h) => !isEchoOfQuery(h.content, query));
+        if (candidates.length === 0) return turnResults;
 
+        // The cross-encoder reads the question with each section; similarity
+        // alone cannot tell a matching reply from text that merely sounds alike.
+        let hits = candidates;
+        let rule = SIMILARITY_RULE;
+        let scoredBy = "similarity";
+        const hfApiKey = Deno.env.get("HUGGINGFACE_API_KEY");
+        if (hfApiKey) {
+            try {
+                const hf = new HuggingFaceClient(hfApiKey, { userId, edgeFunction: "search_memories" });
+                const scores = await hf.rerank(query, candidates.map(sectionRerankText), requestId);
+                const reranked = applyRerankScores(candidates, scores);
+                if (reranked.length > 0) {
+                    hits = reranked;
+                    rule = RERANK_RULE;
+                    scoredBy = "rerank";
+                }
+            } catch (e) {
+                Logger.warn("Section rerank failed (using similarity)", { requestId, error: (e as Error).message });
+            }
+        }
+        const selected = selectSections(hits, undefined, rule);
+        if (selected.length === 0) {
+            Logger.info("Sections matched", {
+                requestId, scoredBy, hits: hits.length, returned: 0, outlines: 0,
+                topScores: hits.slice(0, 5).map((h) => Number(h.similarity).toFixed(3)),
+            });
+            return turnResults;
+        }
         // A turn with two matching sections is being asked about as a whole:
         // fetch its outline as well.
         let outlines: SectionHit[] = [];
-        const wantOutline = turnsWantingOutline(selected);
+        const wantOutline = turnsWantingOutline(selected, rule);
         if (wantOutline.length > 0) {
             const { data: outlineRows } = await admin
                 .from("turn_sections")
@@ -81,10 +114,12 @@ async function withSections(
         }
         Logger.info("Sections matched", {
             requestId,
+            scoredBy,
             hits: hits.length,
             returned: selected.length,
             outlines: outlines.length,
-            topSimilarity: hits.slice(0, 5).map((h) => Number(h.similarity).toFixed(3)),
+            topScores: hits.slice(0, 5).map((h) => Number(h.similarity).toFixed(3)),
+            topSimilarity: candidates.slice(0, 5).map((h) => Number(h.similarity).toFixed(3)),
         });
         return mergeSectionResults(turnResults, selected, outlines);
     } catch (e) {

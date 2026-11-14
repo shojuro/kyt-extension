@@ -17,6 +17,9 @@ import {
     MIN_TURN_CHARS,
     MAX_SECTION_CHARS,
     MAX_SECTIONS_PER_TURN,
+    RERANK_RULE,
+    applyRerankScores,
+    sectionRerankText,
 } from '../../supabase/functions/_shared/turn-sections.ts';
 
 const para = (label, chars = 500) => `${label} ` + 'memory layer and tutoring model work together. '.repeat(Math.ceil(chars / 47)).slice(0, chars);
@@ -171,5 +174,56 @@ describe('search-time selection', () => {
     it('returns the turn results unchanged when no section matched', () => {
         const turns = [{ id: 't1', content: 'x' }];
         expect(mergeSectionResults(turns, [])).toEqual(turns);
+    });
+});
+
+describe('long single-line text (2026-11-14 backfill crash)', () => {
+    // Imported Gemini turns are one line of up to 30,000 characters. The old
+    // sentence pattern re-scanned the line from every position when a dot was
+    // not followed by a space ("file.txt", "3.5"), and dropped that text.
+    const oneLine = 'word '.repeat(6000) + 'see notes.txt and v3.5 of example.com/path now';
+
+    it('finishes quickly', () => {
+        const started = performance.now();
+        const sections = splitIntoSections(oneLine);
+        expect(performance.now() - started).toBeLessThan(500);
+        expect(sections.length).toBeGreaterThan(5);
+    });
+
+    it('loses no text around dots that do not end a sentence', () => {
+        const text = ('Alpha beta. ' + 'The file notes.txt holds v3.5 of example.com/path today. ').repeat(120);
+        const joined = splitIntoSections(text).map((s) => s.content).join(' ');
+        expect(joined.match(/notes\.txt holds v3\.5 of example\.com\/path today\./g)).toHaveLength(120);
+    });
+});
+
+describe('reranked selection (2026-11-14: unrelated document at 0.615, right reply nowhere)', () => {
+    const hit = (id, turn, similarity, kind = 'section') => ({
+        id, turn_id: turn, kind, section_index: 0, heading: `H-${id}`, content: `content ${id}`,
+        similarity, platform: 'chatgpt', speakers: ['assistant'], created_at: '2026-11-14T06:38:58Z',
+    });
+
+    it('re-scores hits with the reranker and orders them by it', () => {
+        const hits = [hit('doc1', 'pasted', 0.615), hit('doc2', 'pasted', 0.594), hit('right', 'reply', 0.56)];
+        const reranked = applyRerankScores(hits, [{ index: 2, score: 0.81 }, { index: 0, score: 0.04 }, { index: 1, score: 0.02 }, { index: 9, score: 0.9 }]);
+        expect(reranked.map((h) => [h.id, h.similarity])).toEqual([['right', 0.81], ['doc1', 0.04], ['doc2', 0.02]]);
+        const picked = selectSections(reranked, undefined, RERANK_RULE);
+        expect(picked.map((h) => h.id)).toEqual(['right']);
+        expect(turnsWantingOutline(picked, RERANK_RULE)).toEqual(['reply']);
+    });
+
+    it('returns nothing when the reranker finds nothing relevant', () => {
+        const reranked = applyRerankScores([hit('a', 't', 0.61), hit('b', 't', 0.6)], [{ index: 0, score: 0.08 }, { index: 1, score: 0.05 }]);
+        expect(selectSections(reranked, undefined, RERANK_RULE)).toEqual([]);
+    });
+
+    it('keeps a second section only when it is at least half as relevant as the best', () => {
+        const picked = selectSections([hit('a', 't1', 0.9), hit('b', 't2', 0.5), hit('c', 't3', 0.4)], undefined, RERANK_RULE);
+        expect(picked.map((h) => h.id)).toEqual(['a', 'b']);
+    });
+
+    it('gives the reranker the heading with the text, capped', () => {
+        expect(sectionRerankText({ kind: 'section', heading: 'A > B', content: 'x'.repeat(5000) })).toHaveLength(2000);
+        expect(sectionRerankText({ kind: 'section', heading: 'A > B', content: 'body' })).toBe('A > B\nbody');
     });
 });

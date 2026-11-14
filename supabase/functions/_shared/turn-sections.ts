@@ -21,7 +21,8 @@ export const MAX_SECTIONS_PER_TURN = 60;
 /** An outline is written when a turn has at least this many headings. */
 export const MIN_HEADINGS_FOR_OUTLINE = 3;
 /** Version of the splitting rules, stored with each turn so a rule change can trigger a re-split. */
-export const SECTIONS_VERSION = 1;
+// 2: sentence splitting no longer drops text around dots inside words.
+export const SECTIONS_VERSION = 2;
 
 export interface Section {
     /** 0-based position among the content sections; -1 for the outline. */
@@ -90,11 +91,40 @@ function toBlocks(text: string): Block[] {
     return blocks;
 }
 
+/**
+ * Sentences of a paragraph, each with its trailing spaces, covering every
+ * character. One pass: a sentence ends at ".", "!" or "?" followed by white
+ * space, or at a line break. A dot inside "notes.txt" or "3.5" ends nothing.
+ * (A pattern did this before; on a 30,000-character line it took seconds and
+ * dropped the text around such dots.)
+ */
+function splitSentences(paragraph: string): string[] {
+    const out: string[] = [];
+    let start = 0;
+    let i = 0;
+    const n = paragraph.length;
+    const isSpace = (c: string) => c === " " || c === "\n" || c === "\t" || c === "\r";
+    while (i < n) {
+        const c = paragraph[i];
+        const endsSentence = (c === "." || c === "!" || c === "?") && (i + 1 >= n || isSpace(paragraph[i + 1]));
+        if (endsSentence || c === "\n") {
+            i++;
+            while (i < n && isSpace(paragraph[i])) i++;
+            out.push(paragraph.slice(start, i));
+            start = i;
+        } else {
+            i++;
+        }
+    }
+    if (start < n) out.push(paragraph.slice(start));
+    return out.length > 0 ? out : [paragraph];
+}
+
 /** Cut one over-long paragraph into pieces at sentence ends (or hard, when there are none). */
 function splitLongParagraph(paragraph: string, maxChars: number): string[] {
     if (paragraph.length <= maxChars) return [paragraph];
     const pieces: string[] = [];
-    const sentences = paragraph.match(/[^.!?\n]+(?:[.!?]+(?=\s|$)|\n|$)\s*/g) ?? [paragraph];
+    const sentences = splitSentences(paragraph);
     let current = "";
     for (const sentence of sentences) {
         if (current.length + sentence.length > maxChars && current) {
@@ -253,10 +283,55 @@ const MAX_SECTIONS_PER_TURN_RESULT = 2;
  * floor and close to the best hit. A turn contributes its two best sections;
  * see turnsWantingOutline for when its outline is added.
  */
-export function selectSections(hits: SectionHit[], max = MAX_SECTION_RESULTS): SectionHit[] {
+/** How hits are judged: a floor, how close to the best hit, and when to add the outline. */
+export interface SelectionRule {
+    floor: number;
+    /** Lowest score kept, given the best score. */
+    bar: (top: number) => number;
+    outline: number;
+}
+
+/** Scores are embedding similarity. Used only when the reranker is unavailable. */
+export const SIMILARITY_RULE: SelectionRule = {
+    floor: SECTION_MIN_SIMILARITY,
+    bar: (top) => top - SECTION_TOP_GAP,
+    outline: OUTLINE_SIMILARITY,
+};
+
+/** Candidates fetched by similarity and handed to the reranker. */
+export const SECTION_CANDIDATES = 16;
+export const SECTION_CANDIDATE_SIMILARITY = 0.5;
+/**
+ * Scores are the cross-encoder's (0 to 1), which reads the question and the
+ * section together. Similarity alone put an unrelated pasted document at
+ * 0.615 on 2026-11-14 with the right reply nowhere. First values, logged on
+ * every search ("Sections matched") so they can be set from real searches.
+ */
+export const RERANK_RULE: SelectionRule = {
+    floor: 0.3,
+    bar: (top) => top * 0.5,
+    outline: 0.5,
+};
+
+/** Hits scored by the reranker instead of by similarity; best first. */
+export function applyRerankScores(hits: SectionHit[], scores: { index: number; score: number }[]): SectionHit[] {
+    const out: SectionHit[] = [];
+    for (const { index, score } of scores ?? []) {
+        const hit = hits[index];
+        if (hit && Number.isFinite(score)) out.push({ ...hit, similarity: score });
+    }
+    return out.sort((a, b) => b.similarity - a.similarity);
+}
+
+/** Text of a section as the reranker reads it. */
+export function sectionRerankText(hit: Pick<SectionHit, "kind" | "heading" | "content">): string {
+    return sectionEmbedText(hit as Pick<Section, "kind" | "heading" | "content">).slice(0, 2000);
+}
+
+export function selectSections(hits: SectionHit[], max = MAX_SECTION_RESULTS, rule: SelectionRule = SIMILARITY_RULE): SectionHit[] {
     const byTurn = new Map<string, SectionHit[]>();
     const sortedHits = [...hits].sort((a, b) => b.similarity - a.similarity);
-    const bar = Math.max(SECTION_MIN_SIMILARITY, (sortedHits[0]?.similarity ?? 0) - SECTION_TOP_GAP);
+    const bar = Math.max(rule.floor, rule.bar(sortedHits[0]?.similarity ?? 0));
     for (const hit of sortedHits) {
         if (!(hit.similarity >= bar)) continue;
         if (!byTurn.has(hit.turn_id)) byTurn.set(hit.turn_id, []);
@@ -279,7 +354,7 @@ export function selectSections(hits: SectionHit[], max = MAX_SECTION_RESULTS): S
  * hits. The outline is the map of the whole message, which is what "the list
  * you gave me" asks for.
  */
-export function turnsWantingOutline(selected: SectionHit[]): string[] {
+export function turnsWantingOutline(selected: SectionHit[], rule: SelectionRule = SIMILARITY_RULE): string[] {
     const count = new Map<string, number>();
     const best = new Map<string, number>();
     const hasOutline = new Set<string>();
@@ -292,7 +367,7 @@ export function turnsWantingOutline(selected: SectionHit[]): string[] {
         best.set(hit.turn_id, Math.max(best.get(hit.turn_id) ?? 0, hit.similarity));
     }
     return [...count.entries()]
-        .filter(([id, n]) => !hasOutline.has(id) && (n >= 2 || (best.get(id) ?? 0) >= OUTLINE_SIMILARITY))
+        .filter(([id, n]) => !hasOutline.has(id) && (n >= 2 || (best.get(id) ?? 0) >= rule.outline))
         .map(([id]) => id);
 }
 
