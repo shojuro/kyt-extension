@@ -52,7 +52,9 @@ export interface SearchOptions {
     queryType?: string;           // 'technical' for code queries — skips HyDE, increases BM25 weight
     isRecallQuery?: boolean;      // True when user is trying to recall past conversation — tightens echo filtering
     _diagnostics?: Record<string, any>;  // Mutable output bag for pipeline stage diagnostics
-    _capture?: { queryEmbedding?: number[] };  // Receives the query embedding, so the caller can reuse it
+    // Receives the query embedding, so the caller can reuse it; and, when
+    // wantJudgeCandidates is set, the fast path's candidates before the score cut.
+    _capture?: { queryEmbedding?: number[]; wantJudgeCandidates?: boolean; judgeCandidates?: any[] };
 }
 
 // ========================================================================
@@ -1083,7 +1085,8 @@ export async function getRelevantMemories(
 
         let fastCandidates = await vectorSearch(
             supabase, rawEmbedding, userId, [],
-            Math.max(topK, 10),
+            // A judge downstream wants the whole pool, not the top few by decayed score.
+            options._capture?.wantJudgeCandidates ? 50 : Math.max(topK, 10),
             requestId, resolvedProfileId, projectId
         );
 
@@ -1166,6 +1169,9 @@ export async function getRelevantMemories(
         };
         Logger.info("Fast path stages", { requestId, ...stageDiag });
         if (options._diagnostics) Object.assign(options._diagnostics, stageDiag);
+        // Candidates that survived the hard filters (bare questions, polluted
+        // items), for a caller that judges relevance itself.
+        if (options._capture?.wantJudgeCandidates) options._capture.judgeCandidates = [...penalized];
 
         // ── Gap 4: Structured decision entity lookup for technical queries ──
         // Decision entities have exact values (e.g., "connection pool = 20") that

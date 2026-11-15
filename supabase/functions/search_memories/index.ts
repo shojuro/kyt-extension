@@ -23,12 +23,16 @@ import { AnthropicClient } from "../_shared/anthropic-client.ts";
 import {
     applyJudgement,
     buildJudgePrompt,
-    JUDGE_MAX_PASSAGES,
+    JUDGE_SECTION_PASSAGES,
+    judgedTurnResults,
     JUDGE_MAX_TOKENS,
     JUDGE_RULE,
     JUDGE_SYSTEM_PROMPT,
     JUDGE_TIMEOUT_MS,
     parseJudgeReply,
+    TURN_KIND,
+    type TurnCandidate,
+    turnPassages,
 } from "../_shared/section-judge.ts";
 import {
     mergeSectionResults,
@@ -44,75 +48,96 @@ import { cardToResult, type CardRow, pickCards, queryAliasKeys, queryAsksAbout }
 const MAX_CARDS_PER_SEARCH = 2;
 
 /**
- * Sections of long turns that match the query (see _shared/turn-sections.ts),
- * merged ahead of the whole-turn results. Never fails the search: a missing
- * table or a database error leaves the turn results as they were.
+ * Decides what is returned besides memory cards.
+ *
+ * With the judge (the extension's path): the closest whole messages and the
+ * closest sections of long messages go to one model call, which keeps the
+ * ones that help answer the message (see _shared/section-judge.ts). Age and
+ * "importance" play no part. Without the judge, or when it fails: the turn
+ * results as scored before, plus sections chosen by similarity.
+ *
+ * Never fails the search: any error leaves the turn results as they were.
  */
-async function withSections(
+async function withJudge(
     admin: any,
     userId: string,
     queryEmbedding: number[] | undefined,
     query: string,
     turnResults: any[],
+    turnCandidates: TurnCandidate[] | undefined,
     projectId: string | undefined,
     requestId: string,
     judge: boolean,
 ): Promise<any[]> {
-    if (!Array.isArray(queryEmbedding) || queryEmbedding.length === 0) return turnResults;
     try {
-        const { data, error } = await admin.rpc("match_turn_sections", {
-            p_user_id: userId,
-            query_embedding: queryEmbedding,
-            match_threshold: SECTION_CANDIDATE_SIMILARITY,
-            match_count: SECTION_CANDIDATES,
-            p_project_id: projectId || null,
-        });
-        if (error) {
-            Logger.warn("Section search failed (search continues)", { requestId, error: error.message });
-            return turnResults;
+        let sectionCandidates: SectionHit[] = [];
+        if (Array.isArray(queryEmbedding) && queryEmbedding.length > 0) {
+            const { data, error } = await admin.rpc("match_turn_sections", {
+                p_user_id: userId,
+                query_embedding: queryEmbedding,
+                match_threshold: SECTION_CANDIDATE_SIMILARITY,
+                match_count: SECTION_CANDIDATES,
+                p_project_id: projectId || null,
+            });
+            if (error) {
+                Logger.warn("Section search failed (search continues)", { requestId, error: error.message });
+            } else {
+                // An earlier asking of this same question is not an answer to it.
+                sectionCandidates = ((data ?? []) as SectionHit[]).filter((h) => !isEchoOfQuery(h.content, query));
+            }
         }
-        // An earlier asking of this same question matches it word for word and
-        // would set the bar that every real section is measured against.
-        const candidates = ((data ?? []) as SectionHit[]).filter((h) => !isEchoOfQuery(h.content, query));
-        if (candidates.length === 0) return turnResults;
 
-        // A model reads the message with the candidate sections and keeps the
-        // ones that help (see _shared/section-judge.ts). Without it, or when
-        // it fails, sections are chosen by similarity as before.
-        let hits = candidates;
+        const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+        const judgeTurns = judge && Array.isArray(turnCandidates);
+        const usableTurns = judgeTurns
+            ? cleanResults(turnCandidates as any[], query) as TurnCandidate[]
+            : [];
+        const passages = judge && anthropicKey
+            ? [...turnPassages(usableTurns), ...sectionCandidates.slice(0, JUDGE_SECTION_PASSAGES)]
+            : [];
+
+        let sectionHits = sectionCandidates;
         let rule = SIMILARITY_RULE;
         let scoredBy = "similarity";
         let rerankMs: number | null = null;
-        const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
-        if (judge && anthropicKey) {
-            const judged = candidates.slice(0, JUDGE_MAX_PASSAGES);
+        let turns = turnResults;
+        if (passages.length > 0) {
             try {
-                const anthropic = new AnthropicClient(anthropicKey, { userId, edgeFunction: "search_memories" });
+                const anthropic = new AnthropicClient(anthropicKey!, { userId, edgeFunction: "search_memories" });
                 const judgeStarted = Date.now();
                 const reply = await anthropic.generateJsonCompletion(
                     JUDGE_SYSTEM_PROMPT,
-                    buildJudgePrompt(query, judged),
+                    buildJudgePrompt(query, passages),
                     { maxTokens: JUDGE_MAX_TOKENS, maxRetries: 0, timeoutMs: JUDGE_TIMEOUT_MS, operation: "section_judge" },
                     requestId,
                 );
                 rerankMs = Date.now() - judgeStarted;
-                hits = applyJudgement(judged, parseJudgeReply(reply, judged.length));
+                const judgement = parseJudgeReply(reply, passages.length);
+                const kept = applyJudgement(passages, judgement);
+                sectionHits = kept.filter((p) => (p.kind as string) !== TURN_KIND);
+                // Structured decisions (technical questions) are exact facts added
+                // by the turn search, not judged passages: keep them.
+                if (judgeTurns) turns = [...turnResults.filter((r) => r?.platform === "decision_entity"), ...judgedTurnResults(kept, usableTurns)];
                 rule = JUDGE_RULE;
                 scoredBy = "judge";
+                Logger.info("Judge", {
+                    requestId,
+                    ms: rerankMs,
+                    shown: passages.map((p, i) => `${i + 1}:${p.kind}:${Number(p.similarity).toFixed(2)}:${String(p.heading ?? "").slice(0, 40)}`),
+                    relevant: judgement.relevant.map((i) => i + 1),
+                    whole: judgement.whole.map((i) => i + 1),
+                });
             } catch (e) {
-                Logger.warn("Section judge failed (using similarity)", { requestId, error: (e as Error).message });
+                Logger.warn("Judge failed (using scores)", { requestId, error: (e as Error).message });
             }
+        } else if (judgeTurns && judge && anthropicKey) {
+            // Nothing close enough to show the judge: nothing to return.
+            turns = turnResults.filter((r) => r?.platform === "decision_entity");
         }
-        const selected = selectSections(hits, undefined, rule);
-        if (selected.length === 0) {
-            Logger.info("Sections matched", {
-                requestId, scoredBy, rerankMs, hits: hits.length, returned: 0, outlines: 0,
-                topScores: hits.slice(0, 5).map((h) => Number(h.similarity).toFixed(3)),
-            });
-            return turnResults;
-        }
-        // A turn with two matching sections is being asked about as a whole:
-        // fetch its outline as well.
+
+        const selected = selectSections(sectionHits, undefined, rule);
+        // A turn with two matching sections, or one the judge wants whole, is
+        // being asked about as a whole: fetch its outline as well.
         let outlines: SectionHit[] = [];
         const wantOutline = turnsWantingOutline(selected, rule);
         if (wantOutline.length > 0) {
@@ -131,15 +156,15 @@ async function withSections(
             requestId,
             scoredBy,
             rerankMs,
-            hits: hits.length,
+            shown: passages.length,
+            turnsReturned: turns.length,
             returned: selected.length,
             outlines: outlines.length,
-            topScores: hits.slice(0, 5).map((h) => Number(h.similarity).toFixed(3)),
-            topSimilarity: candidates.slice(0, 5).map((h) => Number(h.similarity).toFixed(3)),
+            topSimilarity: sectionCandidates.slice(0, 5).map((h) => Number(h.similarity).toFixed(3)),
         });
-        return mergeSectionResults(turnResults, selected, outlines);
+        return selected.length > 0 ? mergeSectionResults(turns, selected, outlines) : turns;
     } catch (e) {
-        Logger.warn("Section search threw (search continues)", { requestId, error: (e as Error).message });
+        Logger.warn("Judging threw (search continues)", { requestId, error: (e as Error).message });
         return turnResults;
     }
 }
@@ -301,7 +326,8 @@ serve(async (req) => {
         const profileId = bodyProfileId || userId;
         const pipelineDiag: Record<string, any> = {};
         options._diagnostics = pipelineDiag;
-        const capture: { queryEmbedding?: number[] } = {};
+        const judgeResults = body?.judgeSections !== false;
+        const capture: { queryEmbedding?: number[]; wantJudgeCandidates?: boolean; judgeCandidates?: any[] } = { wantJudgeCandidates: judgeResults && fast === true };
         options._capture = capture;
         const [turnResults, cards] = await Promise.all([
             getRelevantMemories(query, userId, options, requestId, profileId, projectId || undefined),
@@ -309,7 +335,7 @@ serve(async (req) => {
         ]);
         // Cards first: a question that names a thing gets the short record of
         // what that thing is ahead of the supporting turns.
-        const withParts = await withSections(supabaseAdmin, userId, capture.queryEmbedding, query, turnResults, projectId || undefined, requestId, body?.judgeSections !== false);
+        const withParts = await withJudge(supabaseAdmin, userId, capture.queryEmbedding, query, turnResults, capture.judgeCandidates, projectId || undefined, requestId, judgeResults);
         const results = [...cards, ...cleanResults(withParts, query)];
 
         Logger.info("Search completed", {

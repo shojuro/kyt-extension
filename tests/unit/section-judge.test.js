@@ -12,6 +12,11 @@ import {
     buildJudgePrompt,
     parseJudgeReply,
     applyJudgement,
+    turnPassages,
+    judgedTurnResults,
+    TURN_KIND,
+    JUDGE_TURN_PASSAGES,
+    MAX_JUDGED_TURNS,
 } from '../../supabase/functions/_shared/section-judge.ts';
 import { selectSections, turnsWantingOutline } from '../../supabase/functions/_shared/turn-sections.ts';
 
@@ -34,7 +39,7 @@ describe('buildJudgePrompt', () => {
     });
 
     it('caps the number and length of passages', () => {
-        const many = Array.from({ length: 12 }, (_, i) => hit(`h${i}`, 't', 0.6, { content: 'x'.repeat(5000) }));
+        const many = Array.from({ length: 20 }, (_, i) => hit(`h${i}`, 't', 0.6, { content: 'x'.repeat(5000) }));
         const prompt = buildJudgePrompt('q', many);
         expect(prompt).toContain(`[${JUDGE_MAX_PASSAGES}]`);
         expect(prompt).not.toContain(`[${JUDGE_MAX_PASSAGES + 1}]`);
@@ -83,5 +88,45 @@ describe('applyJudgement with the shared selection', () => {
 
     it('scores kept sections high enough to pass the client filter', () => {
         for (const h of applyJudgement(hits, { relevant: [0, 1, 2, 3], whole: [1] })) expect(h.similarity).toBeGreaterThan(0.85);
+    });
+});
+
+describe('whole messages go to the judge too (2026-11-15 baseline: 0 of 14 old short turns recalled)', () => {
+    const candidates = [
+        { id: 'old-short', content: 'The king cobra is not a true cobra.', vector_similarity: 0.71, gravity_score: 0.0001, platform: 'claude', speakers: ['assistant'], created_at: '2025-11-29T10:00:00Z' },
+        { id: 'recent-noise', content: 'I get frustrated when memory is hit or miss.', vector_similarity: 0.52, gravity_score: 0.9, platform: 'claude', speakers: ['user'], created_at: '2026-11-14T10:00:00Z' },
+        { id: 'empty', content: '   ', vector_similarity: 0.9 },
+        { content: 'no id', vector_similarity: 0.9 },
+    ];
+
+    it('orders candidates by closeness of meaning, not by age or importance', () => {
+        const passages = turnPassages(candidates);
+        expect(passages.map((p) => p.id)).toEqual(['old-short', 'recent-noise']);
+        expect(passages[0]).toMatchObject({ kind: TURN_KIND, turn_id: 'old-short', similarity: 0.71, heading: '' });
+        expect(turnPassages(Array.from({ length: 20 }, (_, i) => ({ id: `t${i}`, content: 'x', vector_similarity: i / 100 })))).toHaveLength(JUDGE_TURN_PASSAGES);
+    });
+
+    it('marks a long whole message as cut, and labels the speaker', () => {
+        const prompt = buildJudgePrompt('q', turnPassages([{ id: 'long', content: 'y'.repeat(5000), vector_similarity: 0.6, speakers: ['assistant'], created_at: '2026-02-01T00:00:00Z' }]));
+        expect(prompt).toContain('[1] (said by an AI assistant, 2026-02-01)\n');
+        expect(prompt).toContain('[message continues]');
+        expect(JUDGE_SYSTEM_PROMPT).toMatch(/whole messages, or sections of long messages/);
+    });
+
+    it('returns only the whole messages the judge kept, in its order, with scores that pass the client filter', () => {
+        const passages = [...turnPassages(candidates), hit('sec', 'reply', 0.6)];
+        const kept = applyJudgement(passages, { relevant: [2, 0], whole: [] });
+        const results = judgedTurnResults(kept, candidates);
+        expect(results.map((r) => r.id)).toEqual(['old-short']);
+        expect(results[0]).toMatchObject({ judged: true, content: 'The king cobra is not a true cobra.', platform: 'claude' });
+        expect(results[0].cross_encoder_score).toBeGreaterThan(0.85);
+        expect(kept.filter((p) => p.kind !== TURN_KIND).map((p) => p.id)).toEqual(['sec']);
+    });
+
+    it('caps how many whole messages come back and returns none when the judge keeps none', () => {
+        const many = Array.from({ length: 8 }, (_, i) => ({ id: `t${i}`, content: `c${i}`, vector_similarity: 0.9 - i / 100 }));
+        const kept = applyJudgement(turnPassages(many), { relevant: [0, 1, 2, 3, 4, 5, 6, 7], whole: [] });
+        expect(judgedTurnResults(kept, many)).toHaveLength(MAX_JUDGED_TURNS);
+        expect(judgedTurnResults(applyJudgement(turnPassages(many), { relevant: [], whole: [] }), many)).toEqual([]);
     });
 });

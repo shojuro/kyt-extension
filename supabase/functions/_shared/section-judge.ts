@@ -11,15 +11,20 @@
 
 import type { SectionHit, SelectionRule } from "./turn-sections.ts";
 
-export const JUDGE_MAX_PASSAGES = 8;
+/** Whole short messages and sections of long ones, judged together in one call. */
+export const JUDGE_TURN_PASSAGES = 8;
+export const JUDGE_SECTION_PASSAGES = 8;
+export const JUDGE_MAX_PASSAGES = JUDGE_TURN_PASSAGES + JUDGE_SECTION_PASSAGES;
 export const JUDGE_PASSAGE_CHARS = 1200;
 export const JUDGE_QUERY_CHARS = 1500;
-export const JUDGE_TIMEOUT_MS = 6000;
-export const JUDGE_MAX_TOKENS = 120;
+export const JUDGE_TIMEOUT_MS = 8000;
+export const JUDGE_MAX_TOKENS = 160;
+/** Whole messages returned at most, after the judge. */
+export const MAX_JUDGED_TURNS = 5;
 
 export const JUDGE_SYSTEM_PROMPT = [
     "You select memory for an assistant. The user is about to send a NEW MESSAGE to an AI assistant.",
-    "You are given numbered PASSAGES: sections of long messages from the user's own past conversations.",
+    "You are given numbered PASSAGES from the user's own past conversations: whole messages, or sections of long messages.",
     "Decide which passages contain information the assistant needs in order to answer the new message.",
     "",
     "Rules:",
@@ -46,10 +51,73 @@ export function buildJudgePrompt(query: string, hits: SectionHit[]): string {
     const passages = hits.slice(0, JUDGE_MAX_PASSAGES).map((hit, i) => {
         const date = typeof hit.created_at === "string" ? hit.created_at.slice(0, 10) : "";
         const heading = hit.kind === "outline" ? "Outline of the whole message" : (hit.heading ?? "");
-        const text = String(hit.content ?? "").slice(0, JUDGE_PASSAGE_CHARS);
-        return `[${i + 1}] (${speakerOf(hit)}${date ? `, ${date}` : ""})${heading ? ` ${heading}` : ""}\n${text}`;
+        const full = String(hit.content ?? "");
+        const text = full.slice(0, JUDGE_PASSAGE_CHARS);
+        const cut = (hit.kind as string) === TURN_KIND && full.length > JUDGE_PASSAGE_CHARS ? " [message continues]" : "";
+        return `[${i + 1}] (${speakerOf(hit)}${date ? `, ${date}` : ""})${heading ? ` ${heading}` : ""}\n${text}${cut}`;
     });
     return `NEW MESSAGE:\n${String(query ?? "").slice(0, JUDGE_QUERY_CHARS)}\n\nPASSAGES:\n\n${passages.join("\n\n")}`;
+}
+
+/** `kind` of a passage that is a whole stored message, not a section. */
+export const TURN_KIND = "turn";
+
+/** A whole-message search candidate, as the turn search returns it. */
+export interface TurnCandidate {
+    id: string;
+    content?: string;
+    platform?: string;
+    speakers?: string[];
+    created_at?: string;
+    vector_similarity?: number;
+    [key: string]: unknown;
+}
+
+/**
+ * Whole messages as passages for the judge: the closest by meaning first.
+ * Relevance is left to the judge, so age and "importance" play no part here:
+ * with time decay in the score, no message older than a few months under
+ * 3,000 characters could be recalled (0 of 14 in the 2026-11-15 baseline).
+ */
+export function turnPassages(candidates: TurnCandidate[], max = JUDGE_TURN_PASSAGES): SectionHit[] {
+    return [...(candidates ?? [])]
+        .filter((c) => c && typeof c.id === "string" && typeof c.content === "string" && c.content.trim().length > 0)
+        .sort((a, b) => (Number(b.vector_similarity) || 0) - (Number(a.vector_similarity) || 0))
+        .slice(0, max)
+        .map((c) => ({
+            id: c.id,
+            turn_id: c.id,
+            kind: TURN_KIND,
+            section_index: 0,
+            heading: "",
+            content: c.content as string,
+            similarity: Number(c.vector_similarity) || 0,
+            platform: c.platform ?? "unknown",
+            speakers: c.speakers ?? [],
+            created_at: c.created_at ?? "",
+        } as unknown as SectionHit));
+}
+
+/**
+ * The whole messages the judge kept, in its order, shaped as search results.
+ * `kept` is what applyJudgement returned; `candidates` are the originals.
+ */
+export function judgedTurnResults(kept: SectionHit[], candidates: TurnCandidate[], max = MAX_JUDGED_TURNS): Record<string, unknown>[] {
+    const byId = new Map((candidates ?? []).map((c) => [c.id, c]));
+    const out: Record<string, unknown>[] = [];
+    for (const passage of kept ?? []) {
+        if ((passage.kind as string) !== TURN_KIND) continue;
+        const original = byId.get(passage.id);
+        if (!original || out.length >= max) continue;
+        out.push({
+            ...original,
+            cross_encoder_score: passage.similarity,
+            rerank_score: passage.similarity,
+            weighted_score: passage.similarity,
+            judged: true,
+        });
+    }
+    return out;
 }
 
 export interface Judgement {
