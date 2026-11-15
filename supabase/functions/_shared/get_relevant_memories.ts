@@ -387,7 +387,11 @@ function applyGravityBoost(items: CandidateWithScore[]): CandidateWithScore[] {
  * was often not among them. The judge only ever sees the closest 10, so a
  * lower floor matters exactly when fewer than 10 clear 0.5.
  */
-export const JUDGE_POOL = { size: 100, floor: 0.4 };
+// Measured the same day at { size: 100, floor: 0.4 } with ef_search 200: no
+// question gained, several correct answers ranked lower, searches slower.
+// The three questions it was meant for already had 10 messages shown, none
+// of them the right one, so the pool was not their problem. Back to 50 / 0.5.
+export const JUDGE_POOL = { size: 50, floor: 0.5 };
 
 /**
  * Perform vector search with a given embedding
