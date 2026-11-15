@@ -76,7 +76,8 @@ describe('an earlier asking of the same recall question', () => {
 
   it('is caught through typos, as a chunk or a short user turn', async () => {
     const { isRepeatOfRecallQuestion } = await import('../../supabase/functions/_shared/recall-attempts.ts');
-    const typo = 'what di you teell me about trump being referred to as cyrus the persian?';
+    expect(isRecallQuestion('what di you teell me about trump being referred to as cyrus the persian?')).toBe(true);
+    const typo = 'wat did you tel me about trump being referred to as cyrus the persian?';
     expect(isRecallQuestion(typo)).toBe(false);
     expect(isRepeatOfRecallQuestion(typo, QUERY)).toBe(true);
     expect(isRecallAttempt({ content: `User: ${typo} Assistant: ${BLOCK} Here is general background on Cyrus.`, speakers: ['user', 'assistant'] }, QUERY)).toBe(true);

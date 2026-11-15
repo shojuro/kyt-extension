@@ -14,6 +14,8 @@ const PLACEHOLDER_RE = /(?:`{3}\s*)?This block is not supported on your current 
 const RECALL_QUESTION_RES: RegExp[] = [
     /\bwhat (?:did|have|had) (?:you|we) (?:tell|told|say|said|talk|talked|discuss|discussed|decide|decided|conclude|determine)\b/i,
     /\bwhat did i (?:say|tell you|mention|share)\b/i,
+    // Typed in a hurry: "what di you teell me about…".
+    /\bwhat d\w{0,2} (?:you|we) t\w{2,5} me\b/i,
     /\b(?:do|did|can) you (?:still )?(?:remember|recall)\b/i,
     /\b(?:did|didn['’]?t) (?:you|we) (?:tell|say|talk|discuss|mention)\b/i,
     /\b(?:we|you and i) (?:were|was) (?:just )?(?:talking|discussing|chatting)\b[\s\S]{0,300}\?/i,
