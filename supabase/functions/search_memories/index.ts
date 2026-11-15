@@ -20,6 +20,7 @@ import { resolveUserId } from "../_shared/auth-helpers.ts";
 import { cleanResults } from "../_shared/result-cleanup.ts";
 import { isEchoOfQuery } from "../_shared/injected-context.ts";
 import { isRecallAttempt } from "../_shared/recall-attempts.ts";
+import { KEYWORD_LANE, KEYWORD_TURN_CANDIDATES, keywordPassages, keywordTerms } from "../_shared/keyword-lane.ts";
 import { AnthropicClient } from "../_shared/anthropic-client.ts";
 import {
     applyJudgement,
@@ -87,7 +88,7 @@ async function withJudge(
                 // and neither is the opening of a reply that says nothing was found.
                 sectionCandidates = ((data ?? []) as SectionHit[]).filter((h) =>
                     !isEchoOfQuery(h.content, query) &&
-                    !(h.kind === "section" && h.section_index === 0 && isRecallAttempt(h)));
+                    !(h.kind === "section" && h.section_index === 0 && isRecallAttempt(h, query)));
             }
         }
 
@@ -96,10 +97,33 @@ async function withJudge(
         // Attempts to recall (the user asking what was said, an assistant saying
         // it could not find it) are not memories: see _shared/recall-attempts.ts.
         const cleanedTurns = judgeTurns ? cleanResults(turnCandidates as any[], query) as TurnCandidate[] : [];
-        const usableTurns = cleanedTurns.filter((c) => !isRecallAttempt(c));
-        const recallAttemptsDropped = cleanedTurns.length - usableTurns.length;
+        const usableTurns = cleanedTurns.filter((c) => !isRecallAttempt(c, query));
+        let recallAttemptsDropped = cleanedTurns.length - usableTurns.length;
+
+        // Keyword lane: messages that contain the question's rarer words join
+        // the ones found by meaning. The judge decides; this only finds.
+        let keywordTurns: TurnCandidate[] = [];
+        const terms = judgeTurns && anthropicKey ? keywordTerms(query) : [];
+        if (terms.length > 0) {
+            const { data, error } = await admin.rpc("keyword_turn_candidates", {
+                p_user_id: userId,
+                p_terms: terms,
+                p_limit: KEYWORD_TURN_CANDIDATES,
+                p_project_id: projectId || null,
+            });
+            if (error) {
+                Logger.warn("Keyword search failed (search continues)", { requestId, error: error.message });
+            } else {
+                const cleaned = cleanResults((data ?? []) as any[], query) as TurnCandidate[];
+                keywordTurns = cleaned.filter((c) => !isRecallAttempt(c, query));
+                recallAttemptsDropped += cleaned.length - keywordTurns.length;
+            }
+        }
+
+        const meaningPassages = judge && anthropicKey ? turnPassages(usableTurns) : [];
+        const wordPassages = judge && anthropicKey ? keywordPassages(keywordTurns, meaningPassages.map((p) => p.id)) : [];
         const passages = judge && anthropicKey
-            ? [...turnPassages(usableTurns), ...sectionCandidates.slice(0, JUDGE_SECTION_PASSAGES)]
+            ? [...meaningPassages, ...wordPassages, ...sectionCandidates.slice(0, JUDGE_SECTION_PASSAGES)]
             : [];
 
         let sectionHits = sectionCandidates;
@@ -123,13 +147,15 @@ async function withJudge(
                 sectionHits = kept.filter((p) => (p.kind as string) !== TURN_KIND);
                 // Structured decisions (technical questions) are exact facts added
                 // by the turn search, not judged passages: keep them.
-                if (judgeTurns) turns = [...turnResults.filter((r) => r?.platform === "decision_entity"), ...judgedTurnResults(kept, usableTurns)];
+                if (judgeTurns) turns = [...turnResults.filter((r) => r?.platform === "decision_entity"), ...judgedTurnResults(kept, [...usableTurns, ...keywordTurns])];
                 rule = JUDGE_RULE;
                 scoredBy = "judge";
                 Logger.info("Judge", {
                     requestId,
                     ms: rerankMs,
-                    shown: passages.map((p, i) => `${i + 1}:${p.kind}:${Number(p.similarity).toFixed(2)}:${String(p.heading ?? "").slice(0, 40)}`),
+                    shown: passages.map((p, i) => `${i + 1}:${(p as any).lane === KEYWORD_LANE ? "word" : p.kind}:${Number(p.similarity).toFixed(2)}:${String(p.heading ?? "").slice(0, 40)}`),
+                    shownIds: passages.map((p) => String(p.turn_id ?? p.id).slice(0, 8)),
+                    keywordTerms: terms,
                     relevant: judgement.relevant.map((i) => i + 1),
                     whole: judgement.whole.map((i) => i + 1),
                 });
@@ -164,6 +190,8 @@ async function withJudge(
             rerankMs,
             shown: passages.length,
             recallAttemptsDropped,
+            keywordFound: keywordTurns.length,
+            keywordShown: wordPassages.length,
             turnsReturned: turns.length,
             returned: selected.length,
             outlines: outlines.length,

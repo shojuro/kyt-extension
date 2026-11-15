@@ -70,3 +70,27 @@ describe('isRecallAttempt', () => {
     expect(isRecallAttempt({})).toBe(false);
   });
 });
+
+describe('an earlier asking of the same recall question', () => {
+  const QUERY = 'what did you tell me about trump being referred to as cyrus the persian?';
+
+  it('is caught through typos, as a chunk or a short user turn', async () => {
+    const { isRepeatOfRecallQuestion } = await import('../../supabase/functions/_shared/recall-attempts.ts');
+    const typo = 'what di you teell me about trump being referred to as cyrus the persian?';
+    expect(isRecallQuestion(typo)).toBe(false);
+    expect(isRepeatOfRecallQuestion(typo, QUERY)).toBe(true);
+    expect(isRecallAttempt({ content: `User: ${typo} Assistant: ${BLOCK} Here is general background on Cyrus.`, speakers: ['user', 'assistant'] }, QUERY)).toBe(true);
+    expect(isRecallAttempt({ content: typo, speakers: ['user'] }, QUERY)).toBe(true);
+    expect(isRecallAttempt({ content: typo, speakers: ['user'] })).toBe(false);
+  });
+
+  it('keeps a real statement that shares the question\'s words', async () => {
+    const { isRepeatOfRecallQuestion } = await import('../../supabase/functions/_shared/recall-attempts.ts');
+    const q = 'What did I say about running around the Beverly Center and Venice Beach?';
+    const statement = 'Oftentimes warm, mainly because we had so many great times running around the city, the Beverly Center, Venice beach, the Four star theater and singing spanish songs with their dad, and what I say about it now is that I was happy.';
+    expect(isRepeatOfRecallQuestion(statement, q)).toBe(false);
+    expect(isRecallAttempt({ content: statement, speakers: ['user'] }, q)).toBe(false);
+    // Not a recall question: nothing is judged.
+    expect(isRepeatOfRecallQuestion('How tall is the Eiffel Tower in metres today?', 'How tall is the Eiffel Tower in metres today?')).toBe(false);
+  });
+});

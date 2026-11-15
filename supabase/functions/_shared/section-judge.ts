@@ -14,7 +14,9 @@ import type { SectionHit, SelectionRule } from "./turn-sections.ts";
 /** Whole short messages and sections of long ones, judged together in one call. */
 export const JUDGE_TURN_PASSAGES = 10;
 export const JUDGE_SECTION_PASSAGES = 8;
-export const JUDGE_MAX_PASSAGES = JUDGE_TURN_PASSAGES + JUDGE_SECTION_PASSAGES;
+/** Whole messages found by the question's words, shown after the ones found by meaning. */
+export const JUDGE_KEYWORD_PASSAGES = 6;
+export const JUDGE_MAX_PASSAGES = JUDGE_TURN_PASSAGES + JUDGE_KEYWORD_PASSAGES + JUDGE_SECTION_PASSAGES;
 export const JUDGE_PASSAGE_CHARS = 1200;
 export const JUDGE_QUERY_CHARS = 1500;
 export const JUDGE_TIMEOUT_MS = 8000;

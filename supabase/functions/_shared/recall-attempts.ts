@@ -59,25 +59,56 @@ interface Stored {
     speakers?: unknown;
 }
 
-/**
- * True when a stored turn is an attempt to recall, not a memory:
- *  - an assistant reply that opens with "I couldn't find…";
- *  - a short user turn that asks what was said before;
- *  - a "User: … Assistant: …" chunk whose first user message asks that.
- */
-export function isRecallAttempt(turn: Stored): boolean {
-    const content = text(turn?.content).trim();
-    if (!content) return false;
-    const speakers = Array.isArray(turn?.speakers) ? (turn.speakers as unknown[]).map(String) : [];
+/** A stored question this many times the new one's length, or longer, is not a repeat of it. */
+export const REPEAT_LENGTH_RATIO = 1.6;
+/** Share of the new question's words a stored question must contain to be a repeat. */
+export const REPEAT_WORD_SHARE = 0.75;
+
+const wordsOf = (value: string): string[] => value.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+
+/** The user's opening message in a stored turn, or "" when an assistant speaks first. */
+function firstUserMessage(content: string, speakers: string[]): string {
     const chunk = /^User:\s*/i.exec(content);
     if (chunk) {
         const rest = content.slice(chunk[0].length);
         const end = rest.search(/\s(?:Assistant|User):\s/i);
-        return isRecallQuestion(end >= 0 ? rest.slice(0, end) : rest.slice(0, MAX_RECALL_QUESTION_CHARS));
+        return end >= 0 ? rest.slice(0, end) : rest.slice(0, MAX_RECALL_QUESTION_CHARS);
     }
-    const assistantOnly = speakers.includes("assistant") && !speakers.includes("user");
     const userOnly = speakers.includes("user") && !speakers.includes("assistant");
-    if (assistantOnly) return opensWithDeflection(content);
-    if (userOnly) return content.length <= MAX_RECALL_QUESTION_CHARS && isRecallQuestion(content);
-    return false;
+    return userOnly && content.length <= MAX_RECALL_QUESTION_CHARS ? content : "";
+}
+
+/**
+ * True when a stored user message is an earlier asking of the same recall
+ * question, typos and all ("what di you teell me about…"). Only judged when
+ * the new message is itself a recall question, and only for stored messages
+ * about as long as it, so a real statement that shares its words is kept.
+ */
+export function isRepeatOfRecallQuestion(stored: unknown, query: unknown): boolean {
+    const q = text(query).trim();
+    const s = text(stored).trim();
+    if (!q || !s || !isRecallQuestion(q)) return false;
+    if (s.length > q.length * REPEAT_LENGTH_RATIO) return false;
+    const queryWords = wordsOf(q);
+    if (queryWords.length < 5) return false;
+    const storedWords = new Set(wordsOf(s));
+    const shared = queryWords.filter((w) => storedWords.has(w)).length;
+    return shared / queryWords.length >= REPEAT_WORD_SHARE;
+}
+
+/**
+ * True when a stored turn is an attempt to recall, not a memory:
+ *  - an assistant reply that opens with "I couldn't find…";
+ *  - a short user turn that asks what was said before;
+ *  - a "User: … Assistant: …" chunk whose first user message asks that;
+ *  - given the new message, a turn that opens with an earlier asking of it.
+ */
+export function isRecallAttempt(turn: Stored, query?: unknown): boolean {
+    const content = text(turn?.content).trim();
+    if (!content) return false;
+    const speakers = Array.isArray(turn?.speakers) ? (turn.speakers as unknown[]).map(String) : [];
+    const opening = firstUserMessage(content, speakers);
+    if (opening) return isRecallQuestion(opening) || isRepeatOfRecallQuestion(opening, query);
+    const assistantOnly = speakers.includes("assistant") && !speakers.includes("user");
+    return assistantOnly ? opensWithDeflection(content) : false;
 }

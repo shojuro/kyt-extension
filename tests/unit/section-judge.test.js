@@ -39,7 +39,7 @@ describe('buildJudgePrompt', () => {
     });
 
     it('caps the number and length of passages', () => {
-        const many = Array.from({ length: 20 }, (_, i) => hit(`h${i}`, 't', 0.6, { content: 'x'.repeat(5000) }));
+        const many = Array.from({ length: JUDGE_MAX_PASSAGES + 4 }, (_, i) => hit(`h${i}`, 't', 0.6, { content: 'x'.repeat(5000) }));
         const prompt = buildJudgePrompt('q', many);
         expect(prompt).toContain(`[${JUDGE_MAX_PASSAGES}]`);
         expect(prompt).not.toContain(`[${JUDGE_MAX_PASSAGES + 1}]`);
