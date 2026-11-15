@@ -381,6 +381,15 @@ function applyGravityBoost(items: CandidateWithScore[]): CandidateWithScore[] {
 }
 
 /**
+ * Pool for a search whose results a model judges. Recall set, 2026-11-15: with
+ * 50 rows and a 0.5 floor the judge was handed 2 to 10 whole messages for most
+ * questions, and for questions about the user's own statements the right one
+ * was often not among them. The judge only ever sees the closest 10, so a
+ * lower floor matters exactly when fewer than 10 clear 0.5.
+ */
+export const JUDGE_POOL = { size: 100, floor: 0.4 };
+
+/**
  * Perform vector search with a given embedding
  */
 async function vectorSearch(
@@ -391,19 +400,22 @@ async function vectorSearch(
     topK: number,
     requestId?: string,
     profileId?: string,
-    projectId?: string
+    projectId?: string,
+    // Rows read from the index, and the similarity floor. A caller that judges
+    // relevance itself asks for a wider, lower pool (see JUDGE_POOL below).
+    pool: { size: number; floor: number } = { size: 50, floor: 0.5 }
 ): Promise<Candidate[]> {
     const { data, error } = await supabase
         .rpc("match_messages_with_gravity", {
             query_embedding: embedding,
-            match_threshold: 0.5,
+            match_threshold: pool.floor,
             match_count: topK,
             exclude_recent_seconds: 120,
             p_user_id: userId,
             boost_entity_ids: boostEntityIds,
             p_profile_id: profileId,
             p_project_id: projectId || null,
-            p_candidate_pool: 50,
+            p_candidate_pool: pool.size,
         });
 
     if (error) {
@@ -1087,7 +1099,8 @@ export async function getRelevantMemories(
             supabase, rawEmbedding, userId, [],
             // A judge downstream wants the whole pool, not the top few by decayed score.
             options._capture?.wantJudgeCandidates ? 50 : Math.max(topK, 10),
-            requestId, resolvedProfileId, projectId
+            requestId, resolvedProfileId, projectId,
+            options._capture?.wantJudgeCandidates ? JUDGE_POOL : undefined
         );
 
         // Exclude platforms (e.g. claude-code dev noise from keyboard results)
