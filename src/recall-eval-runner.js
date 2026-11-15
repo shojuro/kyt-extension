@@ -38,7 +38,13 @@ export async function runRecallSet(set, deps, options = {}) {
         row = { ...scoreQuestion(q, [], { skipped: true }), intent: classification.reason };
       } else {
         const data = await deps.getContext(q.question, configFor(classification, platform));
-        row = { ...scoreQuestion(q, data?.items ?? []), intent: classification.reason };
+        const items = data?.items ?? [];
+        row = {
+          ...scoreQuestion(q, items),
+          intent: classification.reason,
+          // What came back, so a miss can be told apart from a neighbouring turn that also answers.
+          returned_ids: items.slice(0, 10).map((item) => item?.turn_id || item?.id).filter(Boolean),
+        };
       }
     } catch (e) {
       row = { ...scoreQuestion(q, []), error: String(e?.message ?? e).slice(0, 120) };

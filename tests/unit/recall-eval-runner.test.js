@@ -36,6 +36,8 @@ describe('runRecallSet', () => {
     expect(seen).toEqual(['hit', 'section', 'skipped', 'empty', 'boom']);
     const byId = Object.fromEntries(out.scores.map((s) => [s.id, s]));
     expect(byId.hit).toMatchObject({ pass: true, rank: 2 });
+    expect(byId.hit.returned_ids).toEqual(['other', ID_A]);
+    expect(byId.section.returned_ids).toEqual([ID_A]);
     expect(byId.section).toMatchObject({ pass: true, rank: 1, intent: 'layer2_memory' });
     expect(byId.skipped).toMatchObject({ pass: false, skipped: true });
     expect(byId.empty).toMatchObject({ pass: true });

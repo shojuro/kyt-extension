@@ -1515,7 +1515,7 @@ globalThis.KYT_DEBUG = {
   getContext: (message) => getContextForInjection(message, {}).then(console.log),
   // Recall test set: runs the private question set (validation/user_data/, in this
   // unpacked folder) through the real pipeline with the signed-in session.
-  // Usage: r = await KYT_DEBUG.runRecallSet({ label: 'baseline' }); copy(JSON.stringify(r))
+  // Usage: await KYT_DEBUG.runRecallSet({ label: 'baseline' })  then copy the RECALL_RESULT line
   runRecallSet: async (options = {}) => {
     const file = options.file || 'validation/user_data/recall-set-v2.json';
     const set = await (await fetch(chrome.runtime.getURL(file))).json();
@@ -1532,6 +1532,8 @@ globalThis.KYT_DEBUG = {
     if (out.ok) {
       await chrome.storage.local.set({ [RECALL_LAST_RUN_KEY]: { ran_at: out.ran_at, label: out.label, scores: out.scores } });
       console.log('📋 Recall set:', JSON.stringify(out.summary.overall));
+      // One line to copy out of the console (labels, pass/fail and ids only; no chat text).
+      console.log('RECALL_RESULT ' + JSON.stringify({ label: out.label, ran_at: out.ran_at, scores: out.scores.map((r) => ({ id: r.id, pass: r.pass, rank: r.rank, n: r.returned, got: r.returned_ids || [], skipped: r.skipped || undefined, err: r.error })) }));
       if (out.against_previous) console.log('📋 Against the previous run:', JSON.stringify(out.against_previous));
     } else {
       console.warn('📋 Recall set is not usable:', out.problems);

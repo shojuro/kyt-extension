@@ -29,7 +29,7 @@ set from one or two searches are placeholders until the set confirms them.
 - [x] Scoring library and runners: `src/recall-eval-lib.js`, `src/recall-eval-runner.js`, `validation/recall-eval/run.mjs`
 - [x] First question set, 52 questions, private (`validation/user_data/`, not in git)
 - [ ] Founder reviews the questions; expected answers widened where a sibling turn also answers
-- [ ] Baseline run recorded in the results table below
+- [x] Baseline run recorded in the results table below (2026-11-15: 24 of 52)
 - [ ] Add questions whenever a real failure is found (each bug becomes a question)
 
 Done when: a baseline exists and the founder accepts the set as representative.
@@ -101,4 +101,4 @@ repo's `.env` does not hold.) Live, read-only; needs the founder's go.
 
 | Date | Commit | What changed | Answer found | In top 3 | Correctly empty | Notes |
 |---|---|---|---|---|---|---|
-| | | baseline | | | | |
+| 2026-11-15 | 81d690e | baseline | 21/48 | 20/48 | 3/4 | By kind: definition 3/3, whole-list 1/1, cross-platform 10/16, older replies 6/19, own statements 1/9. Every older turn under 3,000 characters failed (14 of 14): time decay scores them near zero. Older turns that passed all had sections, which are not decayed. |
