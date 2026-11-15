@@ -19,6 +19,7 @@ import { getUserTier, getTierLimits } from "../_shared/tier-check.ts";
 import { resolveUserId } from "../_shared/auth-helpers.ts";
 import { cleanResults } from "../_shared/result-cleanup.ts";
 import { isEchoOfQuery } from "../_shared/injected-context.ts";
+import { isRecallAttempt } from "../_shared/recall-attempts.ts";
 import { AnthropicClient } from "../_shared/anthropic-client.ts";
 import {
     applyJudgement,
@@ -82,16 +83,21 @@ async function withJudge(
             if (error) {
                 Logger.warn("Section search failed (search continues)", { requestId, error: error.message });
             } else {
-                // An earlier asking of this same question is not an answer to it.
-                sectionCandidates = ((data ?? []) as SectionHit[]).filter((h) => !isEchoOfQuery(h.content, query));
+                // An earlier asking of this same question is not an answer to it,
+                // and neither is the opening of a reply that says nothing was found.
+                sectionCandidates = ((data ?? []) as SectionHit[]).filter((h) =>
+                    !isEchoOfQuery(h.content, query) &&
+                    !(h.kind === "section" && h.section_index === 0 && isRecallAttempt(h)));
             }
         }
 
         const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
         const judgeTurns = judge && Array.isArray(turnCandidates);
-        const usableTurns = judgeTurns
-            ? cleanResults(turnCandidates as any[], query) as TurnCandidate[]
-            : [];
+        // Attempts to recall (the user asking what was said, an assistant saying
+        // it could not find it) are not memories: see _shared/recall-attempts.ts.
+        const cleanedTurns = judgeTurns ? cleanResults(turnCandidates as any[], query) as TurnCandidate[] : [];
+        const usableTurns = cleanedTurns.filter((c) => !isRecallAttempt(c));
+        const recallAttemptsDropped = cleanedTurns.length - usableTurns.length;
         const passages = judge && anthropicKey
             ? [...turnPassages(usableTurns), ...sectionCandidates.slice(0, JUDGE_SECTION_PASSAGES)]
             : [];
@@ -157,6 +163,7 @@ async function withJudge(
             scoredBy,
             rerankMs,
             shown: passages.length,
+            recallAttemptsDropped,
             turnsReturned: turns.length,
             returned: selected.length,
             outlines: outlines.length,

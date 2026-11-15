@@ -141,3 +141,10 @@ describe('the echo filter is skipped when a judge reads the candidates', () => {
         expect(src).toMatch(/options\._capture\?\.wantJudgeCandidates\s*\?\s*fastCandidates\s*:\s*filterQueryEchoes\(/);
     });
 });
+
+describe('the judge is told that recall attempts are not answers', () => {
+    it('says so in its instructions', () => {
+        expect(JUDGE_SYSTEM_PROMPT).toMatch(/could not find or does not remember the earlier conversation, is not relevant/);
+        expect(JUDGE_SYSTEM_PROMPT).toMatch(/Prefer the passage where the thing was originally said/);
+    });
+});
