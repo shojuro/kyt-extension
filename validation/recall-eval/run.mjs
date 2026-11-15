@@ -14,7 +14,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
-import { validateSet, scoreQuestion, summarise, compareRuns } from './lib.mjs';
+import { validateSet, scoreQuestion, summarise, compareRuns } from '../../src/recall-eval-lib.js';
 import { classifyIntent } from '../../src/intent-classifier.js';
 
 const args = process.argv.slice(2);

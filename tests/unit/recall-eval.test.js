@@ -1,8 +1,8 @@
 /**
- * Recall test set scoring (validation/recall-eval/lib.mjs).
+ * Recall test set scoring (src/recall-eval-lib.js).
  */
 import { describe, it, expect } from 'vitest';
-import { validateSet, scoreQuestion, summarise, compareRuns } from '../../validation/recall-eval/lib.mjs';
+import { validateSet, scoreQuestion, summarise, compareRuns } from '../../src/recall-eval-lib.js';
 
 const ID_A = '11111111-1111-4111-8111-111111111111';
 const ID_B = '22222222-2222-4222-8222-222222222222';

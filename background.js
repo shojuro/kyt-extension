@@ -37,6 +37,7 @@ import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/emb
 import { updateRecentTopics } from './src/recent-topic-cache.js';
 import { exportNotebookLMCookies, getCookieExportStatus, resetCookieExporter } from './src/cookie-exporter.js';
 import { handlePollAlarm, getPollerStatus, pollPlatformNow } from './src/conversation-poller.js';
+import { runRecallSet, RECALL_LAST_RUN_KEY } from './src/recall-eval-runner.js';
 import { regularAlarmFor } from './src/poll-soon.js';
 import { startRpcProxy, stopRpcProxy, isRpcProxyRunning, getRpcProxyStatus, handleRpcPollAlarm, _testFetchUrl } from './src/nlm-rpc-proxy.js';
 self._testFetchUrl = _testFetchUrl; // Debug: test from SW console
@@ -49,7 +50,8 @@ import {
   stripInjectionPrefix,
   detectIsQuestion,
 } from './src/context-retrieval.js';
-import { registerPortHandler, registerMessageHandler } from './src/message-handlers.js';
+import { registerPortHandler, registerMessageHandler, escalateToLayer2 } from './src/message-handlers.js';
+import { classifyIntent } from './src/intent-classifier.js';
 import { getMemoryMode, updateBadge } from './src/memory-mode.js';
 import { syncUserTier } from './src/tier-sync.js';
 import { withStorageMutex } from './src/utils/storage-mutex.js';
@@ -1511,6 +1513,31 @@ function getAuthHeaders(config) {
 globalThis.KYT_DEBUG = {
   getStats: () => getStorageStats().then(console.log),
   getContext: (message) => getContextForInjection(message, {}).then(console.log),
+  // Recall test set: runs the private question set (validation/user_data/, in this
+  // unpacked folder) through the real pipeline with the signed-in session.
+  // Usage: r = await KYT_DEBUG.runRecallSet({ label: 'baseline' }); copy(JSON.stringify(r))
+  runRecallSet: async (options = {}) => {
+    const file = options.file || 'validation/user_data/recall-set-v2.json';
+    const set = await (await fetch(chrome.runtime.getURL(file))).json();
+    const stored = await chrome.storage.local.get([RECALL_LAST_RUN_KEY]);
+    const out = await runRecallSet(set, {
+      classify: classifyIntent,
+      escalate: escalateToLayer2,
+      getContext: (text, config) => getContextForInjection(text, config),
+    }, {
+      ...options,
+      previous: stored[RECALL_LAST_RUN_KEY] || null,
+      onProgress: (row) => console.log(`${row.pass ? 'PASS' : 'FAIL'}  ${row.id}  returned=${row.returned} rank=${row.rank ?? '-'} ${row.skipped ? '(not searched)' : row.ms + 'ms'}`),
+    });
+    if (out.ok) {
+      await chrome.storage.local.set({ [RECALL_LAST_RUN_KEY]: { ran_at: out.ran_at, label: out.label, scores: out.scores } });
+      console.log('📋 Recall set:', JSON.stringify(out.summary.overall));
+      if (out.against_previous) console.log('📋 Against the previous run:', JSON.stringify(out.against_previous));
+    } else {
+      console.warn('📋 Recall set is not usable:', out.problems);
+    }
+    return out;
+  },
   viewStorage: () => chrome.storage.local.get(null).then(console.log),
   clearStorage: () => chrome.storage.local.clear().then(() => console.log('✅ Storage cleared')),
   diagnoseEmbeddings: async () => {
@@ -1819,6 +1846,7 @@ console.log('✅ KYT Background: Service worker ready');
 console.log('   Debug: Use KYT_DEBUG object for testing');
 console.log('   - KYT_DEBUG.getStats() - View storage statistics');
 console.log('   - KYT_DEBUG.getContext("test message") - Test context retrieval');
+console.log('   - KYT_DEBUG.runRecallSet({label}) - Run the private recall test set through the real pipeline');
 console.log('   - KYT_DEBUG.viewStorage() - View all storage');
 console.log('   - KYT_DEBUG.diagnoseEmbeddings() - Check circuit breaker, HF key, null embedding counts');
 console.log('   - KYT_DEBUG.resetEmbeddingCircuit() - Reset embedding circuit breaker');

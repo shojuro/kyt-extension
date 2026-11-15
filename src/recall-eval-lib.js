@@ -1,6 +1,7 @@
 /**
  * Recall test set: validation and scoring. Pure, no network, no file access.
- * Tests: tests/unit/recall-eval.test.js. Runner: validation/recall-eval/run.mjs.
+ * Tests: tests/unit/recall-eval.test.js. Runners: src/recall-eval-runner.js (inside the
+ * extension, with the signed-in session) and validation/recall-eval/run.mjs (service key).
  *
  * A set is a list of questions a user really asks, each with the stored turns
  * that hold the answer. A question passes when the search returns at least

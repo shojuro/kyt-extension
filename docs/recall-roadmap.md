@@ -26,7 +26,7 @@ set from one or two searches are placeholders until the set confirms them.
 
 ## Phase 0 — Measure (in progress)
 
-- [x] Scoring library and runner: `validation/recall-eval/` (tests in `tests/unit/recall-eval.test.js`)
+- [x] Scoring library and runners: `src/recall-eval-lib.js`, `src/recall-eval-runner.js`, `validation/recall-eval/run.mjs`
 - [x] First question set, 52 questions, private (`validation/user_data/`, not in git)
 - [ ] Founder reviews the questions; expected answers widened where a sibling turn also answers
 - [ ] Baseline run recorded in the results table below
@@ -91,8 +91,13 @@ Done when: questions about current state ("what is my X now") return the latest 
 
 ## Results
 
-Run with `node --env-file=.env validation/recall-eval/run.mjs <set.json> --label "<what changed>"`.
-Live, read-only; needs the founder's go.
+Run inside the extension, which uses the signed-in session and the real
+pipeline: in the service-worker console,
+`r = await KYT_DEBUG.runRecallSet({ label: "<what changed>" })`. It reads
+`validation/user_data/recall-set-v2.json` from the unpacked folder and
+compares with the previous run. (`validation/recall-eval/run.mjs` does the
+same from the command line but needs a production service key, which this
+repo's `.env` does not hold.) Live, read-only; needs the founder's go.
 
 | Date | Commit | What changed | Answer found | In top 3 | Correctly empty | Notes |
 |---|---|---|---|---|---|---|

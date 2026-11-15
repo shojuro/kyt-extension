@@ -114,6 +114,8 @@ export async function searchViaEdgeFunction(query, options = {}) {
     contextual_content: item.contextual_content || null,
     // A section of a long turn (search_memories; _shared/turn-sections.ts)
     section: item.section === true,
+    // The turn a section belongs to (used by the recall test set to score sections)
+    turn_id: item.turn_id || null,
   }));
 
   // Attach metadata so callers can determine Jina availability

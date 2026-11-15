@@ -64,7 +64,7 @@ function buildImporterAuth(config) {
  * @param {Object} classification - Layer 1 result from classifyIntent()
  * @returns {Promise<Object>} Updated classification
  */
-async function escalateToLayer2(message, classification) {
+export async function escalateToLayer2(message, classification) {
   // Feature toggle — when disabled, PASSIVE uses v2 behavior unchanged
   if (!(await isHaikuEnabled())) {
     return classification;
