@@ -130,3 +130,14 @@ describe('whole messages go to the judge too (2026-11-15 baseline: 0 of 14 old s
         expect(judgedTurnResults(applyJudgement(turnPassages(many), { relevant: [], whole: [] }), many)).toEqual([]);
     });
 });
+
+describe('the echo filter is skipped when a judge reads the candidates', () => {
+    it('is wired that way in the fast path', async () => {
+        const { readFileSync } = await import('node:fs');
+        const src = readFileSync('supabase/functions/_shared/get_relevant_memories.ts', 'utf8');
+        // A good answer contains the question's words; the lexical echo filter
+        // removed "…does have natural predators…" for "what were the three
+        // natural predators … the possum has?" before the judge could see it.
+        expect(src).toMatch(/options\._capture\?\.wantJudgeCandidates\s*\?\s*fastCandidates\s*:\s*filterQueryEchoes\(/);
+    });
+});

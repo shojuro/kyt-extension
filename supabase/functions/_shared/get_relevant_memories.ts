@@ -1128,7 +1128,14 @@ export async function getRelevantMemories(
             }
         }
 
-        const echoFiltered = filterQueryEchoes(query, fastCandidates, isRecallQuery);
+        // The echo filter drops a candidate that contains most of the question's
+        // words. That is what a good answer does: "What were the three natural
+        // predators … the possum has?" lost its own answer here (2026-11-15).
+        // When a judge reads the candidates it tells an answer from a repeat of
+        // the question, so the filter is skipped; exact repeats are removed later.
+        const echoFiltered = options._capture?.wantJudgeCandidates
+            ? fastCandidates
+            : filterQueryEchoes(query, fastCandidates, isRecallQuery);
 
         const scored: CandidateWithScore[] = echoFiltered.map(c => ({
             ...c,

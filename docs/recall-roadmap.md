@@ -102,3 +102,4 @@ repo's `.env` does not hold.) Live, read-only; needs the founder's go.
 | Date | Commit | What changed | Answer found | In top 3 | Correctly empty | Notes |
 |---|---|---|---|---|---|---|
 | 2026-11-15 | 81d690e | baseline | 21/48 | 20/48 | 3/4 | By kind: definition 3/3, whole-list 1/1, cross-platform 10/16, older replies 6/19, own statements 1/9. Every older turn under 3,000 characters failed (14 of 14): time decay scores them near zero. Older turns that passed all had sections, which are not decayed. |
+| 2026-11-15 | 1e926e8 | One judge over whole messages and sections; no time decay | 25/48 | 21/48 | 4/4 | 29 of 52. Fixed 6 (national-debt, echoes, model-surprise, own-fifa, own-not-mvp, none-recital), broke 1 (harvard-article: returns same-conversation turns, not the ones listed). Cause found for many remaining misses: the echo filter drops candidates that contain most of the question's words, which removes the best answers before the judge sees them. |

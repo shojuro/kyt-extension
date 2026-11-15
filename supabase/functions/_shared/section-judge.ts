@@ -12,7 +12,7 @@
 import type { SectionHit, SelectionRule } from "./turn-sections.ts";
 
 /** Whole short messages and sections of long ones, judged together in one call. */
-export const JUDGE_TURN_PASSAGES = 8;
+export const JUDGE_TURN_PASSAGES = 10;
 export const JUDGE_SECTION_PASSAGES = 8;
 export const JUDGE_MAX_PASSAGES = JUDGE_TURN_PASSAGES + JUDGE_SECTION_PASSAGES;
 export const JUDGE_PASSAGE_CHARS = 1200;
