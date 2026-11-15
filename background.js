@@ -37,6 +37,7 @@ import { getEmbeddingCircuitState, CIRCUIT_BREAKER_STORAGE_KEY } from './src/emb
 import { updateRecentTopics } from './src/recent-topic-cache.js';
 import { exportNotebookLMCookies, getCookieExportStatus, resetCookieExporter } from './src/cookie-exporter.js';
 import { handlePollAlarm, getPollerStatus, pollPlatformNow } from './src/conversation-poller.js';
+import { regularAlarmFor } from './src/poll-soon.js';
 import { startRpcProxy, stopRpcProxy, isRpcProxyRunning, getRpcProxyStatus, handleRpcPollAlarm, _testFetchUrl } from './src/nlm-rpc-proxy.js';
 self._testFetchUrl = _testFetchUrl; // Debug: test from SW console
 
@@ -1469,9 +1470,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       break;
 
     case 'pollChatGPT':
+    case 'pollChatGPTSoon':
     case 'pollClaude':
     case 'pollGemini':
-      try { await handlePollAlarm(alarm.name); }
+      try { await handlePollAlarm(regularAlarmFor(alarm.name) || alarm.name); }
       catch (e) { console.error(`❌ Poller ${alarm.name} error:`, e.message); }
       break;
 

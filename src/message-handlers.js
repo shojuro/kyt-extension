@@ -6,6 +6,8 @@
  * IMPORTANT (MV3): All imports must be static. No dynamic import().
  */
 
+import { pollSoonAlarmFor } from './poll-soon.js';
+import { normalizePlatform } from './utils/normalize-platform.js';
 import { syncToSupabase } from './browser-sync.js';
 import { searchMessages, findSimilarMessages } from './browser-search.js';
 import { syncViaEdgeFunction } from './edge-sync.js';
@@ -623,6 +625,10 @@ export function registerMessageHandler(deps) {
             if (result && result.saved !== false) {
               await incrementTurnCount();
               scheduleDebouncedSync();
+              // ChatGPT turns are stored by the conversation poller: ask for a
+              // poll shortly after the exchange goes quiet (see poll-soon.js).
+              const pollSoon = pollSoonAlarmFor(normalizePlatform(message.data?.platform));
+              if (pollSoon) chrome.alarms.create(pollSoon.name, { delayInMinutes: pollSoon.delayInMinutes });
               sendResponse({ success: true, queued: true });
             } else {
               sendResponse({ success: true, queued: false, reason: result?.reason });
